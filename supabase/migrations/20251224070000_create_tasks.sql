@@ -1,0 +1,3 @@
+-- tasks table and policies were created manually in the database.
+-- This migration is intentionally left blank so that `supabase db push`
+-- can mark it as applied without making any changes.

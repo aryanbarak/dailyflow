@@ -1,0 +1,2 @@
+-- 20251225100000_create_documents_bucket.sql
+-- Storage bucket 'user-documents' created manually. No-op migration.

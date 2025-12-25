@@ -1,0 +1,3 @@
+-- 20251225090000_create_profiles.sql
+-- Profiles table & policies were created manually in Supabase UI.
+-- This migration is intentionally left empty to mark it as applied.
