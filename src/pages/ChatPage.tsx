@@ -841,6 +841,11 @@ export default function ChatPage() {
       if (session === null) throw new Error('No session')
 
       if (shouldUseReasoningForMessage(text)) {
+        // TEMP diagnostic, remove once the stale-closure fix (adding
+        // githubRepositoryInventory to handleSend's useCallback deps) is
+        // confirmed live: proves what this specific reasoning call actually
+        // sent, independent of what the DB cache holds.
+        console.log('[GitHubInventory] safeContext value at send time:', githubRepositoryInventory)
         const result = await reasonAboutUserMessage({
           userMessage: text,
           configuredResponseLanguage: getStoredAiResponseLanguage(),
@@ -913,7 +918,7 @@ export default function ChatPage() {
     } finally {
       setSending(false)
     }
-  }, [draft, sending, workerUrl, t, activeSessionId, createSession, refreshSessions, interfaceLanguage, workspace, tasks, tasksLoading, tasksError])
+  }, [draft, sending, workerUrl, t, activeSessionId, createSession, refreshSessions, interfaceLanguage, workspace, tasks, tasksLoading, tasksError, githubRepositoryInventory])
 
   useEffect(() => {
     const prompt = (location.state as { initialPrompt?: string } | null)?.initialPrompt
