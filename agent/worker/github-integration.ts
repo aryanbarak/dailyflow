@@ -9,6 +9,11 @@ const MAX_ISSUES = 20
 const MAX_PULL_REQUESTS = 20
 const MAX_WORKFLOW_RUNS = 10
 const MAX_REPOS_SCANNED_FOR_FANOUT = 3
+// Separate from MAX_REPOSITORIES: this bounds only the cached inventory used
+// for reasoning-context disambiguation, matching the MAX_SAFE_ITEMS cap the
+// frontend already applies to every other safeContext array. The actual
+// /github/repositories response keeps its own MAX_REPOSITORIES cap.
+const MAX_CACHED_REPOSITORY_NAMES = 12
 const MAX_INSTALLATION_LIST_PAGES = 10
 const API_VERSION = '2022-11-28'
 
@@ -793,6 +798,36 @@ function sanitizeRepository(value: GitHubRepositoryResponse) {
   }
 }
 
+// Best-effort side write, never allowed to fail the caller's actual
+// repositories response. A write failure just leaves the cache at whatever
+// it was before (possibly still NULL/"unknown") -- that degrades the
+// reasoning-context hint, it does not break repository listing.
+//
+// Per-element length bounding happens here, not in a database CHECK
+// constraint -- Postgres CHECK constraints forbid subqueries entirely
+// (error 0A000), which rules out any per-element predicate over an array
+// column. The migration can only bound array length; this is the one place
+// that writes the column, so it is also the one place that can bound each
+// element.
+async function cacheRepositoryNames(
+  userId: string,
+  names: string[],
+  config: GitHubConfig,
+  deps: GitHubIntegrationDependencies,
+) {
+  const boundedNames = names
+    .map((name) => boundedString(name, 200))
+    .filter((name): name is string => Boolean(name))
+  await databaseRequest(config, deps, `github_connections?user_id=eq.${encodeURIComponent(userId)}`, {
+    method: 'PATCH',
+    headers: serviceHeaders(config, 'return=minimal'),
+    body: JSON.stringify({
+      repository_names_cache: boundedNames,
+      repository_names_cached_at: deps.now().toISOString(),
+    }),
+  })
+}
+
 async function listRepositories(
   request: Request,
   config: GitHubConfig,
@@ -828,10 +863,28 @@ async function listRepositories(
   if (repositories.some((item) => !item)) {
     throw new GitHubIntegrationError('GITHUB_RESPONSE_INVALID', 502, 'GitHub returned invalid repository metadata.')
   }
+  const sanitizedRepositories = repositories.filter(
+    (item): item is NonNullable<ReturnType<typeof sanitizeRepository>> => Boolean(item),
+  )
+
+  // Piggybacks on this already-authenticated, already-token-minted call
+  // instead of fetching GitHub again elsewhere -- this is the only place
+  // the reasoning-context repository inventory gets refreshed.
+  try {
+    await cacheRepositoryNames(
+      userId,
+      sanitizedRepositories
+        .slice(0, MAX_CACHED_REPOSITORY_NAMES)
+        .map((item) => `${item.owner}/${item.name}`),
+      config,
+      deps,
+    )
+  } catch (error) {
+    console.error('[GitHub] Failed to cache repository inventory:', error)
+  }
+
   return {
-    repositories: repositories.filter(
-      (item): item is NonNullable<ReturnType<typeof sanitizeRepository>> => Boolean(item),
-    ),
+    repositories: sanitizedRepositories,
   }
 }
 
@@ -1124,6 +1177,36 @@ async function connectionStatus(
   }
 }
 
+// Cheap DB-only read for reasoning-context disambiguation -- never mints a
+// token or calls GitHub. "unknown" covers both "never connected" and
+// "connected but github.repositories.list has not run yet since the cache
+// columns were added" -- deliberately not distinguished from "no repos",
+// since neither means the same thing to a caller deciding how to use this.
+async function repositoryInventory(
+  request: Request,
+  config: GitHubBaseConfig,
+  deps: GitHubIntegrationDependencies,
+): Promise<{ status: 'unknown' } | { status: 'known'; names: string[] }> {
+  const { authorization } = await requireUser(request, config, deps)
+  const response = await userDatabaseRequest(
+    config,
+    deps,
+    authorization,
+    'github_connections?select=status,repository_names_cache&limit=1',
+  )
+  const rows = await response.json() as Array<Record<string, unknown>>
+  const row = Array.isArray(rows) ? rows[0] : undefined
+  if (!row || row.status !== 'connected' || !Array.isArray(row.repository_names_cache)) {
+    return { status: 'unknown' }
+  }
+  const names = row.repository_names_cache
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => boundedString(item, 200))
+    .filter((item): item is string => Boolean(item))
+    .slice(0, MAX_CACHED_REPOSITORY_NAMES)
+  return { status: 'known', names }
+}
+
 async function disconnect(
   request: Request,
   config: GitHubBaseConfig,
@@ -1155,6 +1238,9 @@ export async function handleGitHubIntegrationRequest(
     }
     if (url.pathname === '/github/connection' && request.method === 'GET') {
       return json(await connectionStatus(request, baseConfig, deps), 200, origin, baseConfig)
+    }
+    if (url.pathname === '/github/repository-inventory' && request.method === 'GET') {
+      return json(await repositoryInventory(request, baseConfig, deps), 200, origin, baseConfig)
     }
     if (url.pathname === '/github/disconnect' && request.method === 'POST') {
       return json(await disconnect(request, baseConfig, deps), 200, origin, baseConfig)
@@ -1192,7 +1278,8 @@ export async function handleGitHubIntegrationRequest(
       url.pathname === '/github/pulls' ||
       url.pathname === '/github/workflow_runs' ||
       url.pathname === '/github/disconnect' ||
-      url.pathname === '/github/connection'
+      url.pathname === '/github/connection' ||
+      url.pathname === '/github/repository-inventory'
     ) {
       return json({ error: { code: 'METHOD_NOT_ALLOWED', message: 'Method not allowed.' } }, 405, origin, config)
     }
@@ -1210,6 +1297,7 @@ export const githubIntegrationInternals = {
   MAX_PULL_REQUESTS,
   MAX_WORKFLOW_RUNS,
   MAX_REPOS_SCANNED_FOR_FANOUT,
+  MAX_CACHED_REPOSITORY_NAMES,
   CONNECT_ATTEMPT_TTL_MS,
   resolveBaseConfig,
   resolveConfig,

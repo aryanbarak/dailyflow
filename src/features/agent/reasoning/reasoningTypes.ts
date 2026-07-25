@@ -52,11 +52,21 @@ export interface AgentIntentProposal {
   schemaVersion: typeof AGENT_INTENT_SCHEMA_VERSION;
 }
 
+// "unknown" (never refreshed / not connected / auth or network failure) is
+// deliberately distinct from "known" with an empty names array (refreshed
+// and confirmed zero repositories) -- collapsing them would let an unrefreshed
+// cache read as "this user has no GitHub repositories at all," which is a
+// different, wrong claim. See buildReasoningPrompt's phrasing for this field.
+export type AgentReasoningGitHubInventory =
+  | { status: "unknown" }
+  | { status: "known"; names: string[] };
+
 export interface AgentReasoningSafeContext {
   tasks: ExecutionContextTask[];
   events: ExecutionContextEvent[];
   learningProgress: ExecutionLearningProgressSnapshot | null;
   workspace?: Pick<Workspace, "goal" | "plan" | "signalFeed"> | null;
+  githubRepositoryInventory?: AgentReasoningGitHubInventory;
 }
 
 export interface AgentReasoningInput {

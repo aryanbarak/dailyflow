@@ -46,6 +46,7 @@ interface FakeOptions {
   pullsFailureByRepo?: Record<string, number>
   workflowRunsByRepo?: Record<string, unknown[]>
   workflowRunsFailureByRepo?: Record<string, number>
+  repositoryCacheWriteStatus?: number
 }
 
 function response(body: unknown, status = 200) {
@@ -117,6 +118,15 @@ function fakeProvider(options: FakeOptions = {}) {
       if (method === 'POST') {
         connection = JSON.parse(body ?? '{}')
         return response(null, 201)
+      }
+      if (method === 'PATCH') {
+        const status = options.repositoryCacheWriteStatus ?? 204
+        if (status >= 300) {
+          return response({ message: 'provider detail must not escape' }, status)
+        }
+        const update = JSON.parse(body ?? '{}') as Record<string, unknown>
+        if (connection) connection = { ...connection, ...update }
+        return response(null, 204)
       }
       if (method === 'DELETE') {
         if (connection?.user_id === currentUser) connection = undefined
@@ -606,6 +616,68 @@ describe('GitHub repository listing boundary', () => {
     const result = await handleGitHubIntegrationRequest(apiRequest('/github/repositories'), env(), fake.dependencies)
     expect(await result?.json()).toEqual({ repositories: [] })
     expect(fake.calls.filter((call) => call.url.includes('/installation/repositories'))).toHaveLength(1)
+  })
+
+  it('caches owner/name repository names on the connection row after a successful listing', async () => {
+    const repositories = [
+      { id: 1, name: 'smart-academy', owner: { login: 'aryan' }, visibility: 'private', default_branch: 'main', archived: false },
+      { id: 2, name: 'dailyflow', owner: { login: 'aryan' }, visibility: 'public', default_branch: 'main', archived: false },
+    ]
+    const fake = fakeProvider({ repositories })
+    fake.connection = verifiedConnection()
+    const result = await handleGitHubIntegrationRequest(apiRequest('/github/repositories'), env(), fake.dependencies)
+    expect(result?.status).toBe(200)
+    expect(fake.connection).toMatchObject({
+      repository_names_cache: ['aryan/smart-academy', 'aryan/dailyflow'],
+      repository_names_cached_at: NOW.toISOString(),
+    })
+    const cacheWrite = fake.calls.find((call) => call.method === 'PATCH' && call.url.includes('/rest/v1/github_connections'))
+    expect(cacheWrite?.url).toContain(`user_id=eq.${USER_ONE}`)
+  })
+
+  it('caps the cached inventory at 12 independent of the 20-repository response cap', async () => {
+    const repositories = Array.from({ length: 20 }, (_, index) => ({
+      id: index + 1,
+      name: `repo-${index}`,
+      owner: { login: 'owner' },
+      visibility: 'public',
+      default_branch: 'main',
+      archived: false,
+    }))
+    const fake = fakeProvider({ repositories })
+    fake.connection = verifiedConnection()
+    const result = await handleGitHubIntegrationRequest(apiRequest('/github/repositories'), env(), fake.dependencies)
+    const body = await result!.json() as { repositories: unknown[] }
+    expect(body.repositories).toHaveLength(20)
+    expect((fake.connection?.repository_names_cache as unknown[]).length).toBe(12)
+  })
+
+  it('does not fail the repositories response when the cache write fails', async () => {
+    const repositories = [{ id: 1, name: 'smart-academy', owner: { login: 'aryan' }, visibility: 'private', default_branch: 'main', archived: false }]
+    const fake = fakeProvider({ repositories, repositoryCacheWriteStatus: 500 })
+    fake.connection = verifiedConnection()
+    const result = await handleGitHubIntegrationRequest(apiRequest('/github/repositories'), env(), fake.dependencies)
+    expect(result?.status).toBe(200)
+    const body = await result!.json() as { repositories: Array<{ name: string }> }
+    expect(body.repositories).toHaveLength(1)
+    expect(body.repositories[0].name).toBe('smart-academy')
+    // The write was attempted and failed closed on the cache alone -- the
+    // verifiedConnection() fixture never had repository_names_cache set.
+    expect(fake.connection).not.toHaveProperty('repository_names_cache')
+  })
+
+  it('bounds each cached name to 200 characters, since the database can only bound array length', async () => {
+    // sanitizeRepository already bounds owner and name to 100 chars each,
+    // so "owner/name" can reach 201 chars -- one over the write-path bound.
+    const owner = 'o'.repeat(100)
+    const name = 'r'.repeat(100)
+    const repositories = [{ id: 1, name, owner: { login: owner }, visibility: 'private', default_branch: 'main', archived: false }]
+    const fake = fakeProvider({ repositories })
+    fake.connection = verifiedConnection()
+    await handleGitHubIntegrationRequest(apiRequest('/github/repositories'), env(), fake.dependencies)
+    const cached = fake.connection?.repository_names_cache as string[]
+    expect(cached[0]).toHaveLength(200)
+    expect(cached[0]).toBe(`${owner}/${name}`.slice(0, 200))
   })
 
   it.each([
@@ -1157,6 +1229,101 @@ describe('GitHub workflow runs listing boundary', () => {
     const result = await handleGitHubIntegrationRequest(apiRequest('/github/workflow_runs'), env(), fake.dependencies)
     expect(await result?.json()).toEqual({ workflowRuns: [] })
     expect(fake.calls.some((call) => /\/repos\/.+\/actions\/runs/.test(call.url))).toBe(false)
+  })
+})
+
+describe('GitHub repository inventory boundary', () => {
+  function verifiedConnection(userId = USER_ONE, overrides: Record<string, unknown> = {}) {
+    return {
+      user_id: userId,
+      installation_id: 777,
+      github_account_id: 9001,
+      github_account_login: 'verified-user',
+      status: 'connected',
+      ...overrides,
+    }
+  }
+
+  it('requires authentication without requiring GitHub App credentials', async () => {
+    const fake = fakeProvider()
+    const missingProviderConfig = env({
+      GITHUB_APP_ID: undefined,
+      GITHUB_CLIENT_ID: undefined,
+      GITHUB_APP_SLUG: undefined,
+      GITHUB_SETUP_URL: undefined,
+      GITHUB_CALLBACK_URL: undefined,
+      GITHUB_APP_PRIVATE_KEY: undefined,
+      GITHUB_CLIENT_SECRET: undefined,
+    })
+
+    const unauthenticated = await handleGitHubIntegrationRequest(
+      apiRequest('/github/repository-inventory', 'GET', false),
+      missingProviderConfig,
+      fake.dependencies,
+    )
+    expect(unauthenticated?.status).toBe(401)
+
+    fake.connection = verifiedConnection()
+    const authenticated = await handleGitHubIntegrationRequest(
+      apiRequest('/github/repository-inventory'),
+      missingProviderConfig,
+      fake.dependencies,
+    )
+    expect(authenticated?.status).toBe(200)
+  })
+
+  it('returns unknown when GitHub is not connected at all', async () => {
+    const fake = fakeProvider()
+    const result = await handleGitHubIntegrationRequest(apiRequest('/github/repository-inventory'), env(), fake.dependencies)
+    expect(await result?.json()).toEqual({ status: 'unknown' })
+  })
+
+  it('returns unknown when connected but github.repositories.list has never populated the cache', async () => {
+    const fake = fakeProvider()
+    fake.connection = verifiedConnection()
+    const result = await handleGitHubIntegrationRequest(apiRequest('/github/repository-inventory'), env(), fake.dependencies)
+    expect(await result?.json()).toEqual({ status: 'unknown' })
+  })
+
+  it('returns known with an empty list when the cache was refreshed and confirmed zero repositories', async () => {
+    const fake = fakeProvider()
+    fake.connection = verifiedConnection(USER_ONE, { repository_names_cache: [] })
+    const result = await handleGitHubIntegrationRequest(apiRequest('/github/repository-inventory'), env(), fake.dependencies)
+    expect(await result?.json()).toEqual({ status: 'known', names: [] })
+  })
+
+  it('returns known with names when the cache has been populated', async () => {
+    const fake = fakeProvider()
+    fake.connection = verifiedConnection(USER_ONE, {
+      repository_names_cache: ['aryan/smart-academy', 'aryan/dailyflow'],
+    })
+    const result = await handleGitHubIntegrationRequest(apiRequest('/github/repository-inventory'), env(), fake.dependencies)
+    expect(await result?.json()).toEqual({ status: 'known', names: ['aryan/smart-academy', 'aryan/dailyflow'] })
+  })
+
+  it('treats a revoked connection as unknown even if stale names remain cached', async () => {
+    const fake = fakeProvider()
+    fake.connection = verifiedConnection(USER_ONE, {
+      status: 'revoked',
+      repository_names_cache: ['aryan/stale-repo'],
+    })
+    const result = await handleGitHubIntegrationRequest(apiRequest('/github/repository-inventory'), env(), fake.dependencies)
+    expect(await result?.json()).toEqual({ status: 'unknown' })
+  })
+
+  it('never mints an installation token or calls GitHub for this read', async () => {
+    const fake = fakeProvider()
+    fake.connection = verifiedConnection(USER_ONE, { repository_names_cache: ['aryan/smart-academy'] })
+    await handleGitHubIntegrationRequest(apiRequest('/github/repository-inventory'), env(), fake.dependencies)
+    expect(fake.calls.some((call) => call.url.startsWith('https://api.github.com') || call.url.startsWith('https://github.com'))).toBe(false)
+  })
+
+  it('scopes the read to the authenticated user only', async () => {
+    const fake = fakeProvider()
+    fake.connection = verifiedConnection(USER_ONE, { repository_names_cache: ['aryan/smart-academy'] })
+    fake.currentUser = USER_TWO
+    const result = await handleGitHubIntegrationRequest(apiRequest('/github/repository-inventory'), env(), fake.dependencies)
+    expect(await result?.json()).toEqual({ status: 'unknown' })
   })
 })
 

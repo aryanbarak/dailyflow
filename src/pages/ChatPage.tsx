@@ -44,6 +44,7 @@ import {
   runReadOnlyTool,
   runWriteTool,
   type AgentReasoningResult,
+  type AgentReasoningGitHubInventory,
   type ReadOnlyRuntimeResult,
   type WriteRuntimeResult,
   type ApprovalInteractionResult,
@@ -56,6 +57,7 @@ import { createGitHubRepositoriesClient } from '@/features/integrations/github/g
 import { createGitHubIssuesClient } from '@/features/integrations/github/githubIssuesClient'
 import { createGitHubPullRequestsClient } from '@/features/integrations/github/githubPullRequestsClient'
 import { createGitHubWorkflowRunsClient } from '@/features/integrations/github/githubWorkflowRunsClient'
+import { createGitHubRepositoryInventoryClient } from '@/features/integrations/github/githubRepositoryInventoryClient'
 import { useWorkspace } from '@/features/workspace'
 import type {
   WorkspacePlanActionType,
@@ -743,10 +745,35 @@ export default function ChatPage() {
   const [sendError, setSendError] = useState<string | null>(null)
   const [reasoningProposal, setReasoningProposal] = useState<ReasoningProposalState | null>(null)
   const [approvalDialogOpen, setApprovalDialogOpen] = useState(false)
+  const [githubRepositoryInventory, setGithubRepositoryInventory] = useState<AgentReasoningGitHubInventory>({ status: 'unknown' })
   const bottomRef = useRef<HTMLDivElement>(null)
   const initialPromptFired = useRef(false)
   const workerUrl = import.meta.env.VITE_AGENT_WORKER_URL as string
   const reasoningTransport = resolveAgentReasoningTransport(import.meta.env)
+
+  // Fetched once per mount, not per message -- the underlying cache itself
+  // only changes when github.repositories.list runs, so re-fetching this
+  // cheap DB-only read on every reasoning call would add a request for no
+  // fresher data. The client degrades to { status: 'unknown' } on any
+  // failure, so a failed fetch here is silently equivalent to "not loaded
+  // yet," never a visible error.
+  useEffect(() => {
+    if (!user?.id) return
+    let cancelled = false
+    const inventoryClient = createGitHubRepositoryInventoryClient({
+      workerBaseUrl: workerUrl,
+      getAccessToken: async () => {
+        const { data: { session } } = await supabase.auth.getSession()
+        return session?.access_token
+      },
+    })
+    inventoryClient.getInventory().then((inventory) => {
+      if (!cancelled) setGithubRepositoryInventory(inventory)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [user?.id, workerUrl])
 
   const loadSessionMessages = useCallback(async (sessionId: string) => {
     if (!user?.id) return
@@ -831,6 +858,7 @@ export default function ChatPage() {
               plan: workspace.plan,
               signalFeed: workspace.signalFeed,
             },
+            githubRepositoryInventory,
           },
           sessionId,
         }, {

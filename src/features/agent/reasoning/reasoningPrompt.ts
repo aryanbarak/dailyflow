@@ -42,6 +42,21 @@ function safeLearning(context: AgentReasoningSafeContext) {
   };
 }
 
+// "unknown" and "known with an empty list" are rendered as distinctly
+// different JSON shapes on purpose -- see buildReasoningPrompt's inventory
+// instruction line for why collapsing them would be a real behavior bug,
+// not just a wording nitpick.
+function safeGitHubInventory(context: AgentReasoningSafeContext) {
+  const inventory = context.githubRepositoryInventory;
+  if (!inventory || inventory.status === "unknown") {
+    return { status: "unknown" as const };
+  }
+  return {
+    status: "known" as const,
+    names: inventory.names.slice(0, MAX_SAFE_ITEMS).map((name) => safeString(name)),
+  };
+}
+
 function safeWorkspace(context: AgentReasoningSafeContext) {
   const workspace = context.workspace;
   if (!workspace) return null;
@@ -72,6 +87,7 @@ export function buildReasoningPrompt(input: AgentReasoningPromptInput) {
     events: safeEvents(input.safeContext),
     learning: safeLearning(input.safeContext),
     workspace: safeWorkspace(input.safeContext),
+    githubRepositoryInventory: safeGitHubInventory(input.safeContext),
   };
 
   return [
@@ -88,6 +104,7 @@ export function buildReasoningPrompt(input: AgentReasoningPromptInput) {
     "GitHub pull request requests in English, German, or Persian map only to inspect_github_pull_requests. This intent lists open pull request metadata only, never issues, diffs, reviews, or comments.",
     "GitHub Actions / CI status requests in English, German, or Persian map only to inspect_github_workflow_runs. This intent lists recent workflow run status only, never logs, artifacts, or job details.",
     "If a message names more than one of repositories, issues, pull requests, or workflow runs, ask for clarification instead of guessing which one it means.",
+    "githubRepositoryInventory has two possible shapes. {\"status\":\"unknown\"} means the connected-repository list has not been loaded yet -- this does NOT mean the user has no GitHub repositories, so never use it as evidence against a GitHub intent; evaluate the message normally. {\"status\":\"known\",\"names\":[...]} lists the user's actually connected repository names (owner/repo). If the message names one of these, and that name could otherwise belong to a different domain (for example a learning topic with the same name), treat the match as evidence the message is about GitHub. A name appearing here never by itself selects which GitHub tool (repositories/issues/pull requests/workflow runs) to use -- that still follows the domain distinction rules above.",
     "Unsupported requests include create/update/delete tasks, send messages, create events, finance mutations, or arbitrary automation.",
     "Ask clarification when the target is ambiguous, when multiple tasks match, when no exact task is selected, when confidence is low, or when actions are mixed.",
     getAiResponseLanguageInstruction(input.responseLanguage),

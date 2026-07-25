@@ -404,6 +404,16 @@ Current Agent Response UX Validation V1 status:
 - Error tracking is not centralized.
 - Supabase generated types now include the GitHub connection tables; future
   schema changes must continue using the canonical generation workflow.
+  `github_connections.repository_names_cache` and `repository_names_cached_at`
+  (added for reasoning-context repository-inventory disambiguation) are the
+  first drift against this: the migration exists, `types.ts` was deliberately
+  not hand-patched to add them (the prior hand-patched snapshot caused real
+  bugs), so `Database["public"]["Tables"]["github_connections"]` is stale
+  until the next canonical regeneration against a migrated database. Neither
+  the Worker nor the frontend client currently import that generated shape
+  for `github_connections`, so nothing depends on it today, but the next
+  schema change should regenerate rather than adding a second undocumented
+  drift on top of this one.
 - Some older UI strings still need i18n/RTL polish.
 - Production build still reports large Vite chunks.
 - GitHub Read-only Integration V1 Slice 1 has passed clean local migration
