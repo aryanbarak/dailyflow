@@ -44,7 +44,10 @@ function sanitizeMetadataValue(
   depth: number,
 ): ExecutionAuditMetadataValue | undefined {
   if (value === null || typeof value === "boolean" || typeof value === "number") {
-    return Number.isNaN(value) ? undefined : value;
+    // TS doesn't carry this narrowing (verified null/boolean/number) through to a
+    // return checked against the recursive ExecutionAuditMetadataValue type --
+    // a known compiler limitation with self-referential unions, not a real gap.
+    return Number.isNaN(value) ? undefined : (value as ExecutionAuditMetadataValue);
   }
 
   if (typeof value === "string") {

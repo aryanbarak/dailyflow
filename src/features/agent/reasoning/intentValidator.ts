@@ -205,6 +205,7 @@ function deriveTaskCompletionTarget(
   if (!task?.id) return target;
   return {
     taskId: task.id,
+    taskReference: undefined,
     taskTitleHint: task.title,
   };
 }

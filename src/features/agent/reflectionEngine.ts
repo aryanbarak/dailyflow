@@ -188,7 +188,12 @@ function outcomeFor(result: ExecutionResult, assessment: ToolDataAssessment): Ag
 }
 
 function toolDomain(input: AgentReflectionInput): AgentReflectionDomain | undefined {
-  return input.toolResolution.tool?.domain ?? input.toolResolution.toolId?.split(".")[0] as AgentReflectionDomain | undefined;
+  const domain = input.toolResolution.tool?.domain;
+  // "system" is a real AgentToolDomain member with no reflection concept -- every
+  // other member matches AgentReflectionDomain exactly, so this is the only case
+  // to exclude rather than force-cast through.
+  if (domain && domain !== "system") return domain;
+  return input.toolResolution.toolId?.split(".")[0] as AgentReflectionDomain | undefined;
 }
 
 function relevance(
@@ -198,7 +203,7 @@ function relevance(
 ) {
   if (step.domain !== goal.primaryDomain && domain !== goal.primaryDomain) {
     if (step.domain !== "github" && step.domain !== "workspace" && goal.supportingDomains.includes(step.domain)) return "supporting";
-    if (domain && domain !== "workspace" && domain !== "github" && goal.supportingDomains.includes(domain)) return "supporting";
+    if (domain && domain !== "workspace" && domain !== "github" && domain !== "conversations" && goal.supportingDomains.includes(domain)) return "supporting";
     if (domain === "workspace") return "supporting";
     return "unrelated";
   }

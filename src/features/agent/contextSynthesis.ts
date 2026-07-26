@@ -197,6 +197,7 @@ function repeatedEvidenceDomain(reflection: AgentReflectionResult | undefined): 
       item.domain &&
       item.domain !== "workspace" &&
       item.domain !== "github" &&
+      item.domain !== "conversations" &&
       (item.outcome === "successful" || item.outcome === "empty") &&
       item.usefulness !== "none"
     ) {

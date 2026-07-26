@@ -460,13 +460,16 @@ export function proposalsToStates(result: AgentReasoningResult, t: Translate): R
 }
 
 interface ContextTaskSnapshot {
+  id?: string
+  title?: string
+  createdAt?: string
   completed?: boolean
   dueDate?: string | null
   completedAt?: string | null
 }
 
 export interface LiveTaskReasoningContextInput {
-  tasks: readonly ContextTaskSnapshot[] & readonly { id?: string; title?: string; createdAt?: string }[]
+  tasks: readonly ContextTaskSnapshot[]
   isLoading: boolean
   error: string | null
 }

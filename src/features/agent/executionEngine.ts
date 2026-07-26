@@ -16,7 +16,7 @@ import type {
   ExecutionResult,
   ExecutionStatus,
 } from "./executionTypes";
-import type { ExecutionAuditRecord, ExecutionAuditStatus } from "./executionAuditTypes";
+import type { ExecutionAuditMetadata, ExecutionAuditRecord, ExecutionAuditStatus } from "./executionAuditTypes";
 import type { AgentToolDefinition, ExecutionPolicyDecision } from "./toolTypes";
 
 export const EXECUTION_ENGINE_VERSION = "execution-engine-v1" as const;
@@ -71,7 +71,7 @@ function createAuditRecord(
 ): ExecutionAuditRecord {
   const completedAt = options.completedAt;
   const policyDecision = options.policyDecision;
-  const metadata: Record<string, unknown> = {
+  const metadata: ExecutionAuditMetadata = {
     redacted: true,
     handlerId: options.handler?.toolId,
     retryable: options.retryable,

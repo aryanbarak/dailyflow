@@ -8,7 +8,7 @@ import type {
   WorkspaceSignalDomain,
 } from "../workspace/workspaceTypes";
 
-export type AgentReflectionDomain = WorkspaceSignalDomain | "workspace" | "github";
+export type AgentReflectionDomain = WorkspaceSignalDomain | "workspace" | "github" | "conversations";
 
 export const REFLECTION_ENGINE_VERSION = "reflection-engine-v1" as const;
 

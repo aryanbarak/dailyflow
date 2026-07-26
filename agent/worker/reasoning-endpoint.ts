@@ -560,7 +560,7 @@ export async function handleLocalReasoningRequest(
   }
 
   const validation = await validateRequest(request, origin)
-  if (!validation.ok) return validation.response
+  if (validation.ok === false) return validation.response
 
   try {
     config = resolveLocalReasoningConfig(env, { requireGemini: true })

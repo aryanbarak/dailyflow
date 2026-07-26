@@ -130,7 +130,7 @@ export function detectAiResponseLanguage(message: string): SupportedAiResponseLa
     return "fa";
   }
 
-  const tokens = cleaned
+  const tokens: string[] = cleaned
     .toLowerCase()
     .match(/[a-zäöüß]+/g) ?? [];
 

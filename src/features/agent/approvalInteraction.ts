@@ -118,7 +118,15 @@ function maxRisk(
   return compareRiskLevels(left, right) >= 0 ? left : right;
 }
 
-function validateInteraction(input: ApprovalInteractionInput) {
+interface ValidatedApprovalInteraction {
+  stepApproval: WorkspaceStepApproval;
+  requestedScope: WorkspaceApprovalScope;
+  requestedRisk: WorkspaceApprovalRiskLevel;
+}
+
+function validateInteraction(
+  input: ApprovalInteractionInput,
+): ApprovalInteractionFailure | ValidatedApprovalInteraction {
   const step = input.step;
   const stepApproval = input.stepApproval;
 
@@ -168,7 +176,7 @@ export function approveWorkspaceStep(
   input: ApprovalInteractionInput,
 ): ApprovalInteractionResult {
   const validation = validateInteraction(input);
-  if ("ok" in validation && validation.ok === false) return validation;
+  if ("ok" in validation) return validation;
 
   return {
     ok: true,
@@ -189,7 +197,7 @@ export function rejectWorkspaceStep(
   input: ApprovalInteractionInput,
 ): ApprovalInteractionResult {
   const validation = validateInteraction(input);
-  if ("ok" in validation && validation.ok === false) return validation;
+  if ("ok" in validation) return validation;
 
   return {
     ok: true,

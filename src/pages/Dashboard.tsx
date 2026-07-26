@@ -876,16 +876,10 @@ export default function Dashboard() {
         : null,
     [readOnlyRuntimeStep, workspace.approval.stepApprovals],
   );
-  const approvedTaskCompleteApproval = useMemo(
-    () =>
-      approvalMatchesTaskCompleteCandidate(
-        taskCompleteApprovalDecision?.ok ? taskCompleteApprovalDecision.approval : null,
-        taskCompleteWriteCandidate,
-      )
-        ? taskCompleteApprovalDecision?.approval ?? null
-        : null,
-    [taskCompleteApprovalDecision, taskCompleteWriteCandidate],
-  );
+  const approvedTaskCompleteApproval = useMemo(() => {
+    const approval = taskCompleteApprovalDecision?.ok ? taskCompleteApprovalDecision.approval : null;
+    return approvalMatchesTaskCompleteCandidate(approval, taskCompleteWriteCandidate) ? approval : null;
+  }, [taskCompleteApprovalDecision, taskCompleteWriteCandidate]);
 
   useEffect(() => {
     setTaskCompleteApprovalDecision(null);

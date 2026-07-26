@@ -69,4 +69,5 @@ export type {
   WorkspaceStepApproval,
   WorkspaceStepApprovalStatus,
   WorkspaceSkill,
+  WorkspaceWelcome,
 } from "./workspaceTypes";
