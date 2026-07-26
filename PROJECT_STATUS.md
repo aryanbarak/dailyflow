@@ -1,6 +1,6 @@
 # SmartFlow - Project Status
 
-Last updated: 2026-07-24
+Last updated: 2026-07-26
 
 ---
 
@@ -89,7 +89,27 @@ Completed workspace and agent architecture milestones:
 - Multilingual reasoning-domain correction
 - Response Composer V1
 - Context Synthesis V1
-- GitHub Read-only Integration V1 Slice 1 (live in production)
+- GitHub Read-only Integration: all four tools (`github.repositories.list`,
+  `github.issues.list`, `github.pulls.list`, `github.workflow_runs.list`) live
+  in production — natural-language request -> intent -> explicit Run works
+  end to end for each
+- `/chat` reasoning mode (`mode:"reasoning"`): schema-enforced
+  (`responseSchema`, temperature 0), same contract as `/agent/reason`, skips
+  the conversational persona and `agent_chat_messages` persistence
+- ChatPage's reasoning-routing heuristic (`shouldUseReasoningForMessage`)
+  inverted from a domain-keyword allowlist to a denylist + possessive-based
+  gate, so a phrasing naming a tool it wasn't explicitly taught no longer
+  silently falls through to plain chat
+- Tool-level evidence disambiguation is table-driven
+  (`TOOL_EVIDENCE_PATTERNS`): one table drives per-domain tool
+  disambiguation instead of a one-off function per domain
+- Connected GitHub repository inventory now feeds the reasoning prompt
+  (`safeContext.githubRepositoryInventory`) so a name that matches a
+  connected repo is treated as GitHub evidence even when it could otherwise
+  read as a different domain (e.g. a learning topic)
+- Multi-candidate disambiguation cards: a genuinely ambiguous request (2-3
+  specific read-only intents) can render one validated proposal card per
+  candidate instead of a single generic clarification prompt
 
 Completed validation milestone:
 
@@ -167,6 +187,9 @@ The LLM Reasoning Layer supports these intents:
 - `inspect_learning`
 - `inspect_workspace`
 - `inspect_github_repositories`
+- `inspect_github_issues`
+- `inspect_github_pull_requests`
+- `inspect_github_workflow_runs`
 - `complete_task`
 - `ask_clarification`
 - `unsupported`
@@ -178,7 +201,21 @@ Intent-to-tool mappings:
 - `inspect_learning` -> `learning.get_progress`
 - `inspect_workspace` -> `workspace.get_context`
 - `inspect_github_repositories` -> `github.repositories.list`
+- `inspect_github_issues` -> `github.issues.list`
+- `inspect_github_pull_requests` -> `github.pulls.list`
+- `inspect_github_workflow_runs` -> `github.workflow_runs.list`
 - `complete_task` -> `tasks.complete`
+
+`ask_clarification` can carry a `candidates` array in the raw model output when
+a message is genuinely ambiguous between 2-3 of the intents above (as opposed
+to missing information, which stays a plain clarification with no
+candidates). `resolveDisambiguationCandidates` (`intentValidator.ts`)
+independently revalidates each raw candidate, dedupes on the resolved
+`toolId`, and caps at 3 survivors. The validated result carries these as
+`AgentReasoningResult.disambiguationCandidates`, present only for a genuine
+multi-way ambiguity — absent for a normal confident proposal, a plain
+missing-information clarification, and a disambiguation that collapsed to a
+single survivor (returned as a normal top-level result instead).
 
 Security boundary:
 
@@ -193,9 +230,9 @@ Security boundary:
 - read and write actions still require explicit user interaction.
 
 Multilingual domain correction is bounded. Task markers override generic
-`today` / `heute` / `امروز` markers. Strong task, calendar, learning, and
-workspace evidence is bounded; conflicting strong evidence asks for
-clarification. This is not a general semantic classifier.
+`today` / `heute` / `امروز` markers. Strong task, calendar, learning,
+workspace, and GitHub evidence is bounded; conflicting strong evidence asks
+for clarification. This is not a general semantic classifier.
 
 ---
 
@@ -208,6 +245,9 @@ Supported read-only executable tools:
 - `learning.get_progress`
 - `workspace.get_context`
 - `github.repositories.list`
+- `github.issues.list`
+- `github.pulls.list`
+- `github.workflow_runs.list`
 
 Supported write executable tools:
 
@@ -337,20 +377,43 @@ Guarantees:
 - no hidden approve-and-run path exists,
 - ambiguous targets are never guessed.
 
-Latest confirmed validation:
+Latest confirmed validation (re-run 2026-07-26; counts below are what that run
+actually reported, not carried forward from the prior update):
 
-- Agent tests: 262 passed
-- GitHub Worker tests: 24 passed
-- GitHub migration/type-structure tests: 4 passed
-- GitHub frontend client/UI tests: 19 passed
-- GitHub focused suite: 47 passed
-- GitHub live local Supabase RLS/lifecycle tests: 5 passed
-- Workspace tests: 75 passed
-- ChatPage tests: 14 passed
-- Full default test suite: 474 passed; 5 gated live-RLS tests skipped by default
-- TypeScript: passed
-- Worker TypeScript: passed
-- Production build: passed
+- GitHub Worker tests (`agent/worker/github-integration.test.ts`): 71 passed
+- GitHub migration/type-structure tests
+  (`supabase/tests/github_read_only_connections.test.ts`): 4 passed
+- GitHub frontend client/UI tests (`src/features/integrations/github/*`, 7
+  files): 34 passed
+- GitHub focused suite (Worker + migration/type-structure + frontend
+  client/UI): 109 passed
+- GitHub live local Supabase RLS/lifecycle tests
+  (`supabase/tests/github_read_only_connections.rls.test.ts`): 5 exist, gated
+  and skipped by default in this run; not independently re-run against a live
+  local Supabase stack this session, so "5 passed" there is not re-confirmed
+  (see note below)
+- Workspace tests (`src/features/workspace/**`, 11 files): 75 passed
+  (unchanged from prior update)
+- ChatPage tests (`src/pages/ChatPage.test.tsx`): 26 passed
+- Full default test suite: 621 passed, 5 skipped, 626 total (54 test files
+  passed, 1 skipped)
+- Production build: passed (`npm run build` succeeded 2026-07-26)
+
+Not reconfirmed this update — flagged rather than guessed:
+
+- "Agent tests: 262 passed" (prior update): no single command or file-set
+  in the repo defines exactly which tests this counted, and reconstructing
+  it from directory scope alone produced two different numbers (239 for
+  `src/features/agent/**` excluding `reasoning/`, 326 including it), neither
+  matching 262. Removed rather than replaced with a guess.
+- "TypeScript: passed" / "Worker TypeScript: passed" (prior update): there is
+  no `tsc`/typecheck script in `package.json` (root or `agent/worker`) that
+  this could refer to. Running `npx tsc --noEmit -p tsconfig.app.json`
+  directly surfaces pre-existing errors in `SettingsPage.tsx`,
+  `TutorAppPage.tsx`, and `TutorPage.tsx` — unrelated to this session's
+  reasoning/disambiguation changes, but not something this update can call
+  "passed" without knowing what the original claim was checked against.
+  Removed rather than replaced with a guess.
 
 Existing non-failing build warnings:
 
@@ -469,6 +532,23 @@ Current Agent Response UX Validation V1 status:
   regex, since narrowing it is a separate, broader change affecting the
   existing tasks intent, not scoped to the GitHub tools work that surfaced
   it.
+- Persian possessive detection in `shouldUseReasoningForMessage`
+  (`hasPersianPossessiveMarker`, `ChatPage.tsx`) only matches possession
+  marked by "های" + suffix or a suffix after a ZWNJ. A bare enclitic suffix
+  with no separator (`کارم`, `دستم`) is deliberately not matched, because
+  those same letters are also ordinary word endings and a regex over the
+  message text alone cannot tell them apart without a real morphological
+  analyzer. This misses informal spoken-register Persian possessives
+  (`کارم چیه؟`) — a real, known gap, not a hidden one. If the connected-repo
+  inventory approach (see above) extends to give the model real context
+  about what entities exist, that is the more promising path to close this,
+  not a longer suffix list.
+- The local real-worker reasoning validation flow
+  (`docs/testing/local-real-worker-reasoning-v1.md`) requires a real Gemini
+  credential in `agent/worker/.dev.vars` (git-ignored). Deleting that file and
+  rotating/revoking the credential afterward is a manual step the validator
+  must remember to do — there is no automated teardown, so a skipped manual
+  step leaves a live credential on disk.
 - `resolveDisambiguationCandidates`'s toolId-collision dedup (`intentValidator.ts`)
   keeps the first candidate in the model's returned array order. The kept
   candidate's `toolId` and card title/description are deterministic
