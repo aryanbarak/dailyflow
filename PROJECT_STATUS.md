@@ -469,6 +469,15 @@ Current Agent Response UX Validation V1 status:
   regex, since narrowing it is a separate, broader change affecting the
   existing tasks intent, not scoped to the GitHub tools work that surfaced
   it.
+- `resolveDisambiguationCandidates`'s toolId-collision dedup (`intentValidator.ts`)
+  keeps the first candidate in the model's returned array order. The kept
+  candidate's `toolId` and card title/description are deterministic
+  (map-derived from `type`, not model text), so which duplicate survives never
+  changes what the card says it will do or what tool it runs. Its
+  `reasons[0]` sub-text, however, is genuine model output, so on a collision
+  the justification text shown can differ between runs depending on which
+  duplicate the model happened to list first. Harmless, but noted so it isn't
+  rediscovered as a "bug" later.
 
 ---
 
