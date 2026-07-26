@@ -445,6 +445,20 @@ export function proposalToState(result: AgentReasoningResult, t: Translate): Rea
   }
 }
 
+// Always an array -- one element for a normal confident proposal or a
+// disambiguation that collapsed to a single survivor, two or three for a
+// genuine disambiguation. Each entry goes through the exact same
+// proposalToState used for a lone proposal today, so a card built from
+// result.disambiguationCandidates[i] is indistinguishable from a card built
+// for a standalone AgentReasoningResult of the same shape.
+export function proposalsToStates(result: AgentReasoningResult, t: Translate): ReasoningProposalState[] {
+  const candidates = result.disambiguationCandidates
+  if (candidates && candidates.length >= 2) {
+    return candidates.map(candidate => proposalToState(candidate, t))
+  }
+  return [proposalToState(result, t)]
+}
+
 interface ContextTaskSnapshot {
   completed?: boolean
   dueDate?: string | null
@@ -743,7 +757,7 @@ export default function ChatPage() {
   const [loading, setLoading] = useState(false)
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
-  const [reasoningProposal, setReasoningProposal] = useState<ReasoningProposalState | null>(null)
+  const [reasoningProposal, setReasoningProposal] = useState<ReasoningProposalState[] | null>(null)
   const [approvalDialogOpen, setApprovalDialogOpen] = useState(false)
   const [githubRepositoryInventory, setGithubRepositoryInventory] = useState<AgentReasoningGitHubInventory>({ status: 'unknown' })
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -873,8 +887,7 @@ export default function ChatPage() {
             transport: reasoningTransport.transport,
           }),
         })
-        const proposalState = proposalToState(result, t)
-        setReasoningProposal(proposalState)
+        setReasoningProposal(proposalsToStates(result, t))
         const assistantContent = proposalMessage(result)
 
         setMessages(prev => [
@@ -950,16 +963,19 @@ export default function ChatPage() {
     ])
   }, [interfaceLanguage])
 
-  const handleRunReasoningProposal = useCallback(async () => {
-    if (!reasoningProposal?.step || !reasoningProposal.resolution?.resolved) return
-    if (reasoningProposal.result.proposal.requiresApproval) return
+  const handleRunReasoningProposal = useCallback(async (index: number) => {
+    const current = reasoningProposal?.[index]
+    if (!current?.step || !current.resolution?.resolved) return
+    if (current.result.proposal.requiresApproval) return
 
-    setReasoningProposal(prev => prev ? { ...prev, runStatus: 'running' } : prev)
+    setReasoningProposal(prev => prev
+      ? prev.map((p, i) => i === index ? { ...p, runStatus: 'running' } : p)
+      : prev)
     const currentTime = new Date()
     const runResult = await runReadOnlyTool({
-      requestId: `reasoning:read:${reasoningProposal.resolution.toolId}:${reasoningProposal.step.id}:${currentTime.getTime()}`,
-      step: reasoningProposal.step,
-      toolResolution: reasoningProposal.resolution,
+      requestId: `reasoning:read:${current.resolution.toolId}:${current.step.id}:${currentTime.getTime()}`,
+      step: current.step,
+      toolResolution: current.resolution,
       approval: null,
       executionInput: {},
       executionContext: {
@@ -998,11 +1014,13 @@ export default function ChatPage() {
       currentTime,
     })
 
-    setReasoningProposal(prev => prev ? {
-      ...prev,
-      runStatus: runResult.success ? 'success' : 'failed',
-      readOnlyResult: runResult,
-    } : prev)
+    setReasoningProposal(prev => prev
+      ? prev.map((p, i) => i === index ? {
+        ...p,
+        runStatus: runResult.success ? 'success' : 'failed',
+        readOnlyResult: runResult,
+      } : p)
+      : prev)
     const synthesizedContext = synthesizeContext({
       toolId: runResult.toolId,
       executionStatus: runResult.status,
@@ -1011,43 +1029,50 @@ export default function ChatPage() {
       reflection: runResult.reflection,
       workspaceContext: buildContextSynthesisWorkspaceContext(workspace, tasks, currentTime),
       decisionProfile: workspace.decisionProfile,
-      responseLanguage: reasoningProposal.result.responseLanguage,
+      responseLanguage: current.result.responseLanguage,
       generatedAt: currentTime.toISOString(),
     })
     appendAssistantResult(
       resultMessage(
         runResult,
-        reasoningProposal.result.responseLanguage,
+        current.result.responseLanguage,
         workspace.decisionProfile,
         synthesizedContext,
       ),
-      reasoningProposal.result.responseLanguage,
+      current.result.responseLanguage,
     )
   }, [appendAssistantResult, reasoningProposal, tasks, workerUrl, workspace])
 
+  // complete_task proposals are always a single-element reasoningProposal
+  // array -- disambiguation candidates are deliberately never complete_task
+  // (see resolveDisambiguationCandidates) -- so the approval flow only ever
+  // needs to address index 0.
   const handleApprovalDecision = useCallback((decision: ApprovalInteractionResult) => {
     if (!decision.ok || decision.decision === 'closed') return
     setReasoningProposal(prev => {
-      if (!prev) return prev
-      return {
-        ...prev,
+      if (!prev || prev.length === 0) return prev
+      return prev.map((p, i) => i === 0 ? {
+        ...p,
         approval: decision.approval,
         runStatus: decision.decision === 'approved' ? 'approved' : 'rejected',
-      }
+      } : p)
     })
   }, [])
 
   const handleRunTaskCompleteProposal = useCallback(async () => {
-    if (!reasoningProposal?.step || !reasoningProposal.resolution?.resolved) return
-    if (reasoningProposal.approval?.status !== 'approved') return
+    const current = reasoningProposal?.[0]
+    if (!current?.step || !current.resolution?.resolved) return
+    if (current.approval?.status !== 'approved') return
 
-    setReasoningProposal(prev => prev ? { ...prev, runStatus: 'running' } : prev)
+    setReasoningProposal(prev => prev
+      ? prev.map((p, i) => i === 0 ? { ...p, runStatus: 'running' } : p)
+      : prev)
     const currentTime = new Date()
     const writeResult = await runWriteTool({
-      requestId: `reasoning:write:tasks.complete:${reasoningProposal.step.id}:${reasoningProposal.step.targetId}:${currentTime.getTime()}`,
-      step: reasoningProposal.step,
-      toolResolution: reasoningProposal.resolution,
-      approval: reasoningProposal.approval,
+      requestId: `reasoning:write:tasks.complete:${current.step.id}:${current.step.targetId}:${currentTime.getTime()}`,
+      step: current.step,
+      toolResolution: current.resolution,
+      approval: current.approval,
       executionContext: {
         ...workspace.agentContext,
         workspace,
@@ -1058,11 +1083,13 @@ export default function ChatPage() {
       getAuthenticatedUserId: () => user?.id,
     })
 
-    setReasoningProposal(prev => prev ? {
-      ...prev,
-      runStatus: writeResult.success ? 'success' : 'failed',
-      writeResult,
-    } : prev)
+    setReasoningProposal(prev => prev
+      ? prev.map((p, i) => i === 0 ? {
+        ...p,
+        runStatus: writeResult.success ? 'success' : 'failed',
+        writeResult,
+      } : p)
+      : prev)
     if (writeResult.success) {
       void workspace.refresh?.tasks()
     }
@@ -1074,17 +1101,17 @@ export default function ChatPage() {
       reflection: writeResult.reflection,
       workspaceContext: buildContextSynthesisWorkspaceContext(workspace, tasks, currentTime),
       decisionProfile: workspace.decisionProfile,
-      responseLanguage: reasoningProposal.result.responseLanguage,
+      responseLanguage: current.result.responseLanguage,
       generatedAt: currentTime.toISOString(),
     })
     appendAssistantResult(
       resultMessage(
         writeResult,
-        reasoningProposal.result.responseLanguage,
+        current.result.responseLanguage,
         workspace.decisionProfile,
         synthesizedContext,
       ),
-      reasoningProposal.result.responseLanguage,
+      current.result.responseLanguage,
     )
   }, [appendAssistantResult, reasoningProposal, tasks, user?.id, workspace])
 
@@ -1234,14 +1261,15 @@ export default function ChatPage() {
                 <div ref={bottomRef} />
               </div>
 
-              {reasoningProposal && (
+              {reasoningProposal?.map((proposal, index) => (
                 <ReasoningProposalCard
-                  proposal={reasoningProposal}
-                  onRunReadOnly={handleRunReasoningProposal}
+                  key={proposal.result.proposal.id}
+                  proposal={proposal}
+                  onRunReadOnly={() => handleRunReasoningProposal(index)}
                   onReviewApproval={() => setApprovalDialogOpen(true)}
                   onRunWrite={handleRunTaskCompleteProposal}
                 />
-              )}
+              ))}
 
               {/* Input */}
               <div className="border-t border-border/40 pt-3">
@@ -1336,9 +1364,9 @@ export default function ChatPage() {
       </div>
       <StepApprovalDialog
         open={approvalDialogOpen}
-        step={reasoningProposal?.step ?? null}
-        stepApproval={reasoningProposal?.approval ?? null}
-        tool={reasoningProposal?.resolution?.tool ?? null}
+        step={reasoningProposal?.[0]?.step ?? null}
+        stepApproval={reasoningProposal?.[0]?.approval ?? null}
+        tool={reasoningProposal?.[0]?.resolution?.tool ?? null}
         onClose={() => setApprovalDialogOpen(false)}
         onDecision={handleApprovalDecision}
       />

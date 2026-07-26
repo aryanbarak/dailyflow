@@ -16,6 +16,7 @@ import {
   ChatBubble,
   liveTaskReasoningContext,
   proposalMessage,
+  proposalsToStates,
   proposalToState,
   ReasoningProposalCard,
   resultMessage,
@@ -294,6 +295,56 @@ describe("ChatPage LLM reasoning UX boundary", () => {
 
       expect(state.resolution?.status).toBe("resolved");
       expect(state.resolution?.toolId).toBe(toolId);
+    }
+  });
+
+  it("proposalsToStates returns a single-element array for a normal proposal with no disambiguationCandidates", () => {
+    const t = (key: string) => key;
+    const result = reasoningResult("inspect_github_issues", "github.issues.list");
+    const states = proposalsToStates(result, t);
+
+    expect(states).toHaveLength(1);
+    expect(states[0].result).toBe(result);
+  });
+
+  it("proposalsToStates returns a single-element array when disambiguationCandidates has fewer than 2 entries", () => {
+    const t = (key: string) => key;
+    const result = {
+      ...reasoningResult("inspect_github_issues", "github.issues.list"),
+      disambiguationCandidates: [],
+    };
+    const states = proposalsToStates(result, t);
+
+    expect(states).toHaveLength(1);
+    expect(states[0].result).toBe(result);
+  });
+
+  it("proposalsToStates returns one state per candidate, each built the same way a standalone proposal would be, for 2 or more", () => {
+    // resolveToolForStep stamps generatedAt from a real new Date() when no
+    // currentTime is given, so two independent calls a few microseconds
+    // apart otherwise produce non-identical timestamps -- freeze time so
+    // this is a true structural comparison, not a timing flake.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(now));
+    try {
+      const t = (key: string) => key;
+      const candidateA = reasoningResult("inspect_github_issues", "github.issues.list");
+      const candidateB = reasoningResult("inspect_github_pull_requests", "github.pulls.list");
+      const result = {
+        ...reasoningResult("ask_clarification"),
+        disambiguationCandidates: [candidateA, candidateB],
+      };
+      const states = proposalsToStates(result, t);
+
+      expect(states).toHaveLength(2);
+      expect(states[0].result).toBe(candidateA);
+      expect(states[1].result).toBe(candidateB);
+      // Each is built via the exact same proposalToState path a lone
+      // proposal uses -- proven by comparing against calling it directly.
+      expect(states[0]).toEqual(proposalToState(candidateA, t));
+      expect(states[1]).toEqual(proposalToState(candidateB, t));
+    } finally {
+      vi.useRealTimers();
     }
   });
 

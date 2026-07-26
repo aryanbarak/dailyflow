@@ -208,6 +208,19 @@ describe('POST /agent/reason', () => {
     expect(modelBody.generationConfig.responseMimeType).toBe('application/json')
     expect(modelBody.generationConfig.responseSchema.properties).toHaveProperty('type')
     expect(modelBody.generationConfig.responseSchema.properties).not.toHaveProperty('toolId')
+    const candidatesSchema = modelBody.generationConfig.responseSchema.properties.candidates as {
+      items: { properties: Record<string, unknown> }
+    }
+    expect(modelBody.generationConfig.responseSchema.properties.candidates).toMatchObject({
+      type: 'ARRAY',
+      minItems: 2,
+      maxItems: 6,
+      items: {
+        type: 'OBJECT',
+        required: ['type', 'reasons'],
+      },
+    })
+    expect(candidatesSchema.items.properties).not.toHaveProperty('toolId')
   })
 
   it('sends the bearer token only to local Supabase Auth', async () => {
@@ -239,6 +252,44 @@ describe('POST /agent/reason', () => {
     const malformedFetcher = successfulFetcher({ type: 'delete_everything' })
     const response = await handleLocalReasoningRequest(reasoningRequest(), validEnv, {
       fetcher: malformedFetcher as unknown as typeof fetch,
+    })
+
+    expect(response.status).toBe(502)
+  })
+
+  it('accepts a well-formed disambiguation candidates array', async () => {
+    const fetcher = successfulFetcher({
+      type: 'ask_clarification',
+      candidates: [
+        { type: 'inspect_github_issues', reasons: ['Message names a connected repository.'] },
+        { type: 'inspect_github_pull_requests', reasons: ['Could also mean open pull requests.'] },
+      ],
+    })
+    const response = await handleLocalReasoningRequest(reasoningRequest(), validEnv, {
+      fetcher: fetcher as unknown as typeof fetch,
+    })
+    const body = await response.json() as Record<string, unknown>
+
+    expect(response.status).toBe(200)
+    expect(body.proposal).toMatchObject({
+      type: 'ask_clarification',
+      candidates: [
+        { type: 'inspect_github_issues', reasons: ['Message names a connected repository.'] },
+        { type: 'inspect_github_pull_requests', reasons: ['Could also mean open pull requests.'] },
+      ],
+    })
+  })
+
+  it.each([
+    ['unsupported candidate type', { candidates: [{ type: 'delete_everything', reasons: ['x'] }] }],
+    ['candidate with an extra field', { candidates: [{ type: 'inspect_github_issues', reasons: ['x'], toolId: 'github.issues.list' }] }],
+    ['candidate with no reasons', { candidates: [{ type: 'inspect_github_issues', reasons: [] }] }],
+    ['empty candidates array', { candidates: [] }],
+    ['too many candidates', { candidates: Array.from({ length: 7 }, () => ({ type: 'inspect_github_issues', reasons: ['x'] })) }],
+  ])('fails closed on %s', async (_label, override) => {
+    const fetcher = successfulFetcher(override)
+    const response = await handleLocalReasoningRequest(reasoningRequest(), validEnv, {
+      fetcher: fetcher as unknown as typeof fetch,
     })
 
     expect(response.status).toBe(502)

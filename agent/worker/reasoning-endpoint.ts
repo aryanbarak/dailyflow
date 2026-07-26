@@ -33,8 +33,15 @@ const PROPOSAL_FIELDS = new Set([
   'clarificationQuestion',
   'reasons',
   'language',
+  'candidates',
 ])
 const TARGET_FIELDS = new Set(['taskId', 'taskReference', 'taskTitleHint'])
+const CANDIDATE_FIELDS = new Set(['type', 'reasons'])
+// Defensive schema ceiling only -- distinct from the frontend validator's
+// policy cap (3), which is what actually decides how many cards a user
+// sees. This just stops normalizeProposal from doing unbounded work if
+// Gemini returns something pathological; it is not the disambiguation limit.
+const MAX_SCHEMA_CANDIDATES = 6
 
 export interface LocalReasoningEnv {
   SMARTFLOW_WORKER_MODE?: string
@@ -344,6 +351,44 @@ function normalizeProposal(raw: unknown, responseLanguage: ReasoningRequest['res
     proposal.language = modelLanguage
   }
 
+  // Disambiguation candidates are optional and only meaningful alongside
+  // type "ask_clarification" -- the frontend validator is what actually
+  // decides how many are shown (validate -> dedup -> cap); this only bounds
+  // the raw shape so a malformed or oversized response fails closed here
+  // rather than reaching that logic at all.
+  if (record.candidates !== undefined) {
+    if (!Array.isArray(record.candidates) || record.candidates.length === 0) {
+      throw new Error('Model candidates must be a non-empty array.')
+    }
+    if (record.candidates.length > MAX_SCHEMA_CANDIDATES) {
+      throw new Error('Model returned too many candidates.')
+    }
+    const candidates = record.candidates.map((rawCandidate) => {
+      if (!rawCandidate || typeof rawCandidate !== 'object' || Array.isArray(rawCandidate)) {
+        throw new Error('Model candidate must be an object.')
+      }
+      const candidateRecord = rawCandidate as Record<string, unknown>
+      if (Object.keys(candidateRecord).some((key) => !CANDIDATE_FIELDS.has(key))) {
+        throw new Error('Model candidate contained unexpected fields.')
+      }
+      const candidateType = boundedString(candidateRecord.type, 48)
+      if (!candidateType || !SUPPORTED_INTENTS.has(candidateType)) {
+        throw new Error('Unsupported candidate intent.')
+      }
+      if (
+        !Array.isArray(candidateRecord.reasons) ||
+        candidateRecord.reasons.length < 1 ||
+        candidateRecord.reasons.length > 3
+      ) {
+        throw new Error('Model candidate must contain one to three reasons.')
+      }
+      const candidateReasons = candidateRecord.reasons.map((reason) => boundedString(reason))
+      if (candidateReasons.some((reason) => !reason)) throw new Error('Invalid candidate reason.')
+      return { type: candidateType, reasons: candidateReasons }
+    })
+    proposal.candidates = candidates
+  }
+
   return proposal
 }
 
@@ -378,7 +423,7 @@ async function authenticate(
 export function buildReasoningSystemInstruction(responseLanguage: ReasoningResponseLanguage): string {
   return [
     'Return exactly one JSON intent proposal and no prose.',
-    'Use only the schema fields type, confidence, requestedDomain, target, clarificationQuestion, reasons, and language.',
+    'Use only the schema fields type, confidence, requestedDomain, target, clarificationQuestion, reasons, candidates, and language.',
     'The type field must use one supported SmartFlow intent from the supplied prompt.',
     'You never execute, approve, authorize, or claim completion of an action.',
     languageInstruction(responseLanguage),
@@ -407,6 +452,31 @@ export function buildReasoningResponseSchema() {
         minItems: 1,
         maxItems: 3,
         items: { type: 'STRING' },
+      },
+      // Optional. Only meaningful alongside type "ask_clarification" -- a
+      // specific set of 2-3 candidate tools the model is torn between, each
+      // independently re-validated by the frontend deterministic validator.
+      // This is a disambiguation hint, never a trust path: it does not add
+      // a toolId field, and the validator still derives each candidate's
+      // actual tool from its own type via the same deterministic map used
+      // for a single confident proposal.
+      candidates: {
+        type: 'ARRAY',
+        minItems: 2,
+        maxItems: 6,
+        items: {
+          type: 'OBJECT',
+          required: ['type', 'reasons'],
+          properties: {
+            type: { type: 'STRING', enum: [...SUPPORTED_INTENT_VALUES] },
+            reasons: {
+              type: 'ARRAY',
+              minItems: 1,
+              maxItems: 3,
+              items: { type: 'STRING' },
+            },
+          },
+        },
       },
       language: { type: 'STRING', enum: [...PROPOSAL_LANGUAGES] },
     },

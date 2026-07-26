@@ -282,3 +282,116 @@ describe("reasoningOrchestrator", () => {
     expect(callLlmReasoning).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("reasoningOrchestrator disambiguation", () => {
+  // No task/calendar/learning/workspace/github evidence at all, so the
+  // top-level type stays exactly "ask_clarification" as the model proposed
+  // it, and each candidate keeps its own type instead of being redirected.
+  const neutralContext: AgentReasoningSafeContext = {
+    tasks: [],
+    events: [],
+    learningProgress: null,
+  };
+
+  function rawClarificationWithCandidates(candidates: Array<{ type: string; reasons: string[] }>) {
+    return JSON.stringify({
+      id: "intent-clarify-1",
+      type: "ask_clarification",
+      confidence: "medium",
+      clarificationQuestion: "Did you mean issues or pull requests?",
+      reasons: ["Model was torn between specific tools."],
+      candidates,
+      language: "en",
+      generatedAt: now.toISOString(),
+      schemaVersion: 1,
+    });
+  }
+
+  it("falls back to the plain clarification, unchanged, when zero candidates survive validation", async () => {
+    const result = await reasonAboutUserMessage({
+      userMessage: "Please help me decide.",
+      safeContext: neutralContext,
+      configuredResponseLanguage: "en",
+      interfaceLanguage: "en",
+      now,
+    }, {
+      callLlmReasoning: caller(rawClarificationWithCandidates([
+        { type: "not_a_real_type", reasons: ["a"] },
+        { type: "also_not_real", reasons: ["b"] },
+      ])),
+    });
+
+    expect(result.proposal.type).toBe("ask_clarification");
+    expect(result.proposal.clarificationQuestion).toBe("Did you mean issues or pull requests?");
+    expect(result.disambiguationCandidates).toBeUndefined();
+  });
+
+  it("returns a normal single-proposal result with no disambiguationCandidates field when candidates dedup to one survivor", async () => {
+    const result = await reasonAboutUserMessage({
+      userMessage: "Please help me decide.",
+      safeContext: neutralContext,
+      configuredResponseLanguage: "en",
+      interfaceLanguage: "en",
+      now,
+    }, {
+      callLlmReasoning: caller(rawClarificationWithCandidates([
+        { type: "inspect_github_issues", reasons: ["a"] },
+        { type: "inspect_github_issues", reasons: ["b"] },
+      ])),
+    });
+
+    expect(result.proposal.type).toBe("inspect_github_issues");
+    expect(result.toolId).toBe("github.issues.list");
+    expect(result.disambiguationCandidates).toBeUndefined();
+  });
+
+  it("returns disambiguationCandidates for genuinely distinct surviving candidates, keeping the clarificationQuestion as the top-level text", async () => {
+    const result = await reasonAboutUserMessage({
+      userMessage: "Please help me decide.",
+      safeContext: neutralContext,
+      configuredResponseLanguage: "en",
+      interfaceLanguage: "en",
+      now,
+    }, {
+      callLlmReasoning: caller(rawClarificationWithCandidates([
+        { type: "inspect_github_issues", reasons: ["a"] },
+        { type: "inspect_github_pull_requests", reasons: ["b"] },
+      ])),
+    });
+
+    expect(result.proposal.type).toBe("ask_clarification");
+    expect(result.proposal.clarificationQuestion).toBe("Did you mean issues or pull requests?");
+    expect(result.disambiguationCandidates).toHaveLength(2);
+    expect(result.disambiguationCandidates?.map((candidate) => candidate.proposal.type)).toEqual([
+      "inspect_github_issues",
+      "inspect_github_pull_requests",
+    ]);
+    // Each candidate is a fully independent, complete result -- same shape
+    // as any standalone proposal, not a partial or a pointer into the parent.
+    expect(result.disambiguationCandidates?.[0].toolId).toBe("github.issues.list");
+    expect(result.disambiguationCandidates?.[0].responseLanguage).toBe("en");
+    expect(result.disambiguationCandidates?.[0].disambiguationCandidates).toBeUndefined();
+  });
+
+  it("never consults candidates once evidence-based normalization has already resolved a confident single type", async () => {
+    // Top-level raw type is ask_clarification, but "What tasks do I have?"
+    // deterministically resolves to inspect_tasks via domain evidence before
+    // validation even returns -- proving the VALIDATED type gates candidate
+    // resolution, not the raw model type.
+    const result = await reasonAboutUserMessage({
+      userMessage: "What tasks do I have?",
+      safeContext,
+      configuredResponseLanguage: "en",
+      interfaceLanguage: "en",
+      now,
+    }, {
+      callLlmReasoning: caller(rawClarificationWithCandidates([
+        { type: "inspect_github_issues", reasons: ["a"] },
+        { type: "inspect_github_pull_requests", reasons: ["b"] },
+      ])),
+    });
+
+    expect(result.proposal.type).toBe("inspect_tasks");
+    expect(result.disambiguationCandidates).toBeUndefined();
+  });
+});

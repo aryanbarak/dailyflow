@@ -555,3 +555,72 @@ export function validateAgentIntentProposal(input: {
     validationReasons: ["Intent proposal validated deterministically."],
   };
 }
+
+const MAX_DISAMBIGUATION_CANDIDATES = 3;
+
+function isRecordArray(value: unknown): value is Record<string, unknown>[] {
+  return Array.isArray(value) && value.every((item) => isRecord(item));
+}
+
+// Validates each raw candidate independently through validateAgentIntentProposal
+// -- the exact same function a single confident proposal goes through, called
+// once per candidate. There is no separate "candidate validation" path to
+// drift from the real thing, and no candidate can reach a tool that a
+// standalone proposal of the same type couldn't reach on its own.
+//
+// Sequence is enforced by data flow, not just by writing the steps in the
+// right order: dedup only ever reads `.toolId` off an already-validated
+// result (the deterministic map lookup), never anything from the raw
+// candidate -- there is no raw field in scope to accidentally key off. Cap
+// is applied to the deduped, validated survivor count, never the raw model
+// output, so an invalid or duplicate candidate can never "use up" a slot
+// and hide a genuine one. Above the cap, the leading candidates (in
+// validated order) are kept rather than falling back to a plain
+// clarification -- several real candidates is a strictly better outcome
+// than forcing the user back into the free-text answer this feature exists
+// to avoid.
+export function resolveDisambiguationCandidates(input: {
+  rawCandidates: unknown;
+  userMessage: string;
+  safeContext: AgentReasoningSafeContext;
+  language: SupportedAiResponseLanguage;
+  now: Date;
+}): AgentReasoningValidationResult[] {
+  if (!isRecordArray(input.rawCandidates) || input.rawCandidates.length === 0) {
+    return [];
+  }
+
+  const validated = input.rawCandidates.map((candidate, index) =>
+    validateAgentIntentProposal({
+      rawProposal: {
+        id: `intent:candidate:${index}:${input.now.toISOString()}`,
+        type: candidate.type,
+        confidence: "medium",
+        reasons: candidate.reasons,
+      },
+      userMessage: input.userMessage,
+      safeContext: input.safeContext,
+      language: input.language,
+      now: input.now,
+    }),
+  );
+
+  // Only a genuinely resolved, read-only candidate survives. complete_task
+  // is the only intent that requires approval; excluding it keeps
+  // disambiguation scoped to read-only tools, so a Run click on any
+  // surviving card never touches the approval boundary.
+  const survivors = validated.filter(
+    (result) => Boolean(result.toolId) && !result.proposal.requiresApproval,
+  );
+
+  const deduped: AgentReasoningValidationResult[] = [];
+  const seenToolIds = new Set<string>();
+  for (const result of survivors) {
+    const toolId = result.toolId as string;
+    if (seenToolIds.has(toolId)) continue;
+    seenToolIds.add(toolId);
+    deduped.push(result);
+  }
+
+  return deduped.slice(0, MAX_DISAMBIGUATION_CANDIDATES);
+}

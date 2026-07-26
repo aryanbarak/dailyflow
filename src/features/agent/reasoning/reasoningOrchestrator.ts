@@ -3,13 +3,39 @@ import {
   type SupportedAiResponseLanguage,
 } from "@/features/ai/responseLanguage";
 import { parseLlmIntentJson } from "./llmReasoningService";
-import { validateAgentIntentProposal } from "./intentValidator";
+import { resolveDisambiguationCandidates, validateAgentIntentProposal } from "./intentValidator";
 import { buildReasoningPrompt } from "./reasoningPrompt";
 import type {
   AgentLlmReasoningCaller,
   AgentReasoningInput,
   AgentReasoningResult,
+  AgentReasoningValidationResult,
 } from "./reasoningTypes";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+// The one place a validated result becomes a deliverable AgentReasoningResult
+// -- used identically for a normal confident proposal, for the sole survivor
+// of a disambiguation dedup, and for each entry in a multi-candidate list.
+// There is exactly one path to a finished result; nothing here can drift
+// between those cases because there is only one function that does it.
+function toAgentReasoningResult(
+  validation: AgentReasoningValidationResult,
+  responseLanguage: SupportedAiResponseLanguage,
+): AgentReasoningResult {
+  return {
+    ...validation,
+    responseLanguage,
+    promptPreview: {
+      containsTaskNotes: false,
+      containsRawMemory: false,
+      containsAuditPolicy: false,
+      containsUserId: false,
+    },
+  };
+}
 
 export interface ReasonAboutUserMessageDependencies {
   callLlmReasoning: AgentLlmReasoningCaller;
@@ -71,15 +97,39 @@ export async function reasonAboutUserMessage(
     language: responseLanguage,
     now,
   });
+  const result = toAgentReasoningResult(validation, responseLanguage);
 
+  // Disambiguation is only ever attempted when the VALIDATED top-level type
+  // is ask_clarification -- not the raw model type -- so if evidence-based
+  // normalization already resolved the ambiguity deterministically to a
+  // single confident intent, that takes priority and candidates are never
+  // consulted at all.
+  const rawCandidates = isRecord(rawProposal) ? rawProposal.candidates : undefined;
+  if (validation.proposal.type !== "ask_clarification" || rawCandidates === undefined) {
+    return result;
+  }
+
+  const candidateResults = resolveDisambiguationCandidates({
+    rawCandidates,
+    userMessage: input.userMessage,
+    safeContext: input.safeContext,
+    language: responseLanguage,
+    now,
+  });
+
+  if (candidateResults.length === 0) {
+    // Falls back to the plain clarification above, unchanged.
+    return result;
+  }
+  if (candidateResults.length === 1) {
+    // Indistinguishable from a normal confident proposal: same construction,
+    // same shape, no disambiguationCandidates field at all.
+    return toAgentReasoningResult(candidateResults[0], responseLanguage);
+  }
   return {
-    ...validation,
-    responseLanguage,
-    promptPreview: {
-      containsTaskNotes: false,
-      containsRawMemory: false,
-      containsAuditPolicy: false,
-      containsUserId: false,
-    },
+    ...result,
+    disambiguationCandidates: candidateResults.map((candidate) =>
+      toAgentReasoningResult(candidate, responseLanguage),
+    ),
   };
 }

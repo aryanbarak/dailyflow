@@ -148,6 +148,9 @@ describe('handleChat mode routing', () => {
       'unsupported',
     ])
     expect(call.generationConfig.responseSchema.properties.confidence.enum).toEqual(['low', 'medium', 'high'])
+    expect(call.generationConfig.responseSchema.properties.candidates.items.properties.type.enum).toEqual(
+      call.generationConfig.responseSchema.properties.type.enum,
+    )
 
     expect(log.chatMessageWrites).toHaveLength(0)
     expect(log.sessionPatches).toBe(0)

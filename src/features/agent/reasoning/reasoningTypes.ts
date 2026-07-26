@@ -110,4 +110,13 @@ export interface AgentReasoningResult extends AgentReasoningValidationResult {
     containsAuditPolicy: false;
     containsUserId: false;
   };
+  // Present only when the model proposed ask_clarification with 2-3 genuinely
+  // distinct, validated candidates (see resolveDisambiguationCandidates).
+  // Each entry is a complete, independent AgentReasoningResult -- not a
+  // partial or a pointer into this one -- so running any single candidate is
+  // indistinguishable from that candidate having been the sole proposal.
+  // Absent for a normal confident proposal, a plain clarification with no
+  // candidates, and for a disambiguation that collapsed to exactly one
+  // survivor (that case is returned as a normal top-level result instead).
+  disambiguationCandidates?: AgentReasoningResult[];
 }

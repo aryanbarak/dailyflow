@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validateAgentIntentProposal } from "./intentValidator";
+import { resolveDisambiguationCandidates, validateAgentIntentProposal } from "./intentValidator";
 import type { AgentReasoningSafeContext } from "./reasoningTypes";
 import type { SupportedAiResponseLanguage } from "@/features/ai/responseLanguage";
 
@@ -402,5 +402,117 @@ describe("intentValidator", () => {
 
     expect(fa.proposal.clarificationQuestion).toContain("می");
     expect(en.proposal.clarificationQuestion).toContain("clarify");
+  });
+});
+
+describe("resolveDisambiguationCandidates", () => {
+  // Deliberately neutral -- no task/calendar/learning/workspace/github
+  // domain evidence at all -- so each explicitly-typed candidate keeps its
+  // own type instead of being redirected by evidence-based normalization.
+  // That isolates what this suite actually tests: validate -> dedup -> cap,
+  // not the evidence-rescue behavior already covered elsewhere.
+  const neutralMessage = "Please help me decide.";
+  const emptyContext: AgentReasoningSafeContext = { tasks: [], events: [], learningProgress: null };
+
+  function resolve(rawCandidates: unknown, userMessage = neutralMessage, safeContext = emptyContext) {
+    return resolveDisambiguationCandidates({
+      rawCandidates,
+      userMessage,
+      safeContext,
+      language: "en",
+      now,
+    });
+  }
+
+  it("returns no candidates when rawCandidates is absent, malformed, or empty", () => {
+    expect(resolve(undefined)).toEqual([]);
+    expect(resolve("not-an-array")).toEqual([]);
+    expect(resolve([])).toEqual([]);
+    expect(resolve([{ type: "inspect_github_issues" }, "not-an-object"])).toEqual([]);
+  });
+
+  it("keeps two candidates with genuinely different validated types as two distinct survivors", () => {
+    const result = resolve([
+      { type: "inspect_github_issues", reasons: ["Message names a connected repository."] },
+      { type: "inspect_github_pull_requests", reasons: ["Could also mean open pull requests."] },
+    ]);
+    expect(result.map((r) => r.toolId)).toEqual(["github.issues.list", "github.pulls.list"]);
+  });
+
+  it("dedups two candidates that validate to the same toolId down to one survivor", () => {
+    const result = resolve([
+      { type: "inspect_github_issues", reasons: ["First phrasing."] },
+      { type: "inspect_github_issues", reasons: ["Differently worded, same tool."] },
+    ]);
+    expect(result).toHaveLength(1);
+    expect(result[0].toolId).toBe("github.issues.list");
+  });
+
+  it("the sole survivor of a dedup is identical to what a standalone proposal of that type would produce", () => {
+    const [viaDedup] = resolve([
+      { type: "inspect_github_issues", reasons: ["First phrasing."] },
+      { type: "inspect_github_issues", reasons: ["Second phrasing."] },
+    ]);
+
+    const standalone = validateAgentIntentProposal({
+      rawProposal: {
+        id: `intent:candidate:0:${now.toISOString()}`,
+        type: "inspect_github_issues",
+        confidence: "medium",
+        reasons: ["First phrasing."],
+      },
+      userMessage: neutralMessage,
+      safeContext: emptyContext,
+      language: "en",
+      now,
+    });
+
+    expect(viaDedup).toEqual(standalone);
+  });
+
+  it("counts only validated survivors against the cap: drops the invalid candidate first, then keeps the top 3 of the 4 valid distinct ones", () => {
+    const result = resolve([
+      { type: "inspect_github_repositories", reasons: ["a"] },
+      { type: "not_a_real_intent_type", reasons: ["b"] },
+      { type: "inspect_github_issues", reasons: ["c"] },
+      { type: "inspect_github_pull_requests", reasons: ["d"] },
+      { type: "inspect_github_workflow_runs", reasons: ["e"] },
+    ]);
+    expect(result.map((r) => r.proposal.type)).toEqual([
+      "inspect_github_repositories",
+      "inspect_github_issues",
+      "inspect_github_pull_requests",
+    ]);
+  });
+
+  it("resolves to a single survivor when only one of five candidates validates -- the cap never comes into play", () => {
+    const result = resolve([
+      { type: "garbage_one", reasons: ["a"] },
+      { type: "garbage_two", reasons: ["b"] },
+      { type: "inspect_github_issues", reasons: ["c"] },
+      { type: "garbage_three", reasons: ["d"] },
+      { type: "garbage_four", reasons: ["e"] },
+    ]);
+    expect(result).toHaveLength(1);
+    expect(result[0].proposal.type).toBe("inspect_github_issues");
+  });
+
+  it("excludes complete_task from candidates even when it would otherwise resolve, since it requires approval", () => {
+    const singleTaskContext: AgentReasoningSafeContext = {
+      tasks: [{ id: "only-task", title: "Solo task", completed: false, status: "open" }],
+      events: [],
+      learningProgress: null,
+    };
+    const result = resolve(
+      [
+        { type: "complete_task", reasons: ["User wants to mark the selected task done."] },
+        { type: "inspect_tasks", reasons: ["User might just want to see tasks."] },
+      ],
+      "What about the selected task?",
+      singleTaskContext,
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0].proposal.type).toBe("inspect_tasks");
+    expect(result[0].proposal.requiresApproval).toBe(false);
   });
 });
