@@ -558,6 +558,28 @@ Current Agent Response UX Validation V1 status:
   the justification text shown can differ between runs depending on which
   duplicate the model happened to list first. Harmless, but noted so it isn't
   rediscovered as a "bug" later.
+- There is no typecheck script in either `package.json` (root or
+  `agent/worker`) and `npm run build` uses `vite build`, which does not type-
+  check the way `tsc --noEmit` does — so no gate in this repo currently
+  catches a real type error before it ships. Running
+  `npx tsc --noEmit -p tsconfig.app.json` directly surfaces 108 existing
+  errors across 40 files today, worst offenders `familyHubService.ts` (15),
+  `approvalInteraction.test.ts` (13), `SettingsPage.tsx` (8), and
+  `ChatPage.test.tsx` (7). Confirmed pre-existing, not introduced by this
+  session: the exact same 108 errors (same file, same message, only shifted
+  line numbers from this session's own insertions) were already present at
+  `e4c671e`, the commit immediately before this session's changes. These
+  errors have been invisible simply because nothing runs the check, not
+  because the code is actually sound — the missing gate is the real gap;
+  the 108 errors are its symptom.
+- The "Agent tests: 262 passed" figure that used to appear in §8 mapped to no
+  reproducible command — it was a stale hand-maintained count from a bucket
+  definition that no longer exists (reconstructing it from directory scope
+  gave two different numbers, neither matching 262). It was dropped rather
+  than replaced with a guess. Per-bucket test counts in this doc generally
+  aren't reproducible today; either give each one a defining command (a
+  named `npm test -- <path>` invocation) or drop it in favor of the
+  full-suite total, which `npm test` always reproduces exactly.
 
 ---
 
