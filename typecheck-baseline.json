@@ -1,0 +1,92 @@
+{
+  "src/components/FlowAIOrb/FlowAIOrbIdentity.tsx": {
+    "TS2322": 1
+  },
+  "src/components/FlowAIOrb/FlowAIOrbParticles.tsx": {
+    "TS2322": 1
+  },
+  "src/features/agent/approvalInteraction.test.ts": {
+    "TS2339": 13
+  },
+  "src/features/agent/handlers/tasksCompleteHandler.test.ts": {
+    "TS2352": 1
+  },
+  "src/features/agent/readOnlyRuntime.test.ts": {
+    "TS2698": 1
+  },
+  "src/features/agent/reflectionIntegration.test.ts": {
+    "TS2353": 2
+  },
+  "src/features/agent/writeRuntime.test.ts": {
+    "TS2322": 4
+  },
+  "src/features/ai-memory/aiMemoryService.ts": {
+    "TS2352": 1
+  },
+  "src/features/documents/components/DocumentSummary.tsx": {
+    "TS2339": 1
+  },
+  "src/features/documents/components/DocumentTranslation.tsx": {
+    "TS2339": 1
+  },
+  "src/features/documents/components/ImageToPdfTool.tsx": {
+    "TS2322": 1
+  },
+  "src/features/documents/components/PdfCompressTool.tsx": {
+    "TS2322": 1
+  },
+  "src/features/documents/components/PdfSplitTool.tsx": {
+    "TS2322": 1
+  },
+  "src/features/documents/components/TextEditorTool.tsx": {
+    "TS2322": 1
+  },
+  "src/features/documents/pdfToolsService.ts": {
+    "TS2322": 1
+  },
+  "src/features/family-hub/familyHubService.ts": {
+    "TS2304": 15
+  },
+  "src/features/family/familyService.ts": {
+    "TS2352": 4
+  },
+  "src/features/finance/budgetGoalsService.ts": {
+    "TS2322": 1
+  },
+  "src/features/habits/habitMoodService.ts": {
+    "TS2352": 2
+  },
+  "src/features/habits/habitsService.ts": {
+    "TS2322": 1
+  },
+  "src/features/integrations/github/githubRepositoryInventoryClient.test.ts": {
+    "TS2493": 2,
+    "TS2532": 1
+  },
+  "src/features/mood/MoodWidget.tsx": {
+    "TS2769": 1
+  },
+  "src/features/workspace/components/StepApprovalDialog.tsx": {
+    "TS2322": 1
+  },
+  "src/features/workspace/useWorkspace.ts": {
+    "TS2339": 2
+  },
+  "src/features/workspace/workspaceMemoryStorage.ts": {
+    "TS2322": 5
+  },
+  "src/pages/CalendarPage.tsx": {
+    "TS2339": 2
+  },
+  "src/pages/ChatPage.test.tsx": {
+    "TS2561": 1,
+    "TS2345": 3
+  },
+  "src/pages/FinancePage.tsx": {
+    "TS2322": 1
+  },
+  "src/pages/SettingsPage.tsx": {
+    "TS2322": 7,
+    "TS2339": 1
+  }
+}

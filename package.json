@@ -12,6 +12,8 @@
     "qa:seed": "node scripts/local-qa-seed.mjs",
     "qa:arux:browser": "node scripts/arux-browser-qa.mjs",
     "qa:arux:validate": "node scripts/arux-evidence-validate.mjs",
+    "typecheck": "node scripts/typecheck-gate.mjs",
+    "typecheck:update-baseline": "node scripts/typecheck-gate.mjs --update-baseline",
     "tutor:export": "powershell -ExecutionPolicy Bypass -File scripts/tutor-export.ps1",
     "tutor:sync": "powershell -ExecutionPolicy Bypass -File scripts/tutor-sync.ps1",
     "tutor:verify": "powershell -ExecutionPolicy Bypass -File scripts/tutor-verify.ps1",
