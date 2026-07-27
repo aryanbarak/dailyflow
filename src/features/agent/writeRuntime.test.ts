@@ -538,6 +538,7 @@ describe("writeRuntime", () => {
     expect(result.status).toBe("success");
     expect(result.success).toBe(true);
     expect(result.toolId).toBe("github.issues.comment");
+    expect(result.safeSummary).toBe("Comment added.");
   });
 
   it("runs an approved github.issues.update proposal end-to-end and calls the client with the exact target fields", async () => {
@@ -586,6 +587,7 @@ describe("writeRuntime", () => {
     expect(result.status).toBe("success");
     expect(result.success).toBe(true);
     expect(result.toolId).toBe("github.issues.update");
+    expect(result.safeSummary).toBe("Issue updated.");
   });
 
   it("keeps read-only runtime and write runtime isolated", async () => {

@@ -316,9 +316,12 @@ function writeStatusFromHandler(
 
 function safeSummaryFor(
   status: WriteRuntimeStatus,
+  toolId?: string,
   alreadyCompleted?: boolean,
 ) {
   if (status === "success") {
+    if (toolId === "github.issues.comment") return "Comment added.";
+    if (toolId === "github.issues.update") return "Issue updated.";
     return alreadyCompleted
       ? "Task was already complete."
       : "Task was marked complete.";
@@ -699,7 +702,7 @@ export async function runWriteTool(
       startedAuditId: started?.auditId,
       terminalAuditId: terminal?.auditId,
     },
-    safeSummary: safeSummaryFor(writeStatus, handlerResult.auditMetadata.alreadyCompleted),
+    safeSummary: safeSummaryFor(writeStatus, resolved.toolId, handlerResult.auditMetadata.alreadyCompleted),
     startedAt,
     completedAt,
     durationMs: duration(startedAt, completedAt),
