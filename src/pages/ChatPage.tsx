@@ -683,18 +683,22 @@ export function ReasoningProposalCard({
   const toolLabel = resolution?.tool?.name ?? toolId ?? t('agent_intent_no_runtime')
   const modeLabel = result.proposal.requiresApproval ? t('agent_intent_mode_write') : t('agent_intent_mode_read')
   const isRunning = runStatus === 'running'
-  const isCompleteTask = result.proposal.type === 'complete_task'
+  // Generalized for EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
+  // Previously `result.proposal.type === 'complete_task'` only, which silently
+  // routed every other write proposal (github.issues.comment/update) through
+  // the read-only run button/handler instead of the approval dialog.
+  const isWriteProposal = WRITE_PROPOSAL_TYPES.has(result.proposal.type)
   const isApproved = approval?.status === 'approved'
   const isRejected = approval?.status === 'rejected' || runStatus === 'rejected'
   const canRunReadOnly = Boolean(
-    !isCompleteTask &&
+    !isWriteProposal &&
     proposal.step &&
     resolution?.resolved &&
     runStatus !== 'success' &&
     runStatus !== 'failed'
   )
-  const canReviewApproval = isCompleteTask && approval?.status === 'pending'
-  const canRunWrite = isCompleteTask && isApproved && runStatus !== 'success' && runStatus !== 'failed'
+  const canReviewApproval = isWriteProposal && approval?.status === 'pending'
+  const canRunWrite = isWriteProposal && isApproved && runStatus !== 'success' && runStatus !== 'failed'
   const runtimeResult = proposal.readOnlyResult ?? proposal.writeResult
 
   return (
@@ -746,7 +750,7 @@ export function ReasoningProposalCard({
         <p className="mt-3 text-xs text-muted-foreground">{t('agent_intent_no_runtime')}</p>
       ) : (
         <div className="mt-3 flex flex-wrap gap-2">
-          {!isCompleteTask && (
+          {!isWriteProposal && (
             <Button
               type="button"
               size="sm"
@@ -761,14 +765,14 @@ export function ReasoningProposalCard({
               {t('agent_intent_review_approval')}
             </Button>
           )}
-          {isCompleteTask && isApproved && (
+          {isWriteProposal && isApproved && (
             <Button
               type="button"
               size="sm"
               onClick={onRunWrite}
               disabled={!canRunWrite || isRunning}
             >
-              {isRunning ? t('agent_intent_running') : t('agent_intent_complete_task')}
+              {isRunning ? t('agent_intent_running') : intentTitle(result.proposal.type, t)}
             </Button>
           )}
         </div>

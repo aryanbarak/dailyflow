@@ -465,6 +465,67 @@ describe("ChatPage LLM reasoning UX boundary", () => {
     expect(approvedHtml).toContain("Complete task");
   });
 
+  // Regression test for a bug where writeResolutionForStep/approvalForReasoningStep
+  // were generalized for every write tool, but ReasoningProposalCard's button
+  // gating still hardcoded `type === "complete_task"`. That let a
+  // write_github_issue_comment proposal render the plain read-only run button
+  // (wired to onRunReadOnly, which no-ops on any requiresApproval proposal)
+  // instead of "Review approval", so Run silently did nothing and the
+  // previewText panel was never reachable. Built through the real
+  // proposalToState path, like the resolver tests above, not hand-assembled
+  // step/resolution/approval fixtures, so it exercises the exact same
+  // data ReasoningProposalCard receives in the app.
+  it("routes a github.issues.comment write proposal through the approval dialog, not the read-only run button", () => {
+    const t = (key: string) => key;
+    const result: AgentReasoningResult = {
+      ...reasoningResult("write_github_issue_comment", "github.issues.comment"),
+      proposal: {
+        ...reasoningResult("write_github_issue_comment", "github.issues.comment").proposal,
+        target: { repo: "aryan/smartflow", issueNumber: 5, commentBody: "Thanks, looking into this." },
+        requiresApproval: true,
+      },
+    };
+    const pendingState = proposalToState(result, t);
+    const approvedState = {
+      ...pendingState,
+      approval: pendingState.approval ? { ...pendingState.approval, status: "approved" as const } : null,
+      runStatus: "approved" as const,
+    };
+
+    const onRunReadOnly = vi.fn();
+    const onReviewApproval = vi.fn();
+    const onRunWrite = vi.fn();
+
+    const pendingHtml = renderToString(
+      <ReasoningProposalCard
+        proposal={pendingState}
+        onRunReadOnly={onRunReadOnly}
+        onReviewApproval={onReviewApproval}
+        onRunWrite={onRunWrite}
+      />,
+    );
+    const approvedHtml = renderToString(
+      <ReasoningProposalCard
+        proposal={approvedState}
+        onRunReadOnly={onRunReadOnly}
+        onReviewApproval={onReviewApproval}
+        onRunWrite={onRunWrite}
+      />,
+    );
+
+    // Pending: only the approval-review button may appear -- never the
+    // onRunReadOnly-wired "Run <toolId>" button, which would silently no-op.
+    expect(pendingHtml).toContain("Review approval");
+    expect(pendingHtml).not.toContain("Run github.issues.comment");
+
+    // Approved: the run button must be present, wired to onRunWrite (it's the
+    // only button rendered in this state), and labeled for this specific
+    // tool -- not the complete_task-only "Complete task" label.
+    expect(approvedHtml).toContain("Add a GitHub issue comment");
+    expect(approvedHtml).not.toContain(">Complete task<");
+    expect(approvedHtml).not.toContain("Run github.issues.comment");
+  });
+
   it("formats supported runtime results through context synthesis and the response composer", () => {
     const message = resultMessage({
       requestId: "request-1",
