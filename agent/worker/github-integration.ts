@@ -18,6 +18,16 @@ const MAX_CACHED_REPOSITORY_NAMES = 12
 const MAX_INSTALLATION_LIST_PAGES = 10
 const API_VERSION = '2022-11-28'
 
+// EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
+const MAX_WRITE_BODY_BYTES = 32 * 1024
+const MAX_COMMENT_BODY_LENGTH = 65_536
+const MAX_ISSUE_TITLE_LENGTH = 200
+const MAX_ISSUE_BODY_LENGTH = 65_536
+const MAX_UPDATE_LABELS = 20
+const MAX_REPOSITORY_LABELS = 100
+const MAX_WRITES_PER_HOUR = 5
+const WRITE_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000
+
 type Fetcher = typeof fetch
 
 interface GitHubIntegrationDependencies {
@@ -111,6 +121,20 @@ interface GitHubWorkflowRunResponse {
   status?: unknown
   conclusion?: unknown
   updated_at?: unknown
+}
+
+interface GitHubCommentResponse {
+  id?: unknown
+  html_url?: unknown
+}
+
+interface GitHubUpdatedIssueResponse {
+  number?: unknown
+  html_url?: unknown
+}
+
+interface WriteLogRow {
+  id?: unknown
 }
 
 class GitHubIntegrationError extends Error {
@@ -227,7 +251,7 @@ function resolveConfig(env: Env): GitHubConfig {
 
 function corsHeaders(origin: string, config?: GitHubBaseConfig) {
   const headers: Record<string, string> = {
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, PATCH, OPTIONS',
     'Access-Control-Allow-Headers': 'Authorization, Content-Type',
     'Access-Control-Max-Age': '600',
     Vary: 'Origin',
@@ -481,22 +505,27 @@ async function githubFetch(
   }
 }
 
+type GitHubProviderContext =
+  | 'verification' | 'user-token-exchange' | 'installation-token-mint' | 'repositories'
+  | 'issues' | 'epics' | 'pulls' | 'workflow_runs'
+  | 'repository-access' | 'labels' | 'issue-comment' | 'issue-update'
+
+const NOT_FOUND_ERROR_BY_CONTEXT: Partial<Record<GitHubProviderContext, { code: string; message: string }>> = {
+  verification: { code: 'INSTALLATION_NOT_ACCESSIBLE', message: 'The GitHub App installation is not available.' },
+  'user-token-exchange': { code: 'GITHUB_TOKEN_EXCHANGE_FAILED', message: 'GitHub could not exchange the authorization code for a user token.' },
+  'repository-access': { code: 'REPOSITORY_NOT_ACCESSIBLE', message: 'The requested repository is not part of the verified GitHub App installation.' },
+}
+
 function providerError(
   response: Response,
-  context: 'verification' | 'user-token-exchange' | 'installation-token-mint' | 'repositories' | 'issues' | 'epics' | 'pulls' | 'workflow_runs',
+  context: GitHubProviderContext,
 ) {
   if (response.status === 429) {
     return new GitHubIntegrationError('GITHUB_RATE_LIMITED', 503, 'GitHub rate limit was reached.')
   }
   if (response.status === 404) {
-    const code = context === 'verification'
-      ? 'INSTALLATION_NOT_ACCESSIBLE'
-      : context === 'user-token-exchange'
-        ? 'GITHUB_TOKEN_EXCHANGE_FAILED'
-        : 'GITHUB_APP_NOT_INSTALLED'
-    const message = context === 'user-token-exchange'
-      ? 'GitHub could not exchange the authorization code for a user token.'
-      : 'The GitHub App installation is not available.'
+    const fallback = { code: 'GITHUB_APP_NOT_INSTALLED', message: 'The GitHub App installation is not available.' }
+    const { code, message } = NOT_FOUND_ERROR_BY_CONTEXT[context] ?? fallback
     return new GitHubIntegrationError(code, 409, message)
   }
   if (response.status === 401 || response.status === 403) {
@@ -1330,6 +1359,349 @@ async function disconnect(
   return { connected: false, appUninstalled: false }
 }
 
+// ---------------------------------------------------------------------------
+// EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
+// Every write below: rate-limits, verifies repo access via the installation
+// token (GitHub itself scopes that token to only granted repos -- a 404 here
+// means "not part of this installation", not "issue not found"), logs a
+// pending row to agent_write_log *before* calling GitHub, and updates that
+// row to executed/failed afterward. No caller-supplied field reaches GitHub
+// unsanitized.
+// ---------------------------------------------------------------------------
+
+async function parseWriteRequestBody(request: Request): Promise<Record<string, unknown>> {
+  const declaredLength = Number(request.headers.get('Content-Length') ?? '0')
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_WRITE_BODY_BYTES) {
+    throw new GitHubIntegrationError('REQUEST_TOO_LARGE', 413, 'Request body is too large.')
+  }
+  const rawBody = await request.text()
+  if (new TextEncoder().encode(rawBody).byteLength > MAX_WRITE_BODY_BYTES) {
+    throw new GitHubIntegrationError('REQUEST_TOO_LARGE', 413, 'Request body is too large.')
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(rawBody)
+  } catch {
+    throw new GitHubIntegrationError('INVALID_JSON', 400, 'Request body must contain valid JSON.')
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new GitHubIntegrationError('INVALID_REQUEST', 400, 'Request body must be an object.')
+  }
+  return parsed as Record<string, unknown>
+}
+
+function parseRepoIdentifier(value: unknown): { owner: string; name: string } | undefined {
+  const raw = boundedString(value, 200)
+  const match = /^([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)$/.exec(raw)
+  return match ? { owner: match[1], name: match[2] } : undefined
+}
+
+async function verifyRepositoryAccess(
+  owner: string,
+  name: string,
+  token: string,
+  deps: GitHubIntegrationDependencies,
+) {
+  const response = await githubFetch(
+    deps,
+    `${GITHUB_API_ORIGIN}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`,
+    {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${token}`,
+        'X-GitHub-Api-Version': API_VERSION,
+        'User-Agent': 'SmartFlow-GitHub-App',
+      },
+    },
+  )
+  if (!response.ok) throw providerError(response, 'repository-access')
+}
+
+async function fetchRepositoryLabels(
+  owner: string,
+  name: string,
+  token: string,
+  deps: GitHubIntegrationDependencies,
+): Promise<Set<string>> {
+  const response = await githubFetch(
+    deps,
+    `${GITHUB_API_ORIGIN}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/labels?per_page=${MAX_REPOSITORY_LABELS}&page=1`,
+    {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${token}`,
+        'X-GitHub-Api-Version': API_VERSION,
+        'User-Agent': 'SmartFlow-GitHub-App',
+      },
+    },
+  )
+  if (!response.ok) throw providerError(response, 'labels')
+  const body = await providerJson<unknown>(response)
+  if (!Array.isArray(body)) {
+    throw new GitHubIntegrationError('GITHUB_RESPONSE_INVALID', 502, 'GitHub returned an invalid labels response.')
+  }
+  const names = body
+    .map((item) => item && typeof item === 'object' ? boundedString((item as GitHubLabelResponse).name, 100) : '')
+    .filter((name): name is string => Boolean(name))
+  return new Set(names)
+}
+
+async function countRecentWrites(
+  userId: string,
+  config: GitHubBaseConfig,
+  deps: GitHubIntegrationDependencies,
+): Promise<number> {
+  const since = new Date(deps.now().getTime() - WRITE_RATE_LIMIT_WINDOW_MS).toISOString()
+  const response = await databaseRequest(
+    config,
+    deps,
+    `agent_write_log?user_id=eq.${encodeURIComponent(userId)}&created_at=gt.${encodeURIComponent(since)}&select=id&limit=${MAX_WRITES_PER_HOUR + 1}`,
+  )
+  const rows = await response.json() as unknown[]
+  return Array.isArray(rows) ? rows.length : 0
+}
+
+async function enforceWriteRateLimit(
+  userId: string,
+  config: GitHubBaseConfig,
+  deps: GitHubIntegrationDependencies,
+) {
+  const recentCount = await countRecentWrites(userId, config, deps)
+  if (recentCount >= MAX_WRITES_PER_HOUR) {
+    throw new GitHubIntegrationError(
+      'WRITE_RATE_LIMIT_EXCEEDED',
+      429,
+      'Write rate limit exceeded. Try again later.',
+    )
+  }
+}
+
+async function insertWriteLogRow(
+  userId: string,
+  toolId: string,
+  parameters: Record<string, unknown>,
+  config: GitHubBaseConfig,
+  deps: GitHubIntegrationDependencies,
+): Promise<string> {
+  const response = await databaseRequest(config, deps, 'agent_write_log', {
+    method: 'POST',
+    headers: serviceHeaders(config, 'return=representation'),
+    body: JSON.stringify({
+      user_id: userId,
+      tool_id: toolId,
+      parameters,
+      status: 'pending',
+      created_at: deps.now().toISOString(),
+    }),
+  })
+  const rows = await response.json() as WriteLogRow[]
+  const id = boundedString(rows?.[0]?.id, 64)
+  if (!id) {
+    throw new GitHubIntegrationError('WRITE_LOG_FAILED', 500, 'Write audit log could not be created.')
+  }
+  return id
+}
+
+async function updateWriteLogRow(
+  id: string,
+  status: 'executed' | 'failed',
+  githubResponse: unknown,
+  config: GitHubBaseConfig,
+  deps: GitHubIntegrationDependencies,
+) {
+  await databaseRequest(config, deps, `agent_write_log?id=eq.${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: serviceHeaders(config, 'return=minimal'),
+    body: JSON.stringify({ status, github_response: githubResponse ?? null }),
+  })
+}
+
+async function recordWriteFailure(
+  logId: string,
+  config: GitHubBaseConfig,
+  deps: GitHubIntegrationDependencies,
+) {
+  await updateWriteLogRow(logId, 'failed', null, config, deps).catch((auditError) => {
+    console.error('[GitHub] Failed to record write failure in agent_write_log:', auditError)
+  })
+}
+
+async function postIssueComment(
+  owner: string,
+  name: string,
+  issueNumber: number,
+  body: string,
+  token: string,
+  deps: GitHubIntegrationDependencies,
+): Promise<{ commentId: number; url: string; raw: unknown }> {
+  const response = await githubFetch(
+    deps,
+    `${GITHUB_API_ORIGIN}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${issueNumber}/comments`,
+    {
+      method: 'POST',
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${token}`,
+        'X-GitHub-Api-Version': API_VERSION,
+        'User-Agent': 'SmartFlow-GitHub-App',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ body }),
+    },
+  )
+  if (!response.ok) throw providerError(response, 'issue-comment')
+  const raw = await providerJson<GitHubCommentResponse>(response)
+  const commentId = positiveInteger(raw.id)
+  const url = boundedString(raw.html_url, 500)
+  if (!commentId || !url || !isGitHubIssueUrl(url)) {
+    throw new GitHubIntegrationError('GITHUB_RESPONSE_INVALID', 502, 'GitHub returned an invalid comment response.')
+  }
+  return { commentId, url, raw }
+}
+
+interface IssueUpdatePayload {
+  title?: string
+  body?: string
+  labels?: string[]
+}
+
+async function patchIssue(
+  owner: string,
+  name: string,
+  issueNumber: number,
+  payload: IssueUpdatePayload,
+  token: string,
+  deps: GitHubIntegrationDependencies,
+): Promise<{ issueNumber: number; url: string; raw: unknown }> {
+  const response = await githubFetch(
+    deps,
+    `${GITHUB_API_ORIGIN}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/${issueNumber}`,
+    {
+      method: 'PATCH',
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${token}`,
+        'X-GitHub-Api-Version': API_VERSION,
+        'User-Agent': 'SmartFlow-GitHub-App',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    },
+  )
+  if (!response.ok) throw providerError(response, 'issue-update')
+  const raw = await providerJson<GitHubUpdatedIssueResponse>(response)
+  const returnedNumber = positiveInteger(raw.number)
+  const url = boundedString(raw.html_url, 500)
+  if (!returnedNumber || !url || !isGitHubIssueUrl(url)) {
+    throw new GitHubIntegrationError('GITHUB_RESPONSE_INVALID', 502, 'GitHub returned an invalid issue response.')
+  }
+  return { issueNumber: returnedNumber, url, raw }
+}
+
+async function handleIssueComment(
+  request: Request,
+  config: GitHubConfig,
+  deps: GitHubIntegrationDependencies,
+) {
+  const { userId, authorization } = await requireUser(request, config, deps)
+  const body = await parseWriteRequestBody(request)
+
+  const repoIdentifier = parseRepoIdentifier(body.repo)
+  const issueNumber = positiveInteger(body.issue_number)
+  const commentBody = boundedString(body.body, MAX_COMMENT_BODY_LENGTH)
+  if (!repoIdentifier || !issueNumber || !commentBody) {
+    throw new GitHubIntegrationError('WRITE_INPUT_INVALID', 400, 'repo, issue_number, and body are required.')
+  }
+
+  await enforceWriteRateLimit(userId, config, deps)
+
+  const connection = await loadConnection(userId, authorization, config, deps)
+  const installationId = positiveInteger(connection.installation_id)
+  if (!installationId) {
+    throw new GitHubIntegrationError('CONNECTION_RECORD_INVALID', 500, 'Verified connection metadata is invalid.')
+  }
+  const token = await installationToken(installationId, config, deps)
+  await verifyRepositoryAccess(repoIdentifier.owner, repoIdentifier.name, token, deps)
+
+  const parameters = { repo: `${repoIdentifier.owner}/${repoIdentifier.name}`, issueNumber, body: commentBody }
+  const logId = await insertWriteLogRow(userId, 'github.issues.comment', parameters, config, deps)
+
+  try {
+    const result = await postIssueComment(repoIdentifier.owner, repoIdentifier.name, issueNumber, commentBody, token, deps)
+    await updateWriteLogRow(logId, 'executed', result.raw, config, deps)
+    return { commentId: result.commentId, url: result.url }
+  } catch (error) {
+    await recordWriteFailure(logId, config, deps)
+    throw error
+  }
+}
+
+async function handleIssueUpdate(
+  request: Request,
+  config: GitHubConfig,
+  deps: GitHubIntegrationDependencies,
+) {
+  const { userId, authorization } = await requireUser(request, config, deps)
+  const body = await parseWriteRequestBody(request)
+
+  const repoIdentifier = parseRepoIdentifier(body.repo)
+  const issueNumber = positiveInteger(body.issue_number)
+  if (!repoIdentifier || !issueNumber) {
+    throw new GitHubIntegrationError('WRITE_INPUT_INVALID', 400, 'repo and issue_number are required.')
+  }
+
+  const title = typeof body.title === 'string' ? boundedString(body.title, MAX_ISSUE_TITLE_LENGTH) || undefined : undefined
+  const issueBody = typeof body.body === 'string' ? boundedString(body.body, MAX_ISSUE_BODY_LENGTH) || undefined : undefined
+  const rawLabels = Array.isArray(body.labels) ? body.labels : undefined
+  if (rawLabels && rawLabels.length > MAX_UPDATE_LABELS) {
+    throw new GitHubIntegrationError('WRITE_INPUT_INVALID', 400, `labels must not exceed ${MAX_UPDATE_LABELS} items.`)
+  }
+  const labels = rawLabels
+    ? rawLabels.map((item) => boundedString(item, 100)).filter((item): item is string => Boolean(item))
+    : undefined
+  if (rawLabels && (!labels || labels.length !== rawLabels.length)) {
+    throw new GitHubIntegrationError('WRITE_INPUT_INVALID', 400, 'labels must be a bounded array of non-empty strings.')
+  }
+  if (!title && !issueBody && (!labels || labels.length === 0)) {
+    throw new GitHubIntegrationError('WRITE_INPUT_INVALID', 400, 'At least one of title, body, or labels is required.')
+  }
+
+  await enforceWriteRateLimit(userId, config, deps)
+
+  const connection = await loadConnection(userId, authorization, config, deps)
+  const installationId = positiveInteger(connection.installation_id)
+  if (!installationId) {
+    throw new GitHubIntegrationError('CONNECTION_RECORD_INVALID', 500, 'Verified connection metadata is invalid.')
+  }
+  const token = await installationToken(installationId, config, deps)
+  await verifyRepositoryAccess(repoIdentifier.owner, repoIdentifier.name, token, deps)
+
+  if (labels && labels.length > 0) {
+    const knownLabels = await fetchRepositoryLabels(repoIdentifier.owner, repoIdentifier.name, token, deps)
+    const unknownLabels = labels.filter((label) => !knownLabels.has(label))
+    if (unknownLabels.length > 0) {
+      throw new GitHubIntegrationError('LABELS_NOT_RECOGNIZED', 400, 'One or more labels do not exist on this repository.')
+    }
+  }
+
+  const payload: IssueUpdatePayload = {
+    ...(title ? { title } : {}),
+    ...(issueBody ? { body: issueBody } : {}),
+    ...(labels ? { labels } : {}),
+  }
+  const parameters = { repo: `${repoIdentifier.owner}/${repoIdentifier.name}`, issueNumber, ...payload }
+  const logId = await insertWriteLogRow(userId, 'github.issues.update', parameters, config, deps)
+
+  try {
+    const result = await patchIssue(repoIdentifier.owner, repoIdentifier.name, issueNumber, payload, token, deps)
+    await updateWriteLogRow(logId, 'executed', result.raw, config, deps)
+    return { issueNumber: result.issueNumber, url: result.url }
+  } catch (error) {
+    await recordWriteFailure(logId, config, deps)
+    throw error
+  }
+}
+
 export async function handleGitHubIntegrationRequest(
   request: Request,
   env: Env,
@@ -1385,6 +1757,12 @@ export async function handleGitHubIntegrationRequest(
     if (url.pathname === '/github/workflow_runs' && request.method === 'GET') {
       return json(await listWorkflowRuns(request, config, deps), 200, origin, config)
     }
+    if (url.pathname === '/github/issues/comment' && request.method === 'POST') {
+      return json(await handleIssueComment(request, config, deps), 200, origin, config)
+    }
+    if (url.pathname === '/github/issues/update' && request.method === 'PATCH') {
+      return json(await handleIssueUpdate(request, config, deps), 200, origin, config)
+    }
     if (
       url.pathname === '/github/connect/start' ||
       url.pathname === '/github/connect/setup' ||
@@ -1394,6 +1772,8 @@ export async function handleGitHubIntegrationRequest(
       url.pathname === '/github/epics' ||
       url.pathname === '/github/pulls' ||
       url.pathname === '/github/workflow_runs' ||
+      url.pathname === '/github/issues/comment' ||
+      url.pathname === '/github/issues/update' ||
       url.pathname === '/github/disconnect' ||
       url.pathname === '/github/connection' ||
       url.pathname === '/github/repository-inventory'
@@ -1417,6 +1797,13 @@ export const githubIntegrationInternals = {
   MAX_REPOS_SCANNED_FOR_FANOUT,
   MAX_CACHED_REPOSITORY_NAMES,
   CONNECT_ATTEMPT_TTL_MS,
+  MAX_WRITES_PER_HOUR,
+  WRITE_RATE_LIMIT_WINDOW_MS,
+  MAX_COMMENT_BODY_LENGTH,
+  MAX_ISSUE_TITLE_LENGTH,
+  MAX_ISSUE_BODY_LENGTH,
+  MAX_UPDATE_LABELS,
+  MAX_REPOSITORY_LABELS,
   resolveBaseConfig,
   resolveConfig,
   sanitizeRepository,

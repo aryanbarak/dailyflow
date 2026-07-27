@@ -242,6 +242,114 @@ describe("intentValidator", () => {
     expect(result.toolId).toBe("workspace.get_context");
   });
 
+  describe("EPIC-07 (Write Light) write intents", () => {
+    it("resolves write_github_issue_comment only with a fully-formed target, otherwise asks for clarification", () => {
+      const incomplete = validate(
+        proposal({ type: "intent", requestedDomain: "tasks", toolId: "tasks.list" }),
+        "add a comment saying LGTM to the issue",
+      );
+      expect(incomplete.proposal.type).toBe("ask_clarification");
+
+      const complete = validate(
+        proposal({
+          type: "write_github_issue_comment",
+          requestedDomain: "github",
+          toolId: "github.issues.comment",
+          target: { repo: "aryan/smartflow", issueNumber: 5, commentBody: "Thanks!" },
+        }),
+        "add a comment to the issue",
+      );
+      expect(complete.proposal.type).toBe("write_github_issue_comment");
+      expect(complete.toolId).toBe("github.issues.comment");
+      expect(complete.proposal.requiresApproval).toBe(true);
+      expect(complete.proposal.target).toMatchObject({ repo: "aryan/smartflow", issueNumber: 5, commentBody: "Thanks!" });
+    });
+
+    it("resolves write_github_issue_update only with repo+issueNumber and at least one of title/body/labels", () => {
+      const missingChange = validate(
+        proposal({
+          type: "write_github_issue_update",
+          requestedDomain: "github",
+          toolId: "github.issues.update",
+          target: { repo: "aryan/smartflow", issueNumber: 5 },
+        }),
+        "update this issue",
+      );
+      expect(missingChange.proposal.type).toBe("ask_clarification");
+
+      const withLabels = validate(
+        proposal({
+          type: "write_github_issue_update",
+          requestedDomain: "github",
+          toolId: "github.issues.update",
+          target: { repo: "aryan/smartflow", issueNumber: 5, updateLabels: ["bug"] },
+        }),
+        "update this issue",
+      );
+      expect(withLabels.proposal.type).toBe("write_github_issue_update");
+      expect(withLabels.proposal.requiresApproval).toBe(true);
+    });
+
+    it("does not let bare create/update/add words block an already-confirmed write intent", () => {
+      // "add" and "update" are in requestLooksUnsupported's blocklist -- must
+      // not fire once type has resolved to a confirmed write intent.
+      const comment = validate(
+        proposal({
+          type: "write_github_issue_comment",
+          requestedDomain: "github",
+          toolId: "github.issues.comment",
+          target: { repo: "aryan/smartflow", issueNumber: 5, commentBody: "add this note" },
+        }),
+        "add a comment to the issue",
+      );
+      const update = validate(
+        proposal({
+          type: "write_github_issue_update",
+          requestedDomain: "github",
+          toolId: "github.issues.update",
+          target: { repo: "aryan/smartflow", issueNumber: 5, updateLabels: ["bug"] },
+        }),
+        "update this issue's labels",
+      );
+      expect(comment.proposal.type).not.toBe("unsupported");
+      expect(update.proposal.type).not.toBe("unsupported");
+    });
+
+    it("still rejects unrelated create/delete requests as unsupported", () => {
+      expect(validate(proposal(), "delete my account please").proposal.type).toBe("unsupported");
+    });
+
+    it("asks for clarification instead of guessing when a message mixes a read verb with a write verb", () => {
+      const result = validate(
+        proposal({ type: "intent", requestedDomain: "tasks", toolId: "tasks.list" }),
+        "show my issues and add a comment saying done",
+      );
+      expect(["ask_clarification", "unsupported"]).toContain(result.proposal.type);
+    });
+
+    it("does not let a message naming both comment and update evidence guess between them", () => {
+      const result = validate(
+        proposal({ type: "intent", requestedDomain: "tasks", toolId: "tasks.list" }),
+        "update this issue and add a comment",
+      );
+      expect(result.proposal.type).not.toBe("write_github_issue_comment");
+      expect(result.proposal.type).not.toBe("write_github_issue_update");
+    });
+
+    it("drops an out-of-range or malformed repo/issueNumber/labels instead of trusting them", () => {
+      const result = validate(
+        proposal({
+          type: "write_github_issue_update",
+          requestedDomain: "github",
+          toolId: "github.issues.update",
+          target: { repo: "not-a-valid-repo-format", issueNumber: -5, updateLabels: "not-an-array" },
+        }),
+        "update this issue",
+      );
+      expect(result.proposal.type).toBe("ask_clarification");
+    });
+  });
+
   it("handles malformed or non-object output safely", () => {
     const result = validate(null);
 

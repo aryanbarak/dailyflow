@@ -307,6 +307,11 @@ export interface WorkspaceStepApproval {
   externalEffect: boolean;
   dataDomains: WorkspacePlanDomain[];
   approvalScope: WorkspaceApprovalScope;
+  // EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
+  // The exact pending content (comment body, or a title/body/label diff
+  // summary) shown in the approval dialog before Run is enabled. Absent for
+  // tasks.complete, which has no free-text payload to preview.
+  previewText?: string;
 }
 
 export interface WorkspaceApprovalModel {

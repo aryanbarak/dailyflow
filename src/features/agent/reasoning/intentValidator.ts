@@ -20,9 +20,25 @@ export const supportedIntentTypes: AgentIntentType[] = [
   "inspect_github_pull_requests",
   "inspect_github_workflow_runs",
   "complete_task",
+  "write_github_issue_comment",
+  "write_github_issue_update",
   "ask_clarification",
   "unsupported",
 ];
+
+// EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
+// Every intent here already reaches requiresApproval + the approval dialog
+// before anything executes. Shared by: the requestLooksUnsupported gate
+// (a write intent's own natural language, e.g. "add a comment", must not be
+// rejected by the generic create/update/add blocklist below), the mixed-
+// request gate (an already-resolved write intent is exempt from being
+// second-guessed by a read verb elsewhere in the same message), and the
+// final requiresApproval assignment.
+const CONFIRMED_WRITE_INTENT_TYPES = new Set<AgentIntentType>([
+  "complete_task",
+  "write_github_issue_comment",
+  "write_github_issue_update",
+]);
 
 const supportedDomains: AgentIntentDomain[] = [
   "tasks",
@@ -45,6 +61,8 @@ const intentToolMap = {
   inspect_github_pull_requests: "github.pulls.list",
   inspect_github_workflow_runs: "github.workflow_runs.list",
   complete_task: "tasks.complete",
+  write_github_issue_comment: "github.issues.comment",
+  write_github_issue_update: "github.issues.update",
 } as const;
 
 type KnownToolId = typeof intentToolMap[keyof typeof intentToolMap];
@@ -60,6 +78,8 @@ const domainByIntent: Partial<Record<AgentIntentType, AgentIntentDomain>> = {
   inspect_github_pull_requests: "github",
   inspect_github_workflow_runs: "github",
   complete_task: "tasks",
+  write_github_issue_comment: "github",
+  write_github_issue_update: "github",
 };
 
 function textFor(language: SupportedAiResponseLanguage, key: "clarify" | "unsupported" | "low") {
@@ -139,13 +159,67 @@ function hasRejectedFields(value: Record<string, unknown>) {
   );
 }
 
+// EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
+// Deliberately stricter than the task fields above: there is no safe-context
+// list of the user's own GitHub issues to fuzzy-match against, so repo,
+// issueNumber, and body-like fields are either well-formed or dropped
+// entirely (undefined) -- never partially trusted or guessed.
+function safeRepoIdentifier(value: unknown) {
+  const raw = safeString(value);
+  return /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(raw) ? raw : undefined;
+}
+
+function safePositiveInteger(value: unknown) {
+  const num = typeof value === "number" ? value : Number(value);
+  return Number.isSafeInteger(num) && num > 0 ? num : undefined;
+}
+
+function safeBoundedText(value: unknown, maxLength: number) {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim().slice(0, maxLength);
+  return trimmed || undefined;
+}
+
+function safeLabelList(value: unknown) {
+  if (!Array.isArray(value)) return undefined;
+  const labels = value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim().slice(0, 100))
+    .filter(Boolean)
+    .slice(0, 20);
+  return labels.length > 0 ? labels : undefined;
+}
+
 function normalizeTarget(value: unknown) {
   if (!isRecord(value)) return undefined;
   return {
     taskId: safeString(value.taskId) || undefined,
     taskReference: safeString(value.taskReference) || undefined,
     taskTitleHint: safeString(value.taskTitleHint) || undefined,
+    repo: safeRepoIdentifier(value.repo),
+    issueNumber: safePositiveInteger(value.issueNumber),
+    commentBody: safeBoundedText(value.commentBody, 10_000),
+    updateTitle: safeBoundedText(value.updateTitle, 200),
+    updateBody: safeBoundedText(value.updateBody, 10_000),
+    updateLabels: safeLabelList(value.updateLabels),
   };
+}
+
+function findGithubIssueCommentTarget(target: ReturnType<typeof normalizeTarget>) {
+  if (!target?.repo || !target.issueNumber || !target.commentBody) {
+    return { status: "missing" as const };
+  }
+  return { status: "matched" as const };
+}
+
+function findGithubIssueUpdateTarget(target: ReturnType<typeof normalizeTarget>) {
+  if (!target?.repo || !target.issueNumber) {
+    return { status: "missing" as const };
+  }
+  if (!target.updateTitle && !target.updateBody && !target.updateLabels) {
+    return { status: "missing" as const };
+  }
+  return { status: "matched" as const };
 }
 
 function normalizeTitle(value: string) {
@@ -185,6 +259,28 @@ function requestLooksLikeTaskCompletion(message: string) {
   return /\b(complete|finish|mark .* done|mark .* complete|done|erledige|abschliessen|abschließen|markiere|کامل کن|تمام کن|انجام‌شده)\b/i.test(message);
 }
 
+// EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
+// "comment" alone is deliberately excluded -- it collides with read-ish
+// phrasing like "any comments on my code style", the same class of risk as
+// the excluded bare "PR" and bare "plan" elsewhere in this file. Only the
+// verb-shaped phrases count as evidence.
+function requestLooksLikeGithubIssueComment(message: string) {
+  return (
+    /\b(add (a |the )?comment|post (a |the )?comment|comment on (this|the|an?|my) issue|reply to (this|the|an?|my) issue)\b/i.test(message) ||
+    /(کامنت( بگذار| بذار| اضافه کن)?|نظر بده|پاسخ بده)/i.test(message)
+  );
+}
+
+// "update"/"edit" alone are excluded for the same reason -- these phrases
+// are compound (matches the literal spec: "update issue", "edit issue",
+// "change label"), never bare.
+function requestLooksLikeGithubIssueUpdate(message: string) {
+  return (
+    /\b(update (this |the |an?|my )?issue|edit (this |the |an?|my )?issue|change (the |a )?label)\b/i.test(message) ||
+    /(آپدیت( کن)? ایشو|ایشو( را| رو)? آپدیت کن|لیبل( را| رو)? تغییر بده|تغییر لیبل)/i.test(message)
+  );
+}
+
 function requestReferencesSelectedTask(message: string) {
   if (
     /\bausgew[a\u00e4]hlte[nr]?\s+aufgabe\b/i.test(message) ||
@@ -222,11 +318,14 @@ function requestLooksUnsupported(message: string) {
 }
 
 function requestLooksMixed(message: string, type: AgentIntentType) {
-  if (type === "complete_task") return false;
+  if (CONFIRMED_WRITE_INTENT_TYPES.has(type)) return false;
   const hasReadIntent =
     /\b(check|show|inspect|list|summarize|continue|what|which|zeig|zeige|pruefe|prüfe|fasse|setze|نشان بده|بررسی کن|خلاصه کن|ادامه بده)\b/i.test(message);
-  const hasCompleteIntent = requestLooksLikeTaskCompletion(message);
-  return hasReadIntent && hasCompleteIntent;
+  const hasWriteIntent =
+    requestLooksLikeTaskCompletion(message) ||
+    requestLooksLikeGithubIssueComment(message) ||
+    requestLooksLikeGithubIssueUpdate(message);
+  return hasReadIntent && hasWriteIntent;
 }
 
 function messageHasAny(message: string, patterns: RegExp[]) {
@@ -279,7 +378,7 @@ const GITHUB_WORKFLOW_RUNS_EVIDENCE_PATTERNS = [
 // domain uniformly: add a tool's evidence patterns here and it's covered,
 // no new disambiguation function needed. A message matching more than one
 // tool in the same domain is genuinely ambiguous, not a signal to guess.
-type ReadToolIntentType = Exclude<AgentIntentType, "complete_task" | "ask_clarification" | "unsupported">;
+type ReadToolIntentType = Exclude<AgentIntentType, "complete_task" | "write_github_issue_comment" | "write_github_issue_update" | "ask_clarification" | "unsupported">;
 
 const TOOL_EVIDENCE_PATTERNS: Partial<Record<ReadToolIntentType, RegExp[]>> = {
   inspect_github_repositories: GITHUB_REPOSITORIES_EVIDENCE_PATTERNS,
@@ -345,7 +444,7 @@ function normalizeReadIntentFromEvidence(
   domainEvidence: AgentIntentDomain | "conflicting" | null,
   message: string,
 ): AgentIntentType {
-  if (!domainEvidence || domainEvidence === "conflicting" || type === "complete_task" || type === "unsupported") {
+  if (!domainEvidence || domainEvidence === "conflicting" || CONFIRMED_WRITE_INTENT_TYPES.has(type) || type === "unsupported") {
     return type;
   }
   if (
@@ -407,6 +506,14 @@ export function validateAgentIntentProposal(input: {
   const initialTypeSupported = supportedIntentTypes.includes(initialType);
   const domainEvidence = getStrongReadDomainEvidence(input.userMessage);
   const completionRequested = requestLooksLikeTaskCompletion(input.userMessage);
+  // EPIC-07 (Write Light): same rescue shape as complete_task above it --
+  // detected from the message independently of whatever the LLM proposed,
+  // and only ever assigned when the message isn't also mixed with a read
+  // verb or simultaneously matching the *other* write-intent's evidence
+  // (a message naming both is genuinely ambiguous, not a guess to make).
+  const commentRequested = requestLooksLikeGithubIssueComment(input.userMessage);
+  const issueUpdateRequested = requestLooksLikeGithubIssueUpdate(input.userMessage);
+  const conflictingWriteRequest = commentRequested && issueUpdateRequested;
   const mixedReadWriteRequest = requestLooksMixed(input.userMessage, "inspect_tasks");
   // An unrecognized type is treated the same as a total parse failure (fallbackRawProposal
   // also starts from "ask_clarification"): fall through to deterministic evidence-based
@@ -417,7 +524,17 @@ export function validateAgentIntentProposal(input: {
     !mixedReadWriteRequest &&
     (normalizationSourceType === "ask_clarification" || normalizationSourceType === "inspect_tasks" || normalizationSourceType === "complete_task")
     ? "complete_task"
-    : normalizeReadIntentFromEvidence(normalizationSourceType, domainEvidence, input.userMessage);
+    : commentRequested &&
+      !conflictingWriteRequest &&
+      !mixedReadWriteRequest &&
+      (normalizationSourceType === "ask_clarification" || normalizationSourceType === "inspect_github_issues" || normalizationSourceType === "write_github_issue_comment")
+      ? "write_github_issue_comment"
+      : issueUpdateRequested &&
+        !conflictingWriteRequest &&
+        !mixedReadWriteRequest &&
+        (normalizationSourceType === "ask_clarification" || normalizationSourceType === "inspect_github_issues" || normalizationSourceType === "write_github_issue_update")
+        ? "write_github_issue_update"
+        : normalizeReadIntentFromEvidence(normalizationSourceType, domainEvidence, input.userMessage);
   const normalizedByEvidence = type !== initialType;
   if (!initialTypeSupported && type === "ask_clarification") {
     return createSafeProposal("unsupported", {
@@ -457,7 +574,10 @@ export function validateAgentIntentProposal(input: {
     });
   }
 
-  if (type === "unsupported" || requestLooksUnsupported(input.userMessage)) {
+  if (
+    type === "unsupported" ||
+    (requestLooksUnsupported(input.userMessage) && !CONFIRMED_WRITE_INTENT_TYPES.has(type))
+  ) {
     return createSafeProposal("unsupported", {
       userMessage: input.userMessage,
       language: input.language,
@@ -546,6 +666,24 @@ export function validateAgentIntentProposal(input: {
     target!.taskId = match.task.id;
     target!.taskTitleHint = match.task.title;
   }
+  if (type === "write_github_issue_comment" && findGithubIssueCommentTarget(target).status !== "matched") {
+    return createSafeProposal("ask_clarification", {
+      userMessage: input.userMessage,
+      language: input.language,
+      now,
+      question: textFor(input.language, "clarify"),
+      reason: "Exact repo, issue number, and comment body are required before approval.",
+    });
+  }
+  if (type === "write_github_issue_update" && findGithubIssueUpdateTarget(target).status !== "matched") {
+    return createSafeProposal("ask_clarification", {
+      userMessage: input.userMessage,
+      language: input.language,
+      now,
+      question: textFor(input.language, "clarify"),
+      reason: "Exact repo, issue number, and at least one of title, body, or labels are required before approval.",
+    });
+  }
 
   const proposal: AgentIntentProposal = {
     id: safeString(input.rawProposal.id) || `intent:${type}:${now.toISOString()}`,
@@ -556,7 +694,7 @@ export function validateAgentIntentProposal(input: {
     requestedDomain: expectedDomain,
     toolId: expectedToolId,
     requiresTool: true,
-    requiresApproval: type === "complete_task",
+    requiresApproval: CONFIRMED_WRITE_INTENT_TYPES.has(type),
     clarificationQuestion: undefined,
     reasons: safeReasons(input.rawProposal.reasons).length > 0
       ? safeReasons(input.rawProposal.reasons)

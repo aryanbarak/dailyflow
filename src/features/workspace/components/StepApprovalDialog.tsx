@@ -135,6 +135,16 @@ export function StepApprovalDialog({
               {stepApproval.approvalReason}
             </p>
           )}
+          {stepApproval?.previewText && (
+            <div className="mt-3 rounded-lg border border-border/35 bg-background/40 px-3 py-2">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                {t("approval_preview_label")}
+              </p>
+              <p className="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-foreground/90">
+                {stepApproval.previewText}
+              </p>
+            </div>
+          )}
         </div>
 
         <dl className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">

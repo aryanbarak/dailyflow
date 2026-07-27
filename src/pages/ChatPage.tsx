@@ -58,6 +58,8 @@ import { createGitHubIssuesClient } from '@/features/integrations/github/githubI
 import { createGitHubEpicsClient } from '@/features/integrations/github/githubEpicsClient'
 import { createGitHubPullRequestsClient } from '@/features/integrations/github/githubPullRequestsClient'
 import { createGitHubWorkflowRunsClient } from '@/features/integrations/github/githubWorkflowRunsClient'
+import { createGitHubIssuesCommentClient } from '@/features/integrations/github/githubIssuesCommentClient'
+import { createGitHubIssuesUpdateClient } from '@/features/integrations/github/githubIssuesUpdateClient'
 import { createGitHubRepositoryInventoryClient } from '@/features/integrations/github/githubRepositoryInventoryClient'
 import { useWorkspace } from '@/features/workspace'
 import type {
@@ -174,6 +176,16 @@ const readIntentAction: Record<string, WorkspacePlanActionType> = {
   inspect_workspace: 'inspect',
   inspect_github_repositories: 'inspect',
 }
+
+// EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
+// Every type here already carries requiresApproval=true from the validator;
+// this set drives which write-resolution/approval path proposalToState uses,
+// generalizing what used to be a tasks.complete-only check.
+const WRITE_PROPOSAL_TYPES = new Set<AgentReasoningResult['proposal']['type']>([
+  'complete_task',
+  'write_github_issue_comment',
+  'write_github_issue_update',
+])
 
 const CONVERSATIONAL_FILLER_ATOMS = [
   // English greetings/thanks/acknowledgements, plus "today"/"there"/"and" as
@@ -317,6 +329,10 @@ function intentTitleKey(type: AgentReasoningResult['proposal']['type']): Transla
       return 'agent_intent_title_inspect_github_workflow_runs'
     case 'complete_task':
       return 'agent_intent_title_complete_task'
+    case 'write_github_issue_comment':
+      return 'agent_intent_title_write_github_issue_comment'
+    case 'write_github_issue_update':
+      return 'agent_intent_title_write_github_issue_update'
     case 'ask_clarification':
       return 'agent_intent_title_clarification'
     default:
@@ -352,12 +368,14 @@ function stepForReasoning(result: AgentReasoningResult, t: Translate): Workspace
   if (!proposal.toolId || proposal.type === 'ask_clarification' || proposal.type === 'unsupported') {
     return null
   }
+  const isGithubIssueWrite = proposal.type === 'write_github_issue_comment' || proposal.type === 'write_github_issue_update'
   const domain =
     proposal.type === 'inspect_github_repositories' ||
     proposal.type === 'inspect_github_issues' ||
     proposal.type === 'inspect_github_epics' ||
     proposal.type === 'inspect_github_pull_requests' ||
-    proposal.type === 'inspect_github_workflow_runs'
+    proposal.type === 'inspect_github_workflow_runs' ||
+    isGithubIssueWrite
       ? 'github'
       : proposal.type === 'inspect_workspace'
       ? 'workspace'
@@ -368,8 +386,15 @@ function stepForReasoning(result: AgentReasoningResult, t: Translate): Workspace
         : 'tasks'
   const actionType = proposal.type === 'complete_task'
     ? 'complete'
-    : readIntentAction[proposal.type] ?? 'inspect'
-  const targetId = proposal.type === 'complete_task' ? proposal.target?.taskId : undefined
+    : proposal.type === 'write_github_issue_comment'
+      ? 'create'
+      : proposal.type === 'write_github_issue_update'
+        ? 'update'
+        : readIntentAction[proposal.type] ?? 'inspect'
+  const githubIssueTargetId = isGithubIssueWrite && proposal.target?.repo && proposal.target?.issueNumber
+    ? `${proposal.target.repo}#${proposal.target.issueNumber}`
+    : undefined
+  const targetId = proposal.type === 'complete_task' ? proposal.target?.taskId : githubIssueTargetId
 
   return {
     id: `reasoning-step:${proposal.id}`,
@@ -377,7 +402,11 @@ function stepForReasoning(result: AgentReasoningResult, t: Translate): Workspace
     title: intentTitle(proposal.type, t),
     description: proposal.type === 'complete_task'
       ? t('agent_intent_complete_description', { title: proposal.target?.taskTitleHint ?? t('agent_intent_selected_task') })
-      : t('agent_intent_read_description', { toolId: proposal.toolId }),
+      : proposal.type === 'write_github_issue_comment'
+        ? t('agent_intent_comment_description', { targetId: githubIssueTargetId ?? '' })
+        : proposal.type === 'write_github_issue_update'
+          ? t('agent_intent_update_description', { targetId: githubIssueTargetId ?? '' })
+          : t('agent_intent_read_description', { toolId: proposal.toolId }),
     domain: domain as WorkspacePlanStep['domain'],
     estimatedMinutes: 5,
     status: 'proposed',
@@ -390,55 +419,127 @@ function stepForReasoning(result: AgentReasoningResult, t: Translate): Workspace
   }
 }
 
-function writeResolutionForStep(step: WorkspacePlanStep): ToolResolutionResult | null {
-  const tool = getToolById('tasks.complete')
+// Generalized for EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
+// Previously hardcoded to tasks.complete; now resolves whichever write tool
+// the validated proposal actually named.
+function writeResolutionForStep(step: WorkspacePlanStep, toolId: string): ToolResolutionResult | null {
+  const tool = getToolById(toolId)
   if (!tool) return null
   return {
     status: 'resolved',
     resolved: true,
     stepId: step.id,
-    toolId: 'tasks.complete',
+    toolId,
     tool,
     confidence: 'high',
-    reasons: ['Resolved through the explicit tasks.complete reasoning mapping.'],
+    reasons: [`Resolved through the explicit ${toolId} reasoning mapping.`],
     candidates: [],
-    requiredInput: ['taskId'],
+    requiredInput: tool.inputSchema.filter(field => field.required).map(field => field.name),
     generatedAt: new Date().toISOString(),
     resolverVersion: 'tool-resolver-v1',
   }
 }
 
-function approvalForReasoningStep(step: WorkspacePlanStep, resolution: ToolResolutionResult, t: Translate): WorkspaceStepApproval | null {
-  if (resolution.toolId !== 'tasks.complete' || !step.targetId) return null
+// Generalized for EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
+// Previously hardcoded to tasks.complete only. previewText carries the exact
+// pending write content (comment body, or a title/body/label diff) so the
+// approval dialog can show it before Run is enabled -- the ADR's mandatory
+// preview step.
+function approvalForReasoningStep(
+  result: AgentReasoningResult,
+  step: WorkspacePlanStep,
+  resolution: ToolResolutionResult,
+  t: Translate,
+): WorkspaceStepApproval | null {
+  const proposal = result.proposal
   const tool = resolution.tool
-  return {
-    stepId: step.id,
-    targetId: step.targetId,
-    toolId: 'tasks.complete',
-    toolName: tool?.name,
-    toolDescription: tool?.description,
-    toolCapability: tool?.capability,
-    toolMode: tool?.mode,
-    status: 'pending',
-    requiresApproval: true,
-    approvalReason: t('agent_intent_complete_approval_reason'),
-    riskLevel: 'medium',
-    reversible: true,
-    externalEffect: true,
-    dataDomains: ['tasks'],
-    approvalScope: 'single_step',
+
+  if (proposal.type === 'complete_task') {
+    if (resolution.toolId !== 'tasks.complete' || !step.targetId) return null
+    return {
+      stepId: step.id,
+      targetId: step.targetId,
+      toolId: 'tasks.complete',
+      toolName: tool?.name,
+      toolDescription: tool?.description,
+      toolCapability: tool?.capability,
+      toolMode: tool?.mode,
+      status: 'pending',
+      requiresApproval: true,
+      approvalReason: t('agent_intent_complete_approval_reason'),
+      riskLevel: 'medium',
+      reversible: true,
+      externalEffect: true,
+      dataDomains: ['tasks'],
+      approvalScope: 'single_step',
+    }
   }
+
+  if (proposal.type === 'write_github_issue_comment') {
+    const target = proposal.target
+    if (resolution.toolId !== 'github.issues.comment' || !step.targetId || !target?.commentBody) return null
+    return {
+      stepId: step.id,
+      targetId: step.targetId,
+      toolId: 'github.issues.comment',
+      toolName: tool?.name,
+      toolDescription: tool?.description,
+      toolCapability: tool?.capability,
+      toolMode: tool?.mode,
+      status: 'pending',
+      requiresApproval: true,
+      approvalReason: t('agent_intent_github_comment_approval_reason'),
+      riskLevel: 'medium',
+      reversible: false,
+      externalEffect: true,
+      dataDomains: ['github'],
+      approvalScope: 'single_step',
+      previewText: target.commentBody,
+    }
+  }
+
+  if (proposal.type === 'write_github_issue_update') {
+    const target = proposal.target
+    if (resolution.toolId !== 'github.issues.update' || !step.targetId) return null
+    if (!target?.updateTitle && !target?.updateBody && !target?.updateLabels) return null
+    const previewLines = [
+      target.updateTitle ? `${t('approval_preview_title_label')}: ${target.updateTitle}` : undefined,
+      target.updateBody ? `${t('approval_preview_body_label')}: ${target.updateBody}` : undefined,
+      target.updateLabels ? `${t('approval_preview_labels_label')}: ${target.updateLabels.join(', ')}` : undefined,
+    ].filter((line): line is string => Boolean(line))
+    return {
+      stepId: step.id,
+      targetId: step.targetId,
+      toolId: 'github.issues.update',
+      toolName: tool?.name,
+      toolDescription: tool?.description,
+      toolCapability: tool?.capability,
+      toolMode: tool?.mode,
+      status: 'pending',
+      requiresApproval: true,
+      approvalReason: t('agent_intent_github_update_approval_reason'),
+      riskLevel: 'medium',
+      reversible: false,
+      externalEffect: true,
+      dataDomains: ['github'],
+      approvalScope: 'single_step',
+      previewText: previewLines.join('\n'),
+    }
+  }
+
+  return null
 }
 
 export function proposalToState(result: AgentReasoningResult, t: Translate): ReasoningProposalState {
   const step = stepForReasoning(result, t)
+  const isWriteProposal = WRITE_PROPOSAL_TYPES.has(result.proposal.type)
   const resolution = step
-    ? result.proposal.type === 'complete_task'
-      ? writeResolutionForStep(step)
+    ? isWriteProposal && result.toolId
+      ? writeResolutionForStep(step, result.toolId)
       : resolveToolForStep({ step, expectedToolId: result.toolId })
     : null
-  const approval = step && resolution?.resolved && result.proposal.type === 'complete_task'
-    ? approvalForReasoningStep(step, resolution, t)
+  const approval = step && resolution?.resolved && isWriteProposal
+    ? approvalForReasoningStep(result, step, resolution, t)
     : null
   return {
     result,
@@ -1073,17 +1174,22 @@ export default function ChatPage() {
     })
   }, [])
 
-  const handleRunTaskCompleteProposal = useCallback(async () => {
+  // Generalized for EPIC-07 (Write Light) -- runs any resolved write proposal
+  // (tasks.complete, github.issues.comment, github.issues.update), not just
+  // task completion. runWriteTool itself was already tool-agnostic; only the
+  // requestId label and the tasks-specific refresh below were hardcoded.
+  const handleRunWriteProposal = useCallback(async () => {
     const current = reasoningProposal?.[0]
     if (!current?.step || !current.resolution?.resolved) return
     if (current.approval?.status !== 'approved') return
 
+    const toolId = current.resolution.toolId
     setReasoningProposal(prev => prev
       ? prev.map((p, i) => i === 0 ? { ...p, runStatus: 'running' } : p)
       : prev)
     const currentTime = new Date()
     const writeResult = await runWriteTool({
-      requestId: `reasoning:write:tasks.complete:${current.step.id}:${current.step.targetId}:${currentTime.getTime()}`,
+      requestId: `reasoning:write:${toolId}:${current.step.id}:${currentTime.getTime()}`,
       step: current.step,
       toolResolution: current.resolution,
       approval: current.approval,
@@ -1091,6 +1197,20 @@ export default function ChatPage() {
         ...workspace.agentContext,
         workspace,
         currentTime: currentTime.toISOString(),
+        githubIssueCommentClient: createGitHubIssuesCommentClient({
+          workerBaseUrl: workerUrl,
+          getAccessToken: async () => {
+            const { data: { session } } = await supabase.auth.getSession()
+            return session?.access_token
+          },
+        }),
+        githubIssueUpdateClient: createGitHubIssuesUpdateClient({
+          workerBaseUrl: workerUrl,
+          getAccessToken: async () => {
+            const { data: { session } } = await supabase.auth.getSession()
+            return session?.access_token
+          },
+        }),
       },
       currentTime,
     }, {
@@ -1104,7 +1224,7 @@ export default function ChatPage() {
         writeResult,
       } : p)
       : prev)
-    if (writeResult.success) {
+    if (writeResult.success && toolId === 'tasks.complete') {
       void workspace.refresh?.tasks()
     }
     const synthesizedContext = synthesizeContext({
@@ -1127,7 +1247,7 @@ export default function ChatPage() {
       ),
       current.result.responseLanguage,
     )
-  }, [appendAssistantResult, reasoningProposal, tasks, user?.id, workspace])
+  }, [appendAssistantResult, reasoningProposal, tasks, user?.id, workerUrl, workspace])
 
   const firstName =
     profile?.displayName?.trim()?.split(' ')[0] ||
@@ -1281,7 +1401,7 @@ export default function ChatPage() {
                   proposal={proposal}
                   onRunReadOnly={() => handleRunReasoningProposal(index)}
                   onReviewApproval={() => setApprovalDialogOpen(true)}
-                  onRunWrite={handleRunTaskCompleteProposal}
+                  onRunWrite={handleRunWriteProposal}
                 />
               ))}
 

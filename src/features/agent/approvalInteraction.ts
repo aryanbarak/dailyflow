@@ -108,6 +108,7 @@ function cloneApproval(
     externalEffect: source.externalEffect,
     dataDomains: [...source.dataDomains],
     approvalScope,
+    ...(source.previewText ? { previewText: source.previewText } : {}),
   });
 }
 

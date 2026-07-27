@@ -298,6 +298,60 @@ describe("ChatPage LLM reasoning UX boundary", () => {
     }
   });
 
+  it("resolves write_github_issue_comment generically (previously hardcoded to tasks.complete) and previews the exact comment body", () => {
+    const t = (key: string) => key;
+    const result: AgentReasoningResult = {
+      ...reasoningResult("write_github_issue_comment", "github.issues.comment"),
+      proposal: {
+        ...reasoningResult("write_github_issue_comment", "github.issues.comment").proposal,
+        target: { repo: "aryan/smartflow", issueNumber: 5, commentBody: "Thanks, looking into this." },
+        requiresApproval: true,
+      },
+    };
+    const state = proposalToState(result, t);
+
+    expect(state.resolution?.status).toBe("resolved");
+    expect(state.resolution?.toolId).toBe("github.issues.comment");
+    expect(state.approval?.toolId).toBe("github.issues.comment");
+    expect(state.approval?.previewText).toBe("Thanks, looking into this.");
+    expect(state.approval?.status).toBe("pending");
+    expect(state.runStatus).toBe("approval_required");
+  });
+
+  it("resolves write_github_issue_update generically and previews the exact label/title/body change", () => {
+    const t = (key: string) => key;
+    const result: AgentReasoningResult = {
+      ...reasoningResult("write_github_issue_update", "github.issues.update"),
+      proposal: {
+        ...reasoningResult("write_github_issue_update", "github.issues.update").proposal,
+        target: { repo: "aryan/smartflow", issueNumber: 5, updateLabels: ["bug", "priority:high"] },
+        requiresApproval: true,
+      },
+    };
+    const state = proposalToState(result, t);
+
+    expect(state.resolution?.status).toBe("resolved");
+    expect(state.resolution?.toolId).toBe("github.issues.update");
+    expect(state.approval?.toolId).toBe("github.issues.update");
+    expect(state.approval?.previewText).toContain("bug, priority:high");
+    expect(state.runStatus).toBe("approval_required");
+  });
+
+  it("does not build an approval for a write proposal missing its required target fields", () => {
+    const t = (key: string) => key;
+    const result: AgentReasoningResult = {
+      ...reasoningResult("write_github_issue_comment", "github.issues.comment"),
+      proposal: {
+        ...reasoningResult("write_github_issue_comment", "github.issues.comment").proposal,
+        target: { repo: "aryan/smartflow", issueNumber: 5 },
+        requiresApproval: true,
+      },
+    };
+    const state = proposalToState(result, t);
+
+    expect(state.approval).toBeNull();
+  });
+
   it("proposalsToStates returns a single-element array for a normal proposal with no disambiguationCandidates", () => {
     const t = (key: string) => key;
     const result = reasoningResult("inspect_github_issues", "github.issues.list");

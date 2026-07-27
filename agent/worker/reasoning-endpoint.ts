@@ -17,6 +17,8 @@ export const SUPPORTED_INTENT_VALUES = [
   'inspect_github_pull_requests',
   'inspect_github_workflow_runs',
   'complete_task',
+  'write_github_issue_comment',
+  'write_github_issue_update',
   'ask_clarification',
   'unsupported',
 ] as const
@@ -36,7 +38,12 @@ const PROPOSAL_FIELDS = new Set([
   'language',
   'candidates',
 ])
-const TARGET_FIELDS = new Set(['taskId', 'taskReference', 'taskTitleHint'])
+const TARGET_FIELDS = new Set([
+  'taskId', 'taskReference', 'taskTitleHint',
+  // EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
+  'repo', 'issueNumber', 'commentBody', 'updateTitle', 'updateBody', 'updateLabels',
+])
+const MAX_UPDATE_LABELS = 20
 const CANDIDATE_FIELDS = new Set(['type', 'reasons'])
 // Defensive schema ceiling only -- distinct from the frontend validator's
 // policy cap (3), which is what actually decides how many cards a user
@@ -289,6 +296,21 @@ function boundedString(value: unknown, maxLength = MAX_SHORT_TEXT_LENGTH): strin
   return result || undefined
 }
 
+function boundedPositiveInteger(value: unknown): number | undefined {
+  if (typeof value !== 'number') return undefined
+  return Number.isSafeInteger(value) && value > 0 ? value : undefined
+}
+
+function boundedStringArray(value: unknown, maxItems: number, maxItemLength: number): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const items = value
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim().slice(0, maxItemLength))
+    .filter(Boolean)
+    .slice(0, maxItems)
+  return items.length > 0 ? items : undefined
+}
+
 function normalizeProposal(raw: unknown, responseLanguage: ReasoningRequest['responseLanguage']) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     throw new Error('Model proposal must be an object.')
@@ -325,8 +347,15 @@ function normalizeProposal(raw: unknown, responseLanguage: ReasoningRequest['res
       taskId: boundedString(rawTarget.taskId, 128),
       taskReference: boundedString(rawTarget.taskReference),
       taskTitleHint: boundedString(rawTarget.taskTitleHint),
+      // EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
+      repo: boundedString(rawTarget.repo, 200),
+      issueNumber: boundedPositiveInteger(rawTarget.issueNumber),
+      commentBody: boundedString(rawTarget.commentBody, 10_000),
+      updateTitle: boundedString(rawTarget.updateTitle, 200),
+      updateBody: boundedString(rawTarget.updateBody, 10_000),
+      updateLabels: boundedStringArray(rawTarget.updateLabels, MAX_UPDATE_LABELS, 100),
     }
-    if (Object.values(target).some(Boolean)) proposal.target = target
+    if (Object.values(target).some((value) => value !== undefined)) proposal.target = target
   }
 
   const clarificationQuestion = boundedString(record.clarificationQuestion, 500)
@@ -445,6 +474,13 @@ export function buildReasoningResponseSchema() {
           taskId: { type: 'STRING' },
           taskReference: { type: 'STRING' },
           taskTitleHint: { type: 'STRING' },
+          // EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
+          repo: { type: 'STRING' },
+          issueNumber: { type: 'INTEGER' },
+          commentBody: { type: 'STRING' },
+          updateTitle: { type: 'STRING' },
+          updateBody: { type: 'STRING' },
+          updateLabels: { type: 'ARRAY', items: { type: 'STRING' } },
         },
       },
       clarificationQuestion: { type: 'STRING' },

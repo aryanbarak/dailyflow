@@ -144,6 +144,39 @@ export interface GitHubWorkflowRunsClient {
   listWorkflowRuns(): Promise<GitHubWorkflowRunsResult>;
 }
 
+// EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
+export interface GitHubIssueCommentInput {
+  repo: string;
+  issueNumber: number;
+  body: string;
+}
+
+export interface GitHubIssueCommentResult {
+  commentId: number;
+  url: string;
+}
+
+export interface GitHubIssueCommentClient {
+  createComment(input: GitHubIssueCommentInput): Promise<GitHubIssueCommentResult>;
+}
+
+export interface GitHubIssueUpdateInput {
+  repo: string;
+  issueNumber: number;
+  title?: string;
+  body?: string;
+  labels?: string[];
+}
+
+export interface GitHubIssueUpdateResult {
+  issueNumber: number;
+  url: string;
+}
+
+export interface GitHubIssueUpdateClient {
+  updateIssue(input: GitHubIssueUpdateInput): Promise<GitHubIssueUpdateResult>;
+}
+
 export interface ExecutionContext {
   tasks?: readonly ExecutionContextTask[];
   events?: readonly ExecutionContextEvent[];
@@ -156,6 +189,8 @@ export interface ExecutionContext {
   githubEpicsClient?: GitHubEpicsClient;
   githubPullRequestsClient?: GitHubPullRequestsClient;
   githubWorkflowRunsClient?: GitHubWorkflowRunsClient;
+  githubIssueCommentClient?: GitHubIssueCommentClient;
+  githubIssueUpdateClient?: GitHubIssueUpdateClient;
 }
 
 export interface ExecutionRequest {

@@ -26,7 +26,11 @@ import type {
 } from "../workspace/workspaceTypes";
 
 export const WRITE_RUNTIME_VERSION = "write-runtime-v1" as const;
-export const SUPPORTED_WRITE_TOOL_IDS = Object.freeze(["tasks.complete"] as const);
+export const SUPPORTED_WRITE_TOOL_IDS = Object.freeze([
+  "tasks.complete",
+  "github.issues.comment",
+  "github.issues.update",
+] as const);
 
 export type SupportedWriteToolId = typeof SUPPORTED_WRITE_TOOL_IDS[number];
 

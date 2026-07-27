@@ -47,6 +47,15 @@ interface FakeOptions {
   workflowRunsByRepo?: Record<string, unknown[]>
   workflowRunsFailureByRepo?: Record<string, number>
   repositoryCacheWriteStatus?: number
+  // EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
+  accessibleRepos?: string[]
+  labelsByRepo?: Record<string, string[]>
+  labelsFailureByRepo?: Record<string, number>
+  commentResultByRepo?: Record<string, { id: number; html_url: string } | number>
+  updateResultByRepo?: Record<string, { number: number; html_url: string } | number>
+  writeLogInsertStatus?: number
+  writeLogUpdateStatus?: number
+  preseedWriteLogRows?: Array<Record<string, unknown>>
 }
 
 function response(body: unknown, status = 200) {
@@ -61,7 +70,9 @@ function fakeProvider(options: FakeOptions = {}) {
   let attempt: Record<string, unknown> | undefined
   let connection: Record<string, unknown> | undefined
   let randomCall = 0
+  let writeLogSeq = 0
   const calls: Array<{ url: string; method: string; body?: string; authorization?: string }> = []
+  const writeLogRows: Array<Record<string, unknown>> = (options.preseedWriteLogRows ?? []).map((row) => ({ ...row }))
 
   const fetcher: typeof fetch = async (input, init = {}) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
@@ -134,6 +145,31 @@ function fakeProvider(options: FakeOptions = {}) {
       }
       if (method === 'GET') {
         return response(connection?.user_id === currentUser ? [connection] : [])
+      }
+    }
+
+    // EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
+    if (parsed.pathname.includes('/rest/v1/agent_write_log')) {
+      if (method === 'POST') {
+        const status = options.writeLogInsertStatus ?? 201
+        if (status >= 300) return response({ message: 'provider detail must not escape' }, status)
+        writeLogSeq += 1
+        const row = { ...JSON.parse(body ?? '{}'), id: `write-log-${writeLogSeq}` } as Record<string, unknown>
+        writeLogRows.push(row)
+        return response([row], status)
+      }
+      if (method === 'PATCH') {
+        const status = options.writeLogUpdateStatus ?? 204
+        if (status >= 300) return response({ message: 'provider detail must not escape' }, status)
+        const idParam = parsed.searchParams.get('id')?.replace(/^eq\./, '')
+        const update = JSON.parse(body ?? '{}') as Record<string, unknown>
+        const row = writeLogRows.find((item) => item.id === idParam)
+        if (row) Object.assign(row, update)
+        return response(null, 204)
+      }
+      if (method === 'GET') {
+        const userIdParam = parsed.searchParams.get('user_id')?.replace(/^eq\./, '')
+        return response(writeLogRows.filter((item) => item.user_id === userIdParam).map((item) => ({ id: item.id })))
       }
     }
 
@@ -210,6 +246,43 @@ function fakeProvider(options: FakeOptions = {}) {
         }
         return response({ workflow_runs: options.workflowRunsByRepo?.[key] ?? [] })
       }
+
+      // EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
+      const repoAccessMatch = parsed.pathname.match(/^\/repos\/([^/]+)\/([^/]+)$/)
+      if (repoAccessMatch && method === 'GET') {
+        const key = `${decodeURIComponent(repoAccessMatch[1])}/${decodeURIComponent(repoAccessMatch[2])}`
+        const accessible = options.accessibleRepos ? options.accessibleRepos.includes(key) : true
+        return accessible
+          ? response({ id: 1, name: repoAccessMatch[2], owner: { login: repoAccessMatch[1] } })
+          : response({ message: 'provider detail must not escape' }, 404)
+      }
+      const labelsMatch = parsed.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/labels$/)
+      if (labelsMatch) {
+        const key = `${decodeURIComponent(labelsMatch[1])}/${decodeURIComponent(labelsMatch[2])}`
+        const failStatus = options.labelsFailureByRepo?.[key]
+        if (failStatus) {
+          return response({ message: 'provider detail must not escape' }, failStatus)
+        }
+        return response((options.labelsByRepo?.[key] ?? []).map((name) => ({ name })))
+      }
+      const commentMatch = parsed.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/issues\/(\d+)\/comments$/)
+      if (commentMatch && method === 'POST') {
+        const key = `${decodeURIComponent(commentMatch[1])}/${decodeURIComponent(commentMatch[2])}`
+        const result = options.commentResultByRepo?.[key]
+        if (typeof result === 'number') {
+          return response({ message: 'provider detail must not escape' }, result)
+        }
+        return response(result ?? { id: 555, html_url: `https://github.com/${key}/issues/${commentMatch[3]}#issuecomment-555` })
+      }
+      const updateMatch = parsed.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/issues\/(\d+)$/)
+      if (updateMatch && method === 'PATCH') {
+        const key = `${decodeURIComponent(updateMatch[1])}/${decodeURIComponent(updateMatch[2])}`
+        const result = options.updateResultByRepo?.[key]
+        if (typeof result === 'number') {
+          return response({ message: 'provider detail must not escape' }, result)
+        }
+        return response(result ?? { number: Number(updateMatch[3]), html_url: `https://github.com/${key}/issues/${updateMatch[3]}` })
+      }
     }
 
     throw new Error(`Unexpected request: ${method} ${url}`)
@@ -232,6 +305,7 @@ function fakeProvider(options: FakeOptions = {}) {
     get connection() { return connection },
     set connection(value: Record<string, unknown> | undefined) { connection = value },
     set currentUser(value: string) { currentUser = value },
+    get writeLogRows() { return writeLogRows },
   }
 }
 
@@ -1596,5 +1670,204 @@ describe('GitHub connection status boundary', () => {
       connectedAt: '2026-07-22T10:00:00.000Z',
       reconnectRequired: true,
     })
+  })
+})
+
+// EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
+function writeApiRequest(path: string, method: string, body?: unknown, authenticated = true) {
+  return new Request(`http://127.0.0.1:8787${path}`, {
+    method,
+    headers: {
+      Origin: 'http://localhost:8080',
+      'Content-Type': 'application/json',
+      ...(authenticated ? { Authorization: 'Bearer supabase-session' } : {}),
+    },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  })
+}
+
+function writeVerifiedConnection(userId = USER_ONE) {
+  return {
+    user_id: userId,
+    installation_id: 777,
+    github_account_id: 9001,
+    github_account_login: 'verified-user',
+    status: 'connected',
+  }
+}
+
+describe('GitHub issue comment write boundary', () => {
+  it('requires authentication', async () => {
+    const fake = fakeProvider()
+    fake.connection = writeVerifiedConnection()
+    const result = await handleGitHubIntegrationRequest(
+      writeApiRequest('/github/issues/comment', 'POST', { repo: 'owner/alpha', issue_number: 1, body: 'hi' }, false),
+      env(),
+      fake.dependencies,
+    )
+    expect(result?.status).toBe(401)
+  })
+
+  it('rejects malformed input before touching the rate limit, connection, or GitHub', async () => {
+    const fake = fakeProvider()
+    fake.connection = writeVerifiedConnection()
+    const result = await handleGitHubIntegrationRequest(
+      writeApiRequest('/github/issues/comment', 'POST', { repo: 'not-a-repo', issue_number: 1, body: 'hi' }),
+      env(),
+      fake.dependencies,
+    )
+    expect(result?.status).toBe(400)
+    expect(await result?.json()).toMatchObject({ error: { code: 'WRITE_INPUT_INVALID' } })
+    expect(fake.writeLogRows).toHaveLength(0)
+  })
+
+  it('enforces the 5-writes-per-hour rate limit before calling GitHub', async () => {
+    const fake = fakeProvider({
+      accessibleRepos: ['owner/alpha'],
+      preseedWriteLogRows: Array.from({ length: 5 }, (_, i) => ({
+        id: `existing-${i}`,
+        user_id: USER_ONE,
+        created_at: new Date(NOW.getTime() - 5 * 60 * 1000).toISOString(),
+      })),
+    })
+    fake.connection = writeVerifiedConnection()
+    const result = await handleGitHubIntegrationRequest(
+      writeApiRequest('/github/issues/comment', 'POST', { repo: 'owner/alpha', issue_number: 1, body: 'hi' }),
+      env(),
+      fake.dependencies,
+    )
+    expect(result?.status).toBe(429)
+    expect(await result?.json()).toMatchObject({ error: { code: 'WRITE_RATE_LIMIT_EXCEEDED' } })
+    expect(fake.calls.some((call) => call.url.includes('/comments'))).toBe(false)
+  })
+
+  it('rejects a repository outside the verified installation before posting anything', async () => {
+    const fake = fakeProvider({ accessibleRepos: ['owner/other'] })
+    fake.connection = writeVerifiedConnection()
+    const result = await handleGitHubIntegrationRequest(
+      writeApiRequest('/github/issues/comment', 'POST', { repo: 'owner/alpha', issue_number: 1, body: 'hi' }),
+      env(),
+      fake.dependencies,
+    )
+    expect(result?.status).toBe(409)
+    expect(await result?.json()).toMatchObject({ error: { code: 'REPOSITORY_NOT_ACCESSIBLE' } })
+    expect(fake.calls.some((call) => call.url.includes('/comments'))).toBe(false)
+    expect(fake.writeLogRows).toHaveLength(0)
+  })
+
+  it('logs pending before posting, then executed with the GitHub response on success', async () => {
+    const fake = fakeProvider({
+      accessibleRepos: ['owner/alpha'],
+      commentResultByRepo: { 'owner/alpha': { id: 42, html_url: 'https://github.com/owner/alpha/issues/1#issuecomment-42' } },
+    })
+    fake.connection = writeVerifiedConnection()
+    const result = await handleGitHubIntegrationRequest(
+      writeApiRequest('/github/issues/comment', 'POST', { repo: 'owner/alpha', issue_number: 1, body: 'Thanks!' }),
+      env(),
+      fake.dependencies,
+    )
+    expect(result?.status).toBe(200)
+    expect(await result?.json()).toEqual({ commentId: 42, url: 'https://github.com/owner/alpha/issues/1#issuecomment-42' })
+    expect(fake.writeLogRows).toHaveLength(1)
+    expect(fake.writeLogRows[0]).toMatchObject({
+      user_id: USER_ONE,
+      tool_id: 'github.issues.comment',
+      status: 'executed',
+      parameters: { repo: 'owner/alpha', issueNumber: 1, body: 'Thanks!' },
+    })
+    expect(fake.writeLogRows[0].github_response).toMatchObject({ id: 42 })
+  })
+
+  it('logs failed (not executed) and still returns the provider error when GitHub rejects the write', async () => {
+    const fake = fakeProvider({
+      accessibleRepos: ['owner/alpha'],
+      commentResultByRepo: { 'owner/alpha': 502 },
+    })
+    fake.connection = writeVerifiedConnection()
+    const result = await handleGitHubIntegrationRequest(
+      writeApiRequest('/github/issues/comment', 'POST', { repo: 'owner/alpha', issue_number: 1, body: 'Thanks!' }),
+      env(),
+      fake.dependencies,
+    )
+    expect(result?.status).toBe(502)
+    expect(fake.writeLogRows).toHaveLength(1)
+    expect(fake.writeLogRows[0].status).toBe('failed')
+  })
+})
+
+describe('GitHub issue update write boundary', () => {
+  it('rejects an update with none of title/body/labels present', async () => {
+    const fake = fakeProvider({ accessibleRepos: ['owner/alpha'] })
+    fake.connection = writeVerifiedConnection()
+    const result = await handleGitHubIntegrationRequest(
+      writeApiRequest('/github/issues/update', 'PATCH', { repo: 'owner/alpha', issue_number: 1 }),
+      env(),
+      fake.dependencies,
+    )
+    expect(result?.status).toBe(400)
+    expect(await result?.json()).toMatchObject({ error: { code: 'WRITE_INPUT_INVALID' } })
+    expect(fake.writeLogRows).toHaveLength(0)
+  })
+
+  it('rejects labels that do not exist on the repository, without applying any change', async () => {
+    const fake = fakeProvider({
+      accessibleRepos: ['owner/alpha'],
+      labelsByRepo: { 'owner/alpha': ['bug', 'enhancement'] },
+    })
+    fake.connection = writeVerifiedConnection()
+    const result = await handleGitHubIntegrationRequest(
+      writeApiRequest('/github/issues/update', 'PATCH', { repo: 'owner/alpha', issue_number: 1, labels: ['bug', 'not-a-real-label'] }),
+      env(),
+      fake.dependencies,
+    )
+    expect(result?.status).toBe(400)
+    expect(await result?.json()).toMatchObject({ error: { code: 'LABELS_NOT_RECOGNIZED' } })
+    expect(fake.calls.some((call) => call.method === 'PATCH' && /\/issues\/\d+$/.test(new URL(call.url).pathname))).toBe(false)
+    expect(fake.writeLogRows).toHaveLength(0)
+  })
+
+  it('accepts labels that exist on the repository and logs pending -> executed', async () => {
+    const fake = fakeProvider({
+      accessibleRepos: ['owner/alpha'],
+      labelsByRepo: { 'owner/alpha': ['bug', 'priority:high'] },
+      updateResultByRepo: { 'owner/alpha': { number: 1, html_url: 'https://github.com/owner/alpha/issues/1' } },
+    })
+    fake.connection = writeVerifiedConnection()
+    const result = await handleGitHubIntegrationRequest(
+      writeApiRequest('/github/issues/update', 'PATCH', { repo: 'owner/alpha', issue_number: 1, labels: ['bug', 'priority:high'] }),
+      env(),
+      fake.dependencies,
+    )
+    expect(result?.status).toBe(200)
+    expect(await result?.json()).toEqual({ issueNumber: 1, url: 'https://github.com/owner/alpha/issues/1' })
+    expect(fake.writeLogRows).toHaveLength(1)
+    expect(fake.writeLogRows[0]).toMatchObject({ status: 'executed', tool_id: 'github.issues.update' })
+  })
+
+  it('rejects a repository outside the verified installation', async () => {
+    const fake = fakeProvider({ accessibleRepos: ['owner/other'] })
+    fake.connection = writeVerifiedConnection()
+    const result = await handleGitHubIntegrationRequest(
+      writeApiRequest('/github/issues/update', 'PATCH', { repo: 'owner/alpha', issue_number: 1, title: 'New title' }),
+      env(),
+      fake.dependencies,
+    )
+    expect(result?.status).toBe(409)
+    expect(await result?.json()).toMatchObject({ error: { code: 'REPOSITORY_NOT_ACCESSIBLE' } })
+    expect(fake.writeLogRows).toHaveLength(0)
+  })
+
+  it('does not require labels when only updating the title', async () => {
+    const fake = fakeProvider({
+      accessibleRepos: ['owner/alpha'],
+      updateResultByRepo: { 'owner/alpha': { number: 1, html_url: 'https://github.com/owner/alpha/issues/1' } },
+    })
+    fake.connection = writeVerifiedConnection()
+    const result = await handleGitHubIntegrationRequest(
+      writeApiRequest('/github/issues/update', 'PATCH', { repo: 'owner/alpha', issue_number: 1, title: 'New title' }),
+      env(),
+      fake.dependencies,
+    )
+    expect(result?.status).toBe(200)
   })
 })
