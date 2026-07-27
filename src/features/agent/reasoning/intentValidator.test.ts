@@ -203,6 +203,45 @@ describe("intentValidator", () => {
     expect(result.proposal.requestedDomain).toBe("github");
   });
 
+  it("validates the github epics intent mapping", () => {
+    const result = validate(
+      proposal({ type: "inspect_github_epics", requestedDomain: "github", toolId: "github.epics.list" }),
+      "Show me the roadmap epics.",
+    );
+    expect(result.proposal.type).toBe("inspect_github_epics");
+    expect(result.toolId).toBe("github.epics.list");
+  });
+
+  it("rescues an unrecognized type into inspect_github_epics from roadmap/epic evidence, English and Persian", () => {
+    const english = validate(
+      proposal({ type: "intent", requestedDomain: "tasks", toolId: "tasks.list" }),
+      "What's on the roadmap?",
+    );
+    const persian = validate(
+      proposal({ type: "intent", requestedDomain: "tasks", toolId: "tasks.list" }),
+      "نقشه راه پروژه چیست؟",
+    );
+
+    expect(english.proposal.type).toBe("inspect_github_epics");
+    expect(english.toolId).toBe("github.epics.list");
+    expect(persian.proposal.type).toBe("inspect_github_epics");
+    expect(persian.toolId).toBe("github.epics.list");
+  });
+
+  it("does not let bare 'plan' evidence collide with the workspace domain's 'current plan' evidence", () => {
+    const result = validate(
+      proposal({ type: "intent", requestedDomain: "workspace", toolId: "workspace.get_context" }),
+      "What's my current plan?",
+    );
+
+    // Only "project plan" counts as epics evidence (see the exclusion note
+    // next to GITHUB_EPICS_EVIDENCE_PATTERNS) -- a bare "plan" inside
+    // "current plan" must not turn this into a conflicting-domain
+    // clarification instead of resolving to the workspace intent.
+    expect(result.proposal.type).toBe("inspect_workspace");
+    expect(result.toolId).toBe("workspace.get_context");
+  });
+
   it("handles malformed or non-object output safely", () => {
     const result = validate(null);
 

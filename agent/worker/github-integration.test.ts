@@ -901,6 +901,199 @@ describe('GitHub issues listing boundary', () => {
   })
 })
 
+describe('GitHub epics listing boundary', () => {
+  function verifiedConnection(userId = USER_ONE) {
+    return {
+      user_id: userId,
+      installation_id: 777,
+      github_account_id: 9001,
+      github_account_login: 'verified-user',
+      status: 'connected',
+    }
+  }
+
+  function repoFixture(id: number, name: string, owner = 'owner') {
+    return {
+      id,
+      name,
+      owner: { login: owner },
+      visibility: 'public',
+      default_branch: 'main',
+      archived: false,
+    }
+  }
+
+  function epicIssueFixture(
+    number: number,
+    title: string,
+    labels: string[],
+    extra: Record<string, unknown> = {},
+  ) {
+    return {
+      number,
+      title,
+      state: 'open',
+      updated_at: '2026-07-20T10:00:00.000Z',
+      html_url: `https://github.com/owner/alpha/issues/${number}`,
+      labels: labels.map((name) => ({ name, must_not_pass: 'label-metadata' })),
+      body: 'must-not-pass',
+      user: { login: 'must-not-pass' },
+      ...extra,
+    }
+  }
+
+  it('requires authentication and loads only the authenticated user connection', async () => {
+    const fake = fakeProvider()
+    fake.connection = verifiedConnection()
+    const unauthenticated = await handleGitHubIntegrationRequest(apiRequest('/github/epics', 'GET', false), env(), fake.dependencies)
+    expect(unauthenticated?.status).toBe(401)
+
+    fake.currentUser = USER_TWO
+    const crossUser = await handleGitHubIntegrationRequest(apiRequest('/github/epics'), env(), fake.dependencies)
+    expect(crossUser?.status).toBe(409)
+    expect(fake.calls.some((call) => call.url.includes('/access_tokens'))).toBe(false)
+  })
+
+  it('fetches all issues (state=all), keeps only epic:-labeled ones, and returns bounded sanitized fields', async () => {
+    const fake = fakeProvider({
+      repositories: [repoFixture(1, 'alpha'), repoFixture(2, 'beta'), repoFixture(3, 'gamma')],
+      issuesByRepo: {
+        'owner/alpha': [
+          epicIssueFixture(1, 'Roadmap epic', ['epic:06-roadmap', 'status:planned']),
+          epicIssueFixture(2, 'Untagged issue', ['bug']),
+        ],
+        'owner/beta': [epicIssueFixture(10, 'Beta epic', ['epic:07-billing'])],
+        'owner/gamma': [],
+      },
+    })
+    fake.connection = verifiedConnection()
+
+    const result = await handleGitHubIntegrationRequest(apiRequest('/github/epics'), env(), fake.dependencies)
+    expect(result?.status).toBe(200)
+    const body = await result!.json() as { epics: Array<Record<string, unknown>> }
+    expect(body.epics).toHaveLength(2)
+    expect(Object.keys(body.epics[0]).sort()).toEqual(['epic', 'number', 'repo', 'status', 'title', 'url'])
+    expect(body.epics[0]).toEqual({
+      repo: 'owner/alpha',
+      number: 1,
+      title: 'Roadmap epic',
+      epic: 'epic:06-roadmap',
+      status: 'status:planned',
+      url: 'https://github.com/owner/alpha/issues/1',
+    })
+    expect(body.epics[1].status).toBe('')
+    const serialized = JSON.stringify(body)
+    expect(serialized).not.toContain('must-not-pass')
+    expect(serialized).not.toContain('label-metadata')
+    expect(serialized).not.toContain('bug')
+
+    const issueCalls = fake.calls.filter((call) => /\/repos\/owner\/\w+\/issues/.test(call.url))
+    expect(issueCalls).toHaveLength(3)
+    expect(issueCalls.every((call) => call.url.includes('state=all'))).toBe(true)
+  })
+
+  it('scans at most 3 repositories even when more are connected', async () => {
+    const fake = fakeProvider({
+      repositories: [
+        repoFixture(1, 'r1'), repoFixture(2, 'r2'), repoFixture(3, 'r3'),
+        repoFixture(4, 'r4'), repoFixture(5, 'r5'),
+      ],
+      issuesByRepo: {
+        'owner/r1': [epicIssueFixture(1, 'one', ['epic:a'])],
+        'owner/r2': [epicIssueFixture(1, 'one', ['epic:a'])],
+        'owner/r3': [epicIssueFixture(1, 'one', ['epic:a'])],
+        'owner/r4': [epicIssueFixture(1, 'one', ['epic:a'])],
+        'owner/r5': [epicIssueFixture(1, 'one', ['epic:a'])],
+      },
+    })
+    fake.connection = verifiedConnection()
+
+    const result = await handleGitHubIntegrationRequest(apiRequest('/github/epics'), env(), fake.dependencies)
+    expect(result?.status).toBe(200)
+    const body = await result!.json() as { epics: unknown[] }
+    expect(body.epics).toHaveLength(3)
+
+    const issueCalls = fake.calls.filter((call) => /\/repos\/owner\/r\d+\/issues/.test(call.url))
+    expect(issueCalls).toHaveLength(3)
+  })
+
+  it('caps total epics at 20 across all scanned repos', async () => {
+    const fake = fakeProvider({
+      repositories: [repoFixture(1, 'alpha'), repoFixture(2, 'beta'), repoFixture(3, 'gamma')],
+      issuesByRepo: {
+        'owner/alpha': Array.from({ length: 10 }, (_, i) => epicIssueFixture(i + 1, `Alpha ${i + 1}`, ['epic:a'])),
+        'owner/beta': Array.from({ length: 10 }, (_, i) => epicIssueFixture(i + 1, `Beta ${i + 1}`, ['epic:a'])),
+        'owner/gamma': Array.from({ length: 10 }, (_, i) => epicIssueFixture(i + 1, `Gamma ${i + 1}`, ['epic:a'])),
+      },
+    })
+    fake.connection = verifiedConnection()
+
+    const result = await handleGitHubIntegrationRequest(apiRequest('/github/epics'), env(), fake.dependencies)
+    const body = await result!.json() as { epics: unknown[] }
+    expect(body.epics).toHaveLength(20)
+  })
+
+  it('excludes pull requests silently rather than treating them as invalid issue data', async () => {
+    const fake = fakeProvider({
+      repositories: [repoFixture(1, 'alpha')],
+      issuesByRepo: {
+        'owner/alpha': [
+          epicIssueFixture(1, 'Real epic', ['epic:a']),
+          epicIssueFixture(2, 'A pull request', ['epic:a'], { pull_request: { url: 'https://api.github.com/pulls/2' } }),
+        ],
+      },
+    })
+    fake.connection = verifiedConnection()
+
+    const result = await handleGitHubIntegrationRequest(apiRequest('/github/epics'), env(), fake.dependencies)
+    expect(result?.status).toBe(200)
+    const body = await result!.json() as { epics: Array<{ number: number }> }
+    expect(body.epics).toHaveLength(1)
+    expect(body.epics[0].number).toBe(1)
+  })
+
+  it('fails the whole request closed if any single scanned repo fails, instead of returning a partial list', async () => {
+    const fake = fakeProvider({
+      repositories: [repoFixture(1, 'alpha'), repoFixture(2, 'beta')],
+      issuesByRepo: {
+        'owner/alpha': [epicIssueFixture(1, 'Alpha epic', ['epic:a'])],
+      },
+      issuesFailureByRepo: {
+        'owner/beta': 500,
+      },
+    })
+    fake.connection = verifiedConnection()
+
+    const result = await handleGitHubIntegrationRequest(apiRequest('/github/epics'), env(), fake.dependencies)
+    expect(result?.status).toBe(502)
+    const body = await result!.json() as { error: { code: string } }
+    expect(body.error.code).toBe('GITHUB_UNAVAILABLE')
+  })
+
+  it('rejects malformed issue metadata (missing html_url) instead of guessing a URL', async () => {
+    const fake = fakeProvider({
+      repositories: [repoFixture(1, 'alpha')],
+      issuesByRepo: {
+        'owner/alpha': [{ number: 1, title: 'Missing html_url', labels: [{ name: 'epic:a' }] }],
+      },
+    })
+    fake.connection = verifiedConnection()
+
+    const result = await handleGitHubIntegrationRequest(apiRequest('/github/epics'), env(), fake.dependencies)
+    expect(result?.status).toBe(502)
+    expect(await result?.json()).toMatchObject({ error: { code: 'GITHUB_RESPONSE_INVALID' } })
+  })
+
+  it('returns an empty bounded list without calling any repo issues endpoint when there are no repos', async () => {
+    const fake = fakeProvider({ repositories: [] })
+    fake.connection = verifiedConnection()
+
+    const result = await handleGitHubIntegrationRequest(apiRequest('/github/epics'), env(), fake.dependencies)
+    expect(await result?.json()).toEqual({ epics: [] })
+    expect(fake.calls.some((call) => /\/repos\/.+\/issues/.test(call.url))).toBe(false)
+  })
+})
+
 describe('GitHub pull requests listing boundary', () => {
   function verifiedConnection(userId = USER_ONE) {
     return {

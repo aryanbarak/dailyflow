@@ -22,6 +22,7 @@ export const SUPPORTED_READ_ONLY_TOOL_IDS = Object.freeze([
   "workspace.get_context",
   "github.repositories.list",
   "github.issues.list",
+  "github.epics.list",
   "github.pulls.list",
   "github.workflow_runs.list",
 ] as const);

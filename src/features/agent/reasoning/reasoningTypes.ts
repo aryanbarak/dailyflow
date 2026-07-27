@@ -15,6 +15,7 @@ export type AgentIntentType =
   | "inspect_workspace"
   | "inspect_github_repositories"
   | "inspect_github_issues"
+  | "inspect_github_epics"
   | "inspect_github_pull_requests"
   | "inspect_github_workflow_runs"
   | "complete_task"
@@ -98,7 +99,7 @@ export type AgentLlmReasoningCaller = (
 
 export interface AgentReasoningValidationResult {
   proposal: AgentIntentProposal;
-  toolId?: "tasks.list" | "calendar.list_today" | "learning.get_progress" | "workspace.get_context" | "github.repositories.list" | "github.issues.list" | "github.pulls.list" | "github.workflow_runs.list" | "tasks.complete";
+  toolId?: "tasks.list" | "calendar.list_today" | "learning.get_progress" | "workspace.get_context" | "github.repositories.list" | "github.issues.list" | "github.epics.list" | "github.pulls.list" | "github.workflow_runs.list" | "tasks.complete";
   validationReasons: string[];
 }
 

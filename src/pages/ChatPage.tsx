@@ -55,6 +55,7 @@ import {
 import { StepApprovalDialog } from '@/features/workspace/components/StepApprovalDialog'
 import { createGitHubRepositoriesClient } from '@/features/integrations/github/githubRepositoriesClient'
 import { createGitHubIssuesClient } from '@/features/integrations/github/githubIssuesClient'
+import { createGitHubEpicsClient } from '@/features/integrations/github/githubEpicsClient'
 import { createGitHubPullRequestsClient } from '@/features/integrations/github/githubPullRequestsClient'
 import { createGitHubWorkflowRunsClient } from '@/features/integrations/github/githubWorkflowRunsClient'
 import { createGitHubRepositoryInventoryClient } from '@/features/integrations/github/githubRepositoryInventoryClient'
@@ -308,6 +309,8 @@ function intentTitleKey(type: AgentReasoningResult['proposal']['type']): Transla
       return 'agent_intent_title_inspect_github_repositories'
     case 'inspect_github_issues':
       return 'agent_intent_title_inspect_github_issues'
+    case 'inspect_github_epics':
+      return 'agent_intent_title_inspect_github_epics'
     case 'inspect_github_pull_requests':
       return 'agent_intent_title_inspect_github_pull_requests'
     case 'inspect_github_workflow_runs':
@@ -352,6 +355,7 @@ function stepForReasoning(result: AgentReasoningResult, t: Translate): Workspace
   const domain =
     proposal.type === 'inspect_github_repositories' ||
     proposal.type === 'inspect_github_issues' ||
+    proposal.type === 'inspect_github_epics' ||
     proposal.type === 'inspect_github_pull_requests' ||
     proposal.type === 'inspect_github_workflow_runs'
       ? 'github'
@@ -993,6 +997,13 @@ export default function ChatPage() {
           },
         }),
         githubIssuesClient: createGitHubIssuesClient({
+          workerBaseUrl: workerUrl,
+          getAccessToken: async () => {
+            const { data: { session } } = await supabase.auth.getSession()
+            return session?.access_token
+          },
+        }),
+        githubEpicsClient: createGitHubEpicsClient({
           workerBaseUrl: workerUrl,
           getAccessToken: async () => {
             const { data: { session } } = await supabase.auth.getSession()

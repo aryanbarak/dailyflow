@@ -6,6 +6,7 @@ const CONNECT_ATTEMPT_TTL_MS = 10 * 60 * 1000
 const GITHUB_TIMEOUT_MS = 8_000
 const MAX_REPOSITORIES = 20
 const MAX_ISSUES = 20
+const MAX_EPICS = 20
 const MAX_PULL_REQUESTS = 20
 const MAX_WORKFLOW_RUNS = 10
 const MAX_REPOS_SCANNED_FOR_FANOUT = 3
@@ -82,6 +83,18 @@ interface GitHubIssueResponse {
   title?: unknown
   state?: unknown
   updated_at?: unknown
+  pull_request?: unknown
+}
+
+interface GitHubLabelResponse {
+  name?: unknown
+}
+
+interface GitHubEpicIssueResponse {
+  number?: unknown
+  title?: unknown
+  html_url?: unknown
+  labels?: unknown
   pull_request?: unknown
 }
 
@@ -470,7 +483,7 @@ async function githubFetch(
 
 function providerError(
   response: Response,
-  context: 'verification' | 'user-token-exchange' | 'installation-token-mint' | 'repositories' | 'issues' | 'pulls' | 'workflow_runs',
+  context: 'verification' | 'user-token-exchange' | 'installation-token-mint' | 'repositories' | 'issues' | 'epics' | 'pulls' | 'workflow_runs',
 ) {
   if (response.status === 429) {
     return new GitHubIntegrationError('GITHUB_RATE_LIMITED', 503, 'GitHub rate limit was reached.')
@@ -902,6 +915,37 @@ function sanitizeIssue(repo: string, value: GitHubIssueResponse) {
   return { repo, number, title, state, updatedAt }
 }
 
+function labelNames(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((item) => (typeof item === 'string' ? item : (item as GitHubLabelResponse)?.name))
+    .map((name) => boundedString(name, 100))
+    .filter((name): name is string => Boolean(name))
+}
+
+function isGitHubIssueUrl(value: string) {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' && url.hostname === 'github.com' && url.username === '' && url.password === ''
+  } catch {
+    return false
+  }
+}
+
+// Only number/title/html_url are validated here -- "not carrying an epic:
+// label" is expected for the vast majority of issues and is filtered out by
+// the caller, not treated as malformed data the way a missing number/title
+// is. Keeping that distinction here (base sanitize can fail closed; label
+// matching cannot) mirrors how isPullRequest() is excluded silently instead
+// of failing sanitizeIssue.
+function sanitizeEpicBase(repo: string, value: GitHubEpicIssueResponse) {
+  const number = positiveInteger(value.number)
+  const title = boundedString(value.title, 200)
+  const url = boundedString(value.html_url, 500)
+  if (!number || !title || !url || !isGitHubIssueUrl(url)) return undefined
+  return { repo, number, title, url, labels: labelNames(value.labels) }
+}
+
 function sanitizePullRequest(repo: string, value: GitHubPullRequestResponse) {
   const number = positiveInteger(value.number)
   const title = boundedString(value.title, 200)
@@ -1022,6 +1066,75 @@ async function listIssues(
 
   return {
     issues: perRepositoryIssues.flat().slice(0, MAX_ISSUES),
+  }
+}
+
+async function listEpicsForRepository(
+  repo: NonNullable<ReturnType<typeof sanitizeRepository>>,
+  token: string,
+  deps: GitHubIntegrationDependencies,
+) {
+  const response = await githubFetch(
+    deps,
+    `${GITHUB_API_ORIGIN}/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}/issues?state=all&per_page=${MAX_EPICS}&page=1`,
+    {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${token}`,
+        'X-GitHub-Api-Version': API_VERSION,
+        'User-Agent': 'SmartFlow-GitHub-App',
+      },
+    },
+  )
+  if (!response.ok) throw providerError(response, 'epics')
+  const body = await providerJson<unknown>(response)
+  if (!Array.isArray(body)) {
+    throw new GitHubIntegrationError('GITHUB_RESPONSE_INVALID', 502, 'GitHub returned an invalid issues response.')
+  }
+  const repoLabel = `${repo.owner}/${repo.name}`
+  const candidates = body.filter(
+    (item): item is GitHubEpicIssueResponse =>
+      Boolean(item) && typeof item === 'object' && !isPullRequest(item as GitHubIssueResponse),
+  )
+  const sanitizedBase = candidates.map((item) => sanitizeEpicBase(repoLabel, item))
+  if (sanitizedBase.some((item) => !item)) {
+    throw new GitHubIntegrationError('GITHUB_RESPONSE_INVALID', 502, 'GitHub returned invalid issue metadata.')
+  }
+  const validBase = sanitizedBase.filter((item): item is NonNullable<typeof item> => Boolean(item))
+
+  // Not carrying a label starting with "epic:" is the expected, common case
+  // -- filtered out the same way pull requests are excluded above, not
+  // treated as invalid data.
+  return validBase
+    .map((item) => {
+      const epicLabel = item.labels.find((name) => name.toLowerCase().startsWith('epic:'))
+      if (!epicLabel) return undefined
+      const statusLabel = item.labels.find((name) => name.toLowerCase().startsWith('status:')) ?? ''
+      return { repo: item.repo, number: item.number, title: item.title, epic: epicLabel, status: statusLabel, url: item.url }
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item))
+}
+
+async function listEpics(
+  request: Request,
+  config: GitHubConfig,
+  deps: GitHubIntegrationDependencies,
+) {
+  const { userId, authorization } = await requireUser(request, config, deps)
+  const connection = await loadConnection(userId, authorization, config, deps)
+  const installationId = positiveInteger(connection.installation_id)
+  if (!installationId) {
+    throw new GitHubIntegrationError('CONNECTION_RECORD_INVALID', 500, 'Verified connection metadata is invalid.')
+  }
+  const token = await installationToken(installationId, config, deps)
+  const repositories = await scanRepositoriesForFanout(token, deps, MAX_REPOS_SCANNED_FOR_FANOUT)
+
+  const perRepositoryEpics = await Promise.all(
+    repositories.map((repo) => listEpicsForRepository(repo, token, deps)),
+  )
+
+  return {
+    epics: perRepositoryEpics.flat().slice(0, MAX_EPICS),
   }
 }
 
@@ -1263,6 +1376,9 @@ export async function handleGitHubIntegrationRequest(
     if (url.pathname === '/github/issues' && request.method === 'GET') {
       return json(await listIssues(request, config, deps), 200, origin, config)
     }
+    if (url.pathname === '/github/epics' && request.method === 'GET') {
+      return json(await listEpics(request, config, deps), 200, origin, config)
+    }
     if (url.pathname === '/github/pulls' && request.method === 'GET') {
       return json(await listPullRequests(request, config, deps), 200, origin, config)
     }
@@ -1275,6 +1391,7 @@ export async function handleGitHubIntegrationRequest(
       url.pathname === '/github/connect/callback' ||
       url.pathname === '/github/repositories' ||
       url.pathname === '/github/issues' ||
+      url.pathname === '/github/epics' ||
       url.pathname === '/github/pulls' ||
       url.pathname === '/github/workflow_runs' ||
       url.pathname === '/github/disconnect' ||
@@ -1294,6 +1411,7 @@ export const githubIntegrationInternals = {
   GITHUB_AUTH_ORIGIN,
   MAX_REPOSITORIES,
   MAX_ISSUES,
+  MAX_EPICS,
   MAX_PULL_REQUESTS,
   MAX_WORKFLOW_RUNS,
   MAX_REPOS_SCANNED_FOR_FANOUT,
@@ -1303,6 +1421,7 @@ export const githubIntegrationInternals = {
   resolveConfig,
   sanitizeRepository,
   sanitizeIssue,
+  sanitizeEpicBase,
   sanitizePullRequest,
   sanitizeWorkflowRun,
 }

@@ -34,6 +34,11 @@ interface GitHubIssuesData {
   issues?: Array<{ repo?: string; number?: number; title?: string }>;
 }
 
+interface GitHubEpicsData {
+  connectionStatus?: string;
+  epics?: Array<{ repo?: string; number?: number; title?: string; epic?: string; status?: string }>;
+}
+
 interface GitHubPullRequestsData {
   connectionStatus?: string;
   pullRequests?: Array<{ repo?: string; number?: number; title?: string; draft?: boolean }>;
@@ -152,6 +157,30 @@ function githubIssuesPresentation(data: unknown): ReadOnlyResultPresentation {
   };
 }
 
+function githubEpicsPresentation(data: unknown): ReadOnlyResultPresentation {
+  const value = isObject(data) ? data as GitHubEpicsData : {};
+  if (value.connectionStatus === "not_connected") {
+    return { safeSummary: "GitHub is not connected.", safePreviewItems: [] };
+  }
+  const epics = Array.isArray(value.epics) ? value.epics.slice(0, 20) : [];
+  return {
+    safeSummary: countSummary(
+      epics.length,
+      "No GitHub epics found.",
+      "1 GitHub epic found.",
+      (count) => `${count} GitHub epics found.`,
+    ),
+    safePreviewItems: epics
+      .map((item) => {
+        if (!item.repo || !item.number || !item.title) return undefined;
+        const statusSuffix = item.status ? ` (${item.status})` : "";
+        return `${item.repo}#${item.number} ${item.title}${statusSuffix}`;
+      })
+      .filter((item): item is string => Boolean(item))
+      .slice(0, 6),
+  };
+}
+
 function githubPullRequestsPresentation(data: unknown): ReadOnlyResultPresentation {
   const value = isObject(data) ? data as GitHubPullRequestsData : {};
   if (value.connectionStatus === "not_connected") {
@@ -227,6 +256,8 @@ export function presentReadOnlyResult(result: ExecutionResult): ReadOnlyResultPr
       return githubPresentation(result.data);
     case "github.issues.list":
       return githubIssuesPresentation(result.data);
+    case "github.epics.list":
+      return githubEpicsPresentation(result.data);
     case "github.pulls.list":
       return githubPullRequestsPresentation(result.data);
     case "github.workflow_runs.list":

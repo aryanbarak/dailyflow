@@ -91,6 +91,24 @@ export interface GitHubIssuesClient {
   listIssues(): Promise<GitHubIssuesResult>;
 }
 
+export interface GitHubEpicSummary {
+  repo: string;
+  number: number;
+  title: string;
+  epic: string;
+  status: string;
+  url: string;
+}
+
+export interface GitHubEpicsResult {
+  connectionStatus: "connected" | "not_connected";
+  epics: GitHubEpicSummary[];
+}
+
+export interface GitHubEpicsClient {
+  listEpics(): Promise<GitHubEpicsResult>;
+}
+
 export interface GitHubPullRequestSummary {
   repo: string;
   number: number;
@@ -135,6 +153,7 @@ export interface ExecutionContext {
   currentTime?: string;
   githubRepositoriesClient?: GitHubRepositoriesClient;
   githubIssuesClient?: GitHubIssuesClient;
+  githubEpicsClient?: GitHubEpicsClient;
   githubPullRequestsClient?: GitHubPullRequestsClient;
   githubWorkflowRunsClient?: GitHubWorkflowRunsClient;
 }

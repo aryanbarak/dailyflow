@@ -16,6 +16,7 @@ export const supportedIntentTypes: AgentIntentType[] = [
   "inspect_workspace",
   "inspect_github_repositories",
   "inspect_github_issues",
+  "inspect_github_epics",
   "inspect_github_pull_requests",
   "inspect_github_workflow_runs",
   "complete_task",
@@ -40,6 +41,7 @@ const intentToolMap = {
   inspect_workspace: "workspace.get_context",
   inspect_github_repositories: "github.repositories.list",
   inspect_github_issues: "github.issues.list",
+  inspect_github_epics: "github.epics.list",
   inspect_github_pull_requests: "github.pulls.list",
   inspect_github_workflow_runs: "github.workflow_runs.list",
   complete_task: "tasks.complete",
@@ -54,6 +56,7 @@ const domainByIntent: Partial<Record<AgentIntentType, AgentIntentDomain>> = {
   inspect_workspace: "workspace",
   inspect_github_repositories: "github",
   inspect_github_issues: "github",
+  inspect_github_epics: "github",
   inspect_github_pull_requests: "github",
   inspect_github_workflow_runs: "github",
   complete_task: "tasks",
@@ -242,6 +245,17 @@ const GITHUB_ISSUES_EVIDENCE_PATTERNS = [
   /((گیت[‌\s-]?هاب|github).*(ایشو|ایشوها|مسئله|مسائل)|(ایشو|ایشوها|مسئله|مسائل).*(گیت[‌\s-]?هاب|github))/i,
 ];
 
+// Bare "plan" is deliberately excluded — it collides with the workspace
+// domain's "current plan" evidence (see getStrongReadDomainEvidence) and
+// would turn "what's my current plan" into a false conflicting-domain
+// clarification. Only the more specific "project plan" phrasing counts,
+// same rationale as excluding bare "PR" below.
+const GITHUB_EPICS_EVIDENCE_PATTERNS = [
+  /\b(roadmap|epics?|project plan)\b/i,
+  /\b(road-?map|epics?)\b/i,
+  /(نقشه[‌\s-]?راه|اپیک|اپیک[‌\s-]?ها|برنامه[‌\s-]?پروژه|مپ)/i,
+];
+
 // Bare "PR"/"PRs" is deliberately excluded — it's an ambiguous initialism, a
 // real collision risk. Only the spelled-out phrase counts as evidence; this
 // is a rescue backstop, not the only path, so Gemini's own schema-enforced
@@ -270,6 +284,7 @@ type ReadToolIntentType = Exclude<AgentIntentType, "complete_task" | "ask_clarif
 const TOOL_EVIDENCE_PATTERNS: Partial<Record<ReadToolIntentType, RegExp[]>> = {
   inspect_github_repositories: GITHUB_REPOSITORIES_EVIDENCE_PATTERNS,
   inspect_github_issues: GITHUB_ISSUES_EVIDENCE_PATTERNS,
+  inspect_github_epics: GITHUB_EPICS_EVIDENCE_PATTERNS,
   inspect_github_pull_requests: GITHUB_PULL_REQUESTS_EVIDENCE_PATTERNS,
   inspect_github_workflow_runs: GITHUB_WORKFLOW_RUNS_EVIDENCE_PATTERNS,
 };
@@ -341,6 +356,7 @@ function normalizeReadIntentFromEvidence(
     type === "inspect_workspace" ||
     type === "inspect_github_repositories" ||
     type === "inspect_github_issues" ||
+    type === "inspect_github_epics" ||
     type === "inspect_github_pull_requests" ||
     type === "inspect_github_workflow_runs"
   ) {
