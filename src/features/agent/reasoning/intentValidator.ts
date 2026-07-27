@@ -303,6 +303,7 @@ function deriveTaskCompletionTarget(
   const [task] = context.tasks;
   if (!task?.id) return target;
   return {
+    ...target,
     taskId: task.id,
     taskReference: undefined,
     taskTitleHint: task.title,
