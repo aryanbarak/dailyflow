@@ -18,7 +18,7 @@ import type {
 } from "./executionTypes";
 import type { AgentReflectionResult } from "./reflectionTypes";
 import type { ToolResolutionResult } from "./toolResolverTypes";
-import type { AgentToolDefinition, ExecutionPolicyDecision } from "./toolTypes";
+import type { AgentToolCapability, AgentToolDefinition, ExecutionPolicyDecision } from "./toolTypes";
 import type {
   Workspace,
   WorkspacePlanStep,
@@ -48,11 +48,28 @@ export type WriteRuntimeStatus =
   | "timeout"
   | "failed";
 
+// EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
+// Deliberately a local, narrower shape rather than importing reasoning's
+// AgentIntentTarget -- the execution layer shouldn't depend on the reasoning
+// layer's types, only on the specific fields a write handler actually needs.
+export interface WriteRuntimeProposalTarget {
+  repo?: string;
+  issueNumber?: number;
+  commentBody?: string;
+  updateTitle?: string;
+  updateBody?: string;
+  updateLabels?: string[];
+}
+
 export interface WriteRuntimeRequest {
   requestId: string;
   step?: WorkspacePlanStep | null;
   toolResolution?: ToolResolutionResult | null;
   approval?: WorkspaceStepApproval | null;
+  // The proposal's validated target fields (repo/issueNumber/commentBody/...)
+  // for tools whose handler input isn't fully derivable from step.targetId
+  // alone. tasks.complete doesn't need this -- its target is just the task id.
+  target?: WriteRuntimeProposalTarget | null;
   executionContext?: ExecutionContext & { workspace?: Workspace | null };
   requestedAt?: string;
   currentTime?: Date;
@@ -139,6 +156,35 @@ function executionError(code: string, message: string, retryable = false): Execu
 
 function isSupportedWriteToolId(toolId: string | undefined): toolId is SupportedWriteToolId {
   return SUPPORTED_WRITE_TOOL_IDS.includes(toolId as SupportedWriteToolId);
+}
+
+// Each supported write tool has its own capability -- this used to be a bare
+// `tool.capability !== "complete"` check that only tasks.complete could ever
+// satisfy, silently rejecting every github write tool as "unsupported".
+function expectedCapabilityForToolId(toolId: SupportedWriteToolId): AgentToolCapability {
+  switch (toolId) {
+    case "tasks.complete":
+      return "complete";
+    case "github.issues.comment":
+      return "create";
+    case "github.issues.update":
+      return "update";
+  }
+}
+
+// Same shape of bug as the capability check above: the step's actionType/
+// domain combination is specific to each write tool, not just tasks.complete.
+function expectedStepShapeForToolId(
+  toolId: SupportedWriteToolId,
+): { actionType: WorkspacePlanStep["actionType"]; domain: WorkspacePlanStep["domain"] } {
+  switch (toolId) {
+    case "tasks.complete":
+      return { actionType: "complete", domain: "tasks" };
+    case "github.issues.comment":
+      return { actionType: "create", domain: "github" };
+    case "github.issues.update":
+      return { actionType: "update", domain: "github" };
+  }
 }
 
 function auditId(requestId: string, status: ExecutionAuditStatus, timestampValue: string) {
@@ -410,18 +456,56 @@ function validateResolvedTool(
     !tool.enabled ||
     tool.mode !== "write" ||
     tool.externalEffect !== true ||
-    tool.capability !== "complete"
+    tool.capability !== expectedCapabilityForToolId(resolution.toolId)
   ) {
     return { status: "unsupported_tool" };
   }
   return { tool, toolId: resolution.toolId };
 }
 
-function taskTargetIsValid(request: WriteRuntimeRequest) {
-  return request.step?.actionType === "complete" &&
-    request.step.domain === "tasks" &&
+function writeTargetIsValid(request: WriteRuntimeRequest, toolId: SupportedWriteToolId) {
+  const expected = expectedStepShapeForToolId(toolId);
+  return request.step?.actionType === expected.actionType &&
+    request.step.domain === expected.domain &&
     typeof request.step.targetId === "string" &&
     request.step.targetId.trim().length > 0;
+}
+
+// Each write handler has a completely different input shape (tasks.complete
+// takes {userId, taskId}; the github handlers take {repo, issueNumber, ...}
+// and reject any other field, including userId -- GitHub auth is carried by
+// the client's access token, not a userId parameter). This used to be a
+// single hardcoded {userId, taskId} object that every write tool shared,
+// which meant the github handlers' own validateInput always failed on
+// unrecognized/missing fields.
+function buildHandlerInput(
+  toolId: SupportedWriteToolId,
+  authenticatedUserId: string,
+  request: WriteRuntimeRequest,
+): Record<string, unknown> {
+  if (toolId === "tasks.complete") {
+    return {
+      userId: authenticatedUserId,
+      taskId: request.step?.targetId?.trim(),
+    };
+  }
+
+  const target = request.target;
+  if (toolId === "github.issues.comment") {
+    return {
+      repo: target?.repo,
+      issueNumber: target?.issueNumber,
+      body: target?.commentBody,
+    };
+  }
+
+  return {
+    repo: target?.repo,
+    issueNumber: target?.issueNumber,
+    ...(target?.updateTitle !== undefined ? { title: target.updateTitle } : {}),
+    ...(target?.updateBody !== undefined ? { body: target.updateBody } : {}),
+    ...(target?.updateLabels !== undefined ? { labels: target.updateLabels } : {}),
+  };
 }
 
 export function clearWriteRuntimeRequestHistory() {
@@ -449,8 +533,8 @@ export async function runWriteTool(
     return blocked(request, resolved.status ?? "unresolved", safeSummaryFor(resolved.status ?? "unresolved"), startedAt, request.toolResolution?.toolId);
   }
 
-  if (!taskTargetIsValid(request)) {
-    return blocked(request, "invalid_input", "Write action requires an exact task target.", startedAt, resolved.toolId);
+  if (!writeTargetIsValid(request, resolved.toolId)) {
+    return blocked(request, "invalid_input", "Write action requires an exact target.", startedAt, resolved.toolId);
   }
 
   const approvalStatus = validateApprovalBoundary(request, resolved.toolId);
@@ -530,10 +614,7 @@ export async function runWriteTool(
     };
   }
 
-  const handlerInput = {
-    userId: authenticatedUserId.trim(),
-    taskId: request.step?.targetId?.trim(),
-  };
+  const handlerInput = buildHandlerInput(resolved.toolId, authenticatedUserId.trim(), request);
   const validation = handler.validateInput(handlerInput, resolved.tool.inputSchema);
   if (!validation.valid) {
     const completedAt = timestamp(deps.now());

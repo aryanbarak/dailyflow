@@ -482,6 +482,112 @@ describe("writeRuntime", () => {
     expect(result.reflection).toBeUndefined();
   });
 
+  // Regression coverage for a bug where SUPPORTED_WRITE_TOOL_IDS listed
+  // github.issues.comment/update, but validateResolvedTool's capability
+  // check, taskTargetIsValid's actionType/domain check, and the handlerInput
+  // builder were all still hardcoded to tasks.complete's shape -- so every
+  // approved github write proposal died with "unsupported_tool" before ever
+  // reaching the handler, and even past that would never have carried
+  // repo/issueNumber/commentBody to it. Uses the REAL registered tool
+  // (getToolById) and the REAL githubIssuesCommentHandler (getWriteHandlerByToolId)
+  // -- only the GitHub client is mocked -- and asserts the mock was called
+  // with the exact extracted arguments, not just that the run didn't error.
+  it("runs an approved github.issues.comment proposal end-to-end and calls the client with the exact target fields", async () => {
+    const sourceStep = step({
+      id: "step:github-comment",
+      title: "Add a GitHub issue comment",
+      description: "Comment on aryan/smartflow#5.",
+      domain: "github",
+      actionType: "create",
+      targetId: "aryan/smartflow#5",
+    });
+    const sourceResolution = resolution(sourceStep, "github.issues.comment", {
+      requiredInput: ["repo", "issueNumber", "body"],
+    });
+    const sourceApproval = approval(sourceStep, {
+      toolId: "github.issues.comment",
+      dataDomains: ["github"],
+      reversible: false,
+      previewText: "Thanks, looking into this.",
+    });
+    const createComment = vi.fn().mockResolvedValue({
+      commentId: 42,
+      url: "https://github.com/aryan/smartflow/issues/5#issuecomment-42",
+    });
+
+    const result = await runWriteTool(request({
+      requestId: "write:github-comment",
+      step: sourceStep,
+      toolResolution: sourceResolution,
+      approval: sourceApproval,
+      target: { repo: "aryan/smartflow", issueNumber: 5, commentBody: "Thanks, looking into this." },
+      executionContext: {
+        githubIssueCommentClient: { createComment },
+      } as ExecutionContext,
+    }), {
+      getAuthenticatedUserId: () => "user-1",
+      now: () => now,
+    });
+
+    expect(createComment).toHaveBeenCalledTimes(1);
+    expect(createComment).toHaveBeenCalledWith({
+      repo: "aryan/smartflow",
+      issueNumber: 5,
+      body: "Thanks, looking into this.",
+    });
+    expect(result.status).toBe("success");
+    expect(result.success).toBe(true);
+    expect(result.toolId).toBe("github.issues.comment");
+  });
+
+  it("runs an approved github.issues.update proposal end-to-end and calls the client with the exact target fields", async () => {
+    const sourceStep = step({
+      id: "step:github-update",
+      title: "Update a GitHub issue",
+      description: "Update aryan/smartflow#5.",
+      domain: "github",
+      actionType: "update",
+      targetId: "aryan/smartflow#5",
+    });
+    const sourceResolution = resolution(sourceStep, "github.issues.update", {
+      requiredInput: ["repo", "issueNumber"],
+    });
+    const sourceApproval = approval(sourceStep, {
+      toolId: "github.issues.update",
+      dataDomains: ["github"],
+      reversible: false,
+      previewText: "Labels: bug, priority:high",
+    });
+    const updateIssue = vi.fn().mockResolvedValue({
+      issueNumber: 5,
+      url: "https://github.com/aryan/smartflow/issues/5",
+    });
+
+    const result = await runWriteTool(request({
+      requestId: "write:github-update",
+      step: sourceStep,
+      toolResolution: sourceResolution,
+      approval: sourceApproval,
+      target: { repo: "aryan/smartflow", issueNumber: 5, updateLabels: ["bug", "priority:high"] },
+      executionContext: {
+        githubIssueUpdateClient: { updateIssue },
+      } as ExecutionContext,
+    }), {
+      getAuthenticatedUserId: () => "user-1",
+      now: () => now,
+    });
+
+    expect(updateIssue).toHaveBeenCalledTimes(1);
+    expect(updateIssue).toHaveBeenCalledWith({
+      repo: "aryan/smartflow",
+      issueNumber: 5,
+      labels: ["bug", "priority:high"],
+    });
+    expect(result.status).toBe("success");
+    expect(result.success).toBe(true);
+    expect(result.toolId).toBe("github.issues.update");
+  });
+
   it("keeps read-only runtime and write runtime isolated", async () => {
     const sourceStep = step();
     const result = await runReadOnlyTool({

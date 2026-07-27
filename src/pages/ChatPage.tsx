@@ -1180,8 +1180,11 @@ export default function ChatPage() {
 
   // Generalized for EPIC-07 (Write Light) -- runs any resolved write proposal
   // (tasks.complete, github.issues.comment, github.issues.update), not just
-  // task completion. runWriteTool itself was already tool-agnostic; only the
-  // requestId label and the tasks-specific refresh below were hardcoded.
+  // task completion. runWriteTool's own capability/step-shape/handler-input
+  // logic was still tasks.complete-only until a follow-up fix generalized it;
+  // `target` is threaded through here so the github handlers can see
+  // repo/issueNumber/commentBody/etc. -- step.targetId alone only carries
+  // `${repo}#${issueNumber}`, never the comment body or update fields.
   const handleRunWriteProposal = useCallback(async () => {
     const current = reasoningProposal?.[0]
     if (!current?.step || !current.resolution?.resolved) return
@@ -1197,6 +1200,7 @@ export default function ChatPage() {
       step: current.step,
       toolResolution: current.resolution,
       approval: current.approval,
+      target: current.result.proposal.target,
       executionContext: {
         ...workspace.agentContext,
         workspace,
