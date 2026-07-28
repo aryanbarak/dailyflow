@@ -221,6 +221,41 @@ describe("executionPolicy", () => {
     expect(decision.allowed).toBe(false);
   });
 
+  // EPIC-08 Slice 2 -- see docs/roadmap/epic-08-write-code-design-v1.md.
+  // A synthetic, unregistered high-risk tool shaped like a future code
+  // mutation tool -- this deliberately does not register github.files.update
+  // anywhere; it only proves the policy layer's approval-risk comparison is
+  // >=, so a higher-risk tool correctly requires a matching-or-higher
+  // approval risk rather than silently inheriting a lower one.
+  it("requires approval risk >= a hypothetical high-risk code-mutation tool's risk level", () => {
+    const highRiskCodeTool: AgentToolDefinition = {
+      ...tool("github.issues.update"),
+      id: "github.files.update",
+      riskLevel: "high",
+      reversible: false,
+    };
+    const sourceStep = step("update", { domain: "github", targetId: "aryan/smartflow:README.md" });
+
+    const deniedWithMediumApproval = evaluateExecutionPolicy({
+      currentTime: now,
+      step: sourceStep,
+      tool: highRiskCodeTool,
+      approval: approval("step-1", "medium", "single_step", "approved", "github.files.update"),
+    });
+    expect(deniedWithMediumApproval.status).toBe("risk_mismatch");
+    expect(deniedWithMediumApproval.allowed).toBe(false);
+
+    const allowedWithHighApproval = evaluateExecutionPolicy({
+      currentTime: now,
+      step: sourceStep,
+      tool: highRiskCodeTool,
+      approval: approval("step-1", "high", "single_step", "approved", "github.files.update"),
+    });
+    expect(allowedWithHighApproval.status).toBe("allowed");
+    expect(allowedWithHighApproval.allowed).toBe(true);
+    expect(allowedWithHighApproval.effectiveRiskLevel).toBe("high");
+  });
+
   it("denies approval for another step", () => {
     const decision = evaluateExecutionPolicy({
       currentTime: now,

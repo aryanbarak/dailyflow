@@ -11,6 +11,7 @@
 // bespoke blocking logic added here.
 
 import { executeAgentTool } from "../executionEngine";
+import { buildCodeProposalBinding } from "./codeProposalApproval";
 import { buildApprovalPreview, buildCodeFileProposal } from "./codeProposalBuilder";
 import type {
   ExecutionContext,
@@ -89,6 +90,7 @@ function buildPendingApproval(
   step: WorkspacePlanStep,
   proposal: CodeFileProposal,
   preview: CodeApprovalPreview,
+  currentTime: Date,
 ): WorkspaceStepApproval {
   const approval: WorkspaceStepApproval = {
     stepId: step.id,
@@ -107,13 +109,7 @@ function buildPendingApproval(
     dataDomains: ["github"],
     approvalScope: "single_step",
     previewText: preview.previewText,
-    codeProposalBinding: {
-      repo: proposal.repo,
-      path: proposal.path,
-      baseBlobSha: proposal.baseBlobSha,
-      baseCommitSha: proposal.baseCommitSha,
-      proposedContentDigest: proposal.proposedContentDigest,
-    },
+    codeProposalBinding: buildCodeProposalBinding(proposal, currentTime),
   };
   return Object.freeze(approval);
 }
@@ -123,7 +119,8 @@ export async function requestCodeFileProposal(
   dependencies: Partial<ExecutionEngineDependencies> = {},
 ): Promise<RequestCodeFileProposalResult> {
   const step = readStep(input.step, input.repo, input.path);
-  const requestedAt = (input.currentTime ?? new Date()).toISOString();
+  const currentTime = input.currentTime ?? new Date();
+  const requestedAt = currentTime.toISOString();
 
   const readExecutionResult = await executeAgentTool(
     {
@@ -167,7 +164,7 @@ export async function requestCodeFileProposal(
   }
 
   const preview = buildApprovalPreview(buildResult.proposal);
-  const approval = buildPendingApproval(step, buildResult.proposal, preview);
+  const approval = buildPendingApproval(step, buildResult.proposal, preview, currentTime);
 
   return {
     status: "proposed",

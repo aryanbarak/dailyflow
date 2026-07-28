@@ -36,6 +36,7 @@ import { getWriteHandlerByToolId } from "./writeHandlers";
 import {
   clearWriteRuntimeRequestHistory,
   runWriteTool,
+  validateApprovalBoundary,
   type WriteRuntimeRequest,
 } from "./writeRuntime";
 import { runReadOnlyTool } from "./readOnlyRuntime";
@@ -588,6 +589,71 @@ describe("writeRuntime", () => {
     expect(result.success).toBe(true);
     expect(result.toolId).toBe("github.issues.update");
     expect(result.safeSummary).toBe("Issue updated.");
+  });
+
+  // EPIC-08 Slice 2 -- see docs/roadmap/epic-08-write-code-design-v1.md.
+  // Regression coverage for a bug where validateApprovalBoundary hardcoded
+  // `approval.riskLevel !== "medium"` -- an exact-match check that happened
+  // to work only because every currently-supported write tool's registered
+  // riskLevel is exactly "medium". A higher-than-required approval risk is
+  // strictly *more* authorization, not less, and must still be accepted.
+  describe("approval risk comparison is >=, not an exact match", () => {
+    it("accepts a higher-than-required approval risk level (medium-risk tool, high-risk approval)", async () => {
+      const handler = writeHandler();
+      const result = await runWriteTool(request({
+        requestId: "write:risk-high-approval",
+        approval: approval(step(), { riskLevel: "high", reversible: false }),
+      }), {
+        getAuthenticatedUserId: () => "user-1",
+        getWriteHandlerByToolId: () => handler,
+        now: () => now,
+      });
+
+      expect(result.status).toBe("success");
+      expect(handler.execute).toHaveBeenCalledTimes(1);
+    });
+
+    it("still rejects a lower-than-required approval risk level (medium-risk tool, low-risk approval)", async () => {
+      const handler = writeHandler();
+      const result = await runWriteTool(request({
+        requestId: "write:risk-low-approval",
+        approval: approval(step(), { riskLevel: "low" }),
+      }), {
+        getAuthenticatedUserId: () => "user-1",
+        getWriteHandlerByToolId: () => handler,
+        now: () => now,
+      });
+
+      expect(result.status).toBe("approval_required");
+      expect(handler.execute).not.toHaveBeenCalled();
+    });
+
+    // Direct unit coverage of validateApprovalBoundary's own comparison,
+    // exercised against a required risk level higher than any
+    // currently-registered write tool uses (e.g. a future high-risk code
+    // mutation tool) -- without registering a real high-risk tool, which
+    // EPIC-08 Slice 2 must not do.
+    it("requires approval risk >= a hypothetical high-risk code tool's required risk", () => {
+      const sourceStep = step();
+      const mediumApproval = approval(sourceStep, { toolId: "github.files.update", riskLevel: "medium" });
+      const highApproval = approval(sourceStep, { toolId: "github.files.update", riskLevel: "high" });
+
+      expect(
+        validateApprovalBoundary(
+          request({ step: sourceStep, approval: mediumApproval }),
+          "github.files.update",
+          "high",
+        ),
+      ).toBe("approval_required");
+
+      expect(
+        validateApprovalBoundary(
+          request({ step: sourceStep, approval: highApproval }),
+          "github.files.update",
+          "high",
+        ),
+      ).toBeNull();
+    });
   });
 
   it("keeps read-only runtime and write runtime isolated", async () => {

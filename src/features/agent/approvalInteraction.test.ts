@@ -244,14 +244,16 @@ describe("approvalInteraction", () => {
     expect(findApprovalPresentationTool(step({ domain: "finance", actionType: "pay" }))).toBeNull();
   });
 
-  // EPIC-08 Slice 1 -- see docs/roadmap/epic-08-write-code-design-v1.md.
-  it("carries a code proposal's binding (base blob SHA, base commit SHA, digest) through approve and reject unchanged", () => {
+  // EPIC-08 Slice 1/2 -- see docs/roadmap/epic-08-write-code-design-v1.md.
+  it("carries a code proposal's binding (proposal id, base blob/commit SHA, digest, expiry) through approve and reject unchanged", () => {
     const binding = {
       repo: "aryan/smartflow",
       path: "README.md",
       baseBlobSha: "blob-sha-1",
       baseCommitSha: "commit-sha-1",
       proposedContentDigest: "a".repeat(64),
+      proposalId: `code-proposal:${"b".repeat(64)}`,
+      expiresAt: "2026-07-10T09:15:00.000Z",
     };
     const approval = stepApproval({
       dataDomains: ["github"],
