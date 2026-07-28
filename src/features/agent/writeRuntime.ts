@@ -3,7 +3,7 @@ import {
   getExecutionAuditRecordsByRequestId,
 } from "./executionAudit";
 import { EXECUTION_AUDIT_VERSION } from "./executionAudit";
-import { evaluateExecutionPolicy } from "./executionPolicy";
+import { compareRiskLevels, evaluateExecutionPolicy } from "./executionPolicy";
 import { getToolById } from "./toolRegistry";
 import { getWriteHandlerByToolId } from "./writeHandlers";
 import { processReadOnlyReflection } from "./reflectionIntegration";
@@ -21,6 +21,7 @@ import type { ToolResolutionResult } from "./toolResolverTypes";
 import type { AgentToolCapability, AgentToolDefinition, ExecutionPolicyDecision } from "./toolTypes";
 import type {
   Workspace,
+  WorkspaceApprovalRiskLevel,
   WorkspacePlanStep,
   WorkspaceStepApproval,
 } from "../workspace/workspaceTypes";
@@ -426,7 +427,24 @@ function executionResultFor(
   };
 }
 
-function validateApprovalBoundary(request: WriteRuntimeRequest, toolId: SupportedWriteToolId) {
+// EPIC-08 Slice 2 -- see docs/roadmap/epic-08-write-code-design-v1.md.
+// Exported (not just used internally) so the risk-comparison fix below can be
+// unit tested directly against a required risk level higher than any
+// currently-registered write tool uses, without needing to register a real
+// high-risk tool -- see writeRuntime.test.ts's "high-risk code-tool" tests.
+//
+// This used to hardcode `approval.riskLevel !== "medium"`, which happened to
+// work only because every currently-supported write tool's registered
+// riskLevel is exactly "medium". A future write tool with a higher registered
+// risk (e.g. a code-mutation tool) would have required an approval whose
+// riskLevel is the exact string "medium" -- rejecting a "high" approval,
+// which is strictly *more* authorization than required. executionPolicy.ts's
+// own approval-risk check already compared with >=; this boundary did not.
+export function validateApprovalBoundary(
+  request: WriteRuntimeRequest,
+  toolId: string,
+  requiredRiskLevel: WorkspaceApprovalRiskLevel,
+) {
   const approval = request.approval;
   const step = request.step;
   if (!approval) return "approval_required";
@@ -436,7 +454,7 @@ function validateApprovalBoundary(request: WriteRuntimeRequest, toolId: Supporte
   if (!step.targetId || approval.targetId !== step.targetId) return "approval_required";
   if (approval.toolId !== toolId) return "approval_required";
   if (approval.approvalScope !== "single_step") return "approval_required";
-  if (approval.riskLevel !== "medium") return "approval_required";
+  if (compareRiskLevels(approval.riskLevel, requiredRiskLevel) < 0) return "approval_required";
   return null;
 }
 
@@ -540,7 +558,7 @@ export async function runWriteTool(
     return blocked(request, "invalid_input", "Write action requires an exact target.", startedAt, resolved.toolId);
   }
 
-  const approvalStatus = validateApprovalBoundary(request, resolved.toolId);
+  const approvalStatus = validateApprovalBoundary(request, resolved.toolId, resolved.tool.riskLevel);
   if (approvalStatus) {
     return blocked(request, approvalStatus, safeSummaryFor(approvalStatus), startedAt, resolved.toolId);
   }

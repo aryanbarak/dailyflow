@@ -40,6 +40,10 @@ export interface UnifiedDiffResult {
 }
 
 export interface CodeFileProposal {
+  // EPIC-08 Slice 2 -- content-addressed identity of this exact proposal
+  // (repo + path + baseBlobSha + baseCommitSha + proposedContentDigest).
+  // See codeProposalBuilder.ts's computeProposalId.
+  proposalId: string;
   repo: string;
   path: string;
   baseBranch: string;

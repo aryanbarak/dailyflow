@@ -36,6 +36,25 @@ export async function computeContentDigest(content: string): Promise<string> {
   return toHex(digest);
 }
 
+// EPIC-08 Slice 2 -- a content-addressed proposal identity: the same
+// repo/path/base/proposed-content combination always yields the same id, and
+// any change to any one of them yields a different id. This is what an
+// approval's codeProposalBinding pins, so re-approving after the underlying
+// proposal changed in any way is detectable as a proposal id mismatch,
+// without needing a separately tracked random identifier.
+export async function computeProposalId(
+  proposal: Pick<CodeFileProposal, "repo" | "path" | "baseBlobSha" | "baseCommitSha" | "proposedContentDigest">,
+): Promise<string> {
+  const canonical = [
+    proposal.repo,
+    proposal.path,
+    proposal.baseBlobSha,
+    proposal.baseCommitSha,
+    proposal.proposedContentDigest,
+  ].join("\n");
+  return `code-proposal:${await computeContentDigest(canonical)}`;
+}
+
 export async function buildCodeFileProposal(
   input: BuildCodeFileProposalInput,
 ): Promise<CodeProposalBuildResult> {
@@ -60,7 +79,16 @@ export async function buildCodeFileProposal(
 
   const diff = generateUnifiedDiff(input.baseRead.content, input.proposedContent, input.baseRead.path);
 
+  const proposalId = await computeProposalId({
+    repo: input.baseRead.repo,
+    path: input.baseRead.path,
+    baseBlobSha: input.baseRead.blobSha,
+    baseCommitSha: input.baseRead.commitSha,
+    proposedContentDigest,
+  });
+
   const proposal: CodeFileProposal = {
+    proposalId,
     repo: input.baseRead.repo,
     path: input.baseRead.path,
     baseBranch: input.baseRead.branch,

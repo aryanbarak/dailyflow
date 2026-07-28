@@ -4,6 +4,7 @@ import {
   buildCodeFileProposal,
   checkStaleBase,
   computeContentDigest,
+  computeProposalId,
 } from "./codeProposalBuilder";
 import type { CodeFileReadResult } from "./codeProposalTypes";
 
@@ -58,6 +59,45 @@ describe("buildCodeFileProposal", () => {
     expect(result.proposal.baseContentDigest).toBe(await computeContentDigest("hello\n"));
     expect(result.proposal.proposedContentDigest).toBe(await computeContentDigest("hello world\n"));
     expect(result.proposal.diff.isNoop).toBe(false);
+    expect(result.proposal.proposalId).toBe(
+      await computeProposalId({
+        repo: "aryan/smartflow",
+        path: "README.md",
+        baseBlobSha: "blob-sha-1",
+        baseCommitSha: "commit-sha-1",
+        proposedContentDigest: result.proposal.proposedContentDigest,
+      }),
+    );
+  });
+
+  it("computes the same proposal id for identical inputs and a different one for different proposed content", async () => {
+    const first = await buildCodeFileProposal({
+      baseRead: baseRead(),
+      proposedContent: "hello world\n",
+      requestId: "request:1",
+      stepId: "step:1",
+    });
+    const second = await buildCodeFileProposal({
+      baseRead: baseRead(),
+      proposedContent: "hello world\n",
+      requestId: "request:2",
+      stepId: "step:2",
+    });
+    const differentContent = await buildCodeFileProposal({
+      baseRead: baseRead(),
+      proposedContent: "a different body\n",
+      requestId: "request:3",
+      stepId: "step:3",
+    });
+    if (first.ok === false || second.ok === false || differentContent.ok === false) {
+      throw new Error("expected all three builds to succeed");
+    }
+
+    // Same repo/path/base/proposed content -> same proposal id, even from a
+    // different requestId/stepId -- proposal identity is content-addressed,
+    // not request-addressed.
+    expect(second.proposal.proposalId).toBe(first.proposal.proposalId);
+    expect(differentContent.proposal.proposalId).not.toBe(first.proposal.proposalId);
   });
 
   it("fails closed for a protected base path even if content is otherwise valid", async () => {

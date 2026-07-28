@@ -291,17 +291,23 @@ export type WorkspaceApprovalRiskLevel =
   | "medium"
   | "high";
 
-// EPIC-08 Slice 1 -- see docs/roadmap/epic-08-write-code-design-v1.md.
+// EPIC-08 Slice 1/2 -- see docs/roadmap/epic-08-write-code-design-v1.md.
 // The exact base/proposed identifiers a code-change approval is bound to.
 // Distinct from previewText (the human-readable diff) because these fields
 // must be independently comparable (stale-base detection) without re-parsing
-// free text.
+// free text. proposalId and expiresAt were added in Slice 2: proposalId is a
+// content-addressed identity for the exact proposal this approval was built
+// from (see codeChange/codeProposalBuilder.ts's computeProposalId), and
+// expiresAt enforces the design doc's 15-minute approval expiry
+// (codeChange/codeProposalApproval.ts).
 export interface WorkspaceCodeProposalBinding {
   repo: string;
   path: string;
   baseBlobSha: string;
   baseCommitSha: string;
   proposedContentDigest: string;
+  proposalId: string;
+  expiresAt: string;
 }
 
 export interface WorkspaceStepApproval {

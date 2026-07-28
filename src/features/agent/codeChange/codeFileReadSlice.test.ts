@@ -18,6 +18,7 @@ import { approveWorkspaceStep } from "../approvalInteraction";
 import { clearExecutionAuditRecords, getExecutionAuditRecordsByRequestId } from "../executionAudit";
 import { getToolById } from "../toolRegistry";
 import { runWriteTool } from "../writeRuntime";
+import { validateCodeProposalApproval } from "./codeProposalApproval";
 import { PROSPECTIVE_CODE_WRITE_TOOL_ID, requestCodeFileProposal } from "./codeFileReadSlice";
 import type { GitHubFileContentClient, GitHubFileContentFile } from "../executionTypes";
 import type { WorkspacePlanStep } from "../../workspace/workspaceTypes";
@@ -117,6 +118,9 @@ describe("requestCodeFileProposal", () => {
       baseBlobSha: "blob-sha-1",
       baseCommitSha: "commit-sha-1",
       proposedContentDigest: result.proposal?.proposedContentDigest,
+      proposalId: result.proposal?.proposalId,
+      // EPIC-08 Slice 2 -- 15 minutes after the requestCodeFileProposal call's currentTime (2026-07-28T10:00:00Z).
+      expiresAt: "2026-07-28T10:15:00.000Z",
     });
 
     // Execution Audit is reused, not reimplemented: the read went through
@@ -243,5 +247,59 @@ describe("no mutation path exists yet (Slice 1 boundary)", () => {
     });
     expect(writeResult.status).toBe("unsupported_tool");
     expect(writeResult.success).toBe(false);
+  });
+
+  // EPIC-08 Slice 2 -- a fully valid, unexpired, digest-matching approval
+  // binding (the exact contract Slice 2 adds) still must not produce any
+  // mutation or any audit/write-log activity, because github.files.update
+  // has no registered handler. Validity of the binding and executability
+  // through the write boundary are two independent gates.
+  it("a fully valid Slice 2 approval binding still ends in unsupported_tool with zero audit activity", async () => {
+    clearExecutionAuditRecords();
+    const proposed = await requestCodeFileProposal({
+      requestId: "request:code-8",
+      step: step(),
+      repo: "aryan/smartflow",
+      path: "README.md",
+      proposedContent: "hello world\n",
+      executionContext: { githubFileContentClient: connectedClient() },
+      currentTime: new Date("2026-07-28T10:00:00Z"),
+    });
+    if (!proposed.approval || !proposed.proposal) throw new Error("expected a built proposal and approval");
+
+    const approved = approveWorkspaceStep({ step: step(), stepApproval: proposed.approval });
+    if (approved.ok === false || !approved.approval?.codeProposalBinding) {
+      throw new Error("expected the approval to succeed and carry a binding");
+    }
+
+    const bindingCheck = validateCodeProposalApproval({
+      binding: approved.approval.codeProposalBinding,
+      proposal: proposed.proposal,
+      currentTime: new Date("2026-07-28T10:05:00Z"),
+    });
+    expect(bindingCheck).toEqual({ valid: true, reasons: [] });
+
+    const writeRequestId = "request:code-8:write";
+    const writeResult = await runWriteTool({
+      requestId: writeRequestId,
+      step: { ...step(), actionType: "update", targetId: "aryan/smartflow:README.md" },
+      toolResolution: {
+        status: "resolved",
+        resolved: true,
+        stepId: "step:code-file-read",
+        toolId: PROSPECTIVE_CODE_WRITE_TOOL_ID,
+        confidence: "high",
+        reasons: [],
+        candidates: [],
+        requiredInput: [],
+        generatedAt: new Date().toISOString(),
+        resolverVersion: "tool-resolver-v1",
+      },
+      approval: { ...approved.approval, targetId: "aryan/smartflow:README.md" },
+    });
+
+    expect(writeResult.status).toBe("unsupported_tool");
+    expect(writeResult.success).toBe(false);
+    expect(getExecutionAuditRecordsByRequestId(writeRequestId)).toEqual([]);
   });
 });
