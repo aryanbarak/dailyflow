@@ -31,6 +31,7 @@ export const SUPPORTED_WRITE_TOOL_IDS = Object.freeze([
   "tasks.complete",
   "github.issues.comment",
   "github.issues.update",
+  "github.files.update",
 ] as const);
 
 export type SupportedWriteToolId = typeof SUPPORTED_WRITE_TOOL_IDS[number];
@@ -60,6 +61,14 @@ export interface WriteRuntimeProposalTarget {
   updateTitle?: string;
   updateBody?: string;
   updateLabels?: string[];
+  // EPIC-08 Slice 3 -- see docs/adr/ADR-0005-code-write-mutation-boundary.md.
+  // No baseBlobSha/baseCommitSha/proposedContentDigest/riskLevel/expiresAt --
+  // those are never trusted request fields; the Worker sources them from its
+  // own server-verifiable approval record (ADR-0005 Decision 7).
+  proposalId?: string;
+  path?: string;
+  proposedContent?: string;
+  commitMessage?: string;
 }
 
 export interface WriteRuntimeRequest {
@@ -170,6 +179,8 @@ function expectedCapabilityForToolId(toolId: SupportedWriteToolId): AgentToolCap
       return "create";
     case "github.issues.update":
       return "update";
+    case "github.files.update":
+      return "update";
   }
 }
 
@@ -184,6 +195,8 @@ function expectedStepShapeForToolId(
     case "github.issues.comment":
       return { actionType: "create", domain: "github" };
     case "github.issues.update":
+      return { actionType: "update", domain: "github" };
+    case "github.files.update":
       return { actionType: "update", domain: "github" };
   }
 }
@@ -323,6 +336,7 @@ function safeSummaryFor(
   if (status === "success") {
     if (toolId === "github.issues.comment") return "Comment added.";
     if (toolId === "github.issues.update") return "Issue updated.";
+    if (toolId === "github.files.update") return "File updated.";
     return alreadyCompleted
       ? "Task was already complete."
       : "Task was marked complete.";
@@ -517,6 +531,16 @@ function buildHandlerInput(
       repo: target?.repo,
       issueNumber: target?.issueNumber,
       body: target?.commentBody,
+    };
+  }
+
+  if (toolId === "github.files.update") {
+    return {
+      proposalId: target?.proposalId,
+      repo: target?.repo,
+      path: target?.path,
+      proposedContent: target?.proposedContent,
+      ...(target?.commitMessage !== undefined ? { commitMessage: target.commitMessage } : {}),
     };
   }
 

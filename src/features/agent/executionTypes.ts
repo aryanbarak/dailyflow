@@ -204,6 +204,34 @@ export interface GitHubFileContentClient {
   readFile(input: GitHubFileContentInput): Promise<GitHubFileContentResult>;
 }
 
+// EPIC-08 Slice 3 -- see docs/adr/ADR-0005-code-write-mutation-boundary.md.
+// The mutation write path. Deliberately has no baseBlobSha/baseCommitSha/
+// proposedContentDigest/riskLevel/expiresAt fields -- the Worker sources all
+// of those from its own server-verifiable approval record
+// (agent_code_proposal_approvals), never from this request. See
+// codeChange/codeProposalApprovalRecording.ts for the separate step that
+// records that approval before this input is ever built.
+export interface GitHubFileUpdateInput {
+  proposalId: string;
+  repo: string;
+  path: string;
+  proposedContent: string;
+  commitMessage?: string;
+}
+
+export interface GitHubFileUpdateResult {
+  repo: string;
+  path: string;
+  branch: string;
+  commitSha: string;
+  blobSha: string;
+  commitUrl: string;
+}
+
+export interface GitHubFileUpdateClient {
+  updateFile(input: GitHubFileUpdateInput): Promise<GitHubFileUpdateResult>;
+}
+
 export interface ExecutionContext {
   tasks?: readonly ExecutionContextTask[];
   events?: readonly ExecutionContextEvent[];
@@ -219,6 +247,7 @@ export interface ExecutionContext {
   githubIssueCommentClient?: GitHubIssueCommentClient;
   githubFileContentClient?: GitHubFileContentClient;
   githubIssueUpdateClient?: GitHubIssueUpdateClient;
+  githubFileUpdateClient?: GitHubFileUpdateClient;
 }
 
 export interface ExecutionRequest {

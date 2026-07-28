@@ -591,6 +591,101 @@ describe("writeRuntime", () => {
     expect(result.safeSummary).toBe("Issue updated.");
   });
 
+  // EPIC-08 Slice 3 -- see docs/adr/ADR-0005-code-write-mutation-boundary.md.
+  it("runs an approved github.files.update proposal end-to-end and calls the client with the exact target fields", async () => {
+    const sourceStep = step({
+      id: "step:github-files-update",
+      title: "Update README.md",
+      description: "Commit an approved change to aryan/smartflow:README.md.",
+      domain: "github",
+      actionType: "update",
+      targetId: "aryan/smartflow:README.md",
+    });
+    const sourceResolution = resolution(sourceStep, "github.files.update", {
+      requiredInput: ["proposalId", "repo", "path", "proposedContent"],
+    });
+    const sourceApproval = approval(sourceStep, {
+      toolId: "github.files.update",
+      dataDomains: ["github"],
+      riskLevel: "high",
+      reversible: false,
+      previewText: "+hello world",
+    });
+    const updateFile = vi.fn().mockResolvedValue({
+      repo: "aryan/smartflow",
+      path: "README.md",
+      branch: "smartflow/epic-08/abc123def456",
+      commitSha: "commit-sha-new",
+      blobSha: "blob-sha-new",
+      commitUrl: "https://github.com/aryan/smartflow/commit/commit-sha-new",
+    });
+
+    const result = await runWriteTool(request({
+      requestId: "write:github-files-update",
+      step: sourceStep,
+      toolResolution: sourceResolution,
+      approval: sourceApproval,
+      target: {
+        proposalId: "code-proposal:abc",
+        repo: "aryan/smartflow",
+        path: "README.md",
+        proposedContent: "hello world\n",
+      },
+      executionContext: {
+        githubFileUpdateClient: { updateFile },
+      } as ExecutionContext,
+    }), {
+      getAuthenticatedUserId: () => "user-1",
+      now: () => now,
+    });
+
+    expect(updateFile).toHaveBeenCalledTimes(1);
+    expect(updateFile).toHaveBeenCalledWith({
+      proposalId: "code-proposal:abc",
+      repo: "aryan/smartflow",
+      path: "README.md",
+      proposedContent: "hello world\n",
+    });
+    expect(result.status).toBe("success");
+    expect(result.success).toBe(true);
+    expect(result.toolId).toBe("github.files.update");
+    expect(result.safeSummary).toBe("File updated.");
+  });
+
+  // Regression coverage: github.files.update is registered riskLevel "high"
+  // (Decision 6), not "medium" like the two EPIC-07 write tools -- a
+  // medium-risk approval must not be sufficient to run it.
+  it("rejects github.files.update with only a medium-risk approval", async () => {
+    const sourceStep = step({
+      id: "step:github-files-update-risk",
+      domain: "github",
+      actionType: "update",
+      targetId: "aryan/smartflow:README.md",
+    });
+    const sourceApproval = approval(sourceStep, {
+      toolId: "github.files.update",
+      dataDomains: ["github"],
+      riskLevel: "medium",
+      reversible: false,
+    });
+    const updateFile = vi.fn();
+
+    const result = await runWriteTool(request({
+      requestId: "write:github-files-update-risk",
+      step: sourceStep,
+      toolResolution: resolution(sourceStep, "github.files.update"),
+      approval: sourceApproval,
+      target: { proposalId: "p", repo: "aryan/smartflow", path: "README.md", proposedContent: "x" },
+      executionContext: { githubFileUpdateClient: { updateFile } } as ExecutionContext,
+    }), {
+      getAuthenticatedUserId: () => "user-1",
+      now: () => now,
+    });
+
+    expect(result.status).toBe("approval_required");
+    expect(updateFile).not.toHaveBeenCalled();
+  });
+
   // EPIC-08 Slice 2 -- see docs/roadmap/epic-08-write-code-design-v1.md.
   // Regression coverage for a bug where validateApprovalBoundary hardcoded
   // `approval.riskLevel !== "medium"` -- an exact-match check that happened

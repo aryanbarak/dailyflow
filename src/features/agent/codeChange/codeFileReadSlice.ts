@@ -3,12 +3,14 @@
 // Execution Policy / Execution Audit path) -> deterministic proposal -> diff
 // -> approval-preview data bound to one existing Approval Interaction shape.
 //
-// Deliberately stops here. "github.files.update" is not registered in the
-// Tool Registry and has no write handler -- there is nothing for this module
-// to execute, and it never attempts to. Any future attempt to run that tool
-// id fails closed through the existing, unmodified write boundary
-// (writeRuntime.ts's SUPPORTED_WRITE_TOOL_IDS / handler lookup), not through
-// bespoke blocking logic added here.
+// As of EPIC-08 Slice 3 (see docs/adr/ADR-0005-code-write-mutation-boundary.md),
+// "github.files.update" IS registered, with a real write handler
+// (handlers/githubFilesUpdateHandler.ts) and Worker mutation route. This
+// module's own scope is unchanged -- it only builds the read-side proposal
+// and the pending approval a reviewer would see; it still never executes a
+// mutation itself. Actually running the mutation additionally requires the
+// Slice 3 server-verifiable approval record (agent_code_proposal_approvals),
+// which this module does not create -- see codeProposalApprovalRecording.ts.
 
 import { executeAgentTool } from "../executionEngine";
 import { buildCodeProposalBinding } from "./codeProposalApproval";
@@ -26,12 +28,10 @@ import type {
 } from "./codeProposalTypes";
 import type { WorkspacePlanStep, WorkspaceStepApproval } from "../../workspace/workspaceTypes";
 
-// The eventual write tool this proposal is *for*. Intentionally not present
-// in tools/githubTools.ts, toolRegistry.ts, writeHandlers.ts, or
-// writeRuntime.ts's SUPPORTED_WRITE_TOOL_IDS -- naming it here is what makes
-// the approval preview meaningful to a reviewer, it does not register or
-// enable it.
-export const PROSPECTIVE_CODE_WRITE_TOOL_ID = "github.files.update";
+// The write tool this proposal is *for*. See tools/githubTools.ts for its
+// registration (riskLevel: "high") and handlers/githubFilesUpdateHandler.ts
+// for its handler.
+export const CODE_WRITE_TOOL_ID = "github.files.update";
 
 export type RequestCodeFileProposalStatus =
   | "proposed"
@@ -81,11 +81,13 @@ function toCodeFileReadResult(file: GitHubFileContentFile): CodeFileReadResult {
 }
 
 // Builds the pending approval a reviewer would see, bound to this exact
-// proposal's digests. Its toolId names PROSPECTIVE_CODE_WRITE_TOOL_ID, but
-// approveWorkspaceStep()/rejectWorkspaceStep() (approvalInteraction.ts) only
-// require a matching step/target/tool-id shape -- they do not require the
-// named tool to be registered, executable, or enabled. Approving this
-// object records a decision; it never executes anything.
+// proposal's digests. approveWorkspaceStep()/rejectWorkspaceStep()
+// (approvalInteraction.ts) only require a matching step/target/tool-id
+// shape -- they do not themselves execute anything. riskLevel must match
+// CODE_WRITE_TOOL_ID's actual registered risk (tools/githubTools.ts:
+// "high") -- writeRuntime.ts's approval-risk check requires the approval's
+// risk to be >= the tool's, and a mismatch here would make an otherwise
+// valid approval permanently unusable.
 function buildPendingApproval(
   step: WorkspacePlanStep,
   proposal: CodeFileProposal,
@@ -95,7 +97,7 @@ function buildPendingApproval(
   const approval: WorkspaceStepApproval = {
     stepId: step.id,
     targetId: `${proposal.repo}:${proposal.path}`,
-    toolId: PROSPECTIVE_CODE_WRITE_TOOL_ID,
+    toolId: CODE_WRITE_TOOL_ID,
     toolName: "Update a GitHub file",
     toolDescription: preview.executionScope,
     toolCapability: "update",
@@ -103,7 +105,7 @@ function buildPendingApproval(
     status: "pending",
     requiresApproval: true,
     approvalReason: "Proposes a change to an existing repository file.",
-    riskLevel: "medium",
+    riskLevel: "high",
     reversible: false,
     externalEffect: true,
     dataDomains: ["github"],

@@ -120,13 +120,20 @@ export async function checkStaleBase(
   return { stale: reasons.length > 0, reasons };
 }
 
+// EPIC-08 Slice 3 -- see docs/adr/ADR-0005-code-write-mutation-boundary.md.
+// Building and previewing a proposal is still read-only by itself -- these
+// statements describe THIS step, not whether a mutation capability exists
+// anywhere in the system (it now does: github.files.update). Committing the
+// change requires a separate, explicit approval-recording call and a
+// separate, explicit Run through the write boundary; neither happens here.
 const EXECUTION_SCOPE_STATEMENT =
-  "This can read and diff this one file. It cannot create a branch, create a commit, " +
-  "open a pull request, or modify any other file -- EPIC-08 Slice 1 has no mutation handler.";
+  "Building and previewing this proposal only reads and diffs this one file. It cannot create a branch, " +
+  "cannot create a commit, and cannot open a pull request by itself -- committing this change requires a " +
+  "separate, explicit approval and Run through the write boundary.";
 
 const RISK_STATEMENT =
-  "Read-only: no GitHub state changes as a result of this proposal. A future, separately " +
-  "approved capability would be required before any branch, commit, or pull request could be created.";
+  "No GitHub state changes as a result of building or viewing this proposal. A separate, explicit approval " +
+  "and Run action is required before any branch or commit is created.";
 
 function formatDiffStatsLine(proposal: CodeFileProposal): string {
   return `+${proposal.diff.addedLineCount} / -${proposal.diff.removedLineCount} lines`;

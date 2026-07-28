@@ -62,6 +62,17 @@ interface FakeOptions {
   branchFailureByRepo?: Record<string, number>
   fileContentByRepo?: Record<string, { sha: string; content: string; encoding?: string; size?: number; type?: string }>
   fileContentFailureByRepo?: Record<string, number>
+  // EPIC-08 Slice 3 -- see docs/adr/ADR-0005-code-write-mutation-boundary.md.
+  preseedApprovalRows?: Array<Record<string, unknown>>
+  approvalInsertStatus?: number
+  approvalClaimStatus?: number
+  createRefFailureByRepo?: Record<string, number>
+  putContentResultByRepo?: Record<string, { blobSha: string; commitSha: string; commitUrl: string } | number>
+  // Simulates a concurrent request winning the atomic claim between this
+  // request's SELECT (which still sees the row as unconsumed) and its own
+  // PATCH claim -- deterministically reproduces the TOCTOU race the atomic
+  // conditional update is designed to lose safely.
+  simulateApprovalRaceLoss?: boolean
 }
 
 function response(body: unknown, status = 200) {
@@ -79,6 +90,8 @@ function fakeProvider(options: FakeOptions = {}) {
   let writeLogSeq = 0
   const calls: Array<{ url: string; method: string; body?: string; authorization?: string }> = []
   const writeLogRows: Array<Record<string, unknown>> = (options.preseedWriteLogRows ?? []).map((row) => ({ ...row }))
+  const approvalRows: Array<Record<string, unknown>> = (options.preseedApprovalRows ?? []).map((row) => ({ consumed_at: null, ...row }))
+  let approvalSeq = 0
 
   const fetcher: typeof fetch = async (input, init = {}) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
@@ -176,6 +189,57 @@ function fakeProvider(options: FakeOptions = {}) {
       if (method === 'GET') {
         const userIdParam = parsed.searchParams.get('user_id')?.replace(/^eq\./, '')
         return response(writeLogRows.filter((item) => item.user_id === userIdParam).map((item) => ({ id: item.id })))
+      }
+    }
+
+    // EPIC-08 Slice 3 -- see docs/adr/ADR-0005-code-write-mutation-boundary.md.
+    if (parsed.pathname.includes('/rest/v1/agent_code_proposal_approvals')) {
+      if (method === 'POST') {
+        const status = options.approvalInsertStatus ?? 201
+        if (status >= 300) return response({ message: 'provider detail must not escape' }, status)
+        approvalSeq += 1
+        const row = { ...JSON.parse(body ?? '{}'), id: `approval-${approvalSeq}` } as Record<string, unknown>
+        approvalRows.push(row)
+        return response([row], status)
+      }
+      if (method === 'GET') {
+        const userIdParam = parsed.searchParams.get('user_id')?.replace(/^eq\./, '')
+        const proposalIdParam = parsed.searchParams.get('proposal_id')?.replace(/^eq\./, '')
+        const consumedNull = parsed.searchParams.get('consumed_at') === 'is.null'
+        let matches = approvalRows.filter((row) =>
+          (!userIdParam || row.user_id === userIdParam) &&
+          (!proposalIdParam || row.proposal_id === proposalIdParam) &&
+          (!consumedNull || row.consumed_at == null),
+        )
+        matches = matches.slice().sort((a, b) => String(b.approved_at).localeCompare(String(a.approved_at)))
+        const limitParam = Number(parsed.searchParams.get('limit') ?? matches.length)
+        matches = matches.slice(0, limitParam)
+        const fields = ['id', 'repo', 'path', 'base_blob_sha', 'base_commit_sha', 'proposed_content_digest', 'risk_level', 'expires_at']
+        const projected = matches.map((row) => Object.fromEntries(fields.map((field) => [field, row[field]])))
+        if (options.simulateApprovalRaceLoss) {
+          matches.forEach((row) => { row.consumed_at = new Date().toISOString() })
+        }
+        return response(projected)
+      }
+      if (method === 'PATCH') {
+        const status = options.approvalClaimStatus ?? 200
+        if (status >= 300) return response({ message: 'provider detail must not escape' }, status)
+        const idParam = parsed.searchParams.get('id')?.replace(/^eq\./, '')
+        const userIdParam = parsed.searchParams.get('user_id')?.replace(/^eq\./, '')
+        const proposalIdParam = parsed.searchParams.get('proposal_id')?.replace(/^eq\./, '')
+        const consumedNull = parsed.searchParams.get('consumed_at') === 'is.null'
+        const expiresGtParam = parsed.searchParams.get('expires_at')?.replace(/^gt\./, '')
+        const update = JSON.parse(body ?? '{}') as Record<string, unknown>
+        const row = approvalRows.find((item) =>
+          item.id === idParam &&
+          (!userIdParam || item.user_id === userIdParam) &&
+          (!proposalIdParam || item.proposal_id === proposalIdParam) &&
+          (!consumedNull || item.consumed_at == null) &&
+          (!expiresGtParam || new Date(String(item.expires_at)).getTime() > new Date(expiresGtParam).getTime()),
+        )
+        if (!row) return response([])
+        Object.assign(row, update)
+        return response([row])
       }
     }
 
@@ -299,6 +363,31 @@ function fakeProvider(options: FakeOptions = {}) {
           encoding: file.encoding ?? 'base64',
         })
       }
+      // EPIC-08 Slice 3 -- see docs/adr/ADR-0005-code-write-mutation-boundary.md.
+      if (contentsMatch && method === 'PUT') {
+        const key = `${decodeURIComponent(contentsMatch[1])}/${decodeURIComponent(contentsMatch[2])}`
+        const result = options.putContentResultByRepo?.[key]
+        if (typeof result === 'number') {
+          return response({ message: 'provider detail must not escape' }, result)
+        }
+        return response({
+          content: { sha: result?.blobSha ?? 'new-blob-sha' },
+          commit: {
+            sha: result?.commitSha ?? 'new-commit-sha',
+            html_url: result?.commitUrl ?? `https://github.com/${key}/commit/new-commit-sha`,
+          },
+        })
+      }
+      const refsMatch = parsed.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/git\/refs$/)
+      if (refsMatch && method === 'POST') {
+        const key = `${decodeURIComponent(refsMatch[1])}/${decodeURIComponent(refsMatch[2])}`
+        const failStatus = options.createRefFailureByRepo?.[key]
+        if (failStatus) {
+          return response({ message: 'Reference already exists' }, failStatus)
+        }
+        const requestBody = JSON.parse(body ?? '{}') as { ref?: string; sha?: string }
+        return response({ ref: requestBody.ref, object: { sha: requestBody.sha } }, 201)
+      }
       const labelsMatch = parsed.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/labels$/)
       if (labelsMatch) {
         const key = `${decodeURIComponent(labelsMatch[1])}/${decodeURIComponent(labelsMatch[2])}`
@@ -349,6 +438,7 @@ function fakeProvider(options: FakeOptions = {}) {
     set connection(value: Record<string, unknown> | undefined) { connection = value },
     set currentUser(value: string) { currentUser = value },
     get writeLogRows() { return writeLogRows },
+    get approvalRows() { return approvalRows },
   }
 }
 
@@ -2130,5 +2220,525 @@ describe('GitHub file read boundary (EPIC-08 Slice 1)', () => {
 
     expect(fake.writeLogRows).toHaveLength(0)
     expect(fake.calls.some((call) => call.url.includes('/rest/v1/agent_write_log'))).toBe(false)
+  })
+})
+
+// EPIC-08 Slice 3 -- see docs/adr/ADR-0005-code-write-mutation-boundary.md.
+// Controlled mutation of exactly one existing text file: a new non-default
+// branch, one commit, GitHub REST API only. The Worker is the mutation
+// trust boundary -- every test here either proves a fact is independently
+// server-derived (never trusted from the request), or proves the mutation
+// boundary fails closed before any GitHub write occurs.
+async function sha256Hex(value: string) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
+  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+async function expectedProposalId(input: {
+  repo: string
+  path: string
+  baseBlobSha: string
+  baseCommitSha: string
+  proposedContentDigest: string
+}) {
+  const canonical = [input.repo, input.path, input.baseBlobSha, input.baseCommitSha, input.proposedContentDigest].join('\n')
+  return `code-proposal:${await sha256Hex(canonical)}`
+}
+
+function expectedBranchName(proposalId: string) {
+  const digest = proposalId.startsWith('code-proposal:') ? proposalId.slice('code-proposal:'.length) : proposalId
+  return `smartflow/epic-08/${digest.replace(/[^a-f0-9]/gi, '').toLowerCase().slice(0, 12)}`
+}
+
+function toBase64(content: string) {
+  return Buffer.from(content, 'utf-8').toString('base64')
+}
+
+const CODE_REPO = 'owner/alpha'
+const CODE_PATH = 'README.md'
+const CODE_BASE_CONTENT = 'hello\n'
+const CODE_BASE_BLOB_SHA = 'blob-sha-1'
+const CODE_BASE_COMMIT_SHA = 'commit-sha-1'
+const CODE_PROPOSED_CONTENT = 'hello world\n'
+
+function codeFixtureProvider(overrides: Partial<FakeOptions> = {}) {
+  const fake = fakeProvider({
+    accessibleRepos: [CODE_REPO],
+    defaultBranchByRepo: { [CODE_REPO]: 'main' },
+    branchCommitShaByRepo: { [CODE_REPO]: CODE_BASE_COMMIT_SHA },
+    fileContentByRepo: { [CODE_REPO]: { sha: CODE_BASE_BLOB_SHA, content: toBase64(CODE_BASE_CONTENT) } },
+    ...overrides,
+  })
+  fake.connection = writeVerifiedConnection()
+  return fake
+}
+
+async function approveRequestBody(overrides: Record<string, unknown> = {}) {
+  const proposedContentDigest = await sha256Hex(CODE_PROPOSED_CONTENT)
+  const proposalId = await expectedProposalId({
+    repo: CODE_REPO,
+    path: CODE_PATH,
+    baseBlobSha: CODE_BASE_BLOB_SHA,
+    baseCommitSha: CODE_BASE_COMMIT_SHA,
+    proposedContentDigest,
+  })
+  return {
+    proposalId,
+    repo: CODE_REPO,
+    path: CODE_PATH,
+    proposedContent: CODE_PROPOSED_CONTENT,
+    ...overrides,
+  }
+}
+
+async function approveCodeProposal(
+  fake: ReturnType<typeof fakeProvider>,
+  overrides: Record<string, unknown> = {},
+  authenticated = true,
+) {
+  const body = await approveRequestBody(overrides)
+  return handleGitHubIntegrationRequest(
+    writeApiRequest('/github/code-proposals/approve', 'POST', body, authenticated),
+    env(),
+    fake.dependencies,
+  )
+}
+
+function updateRequestBody(proposalId: string, overrides: Record<string, unknown> = {}) {
+  return {
+    proposalId,
+    repo: CODE_REPO,
+    path: CODE_PATH,
+    proposedContent: CODE_PROPOSED_CONTENT,
+    ...overrides,
+  }
+}
+
+async function updateFile(
+  fake: ReturnType<typeof fakeProvider>,
+  proposalId: string,
+  overrides: Record<string, unknown> = {},
+  authenticated = true,
+) {
+  return handleGitHubIntegrationRequest(
+    writeApiRequest('/github/files/update', 'POST', updateRequestBody(proposalId, overrides), authenticated),
+    env(),
+    fake.dependencies,
+  )
+}
+
+// Runs a full, valid approve call and returns the resulting proposalId.
+async function approvedProposalId(fake: ReturnType<typeof fakeProvider>): Promise<string> {
+  const result = await approveCodeProposal(fake)
+  expect(result?.status).toBe(200)
+  const body = await result!.json() as { proposalId: string }
+  return body.proposalId
+}
+
+describe('EPIC-08 Slice 3: code proposal approval recording (POST /github/code-proposals/approve)', () => {
+  it('requires authentication before any provider call', async () => {
+    const fake = codeFixtureProvider()
+    const result = await approveCodeProposal(fake, {}, false)
+    expect(result?.status).toBe(401)
+    expect(fake.calls).toHaveLength(0)
+  })
+
+  it('rejects invalid repository or path before any provider call', async () => {
+    const fake = codeFixtureProvider()
+    const badRepo = await approveCodeProposal(fake, { repo: 'not-a-repo' })
+    expect(badRepo?.status).toBe(400)
+    const badPath = await approveCodeProposal(fake, { path: '../etc/passwd' })
+    expect(badPath?.status).toBe(400)
+    expect(fake.calls.some((call) => call.url.startsWith('https://api.github.com'))).toBe(false)
+  })
+
+  it('rejects a protected path', async () => {
+    const fake = codeFixtureProvider()
+    const result = await approveCodeProposal(fake, { path: '.env' })
+    expect(result?.status).toBe(400)
+    expect(fake.calls.some((call) => call.url.startsWith('https://api.github.com'))).toBe(false)
+  })
+
+  it('rejects binary proposed content', async () => {
+    const fake = codeFixtureProvider()
+    const result = await approveCodeProposal(fake, { proposedContent: 'abc\u0000def' })
+    expect(result?.status).toBe(400)
+    expect(await result?.json()).toMatchObject({ error: { code: 'FILE_NOT_UTF8' } })
+    expect(fake.calls.some((call) => call.url.startsWith('https://api.github.com'))).toBe(false)
+  })
+
+  it('rejects oversized proposed content', async () => {
+    const fake = codeFixtureProvider()
+    const result = await approveCodeProposal(fake, { proposedContent: 'x'.repeat(128 * 1024 + 1) })
+    expect(result?.status).toBe(400)
+    expect(await result?.json()).toMatchObject({ error: { code: 'FILE_TOO_LARGE' } })
+  })
+
+  it('derives base_blob_sha and base_commit_sha itself, ignoring any browser-supplied values', async () => {
+    const fake = codeFixtureProvider()
+    const result = await approveCodeProposal(fake, {
+      baseBlobSha: 'attacker-blob-sha',
+      baseCommitSha: 'attacker-commit-sha',
+    })
+    expect(result?.status).toBe(200)
+    const insertCall = fake.calls.find((call) => call.url.includes('/rest/v1/agent_code_proposal_approvals') && call.method === 'POST')
+    const inserted = JSON.parse(insertCall!.body!)
+    expect(inserted.base_blob_sha).toBe(CODE_BASE_BLOB_SHA)
+    expect(inserted.base_commit_sha).toBe(CODE_BASE_COMMIT_SHA)
+  })
+
+  it('computes proposed_content_digest itself, ignoring any browser-supplied digest', async () => {
+    const fake = codeFixtureProvider()
+    const result = await approveCodeProposal(fake, { proposedContentDigest: 'attacker-digest' })
+    expect(result?.status).toBe(200)
+    const insertCall = fake.calls.find((call) => call.url.includes('/rest/v1/agent_code_proposal_approvals') && call.method === 'POST')
+    const inserted = JSON.parse(insertCall!.body!)
+    expect(inserted.proposed_content_digest).toBe(await sha256Hex(CODE_PROPOSED_CONTENT))
+    expect(inserted.proposed_content_digest).not.toBe('attacker-digest')
+  })
+
+  it('derives risk_level from the registered tool definition, ignoring any browser-supplied riskLevel', async () => {
+    const fake = codeFixtureProvider()
+    const result = await approveCodeProposal(fake, { riskLevel: 'none' })
+    expect(result?.status).toBe(200)
+    const insertCall = fake.calls.find((call) => call.url.includes('/rest/v1/agent_code_proposal_approvals') && call.method === 'POST')
+    const inserted = JSON.parse(insertCall!.body!)
+    expect(inserted.risk_level).toBe('high')
+  })
+
+  it('rejects when the client-supplied proposalId does not match the server-derived one', async () => {
+    const fake = codeFixtureProvider()
+    const result = await approveCodeProposal(fake, { proposalId: `code-proposal:${'0'.repeat(64)}` })
+    expect(result?.status).toBe(409)
+    expect(await result?.json()).toMatchObject({ error: { code: 'PROPOSAL_ID_MISMATCH' } })
+  })
+
+  it("sets expires_at to exactly 15 minutes after the server clock's approved_at", async () => {
+    const fake = codeFixtureProvider()
+    const result = await approveCodeProposal(fake)
+    expect(result?.status).toBe(200)
+    const body = await result!.json() as { expiresAt: string }
+    expect(body.expiresAt).toBe('2026-07-22T10:15:00.000Z')
+  })
+
+  it('records a valid approval end-to-end with the exact response shape', async () => {
+    const fake = codeFixtureProvider()
+    const proposalId = await expectedProposalId({
+      repo: CODE_REPO,
+      path: CODE_PATH,
+      baseBlobSha: CODE_BASE_BLOB_SHA,
+      baseCommitSha: CODE_BASE_COMMIT_SHA,
+      proposedContentDigest: await sha256Hex(CODE_PROPOSED_CONTENT),
+    })
+    const result = await approveCodeProposal(fake)
+    expect(result?.status).toBe(200)
+    expect(await result?.json()).toEqual({ proposalId, expiresAt: '2026-07-22T10:15:00.000Z' })
+  })
+})
+
+describe('EPIC-08 Slice 3: code mutation (POST /github/files/update)', () => {
+  it('requires authentication before any provider call', async () => {
+    const fake = codeFixtureProvider()
+    const proposalId = await approvedProposalId(fake)
+    const callsBeforeUpdate = fake.calls.length
+    const result = await updateFile(fake, proposalId, {}, false)
+    expect(result?.status).toBe(401)
+    expect(fake.calls).toHaveLength(callsBeforeUpdate)
+  })
+
+  it('rejects when no matching unconsumed approval exists', async () => {
+    const fake = codeFixtureProvider()
+    const result = await updateFile(fake, `code-proposal:${'1'.repeat(64)}`)
+    expect(result?.status).toBe(409)
+    expect(await result?.json()).toMatchObject({ error: { code: 'APPROVAL_NOT_FOUND' } })
+    expect(fake.calls.some((call) => call.url.includes('/git/refs'))).toBe(false)
+  })
+
+  it('rejects when the approval repo/path does not match the request', async () => {
+    const fake = codeFixtureProvider()
+    const proposalId = await approvedProposalId(fake)
+    const result = await updateFile(fake, proposalId, { path: 'OTHER.md' })
+    expect(result?.status).toBe(409)
+    expect(await result?.json()).toMatchObject({ error: { code: 'APPROVAL_MISMATCH' } })
+    expect(fake.calls.some((call) => call.url.includes('/git/refs'))).toBe(false)
+  })
+
+  it('rejects when the request content no longer matches the approved digest', async () => {
+    const fake = codeFixtureProvider()
+    const proposalId = await approvedProposalId(fake)
+    const result = await updateFile(fake, proposalId, { proposedContent: 'a different body\n' })
+    expect(result?.status).toBe(409)
+    expect(await result?.json()).toMatchObject({ error: { code: 'CONTENT_MISMATCH' } })
+    expect(fake.calls.some((call) => call.url.includes('/git/refs'))).toBe(false)
+  })
+
+  it('rejects an insufficient risk level', async () => {
+    const proposalId = await expectedProposalId({
+      repo: CODE_REPO,
+      path: CODE_PATH,
+      baseBlobSha: CODE_BASE_BLOB_SHA,
+      baseCommitSha: CODE_BASE_COMMIT_SHA,
+      proposedContentDigest: await sha256Hex(CODE_PROPOSED_CONTENT),
+    })
+    const fake = codeFixtureProvider({
+      preseedApprovalRows: [{
+        id: 'approval-low-risk',
+        user_id: USER_ONE,
+        proposal_id: proposalId,
+        repo: CODE_REPO,
+        path: CODE_PATH,
+        base_blob_sha: CODE_BASE_BLOB_SHA,
+        base_commit_sha: CODE_BASE_COMMIT_SHA,
+        proposed_content_digest: await sha256Hex(CODE_PROPOSED_CONTENT),
+        risk_level: 'medium',
+        approved_at: NOW.toISOString(),
+        expires_at: new Date(NOW.getTime() + 15 * 60 * 1000).toISOString(),
+      }],
+    })
+    const result = await updateFile(fake, proposalId)
+    expect(result?.status).toBe(409)
+    expect(await result?.json()).toMatchObject({ error: { code: 'RISK_INSUFFICIENT' } })
+    expect(fake.calls.some((call) => call.url.includes('/git/refs'))).toBe(false)
+  })
+
+  it('rejects an expired approval', async () => {
+    const proposalId = await expectedProposalId({
+      repo: CODE_REPO,
+      path: CODE_PATH,
+      baseBlobSha: CODE_BASE_BLOB_SHA,
+      baseCommitSha: CODE_BASE_COMMIT_SHA,
+      proposedContentDigest: await sha256Hex(CODE_PROPOSED_CONTENT),
+    })
+    const fake = codeFixtureProvider({
+      preseedApprovalRows: [{
+        id: 'approval-expired',
+        user_id: USER_ONE,
+        proposal_id: proposalId,
+        repo: CODE_REPO,
+        path: CODE_PATH,
+        base_blob_sha: CODE_BASE_BLOB_SHA,
+        base_commit_sha: CODE_BASE_COMMIT_SHA,
+        proposed_content_digest: await sha256Hex(CODE_PROPOSED_CONTENT),
+        risk_level: 'high',
+        approved_at: new Date(NOW.getTime() - 60 * 60 * 1000).toISOString(),
+        expires_at: new Date(NOW.getTime() - 45 * 60 * 1000).toISOString(),
+      }],
+    })
+    const result = await updateFile(fake, proposalId)
+    expect(result?.status).toBe(409)
+    expect(await result?.json()).toMatchObject({ error: { code: 'APPROVAL_EXPIRED' } })
+    expect(fake.calls.some((call) => call.url.includes('/git/refs'))).toBe(false)
+  })
+
+  it('is single-use: a second mutation attempt with the same approval fails', async () => {
+    const fake = codeFixtureProvider({
+      putContentResultByRepo: { [CODE_REPO]: { blobSha: 'new-blob', commitSha: 'new-commit', commitUrl: 'https://github.com/owner/alpha/commit/new-commit' } },
+    })
+    const proposalId = await approvedProposalId(fake)
+    const first = await updateFile(fake, proposalId)
+    expect(first?.status).toBe(200)
+    const refPostsAfterFirst = fake.calls.filter((call) => call.url.includes('/git/refs')).length
+
+    const second = await updateFile(fake, proposalId)
+    expect(second?.status).toBe(409)
+    expect(await second?.json()).toMatchObject({ error: { code: 'APPROVAL_NOT_FOUND' } })
+    expect(fake.calls.filter((call) => call.url.includes('/git/refs')).length).toBe(refPostsAfterFirst)
+  })
+
+  it('makes no GitHub mutation call when the approval claim loses a race', async () => {
+    const fake = codeFixtureProvider({ simulateApprovalRaceLoss: true })
+    const proposalId = await approvedProposalId(fake)
+    const result = await updateFile(fake, proposalId)
+    expect(result?.status).toBe(409)
+    expect(await result?.json()).toMatchObject({ error: { code: 'APPROVAL_ALREADY_CONSUMED' } })
+    expect(fake.calls.some((call) => call.url.includes('/git/refs'))).toBe(false)
+    expect(fake.calls.some((call) => call.method === 'PUT' && call.url.includes('/contents/'))).toBe(false)
+  })
+
+  it('never leaves a dangling pending write-log row when the approval claim fails', async () => {
+    const fake = codeFixtureProvider({ simulateApprovalRaceLoss: true })
+    const proposalId = await approvedProposalId(fake)
+    await updateFile(fake, proposalId)
+    expect(fake.writeLogRows).toHaveLength(1)
+    expect(fake.writeLogRows[0].status).toBe('failed')
+    expect(fake.writeLogRows[0].github_response).toMatchObject({ code: 'APPROVAL_ALREADY_CONSUMED' })
+  })
+
+  it('rejects a changed blob SHA (stale base) and makes no mutation call', async () => {
+    const fake = codeFixtureProvider()
+    const proposalId = await approvedProposalId(fake)
+    const staleFake = codeFixtureProvider({
+      preseedApprovalRows: fake.approvalRows,
+      fileContentByRepo: { [CODE_REPO]: { sha: 'blob-sha-changed', content: toBase64(CODE_BASE_CONTENT) } },
+    })
+    const result = await updateFile(staleFake, proposalId)
+    expect(result?.status).toBe(409)
+    expect(await result?.json()).toMatchObject({ error: { code: 'STALE_BASE' } })
+    expect(staleFake.calls.some((call) => call.url.includes('/git/refs'))).toBe(false)
+    expect(staleFake.calls.some((call) => call.method === 'PUT' && call.url.includes('/contents/'))).toBe(false)
+  })
+
+  it('rejects a changed default-branch commit SHA (stale base) and makes no mutation call', async () => {
+    const fake = codeFixtureProvider()
+    const proposalId = await approvedProposalId(fake)
+    const staleFake = codeFixtureProvider({
+      preseedApprovalRows: fake.approvalRows,
+      branchCommitShaByRepo: { [CODE_REPO]: 'commit-sha-changed' },
+    })
+    const result = await updateFile(staleFake, proposalId)
+    expect(result?.status).toBe(409)
+    expect(await result?.json()).toMatchObject({ error: { code: 'STALE_BASE' } })
+    expect(staleFake.calls.some((call) => call.url.includes('/git/refs'))).toBe(false)
+  })
+
+  it('creates the exact expected branch name and never targets the default branch', async () => {
+    const fake = codeFixtureProvider({
+      putContentResultByRepo: { [CODE_REPO]: { blobSha: 'new-blob', commitSha: 'new-commit', commitUrl: 'https://github.com/owner/alpha/commit/new-commit' } },
+    })
+    const proposalId = await approvedProposalId(fake)
+    const result = await updateFile(fake, proposalId)
+    expect(result?.status).toBe(200)
+
+    const refCall = fake.calls.find((call) => call.url.includes('/git/refs'))
+    const refBody = JSON.parse(refCall!.body!)
+    expect(refBody.ref).toBe(`refs/heads/${expectedBranchName(proposalId)}`)
+    expect(refBody.sha).toBe(CODE_BASE_COMMIT_SHA)
+    expect(refBody.ref).not.toBe('refs/heads/main')
+
+    const putCall = fake.calls.find((call) => call.method === 'PUT' && call.url.includes('/contents/'))
+    const putBody = JSON.parse(putCall!.body!)
+    expect(putBody.branch).toBe(expectedBranchName(proposalId))
+    expect(putBody.branch).not.toBe('main')
+  })
+
+  it('rejects a branch collision', async () => {
+    const fake = codeFixtureProvider({ createRefFailureByRepo: { [CODE_REPO]: 422 } })
+    const proposalId = await approvedProposalId(fake)
+    const result = await updateFile(fake, proposalId)
+    expect(result?.status).toBe(409)
+    expect(await result?.json()).toMatchObject({ error: { code: 'BRANCH_COLLISION' } })
+    expect(fake.calls.some((call) => call.url.includes('/contents/') && call.method === 'PUT')).toBe(false)
+  })
+
+  it('succeeds: creates one branch and one commit, returning the exact response shape', async () => {
+    const fake = codeFixtureProvider({
+      putContentResultByRepo: {
+        [CODE_REPO]: { blobSha: 'new-blob-sha', commitSha: 'new-commit-sha', commitUrl: 'https://github.com/owner/alpha/commit/new-commit-sha' },
+      },
+    })
+    const proposalId = await approvedProposalId(fake)
+    const result = await updateFile(fake, proposalId)
+    expect(result?.status).toBe(200)
+    expect(await result?.json()).toEqual({
+      repo: CODE_REPO,
+      path: CODE_PATH,
+      branch: expectedBranchName(proposalId),
+      commitSha: 'new-commit-sha',
+      blobSha: 'new-blob-sha',
+      commitUrl: 'https://github.com/owner/alpha/commit/new-commit-sha',
+    })
+    expect(fake.calls.filter((call) => call.url.includes('/git/refs')).length).toBe(1)
+    expect(fake.calls.filter((call) => call.method === 'PUT' && call.url.includes('/contents/')).length).toBe(1)
+  })
+
+  it('sends the correct Contents API payload', async () => {
+    const fake = codeFixtureProvider({
+      putContentResultByRepo: { [CODE_REPO]: { blobSha: 'new-blob', commitSha: 'new-commit', commitUrl: 'https://github.com/owner/alpha/commit/new-commit' } },
+    })
+    const proposalId = await approvedProposalId(fake)
+    await updateFile(fake, proposalId, { commitMessage: 'Fix the README' })
+
+    const putCall = fake.calls.find((call) => call.method === 'PUT' && call.url.includes('/contents/'))
+    const putBody = JSON.parse(putCall!.body!)
+    expect(putBody).toEqual({
+      message: 'Fix the README',
+      content: toBase64(CODE_PROPOSED_CONTENT),
+      sha: CODE_BASE_BLOB_SHA,
+      branch: expectedBranchName(proposalId),
+    })
+  })
+
+  it('records a partial failure when branch creation succeeds but the commit fails, and leaves the branch alone', async () => {
+    const fake = codeFixtureProvider({ putContentResultByRepo: { [CODE_REPO]: 500 } })
+    const proposalId = await approvedProposalId(fake)
+    const result = await updateFile(fake, proposalId)
+
+    expect(result?.status).toBe(502)
+    expect(await result?.json()).toMatchObject({ error: { code: 'PARTIAL_MUTATION' } })
+    expect(fake.calls.filter((call) => call.url.includes('/git/refs')).length).toBe(1)
+    expect(fake.writeLogRows).toHaveLength(1)
+    expect(fake.writeLogRows[0].status).toBe('failed')
+    expect(fake.writeLogRows[0].github_response).toMatchObject({
+      partial: true,
+      createdBranch: expectedBranchName(proposalId),
+      reason: 'commit_failed',
+    })
+
+    // No retry: attempting again with the same (now-consumed) approval must
+    // not create a second branch or repeat the commit attempt.
+    const second = await updateFile(fake, proposalId)
+    expect(second?.status).toBe(409)
+    expect(await second?.json()).toMatchObject({ error: { code: 'APPROVAL_NOT_FOUND' } })
+    expect(fake.calls.filter((call) => call.url.includes('/git/refs')).length).toBe(1)
+  })
+
+  it('enforces the write rate limit before consulting the approval', async () => {
+    const proposalId = await expectedProposalId({
+      repo: CODE_REPO,
+      path: CODE_PATH,
+      baseBlobSha: CODE_BASE_BLOB_SHA,
+      baseCommitSha: CODE_BASE_COMMIT_SHA,
+      proposedContentDigest: await sha256Hex(CODE_PROPOSED_CONTENT),
+    })
+    const fake = codeFixtureProvider({
+      preseedWriteLogRows: Array.from({ length: 5 }, (_, index) => ({
+        id: `existing-${index}`,
+        user_id: USER_ONE,
+        created_at: new Date(NOW.getTime() - 5 * 60 * 1000).toISOString(),
+      })),
+      preseedApprovalRows: [{
+        id: 'approval-rate-limited',
+        user_id: USER_ONE,
+        proposal_id: proposalId,
+        repo: CODE_REPO,
+        path: CODE_PATH,
+        base_blob_sha: CODE_BASE_BLOB_SHA,
+        base_commit_sha: CODE_BASE_COMMIT_SHA,
+        proposed_content_digest: await sha256Hex(CODE_PROPOSED_CONTENT),
+        risk_level: 'high',
+        approved_at: NOW.toISOString(),
+        expires_at: new Date(NOW.getTime() + 15 * 60 * 1000).toISOString(),
+      }],
+    })
+    const result = await updateFile(fake, proposalId)
+    expect(result?.status).toBe(429)
+    expect(await result?.json()).toMatchObject({ error: { code: 'WRITE_RATE_LIMIT_EXCEEDED' } })
+    expect(fake.calls.some((call) => call.url.includes('/git/refs'))).toBe(false)
+  })
+
+  it('inserts a pending agent_write_log row before consuming the approval', async () => {
+    const fake = codeFixtureProvider({
+      putContentResultByRepo: { [CODE_REPO]: { blobSha: 'new-blob', commitSha: 'new-commit', commitUrl: 'https://github.com/owner/alpha/commit/new-commit' } },
+    })
+    const proposalId = await approvedProposalId(fake)
+    await updateFile(fake, proposalId)
+
+    const writeLogPostIndex = fake.calls.findIndex((call) => call.url.includes('/rest/v1/agent_write_log') && call.method === 'POST')
+    const claimPatchIndex = fake.calls.findIndex((call) =>
+      call.url.includes('/rest/v1/agent_code_proposal_approvals') && call.method === 'PATCH',
+    )
+    expect(writeLogPostIndex).toBeGreaterThanOrEqual(0)
+    expect(claimPatchIndex).toBeGreaterThan(writeLogPostIndex)
+  })
+
+  it('records a terminal executed write-log row after success', async () => {
+    const fake = codeFixtureProvider({
+      putContentResultByRepo: { [CODE_REPO]: { blobSha: 'new-blob', commitSha: 'new-commit', commitUrl: 'https://github.com/owner/alpha/commit/new-commit' } },
+    })
+    const proposalId = await approvedProposalId(fake)
+    await updateFile(fake, proposalId)
+
+    expect(fake.writeLogRows).toHaveLength(1)
+    expect(fake.writeLogRows[0]).toMatchObject({ status: 'executed', tool_id: 'github.files.update' })
   })
 })
