@@ -177,6 +177,33 @@ export interface GitHubIssueUpdateClient {
   updateIssue(input: GitHubIssueUpdateInput): Promise<GitHubIssueUpdateResult>;
 }
 
+// EPIC-08 Slice 1 -- see docs/roadmap/epic-08-write-code-design-v1.md.
+// Authenticated, bounded, single-file read only. No write counterpart exists
+// yet; SUPPORTED_WRITE_TOOL_IDS in writeRuntime.ts is unchanged by this type.
+export interface GitHubFileContentInput {
+  repo: string;
+  path: string;
+}
+
+export interface GitHubFileContentFile {
+  repo: string;
+  path: string;
+  branch: string;
+  blobSha: string;
+  commitSha: string;
+  content: string;
+  size: number;
+}
+
+export interface GitHubFileContentResult {
+  connectionStatus: "connected" | "not_connected";
+  file: GitHubFileContentFile | null;
+}
+
+export interface GitHubFileContentClient {
+  readFile(input: GitHubFileContentInput): Promise<GitHubFileContentResult>;
+}
+
 export interface ExecutionContext {
   tasks?: readonly ExecutionContextTask[];
   events?: readonly ExecutionContextEvent[];
@@ -190,6 +217,7 @@ export interface ExecutionContext {
   githubPullRequestsClient?: GitHubPullRequestsClient;
   githubWorkflowRunsClient?: GitHubWorkflowRunsClient;
   githubIssueCommentClient?: GitHubIssueCommentClient;
+  githubFileContentClient?: GitHubFileContentClient;
   githubIssueUpdateClient?: GitHubIssueUpdateClient;
 }
 

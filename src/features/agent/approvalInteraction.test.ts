@@ -243,4 +243,41 @@ describe("approvalInteraction", () => {
     expect(findApprovalPresentationTool(step())?.id).toBeUndefined();
     expect(findApprovalPresentationTool(step({ domain: "finance", actionType: "pay" }))).toBeNull();
   });
+
+  // EPIC-08 Slice 1 -- see docs/roadmap/epic-08-write-code-design-v1.md.
+  it("carries a code proposal's binding (base blob SHA, base commit SHA, digest) through approve and reject unchanged", () => {
+    const binding = {
+      repo: "aryan/smartflow",
+      path: "README.md",
+      baseBlobSha: "blob-sha-1",
+      baseCommitSha: "commit-sha-1",
+      proposedContentDigest: "a".repeat(64),
+    };
+    const approval = stepApproval({
+      dataDomains: ["github"],
+      previewText: "--- a/README.md\n+++ b/README.md\n",
+      codeProposalBinding: binding,
+    });
+
+    const approved = approveWorkspaceStep({ now, step: step(), stepApproval: approval });
+    expect(approved.ok).toBe(true);
+    if (approved.ok) {
+      expect(approved.approval?.codeProposalBinding).toEqual(binding);
+      expect(approved.approval?.previewText).toBe(approval.previewText);
+    }
+
+    const rejected = rejectWorkspaceStep({ now, step: step(), stepApproval: approval });
+    expect(rejected.ok).toBe(true);
+    if (rejected.ok) {
+      expect(rejected.approval?.codeProposalBinding).toEqual(binding);
+    }
+  });
+
+  it("omits codeProposalBinding entirely for approvals that never had one (e.g. tasks.complete)", () => {
+    const result = approveWorkspaceStep({ now, step: step(), stepApproval: stepApproval() });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.approval).not.toHaveProperty("codeProposalBinding");
+    }
+  });
 });

@@ -109,6 +109,7 @@ function cloneApproval(
     dataDomains: [...source.dataDomains],
     approvalScope,
     ...(source.previewText ? { previewText: source.previewText } : {}),
+    ...(source.codeProposalBinding ? { codeProposalBinding: source.codeProposalBinding } : {}),
   });
 }
 

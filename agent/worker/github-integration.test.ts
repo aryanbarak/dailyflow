@@ -56,6 +56,12 @@ interface FakeOptions {
   writeLogInsertStatus?: number
   writeLogUpdateStatus?: number
   preseedWriteLogRows?: Array<Record<string, unknown>>
+  // EPIC-08 Slice 1 -- see docs/roadmap/epic-08-write-code-design-v1.md.
+  defaultBranchByRepo?: Record<string, string>
+  branchCommitShaByRepo?: Record<string, string>
+  branchFailureByRepo?: Record<string, number>
+  fileContentByRepo?: Record<string, { sha: string; content: string; encoding?: string; size?: number; type?: string }>
+  fileContentFailureByRepo?: Record<string, number>
 }
 
 function response(body: unknown, status = 200) {
@@ -253,8 +259,45 @@ function fakeProvider(options: FakeOptions = {}) {
         const key = `${decodeURIComponent(repoAccessMatch[1])}/${decodeURIComponent(repoAccessMatch[2])}`
         const accessible = options.accessibleRepos ? options.accessibleRepos.includes(key) : true
         return accessible
-          ? response({ id: 1, name: repoAccessMatch[2], owner: { login: repoAccessMatch[1] } })
+          ? response({
+            id: 1,
+            name: repoAccessMatch[2],
+            owner: { login: repoAccessMatch[1] },
+            default_branch: options.defaultBranchByRepo?.[key] ?? 'main',
+          })
           : response({ message: 'provider detail must not escape' }, 404)
+      }
+      // EPIC-08 Slice 1 -- see docs/roadmap/epic-08-write-code-design-v1.md.
+      const branchMatch = parsed.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/branches\/([^/]+)$/)
+      if (branchMatch && method === 'GET') {
+        const key = `${decodeURIComponent(branchMatch[1])}/${decodeURIComponent(branchMatch[2])}`
+        const failStatus = options.branchFailureByRepo?.[key]
+        if (failStatus) {
+          return response({ message: 'provider detail must not escape' }, failStatus)
+        }
+        return response({
+          name: decodeURIComponent(branchMatch[3]),
+          commit: { sha: options.branchCommitShaByRepo?.[key] ?? 'commit-sha-main' },
+        })
+      }
+      const contentsMatch = parsed.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/contents\/(.+)$/)
+      if (contentsMatch && method === 'GET') {
+        const key = `${decodeURIComponent(contentsMatch[1])}/${decodeURIComponent(contentsMatch[2])}`
+        const failStatus = options.fileContentFailureByRepo?.[key]
+        if (failStatus) {
+          return response({ message: 'provider detail must not escape' }, failStatus)
+        }
+        const file = options.fileContentByRepo?.[key]
+        if (!file) {
+          return response({ message: 'provider detail must not escape' }, 404)
+        }
+        return response({
+          type: file.type ?? 'file',
+          sha: file.sha,
+          size: file.size ?? file.content.length,
+          content: file.content,
+          encoding: file.encoding ?? 'base64',
+        })
       }
       const labelsMatch = parsed.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/labels$/)
       if (labelsMatch) {
@@ -1869,5 +1912,223 @@ describe('GitHub issue update write boundary', () => {
       fake.dependencies,
     )
     expect(result?.status).toBe(200)
+  })
+})
+
+// EPIC-08 Slice 1 -- see docs/roadmap/epic-08-write-code-design-v1.md.
+// Read-only: no branch, no commit, no pull request, no mutation. Every test
+// in this block asserts the boundary holds, not only the happy path.
+describe('GitHub file read boundary (EPIC-08 Slice 1)', () => {
+  function base64(content: string) {
+    return Buffer.from(content, 'utf-8').toString('base64')
+  }
+
+  function readRequest(query: string, authenticated = true) {
+    return apiRequest(`/github/files/read?${query}`, 'GET', authenticated)
+  }
+
+  it('requires authentication before any provider call', async () => {
+    const fake = fakeProvider()
+    fake.connection = writeVerifiedConnection()
+    const result = await handleGitHubIntegrationRequest(
+      readRequest('repo=owner/alpha&path=README.md', false),
+      env(),
+      fake.dependencies,
+    )
+    expect(result?.status).toBe(401)
+    expect(fake.calls).toHaveLength(0)
+  })
+
+  it('rejects a missing or malformed repo or path before any provider call', async () => {
+    const fake = fakeProvider()
+    fake.connection = writeVerifiedConnection()
+
+    const missingPath = await handleGitHubIntegrationRequest(readRequest('repo=owner/alpha'), env(), fake.dependencies)
+    expect(missingPath?.status).toBe(400)
+    expect(await missingPath?.json()).toMatchObject({ error: { code: 'WRITE_INPUT_INVALID' } })
+
+    const missingRepo = await handleGitHubIntegrationRequest(readRequest('path=README.md'), env(), fake.dependencies)
+    expect(missingRepo?.status).toBe(400)
+
+    const malformedRepo = await handleGitHubIntegrationRequest(readRequest('repo=not-a-repo&path=README.md'), env(), fake.dependencies)
+    expect(malformedRepo?.status).toBe(400)
+
+    expect(fake.calls.some((call) => call.url.startsWith('https://api.github.com'))).toBe(false)
+  })
+
+  it.each([
+    ['traversal', 'repo=owner/alpha&path=..%2Fetc%2Fpasswd'],
+    ['absolute path', 'repo=owner/alpha&path=%2Fetc%2Fpasswd'],
+    ['.env', 'repo=owner/alpha&path=.env'],
+    ['.env.production', 'repo=owner/alpha&path=.env.production'],
+    ['nested .git', 'repo=owner/alpha&path=vendor%2F.git%2Fconfig'],
+    ['github workflow', 'repo=owner/alpha&path=.github%2Fworkflows%2Fci.yml'],
+    ['private key', 'repo=owner/alpha&path=deploy%2Fid_rsa'],
+    ['pem certificate', 'repo=owner/alpha&path=certs%2Fserver.pem'],
+  ] as const)('rejects a protected or invalid path (%s) before any provider call', async (_label, query) => {
+    const fake = fakeProvider()
+    fake.connection = writeVerifiedConnection()
+    const result = await handleGitHubIntegrationRequest(readRequest(query), env(), fake.dependencies)
+    expect(result?.status).toBe(400)
+    expect(fake.calls.some((call) => call.url.startsWith('https://api.github.com'))).toBe(false)
+  })
+
+  it('accepts an id_rsa.pub public key path -- only the private-key basename is protected', async () => {
+    const fake = fakeProvider({
+      accessibleRepos: ['owner/alpha'],
+      fileContentByRepo: { 'owner/alpha': { sha: 'blob-sha-1', content: base64('ssh-rsa AAAA...') } },
+    })
+    fake.connection = writeVerifiedConnection()
+    const result = await handleGitHubIntegrationRequest(
+      readRequest('repo=owner/alpha&path=deploy%2Fid_rsa.pub'),
+      env(),
+      fake.dependencies,
+    )
+    expect(result?.status).toBe(200)
+  })
+
+  it('rejects a repository outside the verified installation', async () => {
+    const fake = fakeProvider({ accessibleRepos: ['owner/other'] })
+    fake.connection = writeVerifiedConnection()
+    const result = await handleGitHubIntegrationRequest(
+      readRequest('repo=owner/alpha&path=README.md'),
+      env(),
+      fake.dependencies,
+    )
+    expect(result?.status).toBe(409)
+    expect(await result?.json()).toMatchObject({ error: { code: 'REPOSITORY_NOT_ACCESSIBLE' } })
+  })
+
+  it('reads the default branch head commit and file content, and returns exactly the sanitized shape', async () => {
+    const fake = fakeProvider({
+      accessibleRepos: ['owner/alpha'],
+      defaultBranchByRepo: { 'owner/alpha': 'main' },
+      branchCommitShaByRepo: { 'owner/alpha': 'commit-sha-abc' },
+      fileContentByRepo: { 'owner/alpha': { sha: 'blob-sha-1', content: base64('hello world\n') } },
+    })
+    fake.connection = writeVerifiedConnection()
+    const result = await handleGitHubIntegrationRequest(
+      readRequest('repo=owner/alpha&path=README.md'),
+      env(),
+      fake.dependencies,
+    )
+    expect(result?.status).toBe(200)
+    const body = await result!.json()
+    expect(body).toEqual({
+      repo: 'owner/alpha',
+      path: 'README.md',
+      branch: 'main',
+      blobSha: 'blob-sha-1',
+      commitSha: 'commit-sha-abc',
+      content: 'hello world\n',
+      size: 12,
+    })
+    expect(fake.calls.some((call) => call.url.includes('/branches/main'))).toBe(true)
+    expect(fake.calls.some((call) => call.url.includes('/contents/README.md'))).toBe(true)
+    expect(JSON.stringify(body)).not.toContain('ghs_transient-installation-token')
+  })
+
+  it('reads a nested path using the repository default branch, never a caller-supplied ref', async () => {
+    const fake = fakeProvider({
+      accessibleRepos: ['owner/alpha'],
+      defaultBranchByRepo: { 'owner/alpha': 'develop' },
+      branchCommitShaByRepo: { 'owner/alpha': 'commit-sha-develop' },
+      fileContentByRepo: { 'owner/alpha': { sha: 'blob-sha-2', content: base64('export const x = 1;\n') } },
+    })
+    fake.connection = writeVerifiedConnection()
+    const result = await handleGitHubIntegrationRequest(
+      readRequest('repo=owner/alpha&path=src%2Findex.ts&ref=some-other-branch'),
+      env(),
+      fake.dependencies,
+    )
+    expect(result?.status).toBe(200)
+    const body = await result!.json() as { branch: string }
+    expect(body.branch).toBe('develop')
+    expect(fake.calls.some((call) => call.url.includes('/branches/develop'))).toBe(true)
+    expect(fake.calls.some((call) => call.url.includes('ref=some-other-branch'))).toBe(false)
+  })
+
+  it('rejects a non-file path (directory) without exposing the raw provider shape', async () => {
+    const fake = fakeProvider({
+      accessibleRepos: ['owner/alpha'],
+      fileContentByRepo: { 'owner/alpha': { sha: 'tree-sha', content: '', type: 'dir' } },
+    })
+    fake.connection = writeVerifiedConnection()
+    const result = await handleGitHubIntegrationRequest(
+      readRequest('repo=owner/alpha&path=src'),
+      env(),
+      fake.dependencies,
+    )
+    expect(result?.status).toBe(400)
+    expect(await result?.json()).toMatchObject({ error: { code: 'FILE_NOT_A_TEXT_FILE' } })
+  })
+
+  it('rejects a file over the 128 KiB size limit before decoding its content', async () => {
+    const fake = fakeProvider({
+      accessibleRepos: ['owner/alpha'],
+      fileContentByRepo: {
+        'owner/alpha': { sha: 'blob-sha-big', content: base64('x'.repeat(10)), size: 128 * 1024 + 1 },
+      },
+    })
+    fake.connection = writeVerifiedConnection()
+    const result = await handleGitHubIntegrationRequest(
+      readRequest('repo=owner/alpha&path=big.txt'),
+      env(),
+      fake.dependencies,
+    )
+    expect(result?.status).toBe(400)
+    expect(await result?.json()).toMatchObject({ error: { code: 'FILE_TOO_LARGE' } })
+  })
+
+  it('rejects binary (invalid UTF-8) content', async () => {
+    const invalidUtf8 = Buffer.from([0xff, 0xfe, 0x00, 0x01]).toString('base64')
+    const fake = fakeProvider({
+      accessibleRepos: ['owner/alpha'],
+      fileContentByRepo: { 'owner/alpha': { sha: 'blob-sha-bin', content: invalidUtf8 } },
+    })
+    fake.connection = writeVerifiedConnection()
+    const result = await handleGitHubIntegrationRequest(
+      readRequest('repo=owner/alpha&path=image.png'),
+      env(),
+      fake.dependencies,
+    )
+    expect(result?.status).toBe(400)
+    expect(await result?.json()).toMatchObject({ error: { code: 'FILE_NOT_UTF8' } })
+  })
+
+  it('rejects content containing an embedded NUL byte even though it decodes as valid UTF-8', async () => {
+    const withNul = Buffer.from('abc\u0000def', 'utf-8').toString('base64')
+    const fake = fakeProvider({
+      accessibleRepos: ['owner/alpha'],
+      fileContentByRepo: { 'owner/alpha': { sha: 'blob-sha-nul', content: withNul } },
+    })
+    fake.connection = writeVerifiedConnection()
+    const result = await handleGitHubIntegrationRequest(
+      readRequest('repo=owner/alpha&path=weird.txt'),
+      env(),
+      fake.dependencies,
+    )
+    expect(result?.status).toBe(400)
+    expect(await result?.json()).toMatchObject({ error: { code: 'FILE_NOT_UTF8' } })
+  })
+
+  it('never writes an agent_write_log row and never consumes the write rate limit', async () => {
+    const fake = fakeProvider({
+      accessibleRepos: ['owner/alpha'],
+      fileContentByRepo: { 'owner/alpha': { sha: 'blob-sha-1', content: base64('ok') } },
+    })
+    fake.connection = writeVerifiedConnection()
+
+    for (let index = 0; index < 6; index += 1) {
+      const result = await handleGitHubIntegrationRequest(
+        readRequest('repo=owner/alpha&path=README.md'),
+        env(),
+        fake.dependencies,
+      )
+      expect(result?.status).toBe(200)
+    }
+
+    expect(fake.writeLogRows).toHaveLength(0)
+    expect(fake.calls.some((call) => call.url.includes('/rest/v1/agent_write_log'))).toBe(false)
   })
 })

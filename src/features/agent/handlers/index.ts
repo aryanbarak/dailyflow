@@ -6,6 +6,7 @@ import { githubIssuesListHandler } from "./githubIssuesListHandler";
 import { githubEpicsListHandler } from "./githubEpicsListHandler";
 import { githubPullRequestsListHandler } from "./githubPullRequestsListHandler";
 import { githubWorkflowRunsListHandler } from "./githubWorkflowRunsListHandler";
+import { githubFilesReadHandler } from "./githubFilesReadHandler";
 import { tasksListHandler } from "./tasksListHandler";
 import { workspaceGetContextHandler } from "./workspaceGetContextHandler";
 
@@ -19,6 +20,7 @@ const registeredHandlers: readonly AgentToolHandler[] = Object.freeze([
   githubEpicsListHandler,
   githubPullRequestsListHandler,
   githubWorkflowRunsListHandler,
+  githubFilesReadHandler,
 ]);
 
 export function getHandlerByToolId(toolId: string): AgentToolHandler | undefined {
@@ -37,6 +39,7 @@ export {
   githubEpicsListHandler,
   githubPullRequestsListHandler,
   githubWorkflowRunsListHandler,
+  githubFilesReadHandler,
   tasksListHandler,
   workspaceGetContextHandler,
 };
