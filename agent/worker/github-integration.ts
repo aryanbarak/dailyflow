@@ -34,6 +34,27 @@ const WRITE_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000
 const MAX_FILE_READ_BYTES = 128 * 1024
 const MAX_REPOSITORY_RELATIVE_PATH_LENGTH = 400
 
+// EPIC-08 Slice 3 -- see docs/adr/ADR-0005-code-write-mutation-boundary.md.
+// Sized for a 128 KiB (MAX_FILE_READ_BYTES) proposed-content string sent as
+// plain JSON text (not base64 -- only the outbound call to GitHub itself is
+// base64), plus JSON-escaping overhead and the other request fields.
+const MAX_FILE_MUTATION_BODY_BYTES = 256 * 1024
+const MAX_COMMIT_MESSAGE_LENGTH = 500
+const DEFAULT_COMMIT_MESSAGE = 'Update file via SmartFlow'
+// ADR-0005 Decision 8: 15 minutes, computed and enforced by the Worker's own
+// clock -- never accepted from the browser.
+const CODE_PROPOSAL_APPROVAL_TTL_MS = 15 * 60 * 1000
+// ADR-0005 Decision 6: github.files.update's registered risk level. A fixed,
+// Worker-side lookup -- never a request field (ADR-0005 Decision 7).
+const REQUIRED_CODE_WRITE_RISK_LEVEL = 'high'
+const RISK_LEVEL_ORDER: Record<string, number> = { none: 0, low: 1, medium: 2, high: 3 }
+
+function isRiskLevelSufficient(riskLevel: string, required: string): boolean {
+  const actual = RISK_LEVEL_ORDER[riskLevel]
+  const requiredRank = RISK_LEVEL_ORDER[required]
+  return actual !== undefined && requiredRank !== undefined && actual >= requiredRank
+}
+
 type Fetcher = typeof fetch
 
 interface GitHubIntegrationDependencies {
@@ -141,6 +162,18 @@ interface GitHubUpdatedIssueResponse {
 
 interface WriteLogRow {
   id?: unknown
+}
+
+// EPIC-08 Slice 3 -- see docs/adr/ADR-0005-code-write-mutation-boundary.md.
+interface CodeProposalApprovalRow {
+  id?: unknown
+  repo?: unknown
+  path?: unknown
+  base_blob_sha?: unknown
+  base_commit_sha?: unknown
+  proposed_content_digest?: unknown
+  risk_level?: unknown
+  expires_at?: unknown
 }
 
 class GitHubIntegrationError extends Error {
@@ -297,11 +330,81 @@ function base64Url(bytes: Uint8Array) {
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
 }
 
+// Standard (not URL-safe) base64, padded -- the shape GitHub's Contents API
+// requires for the "content" field.
+function base64Encode(bytes: Uint8Array) {
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary)
+}
+
 async function sha256(value: string) {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
   return Array.from(new Uint8Array(digest))
     .map((byte) => byte.toString(16).padStart(2, '0'))
     .join('')
+}
+
+// EPIC-08 Slice 3 -- see docs/adr/ADR-0005-code-write-mutation-boundary.md.
+// Mirrors src/features/agent/codeChange/codeProposalBuilder.ts's
+// computeContentDigest + computeProposalId exactly (same canonical join,
+// same SHA-256 digest via sha256() above). Duplicated, not imported -- the
+// Worker and frontend are separate deployables (same precedent as
+// isProtectedRepositoryPath below).
+async function computeProposalId(input: {
+  repo: string
+  path: string
+  baseBlobSha: string
+  baseCommitSha: string
+  proposedContentDigest: string
+}): Promise<string> {
+  const canonical = [input.repo, input.path, input.baseBlobSha, input.baseCommitSha, input.proposedContentDigest].join('\n')
+  return `code-proposal:${await sha256(canonical)}`
+}
+
+// smartflow/epic-08/<first-12-hex-chars-of-proposalId's-digest> -- a
+// content-addressed, deterministic, collision-resistant branch name tied to
+// the exact approved proposal (ADR-0005 Decision 7). All-lowercase hex is
+// trivially a valid git ref segment.
+function generatedBranchName(proposalId: string): string {
+  const digest = proposalId.startsWith('code-proposal:') ? proposalId.slice('code-proposal:'.length) : proposalId
+  const suffix = digest.replace(/[^a-f0-9]/gi, '').toLowerCase().slice(0, 12)
+  return `smartflow/epic-08/${suffix}`
+}
+
+// A JS string is already decoded text, so "binary" here means content that
+// could not plausibly have come from a legitimate UTF-8 text file: an
+// embedded NUL, an unpaired surrogate half, or a control character other
+// than tab/CR/LF. Mirrors
+// src/features/agent/codeChange/codeProposalValidator.ts's
+// containsBinaryMarkers exactly.
+function containsBinaryMarkers(content: string): boolean {
+  for (let index = 0; index < content.length; index += 1) {
+    const code = content.charCodeAt(index)
+    if (code === 0) return true
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = content.charCodeAt(index + 1)
+      if (Number.isNaN(next) || next < 0xdc00 || next > 0xdfff) return true
+      index += 1
+      continue
+    }
+    if (code >= 0xdc00 && code <= 0xdfff) return true
+    if (code < 32 && code !== 9 && code !== 10 && code !== 13) return true
+    if (code === 127) return true
+  }
+  return false
+}
+
+// Reuses MAX_FILE_READ_BYTES as the one content-size ceiling shared by both
+// the read path and the proposed-content write path (ADR-0005 Decision 12).
+function validateProposedContent(content: string) {
+  if (containsBinaryMarkers(content)) {
+    throw new GitHubIntegrationError('FILE_NOT_UTF8', 400, 'Proposed content is not valid UTF-8 text.')
+  }
+  const byteLength = new TextEncoder().encode(content).byteLength
+  if (byteLength > MAX_FILE_READ_BYTES) {
+    throw new GitHubIntegrationError('FILE_TOO_LARGE', 400, `Proposed content must not exceed ${MAX_FILE_READ_BYTES} bytes.`)
+  }
 }
 
 function stateToken(deps: GitHubIntegrationDependencies) {
@@ -517,6 +620,8 @@ type GitHubProviderContext =
   | 'repository-access' | 'labels' | 'issue-comment' | 'issue-update'
   // EPIC-08 Slice 1 -- see docs/roadmap/epic-08-write-code-design-v1.md.
   | 'branch' | 'file-content'
+  // EPIC-08 Slice 3 -- see docs/adr/ADR-0005-code-write-mutation-boundary.md.
+  | 'branch-create' | 'file-update'
 
 const NOT_FOUND_ERROR_BY_CONTEXT: Partial<Record<GitHubProviderContext, { code: string; message: string }>> = {
   verification: { code: 'INSTALLATION_NOT_ACCESSIBLE', message: 'The GitHub App installation is not available.' },
@@ -524,6 +629,8 @@ const NOT_FOUND_ERROR_BY_CONTEXT: Partial<Record<GitHubProviderContext, { code: 
   'repository-access': { code: 'REPOSITORY_NOT_ACCESSIBLE', message: 'The requested repository is not part of the verified GitHub App installation.' },
   branch: { code: 'BRANCH_NOT_FOUND', message: 'The repository default branch could not be found.' },
   'file-content': { code: 'FILE_NOT_FOUND', message: 'The requested file was not found on the default branch.' },
+  'branch-create': { code: 'REPOSITORY_NOT_ACCESSIBLE', message: 'The requested repository is not part of the verified GitHub App installation.' },
+  'file-update': { code: 'FILE_NOT_FOUND', message: 'The requested file was not found on the generated branch.' },
 }
 
 function providerError(
@@ -1379,13 +1486,16 @@ async function disconnect(
 // unsanitized.
 // ---------------------------------------------------------------------------
 
-async function parseWriteRequestBody(request: Request): Promise<Record<string, unknown>> {
+async function parseWriteRequestBody(
+  request: Request,
+  maxBytes: number = MAX_WRITE_BODY_BYTES,
+): Promise<Record<string, unknown>> {
   const declaredLength = Number(request.headers.get('Content-Length') ?? '0')
-  if (Number.isFinite(declaredLength) && declaredLength > MAX_WRITE_BODY_BYTES) {
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
     throw new GitHubIntegrationError('REQUEST_TOO_LARGE', 413, 'Request body is too large.')
   }
   const rawBody = await request.text()
-  if (new TextEncoder().encode(rawBody).byteLength > MAX_WRITE_BODY_BYTES) {
+  if (new TextEncoder().encode(rawBody).byteLength > maxBytes) {
     throw new GitHubIntegrationError('REQUEST_TOO_LARGE', 413, 'Request body is too large.')
   }
   let parsed: unknown
@@ -1909,6 +2019,422 @@ async function readFileContent(
   }
 }
 
+// ---------------------------------------------------------------------------
+// EPIC-08 Slice 3 -- see docs/adr/ADR-0005-code-write-mutation-boundary.md.
+// Controlled mutation of exactly one existing text file: a new non-default
+// branch, one commit, via the GitHub REST API only. No PR, no merge, no
+// retry, no rollback, no shell execution, no local filesystem write.
+// ---------------------------------------------------------------------------
+
+interface CodeProposalApprovalRequestInput {
+  proposalId: string
+  repoIdentifier: { owner: string; name: string }
+  repo: string
+  path: string
+  proposedContent: string
+}
+
+function parseCodeProposalApprovalRequest(body: Record<string, unknown>): CodeProposalApprovalRequestInput {
+  const proposalId = boundedString(body.proposalId, 200)
+  const repoIdentifier = parseRepoIdentifier(body.repo)
+  const path = parseRepositoryRelativePath(body.path)
+  const proposedContent = typeof body.proposedContent === 'string' ? body.proposedContent : undefined
+  if (!proposalId || !repoIdentifier || !path || proposedContent === undefined) {
+    throw new GitHubIntegrationError('WRITE_INPUT_INVALID', 400, 'proposalId, repo, path, and proposedContent are required.')
+  }
+  return {
+    proposalId,
+    repoIdentifier,
+    repo: `${repoIdentifier.owner}/${repoIdentifier.name}`,
+    path,
+    proposedContent,
+  }
+}
+
+// ADR-0005 Decision 7: the request is not allowed to define trusted values
+// for baseBlobSha, baseCommitSha, proposedContentDigest, riskLevel, or
+// expiresAt -- this route does not read any such fields from the request
+// body at all. Every stored fact is independently derived here, from a
+// fresh GitHub read and the Worker's own fixed knowledge of the tool's
+// registered risk level. No GitHub mutation occurs in this route.
+async function recordCodeProposalApproval(
+  request: Request,
+  config: GitHubConfig,
+  deps: GitHubIntegrationDependencies,
+) {
+  const { userId, authorization } = await requireUser(request, config, deps)
+  const body = await parseWriteRequestBody(request, MAX_FILE_MUTATION_BODY_BYTES)
+  const input = parseCodeProposalApprovalRequest(body)
+  validateProposedContent(input.proposedContent)
+
+  const connection = await loadConnection(userId, authorization, config, deps)
+  const installationId = positiveInteger(connection.installation_id)
+  if (!installationId) {
+    throw new GitHubIntegrationError('CONNECTION_RECORD_INVALID', 500, 'Verified connection metadata is invalid.')
+  }
+  const token = await installationToken(installationId, config, deps)
+  const { defaultBranch } = await verifyRepositoryAccess(input.repoIdentifier.owner, input.repoIdentifier.name, token, deps)
+  const baseCommitSha = await fetchBranchHeadCommit(input.repoIdentifier.owner, input.repoIdentifier.name, defaultBranch, token, deps)
+  const baseFile = await fetchFileContent(input.repoIdentifier.owner, input.repoIdentifier.name, input.path, defaultBranch, token, deps)
+
+  const proposedContentDigest = await sha256(input.proposedContent)
+  const derivedProposalId = await computeProposalId({
+    repo: input.repo,
+    path: input.path,
+    baseBlobSha: baseFile.blobSha,
+    baseCommitSha,
+    proposedContentDigest,
+  })
+  if (derivedProposalId !== input.proposalId) {
+    throw new GitHubIntegrationError('PROPOSAL_ID_MISMATCH', 409, 'The proposal no longer matches the current repository state.')
+  }
+
+  const approvedAt = deps.now()
+  const expiresAt = new Date(approvedAt.getTime() + CODE_PROPOSAL_APPROVAL_TTL_MS)
+
+  const response = await databaseRequest(config, deps, 'agent_code_proposal_approvals', {
+    method: 'POST',
+    headers: serviceHeaders(config, 'return=representation'),
+    body: JSON.stringify({
+      user_id: userId,
+      proposal_id: derivedProposalId,
+      repo: input.repo,
+      path: input.path,
+      base_blob_sha: baseFile.blobSha,
+      base_commit_sha: baseCommitSha,
+      proposed_content_digest: proposedContentDigest,
+      risk_level: REQUIRED_CODE_WRITE_RISK_LEVEL,
+      approved_at: approvedAt.toISOString(),
+      expires_at: expiresAt.toISOString(),
+    }),
+  })
+  const rows = await response.json() as CodeProposalApprovalRow[]
+  const id = boundedString(rows?.[0]?.id, 64)
+  if (!id) {
+    throw new GitHubIntegrationError('APPROVAL_RECORD_FAILED', 500, 'The approval could not be recorded safely.')
+  }
+
+  return { proposalId: derivedProposalId, expiresAt: expiresAt.toISOString() }
+}
+
+async function loadUnconsumedApproval(
+  userId: string,
+  proposalId: string,
+  config: GitHubBaseConfig,
+  deps: GitHubIntegrationDependencies,
+): Promise<CodeProposalApprovalRow | undefined> {
+  const response = await databaseRequest(
+    config,
+    deps,
+    `agent_code_proposal_approvals?user_id=eq.${encodeURIComponent(userId)}&proposal_id=eq.${encodeURIComponent(proposalId)}&consumed_at=is.null&select=id,repo,path,base_blob_sha,base_commit_sha,proposed_content_digest,risk_level,expires_at&order=approved_at.desc&limit=1`,
+  )
+  const rows = await response.json() as CodeProposalApprovalRow[]
+  return Array.isArray(rows) ? rows[0] : undefined
+}
+
+// The atomic single-use claim (ADR-0005 Decision 9): a conditional UPDATE
+// whose WHERE clause matches user_id, proposal_id, consumed_at IS NULL, and
+// expires_at > the Worker's own clock, all at once. PostgREST returns 200
+// with an empty array (not an error) when the WHERE clause matches zero
+// rows, so "affected exactly one row" is the actual single-use guarantee,
+// not response.ok -- this is what makes a race between two concurrent
+// requests for the same approval resolve to exactly one winner.
+async function claimApproval(
+  id: string,
+  userId: string,
+  proposalId: string,
+  config: GitHubBaseConfig,
+  deps: GitHubIntegrationDependencies,
+): Promise<boolean> {
+  const now = deps.now().toISOString()
+  const response = await databaseRequest(
+    config,
+    deps,
+    `agent_code_proposal_approvals?id=eq.${encodeURIComponent(id)}&user_id=eq.${encodeURIComponent(userId)}&proposal_id=eq.${encodeURIComponent(proposalId)}&consumed_at=is.null&expires_at=gt.${encodeURIComponent(now)}`,
+    {
+      method: 'PATCH',
+      headers: serviceHeaders(config, 'return=representation'),
+      body: JSON.stringify({ consumed_at: now }),
+    },
+  )
+  const rows = await response.json() as CodeProposalApprovalRow[]
+  return Array.isArray(rows) && rows.length === 1
+}
+
+async function recordApprovalClaimFailure(
+  logId: string,
+  errorCode: string,
+  config: GitHubBaseConfig,
+  deps: GitHubIntegrationDependencies,
+) {
+  await updateWriteLogRow(logId, 'failed', { code: errorCode }, config, deps).catch((auditError) => {
+    console.error('[GitHub] Failed to record approval-claim failure in agent_write_log:', auditError)
+  })
+}
+
+async function recordPartialMutationFailure(
+  logId: string,
+  branchName: string,
+  config: GitHubBaseConfig,
+  deps: GitHubIntegrationDependencies,
+) {
+  await updateWriteLogRow(
+    logId,
+    'failed',
+    { partial: true, createdBranch: branchName, reason: 'commit_failed' },
+    config,
+    deps,
+  ).catch((auditError) => {
+    console.error('[GitHub] Failed to record partial mutation failure in agent_write_log:', auditError)
+  })
+}
+
+// Creates a branch. This is the one unavoidable exception to "Contents API
+// only" (ADR-0005 Decision 4/11) -- GitHub has no Contents-API equivalent
+// for creating a branch.
+async function createBranch(
+  owner: string,
+  name: string,
+  branchName: string,
+  fromCommitSha: string,
+  token: string,
+  deps: GitHubIntegrationDependencies,
+): Promise<void> {
+  const response = await githubFetch(
+    deps,
+    `${GITHUB_API_ORIGIN}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/git/refs`,
+    {
+      method: 'POST',
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${token}`,
+        'X-GitHub-Api-Version': API_VERSION,
+        'User-Agent': 'SmartFlow-GitHub-App',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ ref: `refs/heads/${branchName}`, sha: fromCommitSha }),
+    },
+  )
+  if (!response.ok) {
+    if (response.status === 422) {
+      throw new GitHubIntegrationError('BRANCH_COLLISION', 409, 'The generated branch already exists.')
+    }
+    throw providerError(response, 'branch-create')
+  }
+}
+
+interface GitHubContentsCommitResponse {
+  content?: { sha?: unknown }
+  commit?: { sha?: unknown; html_url?: unknown }
+}
+
+// The Contents API call: creates the blob, tree, and commit for this single
+// file as one provider-side operation (ADR-0005 Decision 4). Never targets
+// the default branch -- branchName is always the freshly generated one.
+async function putFileContent(
+  owner: string,
+  name: string,
+  path: string,
+  branchName: string,
+  baseBlobSha: string,
+  content: string,
+  commitMessage: string,
+  token: string,
+  deps: GitHubIntegrationDependencies,
+): Promise<{ blobSha: string; commitSha: string; commitUrl: string }> {
+  const response = await githubFetch(
+    deps,
+    `${GITHUB_API_ORIGIN}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/contents/${path.split('/').map(encodeURIComponent).join('/')}`,
+    {
+      method: 'PUT',
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${token}`,
+        'X-GitHub-Api-Version': API_VERSION,
+        'User-Agent': 'SmartFlow-GitHub-App',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        message: commitMessage,
+        content: base64Encode(new TextEncoder().encode(content)),
+        sha: baseBlobSha,
+        branch: branchName,
+      }),
+    },
+  )
+  if (!response.ok) throw providerError(response, 'file-update')
+  const raw = await providerJson<GitHubContentsCommitResponse>(response)
+  const blobSha = boundedString(raw.content?.sha, 64)
+  const commitSha = boundedString(raw.commit?.sha, 64)
+  const commitUrl = boundedString(raw.commit?.html_url, 500)
+  if (!blobSha || !commitSha || !commitUrl) {
+    throw new GitHubIntegrationError('GITHUB_RESPONSE_INVALID', 502, 'GitHub returned an invalid commit response.')
+  }
+  return { blobSha, commitSha, commitUrl }
+}
+
+interface FileUpdateRequestInput {
+  proposalId: string
+  repoIdentifier: { owner: string; name: string }
+  repo: string
+  path: string
+  proposedContent: string
+  commitMessage?: string
+}
+
+function parseFileUpdateRequest(body: Record<string, unknown>): FileUpdateRequestInput {
+  const proposalId = boundedString(body.proposalId, 200)
+  const repoIdentifier = parseRepoIdentifier(body.repo)
+  const path = parseRepositoryRelativePath(body.path)
+  const proposedContent = typeof body.proposedContent === 'string' ? body.proposedContent : undefined
+  const commitMessage = typeof body.commitMessage === 'string'
+    ? boundedString(body.commitMessage, MAX_COMMIT_MESSAGE_LENGTH) || undefined
+    : undefined
+  if (!proposalId || !repoIdentifier || !path || proposedContent === undefined) {
+    throw new GitHubIntegrationError('WRITE_INPUT_INVALID', 400, 'proposalId, repo, path, and proposedContent are required.')
+  }
+  return {
+    proposalId,
+    repoIdentifier,
+    repo: `${repoIdentifier.owner}/${repoIdentifier.name}`,
+    path,
+    proposedContent,
+    commitMessage,
+  }
+}
+
+// The mutation lifecycle (ADR-0005 Decision 14), in exactly this order:
+//   validate request -> validate approval artifact -> revalidate stale base
+//   -> insert pending agent_write_log row -> atomically claim/consume
+//   approval -> create branch -> update file and create one commit ->
+//   update audit row to executed or failed.
+// The pending write-log row is inserted BEFORE the approval is consumed --
+// not after -- so a consumed approval can never exist without a
+// corresponding pending audit row already on record.
+async function handleFileUpdate(
+  request: Request,
+  config: GitHubConfig,
+  deps: GitHubIntegrationDependencies,
+) {
+  const { userId, authorization } = await requireUser(request, config, deps)
+  const body = await parseWriteRequestBody(request, MAX_FILE_MUTATION_BODY_BYTES)
+  const input = parseFileUpdateRequest(body)
+  validateProposedContent(input.proposedContent)
+
+  await enforceWriteRateLimit(userId, config, deps)
+
+  // --- Approval binding validation (ADR-0005 Decision 10) ---------------
+  const approvalRow = await loadUnconsumedApproval(userId, input.proposalId, config, deps)
+  if (!approvalRow) {
+    throw new GitHubIntegrationError('APPROVAL_NOT_FOUND', 409, 'No matching, unconsumed approval was found.')
+  }
+  const approvalId = boundedString(approvalRow.id, 64)
+  const storedRepo = boundedString(approvalRow.repo, 200)
+  const storedPath = boundedString(approvalRow.path, MAX_REPOSITORY_RELATIVE_PATH_LENGTH)
+  const storedBaseBlobSha = boundedString(approvalRow.base_blob_sha, 64)
+  const storedBaseCommitSha = boundedString(approvalRow.base_commit_sha, 64)
+  const storedDigest = boundedString(approvalRow.proposed_content_digest, 128)
+  const storedRiskLevel = boundedString(approvalRow.risk_level, 16)
+  const storedExpiresAt = boundedString(approvalRow.expires_at, 64)
+  if (
+    !approvalId || !storedRepo || !storedPath || !storedBaseBlobSha ||
+    !storedBaseCommitSha || !storedDigest || !storedRiskLevel || !storedExpiresAt
+  ) {
+    throw new GitHubIntegrationError('APPROVAL_RECORD_INVALID', 500, 'The stored approval record is invalid.')
+  }
+  if (storedRepo !== input.repo || storedPath !== input.path) {
+    throw new GitHubIntegrationError('APPROVAL_MISMATCH', 409, 'The approval does not match the requested repository or path.')
+  }
+  const recomputedDigest = await sha256(input.proposedContent)
+  if (recomputedDigest !== storedDigest) {
+    throw new GitHubIntegrationError('CONTENT_MISMATCH', 409, 'The proposed content no longer matches the approved content.')
+  }
+  if (!isRiskLevelSufficient(storedRiskLevel, REQUIRED_CODE_WRITE_RISK_LEVEL)) {
+    throw new GitHubIntegrationError('RISK_INSUFFICIENT', 409, 'The approved risk level is insufficient for this mutation.')
+  }
+  if (deps.now().getTime() > new Date(storedExpiresAt).getTime()) {
+    throw new GitHubIntegrationError('APPROVAL_EXPIRED', 409, 'The approval has expired. A new proposal is required.')
+  }
+
+  // --- Stale-base revalidation (ADR-0005 Decision 11) -- independent of,
+  // and strictly after, approval-binding validation. ----------------------
+  const connection = await loadConnection(userId, authorization, config, deps)
+  const installationId = positiveInteger(connection.installation_id)
+  if (!installationId) {
+    throw new GitHubIntegrationError('CONNECTION_RECORD_INVALID', 500, 'Verified connection metadata is invalid.')
+  }
+  const token = await installationToken(installationId, config, deps)
+  const { defaultBranch } = await verifyRepositoryAccess(input.repoIdentifier.owner, input.repoIdentifier.name, token, deps)
+  const currentCommitSha = await fetchBranchHeadCommit(input.repoIdentifier.owner, input.repoIdentifier.name, defaultBranch, token, deps)
+  const currentFile = await fetchFileContent(input.repoIdentifier.owner, input.repoIdentifier.name, input.path, defaultBranch, token, deps)
+  if (currentCommitSha !== storedBaseCommitSha || currentFile.blobSha !== storedBaseBlobSha) {
+    throw new GitHubIntegrationError('STALE_BASE', 409, 'The file has changed since it was approved. A new proposal is required.')
+  }
+
+  const branchName = generatedBranchName(input.proposalId)
+  if (branchName === defaultBranch) {
+    // Structurally unreachable given the naming scheme (Decision 3) -- fail closed anyway.
+    throw new GitHubIntegrationError('DEFAULT_BRANCH_DENIED', 500, 'Refusing to target the default branch.')
+  }
+
+  // --- Insert pending audit row, then atomically consume the approval --
+  const parameters = { repo: input.repo, path: input.path, proposalId: input.proposalId, branch: branchName }
+  const logId = await insertWriteLogRow(userId, 'github.files.update', parameters, config, deps)
+
+  let claimed: boolean
+  try {
+    claimed = await claimApproval(approvalId, userId, input.proposalId, config, deps)
+  } catch (claimError) {
+    await recordApprovalClaimFailure(logId, 'APPROVAL_CONSUMPTION_FAILED', config, deps)
+    throw claimError
+  }
+  if (!claimed) {
+    await recordApprovalClaimFailure(logId, 'APPROVAL_ALREADY_CONSUMED', config, deps)
+    throw new GitHubIntegrationError('APPROVAL_ALREADY_CONSUMED', 409, 'This approval has already been used or has expired.')
+  }
+
+  // --- GitHub mutation: branch, then commit. Not atomic with each other. -
+  const commitMessage = input.commitMessage ?? DEFAULT_COMMIT_MESSAGE
+  let branchCreated = false
+  try {
+    await createBranch(input.repoIdentifier.owner, input.repoIdentifier.name, branchName, currentCommitSha, token, deps)
+    branchCreated = true
+    const result = await putFileContent(
+      input.repoIdentifier.owner,
+      input.repoIdentifier.name,
+      input.path,
+      branchName,
+      storedBaseBlobSha,
+      input.proposedContent,
+      commitMessage,
+      token,
+      deps,
+    )
+    await updateWriteLogRow(logId, 'executed', result, config, deps)
+    return {
+      repo: input.repo,
+      path: input.path,
+      branch: branchName,
+      commitSha: result.commitSha,
+      blobSha: result.blobSha,
+      commitUrl: result.commitUrl,
+    }
+  } catch (error) {
+    if (branchCreated) {
+      // ADR-0005 Decision 13: the branch is left in place, never deleted.
+      // The approval is already consumed and stays consumed -- no retry.
+      await recordPartialMutationFailure(logId, branchName, config, deps)
+      throw new GitHubIntegrationError(
+        'PARTIAL_MUTATION',
+        502,
+        'The branch was created but the file could not be committed. No automatic retry will occur.',
+      )
+    }
+    await recordWriteFailure(logId, config, deps)
+    throw error
+  }
+}
+
 export async function handleGitHubIntegrationRequest(
   request: Request,
   env: Env,
@@ -1973,6 +2499,12 @@ export async function handleGitHubIntegrationRequest(
     if (url.pathname === '/github/files/read' && request.method === 'GET') {
       return json(await readFileContent(request, config, deps), 200, origin, config)
     }
+    if (url.pathname === '/github/code-proposals/approve' && request.method === 'POST') {
+      return json(await recordCodeProposalApproval(request, config, deps), 200, origin, config)
+    }
+    if (url.pathname === '/github/files/update' && request.method === 'POST') {
+      return json(await handleFileUpdate(request, config, deps), 200, origin, config)
+    }
     if (
       url.pathname === '/github/connect/start' ||
       url.pathname === '/github/connect/setup' ||
@@ -1985,6 +2517,8 @@ export async function handleGitHubIntegrationRequest(
       url.pathname === '/github/issues/comment' ||
       url.pathname === '/github/issues/update' ||
       url.pathname === '/github/files/read' ||
+      url.pathname === '/github/code-proposals/approve' ||
+      url.pathname === '/github/files/update' ||
       url.pathname === '/github/disconnect' ||
       url.pathname === '/github/connection' ||
       url.pathname === '/github/repository-inventory'

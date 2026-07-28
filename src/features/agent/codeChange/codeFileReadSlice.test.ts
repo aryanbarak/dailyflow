@@ -19,7 +19,7 @@ import { clearExecutionAuditRecords, getExecutionAuditRecordsByRequestId } from 
 import { getToolById } from "../toolRegistry";
 import { runWriteTool } from "../writeRuntime";
 import { validateCodeProposalApproval } from "./codeProposalApproval";
-import { PROSPECTIVE_CODE_WRITE_TOOL_ID, requestCodeFileProposal } from "./codeFileReadSlice";
+import { CODE_WRITE_TOOL_ID, requestCodeFileProposal } from "./codeFileReadSlice";
 import type { GitHubFileContentClient, GitHubFileContentFile } from "../executionTypes";
 import type { WorkspacePlanStep } from "../../workspace/workspaceTypes";
 
@@ -77,8 +77,21 @@ describe("github.files.read registered contract", () => {
     expect(tool?.inputSchema.map((field) => field.name).sort()).toEqual(["path", "repo"]);
   });
 
-  it("does not register any write counterpart -- no mutation tool exists yet", () => {
-    expect(getToolById(PROSPECTIVE_CODE_WRITE_TOOL_ID)).toBeUndefined();
+  // EPIC-08 Slice 3 -- see docs/adr/ADR-0005-code-write-mutation-boundary.md.
+  // Registered as of Slice 3, at a strictly higher risk than any read tool --
+  // see writeRuntime.test.ts / githubFilesUpdateHandler.test.ts for its full
+  // write-boundary and handler coverage; this file only asserts it exists
+  // and carries the risk level this module's own pending approval must match.
+  it("registers a real, high-risk write counterpart as of Slice 3", () => {
+    const tool = getToolById(CODE_WRITE_TOOL_ID);
+    expect(tool).toMatchObject({
+      domain: "github",
+      capability: "update",
+      mode: "write",
+      riskLevel: "high",
+      requiresApproval: true,
+      enabled: true,
+    });
   });
 });
 
@@ -108,7 +121,7 @@ describe("requestCodeFileProposal", () => {
     expect(result.preview?.executionScope).toMatch(/cannot create a branch/i);
     expect(result.approval).toMatchObject({
       stepId: "step:code-file-read",
-      toolId: PROSPECTIVE_CODE_WRITE_TOOL_ID,
+      toolId: CODE_WRITE_TOOL_ID,
       status: "pending",
       requiresApproval: true,
     });
@@ -215,7 +228,12 @@ describe("no mutation path exists yet (Slice 1 boundary)", () => {
     // client, no Worker call, and no side effect of any kind.
   });
 
-  it("attempting to run the prospective write tool through the real write boundary fails closed as unsupported", async () => {
+  // EPIC-08 Slice 3 -- see docs/adr/ADR-0005-code-write-mutation-boundary.md.
+  // github.files.update is registered riskLevel "high" (tools/githubTools.ts).
+  // An approval carrying only "medium" -- e.g. one built before this module's
+  // riskLevel fix, or tampered with -- must still fail closed at the approval
+  // boundary, never execute.
+  it("fails closed at the approval-risk boundary for a medium-risk approval", async () => {
     const writeResult = await runWriteTool({
       requestId: "request:code-7",
       step: { ...step(), actionType: "update", targetId: "aryan/smartflow:README.md" },
@@ -223,7 +241,7 @@ describe("no mutation path exists yet (Slice 1 boundary)", () => {
         status: "resolved",
         resolved: true,
         stepId: "step:code-file-read",
-        toolId: PROSPECTIVE_CODE_WRITE_TOOL_ID,
+        toolId: CODE_WRITE_TOOL_ID,
         confidence: "high",
         reasons: [],
         candidates: [],
@@ -234,7 +252,7 @@ describe("no mutation path exists yet (Slice 1 boundary)", () => {
       approval: {
         stepId: "step:code-file-read",
         targetId: "aryan/smartflow:README.md",
-        toolId: PROSPECTIVE_CODE_WRITE_TOOL_ID,
+        toolId: CODE_WRITE_TOOL_ID,
         status: "approved",
         requiresApproval: true,
         approvalReason: "test",
@@ -245,16 +263,19 @@ describe("no mutation path exists yet (Slice 1 boundary)", () => {
         approvalScope: "single_step",
       },
     });
-    expect(writeResult.status).toBe("unsupported_tool");
+    expect(writeResult.status).toBe("approval_required");
     expect(writeResult.success).toBe(false);
   });
 
-  // EPIC-08 Slice 2 -- a fully valid, unexpired, digest-matching approval
-  // binding (the exact contract Slice 2 adds) still must not produce any
-  // mutation or any audit/write-log activity, because github.files.update
-  // has no registered handler. Validity of the binding and executability
-  // through the write boundary are two independent gates.
-  it("a fully valid Slice 2 approval binding still ends in unsupported_tool with zero audit activity", async () => {
+  // EPIC-08 Slice 3 -- see docs/adr/ADR-0005-code-write-mutation-boundary.md.
+  // A fully valid, unexpired, digest-matching, correctly-high-risk approval
+  // binding is still not enough to mutate anything through this in-process
+  // call alone: there is no githubFileUpdateClient in the execution context,
+  // and -- the actual point of Slice 3 -- no server-verifiable approval
+  // record exists at the Worker (this test never calls
+  // POST /github/code-proposals/approve). Validity of the binding and
+  // actual executability are independent gates.
+  it("a fully valid Slice 2/3 approval binding alone still cannot execute a mutation", async () => {
     clearExecutionAuditRecords();
     const proposed = await requestCodeFileProposal({
       requestId: "request:code-8",
@@ -287,7 +308,7 @@ describe("no mutation path exists yet (Slice 1 boundary)", () => {
         status: "resolved",
         resolved: true,
         stepId: "step:code-file-read",
-        toolId: PROSPECTIVE_CODE_WRITE_TOOL_ID,
+        toolId: CODE_WRITE_TOOL_ID,
         confidence: "high",
         reasons: [],
         candidates: [],
@@ -298,7 +319,11 @@ describe("no mutation path exists yet (Slice 1 boundary)", () => {
       approval: { ...approved.approval, targetId: "aryan/smartflow:README.md" },
     });
 
-    expect(writeResult.status).toBe("unsupported_tool");
+    // Fails at the authenticated-user boundary (no injected dependencies,
+    // no runtime-authenticated identity in this test environment) --
+    // whichever boundary it fails at, the point is it never reaches a
+    // successful mutation, and it emits no audit activity doing so.
+    expect(writeResult.status).toBe("failed");
     expect(writeResult.success).toBe(false);
     expect(getExecutionAuditRecordsByRequestId(writeRequestId)).toEqual([]);
   });
