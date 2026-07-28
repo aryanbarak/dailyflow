@@ -1,665 +1,316 @@
-# EPIC-08 — Write Code — Product and Technical Design v1
+# EPIC-08 - Write Code - Design v1
 
 **Version:** 1.0
-**Status:** Draft — for Product Owner and Architecture review
+**Status:** Implementation-ready design
 **Date:** 2026-07-28
-**Derives from:**
-[`docs/product/product-direction-v1.md`](../product/product-direction-v1.md) (v1.1,
-Approved),
-[`docs/design/ux/ux-architecture-v1.md`](../design/ux/ux-architecture-v1.md) (v1.1,
-Draft),
-[`docs/design/ux/project-workspace-wireframe-spec-v1.md`](../design/ux/project-workspace-wireframe-spec-v1.md)
-(v1.1, Draft),
-[`docs/design/ux/project-workspace-low-fidelity-wireframes-v1.md`](../design/ux/project-workspace-low-fidelity-wireframes-v1.md)
-(v1.0, Draft),
-[`docs/roadmap/project-workspace-implementation-roadmap-v1.md`](project-workspace-implementation-roadmap-v1.md)
-(v1.0, Draft), and
-[`docs/adr/ADR-0004-write-boundaries.md`](../adr/ADR-0004-write-boundaries.md) (Accepted)
-**Scope:** Product and technical scope definition for EPIC-08 (Write Code) only. Does not
-implement anything, does not modify code, schema, routes, or components, and does not
-itself constitute the new ADR that [ADR-0004](../adr/ADR-0004-write-boundaries.md) and
-[Product Direction §13](../product/product-direction-v1.md) require before any EPIC-08
-implementation may begin. This document is the design work that ADR is expected to draw
-on.
+**Scope:** Controlled code changes for one GitHub software project. This document does not modify production code, tests, database schema, or deployment configuration.
 
----
+## 1. Status and Scope
 
-## 1. Purpose
+EPIC-08 extends SmartFlow from a project assistant that reads GitHub state and performs narrow issue writes into a controlled code-change assistant. The supported flow is:
 
-Product Direction §13 declared EPIC-08 ("Write Code") frozen and in need of re-scoping:
-its prior framing — new issues, file/code/PR operations, scoped to GitHub in isolation —
-is superseded. EPIC-08's capabilities now belong inside the Software Project's **Act**
-step (Observe → Understand → Act → Verify), scoped against that project's own approval
-and verification model, rather than as a freestanding GitHub write expansion. It stays
-frozen until re-scoped this way, and ADR-0004 already states that EPIC-08 "requires a new
-ADR before any implementation."
-
-This document performs that re-scoping at the product and technical-design level. It
-answers what EPIC-08 is for, what capabilities it should and should not include, how it
-uses the Project Workspace's existing Observe/Reason/Proposal/Approval/Execution/
-Verification shape, and how it plugs into systems that already exist — Planner, Approval,
-Execution, Execution Audit, Workspace, GitHub, Assistant — without redesigning any of
-them. It does not decide implementation order, schema, or UI; that is later work, gated
-on the ADR this document is intended to inform.
-
-The goal, stated plainly: transform SmartFlow from a project assistant that can only
-*read* a repository and make narrow, GitHub-metadata writes (EPIC-07, per ADR-0004) into
-one that can propose and — after explicit approval — make actual code changes, under the
-same trust boundaries already proven for tasks and GitHub writes.
-
----
-
-## 2. Goals
-
-- Extend the Act step of Observe → Understand → Act → Verify (Product Direction §6;
-  UX Architecture §12; Wireframe Spec §11) to cover real file and code changes, not only
-  issue comments and metadata edits.
-- Close the gap Product Direction §5 names directly: "Acting on a recommendation (comment,
-  update, eventually code/PR changes) requires trusting that the action is safe,
-  reviewable, and reversible" — for the code/PR case specifically.
-- Reuse the write pipeline ADR-0004 already established and validated for EPIC-07
-  (LLM proposes → deterministic validator sanitizes → preview → explicit approval →
-  single execution → durable audit) rather than inventing a second write mechanism.
-- Give the user a way to go from "Flow AI, make this change" to a real, reviewed,
-  approved, auditable code change without leaving SmartFlow for the mechanical part of
-  authoring a diff and opening a pull request.
-- Keep every new capability inside the existing safety architecture — Tool Registry,
-  Execution Policy, Approval Model, Execution Engine, Execution Audit (Product Direction
-  §9, §12) — as new tool definitions and new compositions, not new engines.
-
----
-
-## 3. Non-goals
-
-- **Not a redesign of Approval.** `approvalInteraction.ts` / `StepApprovalDialog.tsx`'s
-  proposal → validate → preview → approve → execute sequence is reused as-is, only
-  extended to carry code-shaped previews (diffs) instead of, or alongside, text previews.
-- **Not a redesign of Execution.** `executionEngine.ts`, `executionPolicy.ts`,
-  `writeRuntime.ts` are reused as-is; EPIC-08 adds tool IDs to
-  `SUPPORTED_WRITE_TOOL_IDS`, it does not change how execution is dispatched or audited.
-- **Not autonomy.** Every write remains explicitly user-approved, single-action,
-  single-approval, no automatic retry, no chaining — identical in kind to ADR-0004's
-  existing hard limits. EPIC-09 (Agent Autonomy), whatever it eventually authorizes, must
-  still operate inside these same boundaries (Product Direction §13) — nothing in this
-  document brings any part of that forward.
-- **Not an IDE replacement.** SmartFlow does not become a general-purpose code editor; it
-  proposes bounded, reviewable changes, not open-ended editing sessions (Product Direction
-  §14).
-- **Not a GitHub replacement.** Merge decisions, code review, branch protection
-  configuration, and CI/CD remain GitHub's own responsibility; SmartFlow proposes changes
-  *to* GitHub, it does not replace GitHub's own tooling (Product Direction §14).
-- **Not the ADR.** This document is design input. ADR-0004's requirement for a new,
-  dedicated ADR before any EPIC-08 implementation still stands; nothing here authorizes
-  writing code.
-- **Not a decision to build all of §5's candidate capabilities.** Each is evaluated on
-  its own merits below — inclusion in the candidate list is not inclusion in scope.
-
----
-
-## 4. User Problems Solved
-
-1. **The Act step stops short of the work that actually matters for a Software Project.**
-   EPIC-07 lets Flow AI comment on or update an issue; it cannot yet act on the thing the
-   issue is usually about — a code change. The user still has to leave SmartFlow, open an
-   editor, and do the mechanical part themselves even after Flow AI has correctly
-   understood what needs to change.
-2. **Small, well-understood changes carry disproportionate context-switching cost.** A
-   one-line fix, a config update, or a small new file often does not need a full IDE
-   session — it needs a proposal the user can read, trust, and approve in place, the same
-   way they already do for an issue comment.
-3. **"Eventually code/PR changes" (Product Direction §5) is currently unmet.** The product
-   direction names this as one of the four core user problems Projects exists to solve;
-   EPIC-08 is the increment that actually closes it, rather than leaving it permanently
-   aspirational.
-4. **Trust in an AI-authored change is currently all-or-nothing outside SmartFlow.** A
-   user asking any general-purpose coding assistant to "just make the change" typically
-   gets either a diff they must manually apply themselves, or a tool that pushes without a
-   reviewable, audited approval step. EPIC-08's contribution is not "AI writes code" —
-   that already exists elsewhere — it is doing so inside SmartFlow's already-proven
-   observe/propose/approve/execute/verify boundary, with a durable audit trail
-   (`agent_write_log`) tied to the same project the change concerns.
-
----
-
-## 5. Product Capabilities
-
-Each candidate the roadmap named is evaluated independently — none are assumed final.
-Verdicts use three outcomes: **In scope** (EPIC-08 should build this), **Reframed** (the
-underlying need is in scope, but not in the form named), or **Deferred to EPIC-09** (out
-of EPIC-08; requires the bounded-autonomy work Product Direction §13/§16 has not yet
-scoped).
-
-### 5.1 Create files
-**Verdict: In scope.** A new file (a config file, a small module, a doc file) is a bounded,
-single-target change with a natural preview: the full proposed file content. This is the
-most straightforward extension of the existing write pattern — closest in shape to
-`github.issues.update`'s "propose new content for a known target," except the target does
-not yet exist.
-
-### 5.2 Edit files
-**Verdict: In scope.** The central capability. An edit to an existing file has a natural,
-already-familiar preview format (a unified diff) and a natural verification check (re-read
-the file after execution and confirm it matches what was previewed). This is the
-capability that closes User Problem 1.
-
-### 5.3 Rename
-**Verdict: Reframed — modeled as a move, not a separate capability.** A rename is a move
-where the new path is in the same directory. Building it as a distinct capability from
-Move would duplicate validation and preview logic for no product benefit; both are one
-tool (§5.4) parameterized by old and new path.
-
-### 5.4 Move
-**Verdict: In scope, as the same tool as Rename.** Preview shows old path → new path
-explicitly (Wireframe Spec §12's "Expected effect" requirement is a direct fit: a path
-diff is exactly as previewable as a content diff). Content is not required to change for a
-move to be valid, but if the proposal also edits content, that must be shown as a separate,
-explicit diff — never folded silently into "moved."
-
-### 5.5 Delete
-**Verdict: In scope, but as its own, higher-scrutiny capability — not folded into Edit.**
-Deletion is the one candidate capability whose reversibility is qualitatively different
-from the others: an edit or create is trivially reversible by a follow-up proposal, but a
-delete removes content the user may not be able to accurately reconstruct from memory.
-Two things follow, both binding on the approval and safety models below (§8, §9):
-- The approval preview must show the full current file content being removed, not just
-  its path — the user is approving the loss of that specific content, not a label.
-- Risk/reversibility (Wireframe Spec §12) must state plainly that reversibility depends on
-  git history existing for the file (true for any tracked file with prior commits, not
-  guaranteed for a file created and deleted within the same session before any commit
-  lands).
-
-### 5.6 Multi-file changes
-**Verdict: Deferred to EPIC-09, with a bounded exception.** ADR-0004's hard limit — "no
-bulk writes — each tool call accepts exactly one issue/comment target" — is a direct,
-intentional constraint on blast radius, and it generalizes directly to code: a single
-approval must not be able to authorize changes across many files at once, since that
-collapses "review this specific change" into "review this basket of changes," which is
-exactly the batching Wireframe Spec §12 rules out for approvals in general ("independence
-between proposals... never as a batch"). EPIC-08 therefore keeps the existing one-target
-rule: **one file per proposal, one proposal per approval.**
-
-The bounded exception: a single logical change that inherently touches more than one file
-(e.g., a rename that also requires updating an import elsewhere) is common enough that
-requiring the user to separately discover and approve every downstream file is worse for
-trust, not better — the user cannot evaluate a rename's safety without seeing what
-references it. This document does not resolve that tension; it is named as an **open
-product decision** for the ADR to settle, with two candidate resolutions to choose
-between, not decide here: (a) keep strict one-file-per-proposal and accept that
-multi-file-coupled changes must be proposed as separate, sequential, individually-approved
-steps; or (b) allow a proposal to name a small, explicit, bounded set of files (not an
-open-ended count) with every file's diff shown in full, still as a single audited unit.
-True open-ended, unbounded multi-file changes remain out of scope regardless of which way
-this resolves.
-
-### 5.7 Diff preview
-**Verdict: In scope — this is the mandatory preview mechanism for Edit, Move, and Delete.**
-Directly required by ADR-0004 ("preview shown to user in the approval dialog... the exact
-title/body/label diff") and Wireframe Spec §12 ("Expected effect... shown as a preview
-where the content allows it"). Not a separate capability from Edit/Create/Move/Delete — it
-is how each of those satisfies the existing mandatory-preview requirement.
-
-### 5.8 Patch preview
-**Verdict: Reframed — folded into Diff preview.** A "patch" (a applyable diff artifact) and
-a "diff preview" (a human-reviewable rendering of the same change) are the same underlying
-data shown two ways. EPIC-08 needs exactly one preview mechanism, not two; keeping the
-patch as an internal execution detail (what actually gets applied) while the diff is what
-the user reviews avoids introducing a second, parallel preview concept.
-
-### 5.9 Commit proposal
-**Verdict: In scope, reframed as a branch + commit + pull request proposal — never a
-direct commit to the project's default/protected branch.** ADR-0004 explicitly named "any
-file/code/PR operations" as EPIC-08 territory and out of EPIC-07 scope; this is where that
-territory is defined. A "commit proposal" is not free-standing — SmartFlow does not
-directly commit to a branch a human is also working on. Execution instead: create a new
-branch scoped to this change, commit the approved diff to it, and open a pull request via
-GitHub's existing API (reusing the same verified installation-token flow EPIC-06/07
-already validated). The user reviews and approves *this*, not a raw git operation; GitHub's
-own review/merge process remains authoritative over whether the change ultimately lands.
-This is consistent with Product Direction §14: SmartFlow is not a GitHub replacement, and
-does not perform merges.
-
-### 5.10 Rollback proposal
-**Verdict: Reframed — not a distinct capability; rollback is a fresh proposal like any
-other.** ADR-0004 already establishes that retry after failure "requires a fresh proposal
-and a fresh approval — never an automatic retry." The same principle extends cleanly to
-undoing a completed change: proposing a revert is exactly a new Edit/Delete/PR proposal
-targeting the same file(s), reviewed and approved the same way as any other change, not a
-privileged or automatic capability. A "rollback" button that skipped proposal/approval
-would itself be a second write mechanism, which is exactly what EPIC-08 must not
-introduce. No dedicated rollback tool is built; the existing proposal path already covers
-it.
-
-### 5.11 Capability summary
-
-| Capability | Verdict |
-|---|---|
-| Create files | In scope |
-| Edit files | In scope |
-| Rename | In scope, as Move |
-| Move | In scope |
-| Delete | In scope, higher scrutiny |
-| Multi-file changes | Deferred to EPIC-09, one open exception for the ADR to decide |
-| Diff preview | In scope — the mandatory preview mechanism |
-| Patch preview | Folded into Diff preview |
-| Commit proposal | In scope, reframed as branch + commit + PR, never direct-to-protected-branch |
-| Rollback proposal | Reframed — an ordinary fresh proposal, no dedicated tool |
-
----
-
-## 6. User Workflow
-
-```
-Observe
-  ↓
-Reason
-  ↓
-Proposal
-  ↓
-Approval
-  ↓
-Execution
-  ↓
-Verification
+```text
+User request -> bounded plan -> code proposal -> validation -> diff preview
+-> explicit approval -> execution -> verification -> audit
 ```
 
-- **Observe.** Flow AI (or the user) looks at already-validated project state: repository
-  content, issues, roadmap position, recent activity — the same Observe step already
-  defined for the Project Workspace (Wireframe Spec §11). Nothing about EPIC-08 changes
-  what Observe means; a code change proposal must still be grounded in real, current
-  repository state, not assumed content.
-- **Reason.** Flow AI synthesizes what a change should be and why, traceable back to
-  Evidence (Wireframe Spec §14) exactly as Understand already requires for any
-  recommendation. For EPIC-08 specifically, "reasoning" additionally includes reading the
-  actual current file content being changed — a proposal cannot be generated against
-  stale or assumed file state.
-- **Proposal.** Flow AI produces a specific, named action with a deterministic-validator-
-  sanitized target (repository, path, and the exact diff or new content) — never raw,
-  unvalidated LLM output reaching the Worker, identical in kind to ADR-0004's existing
-  validator step for GitHub writes.
-- **Approval.** The user reviews the proposal in full per §9 below and explicitly
-  approves, rejects, defers, or cancels it — one proposal at a time, never batched
-  (Wireframe Spec §12).
-- **Execution.** A single, audited execution: create branch → commit → open PR (§5.9), or
-  the equivalent single-file operation. No automatic retry (§12 below).
-  **Note on scope naming:** "Execution" here is the same concept the Wireframe
-  Specification and Execution Engine already use elsewhere in the Workspace — this
-  section's structure (Observe/Reason/Proposal/Approval/Execution/Verification) is
-  EPIC-08's own naming for how that same underlying Observe → Understand → Act → Verify
-  loop applies specifically to a code-change proposal; it is not a second, competing
-  workflow model.
-- **Verification.** The PR's actual state is re-read via a read tool and compared against
-  what was previewed at Approval, closing the loop back to Observe (§11 below).
+The first implementation target is GitHub-backed source content. Local filesystem mutation is outside this epic. Every code change is a single, explicit proposal and requires an approval bound to the exact step, tool, target, base revision, and proposed content.
 
----
+## 2. Current Implementation Reality
 
-## 7. Relationship to Existing Systems
+The repository already contains a deterministic read pipeline and a separate write boundary.
 
-- **Planner.** `plannerEngine.ts`/`priorityEngine.ts`/`goalEngine.ts` are unchanged.
-  EPIC-08 gives the planner a new *kind* of candidate next-step to surface (a code change
-  worth proposing), not a new engine. Whether a code-change candidate becomes a project's
-  Current Focus follows the same singular, explainable selection already defined
-  (Wireframe Spec §8) — EPIC-08 does not grant code proposals any priority precedence
-  over other candidates.
-- **Approval.** `approvalInteraction.ts` and `StepApprovalDialog.tsx` are reused unchanged
-  in mechanism. EPIC-08's only requirement on Approval is presentational: the dialog must
-  be able to render a diff (or new-file content, or a path change) as its preview, the way
-  it already renders a comment body or a title/label diff for EPIC-07's tools — the same
-  generalization ADR-0004 already made explicit ("generalized to carry a per-tool
-  preview").
-- **Execution.** `executionEngine.ts`, `executionPolicy.ts`, and `writeRuntime.ts`'s
-  `SUPPORTED_WRITE_TOOL_IDS` allowlist are reused unchanged in mechanism. EPIC-08 adds new
-  tool IDs to that allowlist (e.g., a file-write tool and a pull-request-creation tool);
-  it does not add a second dispatch path.
-- **Execution Audit.** Both existing layers — the in-memory, browser-tab-local
-  `executionAudit.ts` and the durable, Supabase-backed `agent_write_log` — are reused, not
-  replaced. `agent_write_log`'s existing columns (`tool_id`, `parameters`,
-  `github_response`) already generalize to a file-write or PR-creation tool call without
-  schema redesign in principle; whether new columns are needed for diff storage is an
-  implementation-level question for the ADR/engineering task that follows this document,
-  not decided here.
-- **Workspace.** The Project Workspace consumes EPIC-08 exactly as it already consumes
-  EPIC-07's write tools: a code-change proposal appears in Approval Review (Wireframe
-  Spec §12), its outcome in Execution Result (§13), and its confirmation in Evidence &
-  Verification (§14) — no new screen is required (§13 of this document confirms this).
-- **GitHub.** EPIC-08 extends the existing, already-verified GitHub App installation
-  flow — the same installation token used for the four read tools and two EPIC-07 write
-  tools — with new capability scopes (contents write, pull request creation). It does not
-  introduce a second GitHub connection or authentication path.
-- **Assistant.** Per UX Architecture §10, Assistant "earns trust by being verifiably
-  correct about what it observed and honest about what it cannot yet do (e.g., code/PR
-  changes, per EPIC-08's frozen status)." Once EPIC-08 is unfrozen (post-ADR), that
-  specific honesty boundary changes for code/PR proposals — Assistant may now propose
-  them — but every other boundary in UX Architecture §10 (no execution without approval,
-  no implied completion, no chaining, no cross-project data) is unchanged and binding on
-  EPIC-08 exactly as on every other write tool.
+| Area | Current reality | EPIC-08 implication |
+|---|---|---|
+| Planner | `src/features/workspace/plannerEngine.ts` produces typed workspace plan steps. | Extend step mapping only where required; do not create a code planner. |
+| Approval | `src/features/agent/approvalInteraction.ts` validates step, target, tool, scope, and risk. `StepApprovalDialog.tsx` presents the existing review interaction. | Add code-specific preview data while retaining exact-step approval. |
+| Execution Policy | `src/features/agent/executionPolicy.ts` checks tool, domain, capability, target, approval, risk, and scope. | Register code tools with explicit mappings and stricter code restrictions. |
+| Read execution | `src/features/agent/executionEngine.ts` intentionally accepts only read-only handlers. | Do not route code mutation through this engine. |
+| Write Runtime | `src/features/agent/writeRuntime.ts` is the mutation boundary. It enforces supported tool IDs, authentication, policy, approval, duplicate request protection, timeout handling, verification, and audit correlation. | Extend this existing runtime for code tools. |
+| Write handlers | `src/features/agent/writeHandlers.ts` registers `tasks.complete`, `github.issues.comment`, and `github.issues.update`. | Add code handlers only after their contracts are defined. |
+| Audit | `src/features/agent/executionAudit.ts` stores sanitized browser-tab-local records, capped at 200. `ExecutionAuditRecord` is typed in `executionAuditTypes.ts`. | Preserve the existing audit record and add bounded code metadata; durable GitHub mutation logging remains a Worker concern. |
+| Tool Registry | `src/features/agent/toolRegistry.ts` validates immutable tool definitions from `src/features/agent/tools`. | Code tools must be explicit, disabled until implemented, and have bounded schemas. |
+| GitHub client | `src/features/integrations/github/` has clients for repositories, issues, pulls, workflow runs, issue comments, and issue updates. | No source-file, branch, commit, or content verification client exists. |
+| GitHub Worker | `agent/worker/github-integration.ts` exposes authenticated, origin-checked routes for connection, reads, and two issue writes. It validates repository access, applies a five-write/hour limit, and writes `agent_write_log` before mutation. | New file/branch/commit routes and audit parameters are required. |
+| Typed results | `AgentWriteToolExecutionResult` and `WriteRuntimeResult` already distinguish success, invalid input, verification failure, timeout, and failure. | Reuse these result types and extend only where code evidence is necessary. |
 
----
+## 3. EPIC-08 Goals
 
-## 8. Safety Model
+- Propose a bounded change to one existing text file in one connected GitHub repository.
+- Show the exact proposed diff before execution.
+- Require explicit approval for the exact proposal.
+- Execute only through the existing write runtime and authenticated GitHub Worker boundary.
+- Mutate a non-default branch and create one commit, never the default branch directly.
+- Read the resulting file back and verify content plus resulting commit identity.
+- Record the lifecycle in the existing execution audit and the Worker durable write log.
+- Keep behaviour deterministic, reviewable, and manually initiated.
 
-### What is allowed
+## 4. Non-Goals
 
-- Proposing a single-file create, edit, move/rename, or delete, or a single bounded
-  create-branch-commit-PR sequence representing one such change (§5.6's open exception
-  aside), always with a deterministic-validator-sanitized target and content.
-- Opening a pull request against the connected repository via the existing verified
-  installation.
-- Re-reading the repository (via existing or extended read tools) to verify an executed
-  change, before and after execution.
+- Autonomous chaining, autonomous planning loops, or background coding.
+- Silent retry, automatic merge, or automatic pull-request approval.
+- Direct commits to the default branch.
+- Unrestricted shell execution, arbitrary command execution, or local workspace mutation.
+- Multi-file proposals in EPIC-08 MVP.
+- File creation, deletion, rename, binary files, or oversized files in the first mutation slice.
+- A general IDE, code editor, provider abstraction, or EPIC-09 autonomy capability.
 
-### What is never allowed
+## 5. Existing Systems Reused
 
-- **No direct write to a protected/default branch.** Every code change lands via a new
-  branch and a pull request; SmartFlow never commits directly to `main` (or whatever
-  branch the repository's default is), regardless of user role or approval — this is a
-  hard limit, not a configurable option, mirroring ADR-0004's own posture that hard limits
-  are "enforced in code... not aspirational."
-- **No merge.** SmartFlow opens pull requests; it does not merge them. Merge remains a
-  GitHub-native decision, consistent with Product Direction §14 ("not a GitHub
-  replacement").
-- **No force-push, no branch deletion, no repository-level operations** (settings,
-  webhooks, collaborators, branch protection rules).
-- **No arbitrary code execution.** SmartFlow proposes and writes file content; it does not
-  run build tooling, tests, or scripts as part of executing a proposal. (Whether a proposal
-  can be *informed* by CI results already visible via `github.workflow_runs.list` is an
-  Observe-step question, not an Execution-step capability — this stays a read, not a new
-  write.)
-- **No bulk writes beyond §5.6's single bounded exception**, which itself remains an open
-  decision for the ADR, not a default allowance.
-- **No LLM-authored writes reaching the Worker unvalidated.** The deterministic validator
-  sanitizes every parameter — repository, branch name, file path(s), diff/content — before
-  anything executes, identical in principle to ADR-0004's existing validator step.
-- **No silent side effects.** Opening a PR is very likely to trigger the repository's own
-  CI. This must be disclosed as part of "Execution scope" in the approval preview
-  (Wireframe Spec §12: "what this action... cannot do"), not left implicit.
-- **No path traversal or out-of-repository writes.** The validator must confirm every
-  proposed path resolves inside the target repository's own tree before execution — this
-  is the code-write analogue of ADR-0004's existing repository/label validation against
-  the live GitHub state.
-- **No writing to files outside the user's own connected, permission-verified
-  repository**, mirroring ADR-0004's existing installation-access check
-  (`GET /repos/{owner}/{repo}` before any mutation).
+The implementation must use `plannerEngine.ts`, `approvalInteraction.ts`, `executionPolicy.ts`, `writeRuntime.ts`, `executionAudit.ts`, `toolRegistry.ts`, existing GitHub authentication, `agent/worker/github-integration.ts`, and the existing integration-client pattern. No parallel approval, execution, audit, or GitHub authentication system is permitted.
 
----
+## 6. Capability Gap Analysis
 
-## 9. Approval Model
+| Candidate capability | Status | Decision |
+|---|---|---|
+| Read an existing text file | Missing | Add an authenticated bounded GitHub contents read route and client. |
+| Generate exact diff | Missing | Add deterministic diff generation from the fetched base content and proposed content. |
+| Edit one existing file | Missing | EPIC-08 capability; only after preview and approval. |
+| Create a file | Missing | Deferred until existing-file edit is proven. |
+| Multi-file edit | Missing and higher risk | Out of EPIC-08 MVP; one file per proposal. |
+| Branch creation | Missing | Required for mutation slice, not Slice 1. |
+| Commit creation | Missing | Required for mutation slice, not Slice 1. |
+| Pull request creation | Missing | Not required for MVP; deferred. |
+| Result read-back | Missing for source files | Required verification step. |
+| Durable code-write audit | Existing pattern only for issue writes | Extend `agent_write_log` usage for code mutation; do not invent a third audit store. |
 
-### What requires approval
+The candidate MVP is therefore **accepted as the EPIC-08 target but rejected as Slice 1**. Branch creation and commit creation do not belong in Slice 1 because the repository has no source-content contract, diff authority, stale-base contract, or code-specific approval payload yet.
 
-Every code-write action, without exception: every create, edit, move/rename, delete, and
-every branch-commit-PR sequence. There is no "trivial change" exemption — a one-character
-edit requires the same explicit approval as a new file, consistent with Wireframe Spec
-§12's "before a user may approve any single action, without exception."
+## 7. Final MVP Definition
 
-The full required-before-approval content, applying Wireframe Spec §12 to a code change
-specifically:
+The EPIC-08 MVP is one `github.files.update` proposal:
 
-- **Proposed action** — in plain terms ("create a new file at `src/x.ts`," "edit
-  `README.md`," "open a pull request titled …"), never a raw tool identifier.
-- **Target** — the exact file path(s) and repository.
-- **Reason** — the evidence this was proposed from (§7's Planner relationship).
-- **Expected effect** — the full diff (or full new-file content, or old-path → new-path),
-  never truncated or summarized in place of the real content.
-- **Execution scope** — explicitly states this creates a branch and opens a PR; it does
-  not merge, does not push to the default branch, and may trigger the repository's CI.
-- **Approval status** — pending/approved/rejected/deferred/cancelled, per proposal.
-- **Risk or reversibility** — stated per §5.5 for deletes specifically; for create/edit/
-  move, reversibility is "propose a follow-up change" (§5.10), stated plainly rather than
-  implied.
+- one repository selected from the verified GitHub installation;
+- one existing UTF-8 text file;
+- one bounded replacement or complete-content proposal;
+- one exact unified diff generated from the fetched base blob;
+- one approval bound to the file path, base blob SHA, proposed content digest, and step ID;
+- one branch created from the recorded default-branch head;
+- one commit containing that file change on the non-default branch;
+- one read-back of the committed file;
+- verification of content digest and commit SHA;
+- one terminal success or failure result and corresponding audit records.
 
-### Can approvals be grouped?
+The MVP does not create a pull request. A later, separately approved capability may create a PR from the resulting branch.
 
-**No.** This is not a new decision — it is ADR-0004's existing hard limit ("no bulk
-writes... each tool call accepts exactly one issue/comment target") and Wireframe Spec
-§12's existing rule ("no action here decides more than one proposal at once") applied to
-code. A user approving five file edits must make five explicit approval decisions, each
-individually reviewable, exactly as they would for five separate GitHub issue updates
-today. §5.6 names the one place this document leaves open — a single proposal spanning a
-small, explicit, bounded set of files for one logically-coupled change — but even that
-resolution, if adopted, is still one proposal with one approval, not multiple proposals
-approved together.
+## 8. End-to-End Lifecycle
 
-### Can they expire?
+1. The user requests a bounded code change.
+2. The Planner produces one GitHub code-change step with one repository and one file target.
+3. A deterministic proposal builder reads the existing file and records its blob SHA, branch, content digest, and proposed content.
+4. A deterministic validator rejects unsupported paths, encodings, sizes, and content shapes.
+5. The diff generator produces the exact preview from fetched base content to proposed content.
+6. The approval UI displays target, branch, base revision, diff, risk, and expected effect.
+7. The user explicitly approves that exact step.
+8. The write runtime revalidates authentication, tool mapping, approval, expiry, target, and proposal digest.
+9. The Worker revalidates repository access and the current branch base before mutation.
+10. The Worker creates a generated branch and one commit using the GitHub API.
+11. The Worker reads the committed file and commit metadata back.
+12. SmartFlow verifies content digest and commit identity, then emits the typed result and audit records.
 
-**Open decision, with a specific safety requirement that holds regardless of how it is
-resolved.** No existing write tool (EPIC-07 or `tasks.complete`) currently expires a
-pending proposal — Wireframe Spec §12 defines Defer as "remains pending and visible... until
-it is approved, rejected, or cancelled," with no time-based expiry. EPIC-08 could
-reasonably inherit that as-is.
+## 9. Proposal Contract
 
-However, code proposals have a failure mode text-metadata proposals do not: **the target
-file can change between when a diff was proposed and when the user approves it** — a
-second commit could land on the same file in the interim (from the user directly, from
-another tool, or from another approved SmartFlow proposal). Two resolutions are available
-to the ADR; this document does not choose between them, but states the requirement either
-must satisfy: **execution must never apply a diff to a file whose current content no
-longer matches what was diffed at proposal time.** Concretely, that means either (a) the
-validator re-reads the target file immediately before execution and fails closed —
-rejecting execution and requiring a fresh proposal — if the content has drifted, or (b)
-proposals are treated as expiring the moment the underlying file changes, surfaced to the
-user as "this proposal is stale, a fresh one is needed" rather than silently executed
-against outdated content. Either way, this extends ADR-0004's existing "no automatic
-retry" principle to "no stale execution" — an execution proceeding against content the
-user never actually saw would be a real approval-boundary violation, not a cosmetic one.
+The code proposal must contain:
 
----
+- `repo`: canonical `owner/name`;
+- `path`: normalized repository-relative POSIX path;
+- `baseBranch`: the recorded default branch, never a caller-selected protected branch;
+- `baseCommitSha`: the commit checked before proposal creation;
+- `baseBlobSha`: the exact file blob SHA read for the proposal;
+- `baseContentDigest`: SHA-256 of normalized UTF-8 content;
+- `proposedContent`: bounded UTF-8 text;
+- `proposedContentDigest`: SHA-256 of proposed content;
+- `diff`: deterministic unified diff generated by SmartFlow;
+- `operationCount`: always `1`;
+- `requestId` and `stepId`.
 
-## 10. Execution Model
+The LLM may suggest intent and content, but it is never authoritative for repository identity, revision, diff, branch, or authorization fields. The deterministic builder and validator own those values.
 
-Execution reuses the existing single-action, single-approval dispatch (`writeRuntime.ts`,
-`executionEngine.ts`) with new tool IDs added to `SUPPORTED_WRITE_TOOL_IDS`:
+## 10. Approval Boundary
 
-1. On explicit approval (`status === 'approved'`, identical gate to every existing write
-   tool), the Worker re-validates the target and, per §9's freshness requirement, the
-   current file content.
-2. The Worker creates a new branch scoped to this change (naming convention is an
-   implementation detail, not decided here).
-3. The Worker commits the approved diff/content/path-change to that branch using the
-   existing verified installation token.
-4. The Worker opens a pull request against the repository's default branch, using the
-   proposal's reason as the PR description context.
-5. The result (branch name, commit SHA, PR URL/number) is logged to `agent_write_log`
-   before being reported back to the user, exactly as ADR-0004 already requires writes to
-   be logged from the Worker using the service role before execution completes.
-6. Execution happens exactly once per approval. No automatic retry — a failure (§12)
-   requires a fresh proposal, identical to every existing write tool's behavior today.
+Approval is required and is valid only for the exact `stepId`, `toolId`, repository, path, base blob SHA, proposed-content digest, and risk level. Approval scope is `single_step`. Approval is not execution. Closing, rejecting, rerendering, or reopening the dialog does not mutate anything.
 
-Rate limiting extends ADR-0004's existing "max 5 writes per hour per user" posture to
-cover the new tool IDs under the same `agent_write_log`-row-counting mechanism; whether
-code writes share the existing 5/hour budget or need their own bound (a PR is a heavier
-action than a comment) is an open decision for the ADR, not resolved here.
+Approval expires after **15 minutes** or when the current base blob SHA differs from the proposal, whichever comes first. Expired approval becomes non-executable and requires a fresh proposal and diff.
 
----
+## 11. Execution Boundary
 
-## 11. Verification Model
+Code mutation must be represented by a registered write tool and executed through `runWriteTool` in `writeRuntime.ts`. The handler must be authenticated, explicitly supported, `mode: "write"`, externally effectful, approval-required, and verified. The Worker remains the only component allowed to use the GitHub installation token.
 
-Extends the existing Evidence & Verification model (Wireframe Spec §14) without
-redefining its four distinctions:
+One request authorizes exactly one file mutation and one commit. No automatic retry occurs after a provider response, timeout, or uncertain outcome. A repeated `requestId` is rejected by the existing duplicate-request boundary.
 
-- **Action result** — what the execution step reported (branch created, commit made, PR
-  opened) — a claim, not yet confirmation.
-- **Evidence** — the pull request's actual current state, re-read via a read tool
-  (extending the existing `github.pulls.list`-style pattern, or a new equivalent read
-  covering PR diff content) after execution.
-- **Verification status** — whether the re-read PR state matches what was previewed at
-  approval: same target file(s), same resulting content. This is what closes Act back to
-  Observe (Wireframe Spec §11) for a code change specifically.
-- **Unresolved uncertainty** — if the post-execution read cannot be completed (e.g., the
-  connection is unavailable at the moment of checking), this must be stated explicitly as
-  its own condition, never silently presented as verified or as failed, identical to the
-  existing rule.
+## 12. GitHub Mutation Model
 
-A code change additionally distinguishes two claims that must not be collapsed: "the PR
-was opened" (execution succeeded) is not the same claim as "the PR contains exactly the
-diff the user approved" (verified) — the latter requires the re-read, the former does not
-prove it.
+Mutation is GitHub-backed, not local. The Worker must:
 
----
+1. authenticate the user and load the verified connection;
+2. verify repository access through the installation token;
+3. resolve and validate the default branch;
+4. compare the current base commit/blob with the proposal;
+5. create a generated branch from the current default-branch head;
+6. create exactly one file commit on that branch;
+7. return branch name, commit SHA, path, and bounded response metadata;
+8. read the file and commit back for verification.
 
-## 12. Failure Model
+Branch ownership belongs to SmartFlow for the mutation operation. The generated name is deterministic from a safe request identifier, for example `smartflow/epic-08/<short-request-id>`, with length and character limits. A collision must fail closed; it must not overwrite or reuse an existing branch.
 
-- **Execution failure.** If branch creation, commit, or PR creation fails (permissions,
-  conflict, API error), the failure is reported in the same terms Wireframe Spec §13
-  already requires: status, the action as approved, the target, and a plain-terms
-  explanation of what failed and why. No partial state is left silently unexplained.
-- **Partial success.** Code-write execution introduces a real partial-success case
-  text-metadata writes did not have: a branch could be created and committed to, but PR
-  creation could fail. This must be surfaced as its own distinct state — not reported as a
-  clean failure (the branch/commit still exist and are potentially visible in the
-  repository) and not reported as success (no PR exists for the user to review or merge).
-  The Execution Result screen (Wireframe Spec §13) must be able to represent "partially
-  completed, here is exactly what did and did not happen" rather than forcing a binary
-  succeeded/failed label onto a case that is neither.
-- **Rollback.** No automatic rollback of a partially-completed execution. Per §5.10, if a
-  partial or unwanted state needs to be undone, that is a fresh, explicit proposal (e.g.,
-  "delete the orphaned branch," itself an approved action) — not an automatic compensating
-  action taken without approval, which would itself violate the no-autonomy boundary (§3).
-- **Retry.** Identical to every existing write tool: retry requires a fresh proposal and a
-  fresh approval, never an automatic retry (ADR-0004). This applies equally to full
-  failures and partial successes.
+The default branch is never mutated. Direct commit is permitted only on the generated non-default branch. Pull-request creation is a later action and is not part of the MVP.
 
----
+## 13. Diff and Stale-Base Model
 
-## 13. User Experience
+The fetched base content is the sole diff input. SmartFlow, not the LLM and not a client-supplied patch, is the diff authority. The UI displays the exact generated diff and the file path.
 
-No new screens. EPIC-08 is a new *kind* of content flowing through the seven Workspace
-destinations the Wireframe Specification already defines (§5) — Approval Review,
-Execution Result, and Evidence & Verification specifically — not a reason to add an
-eighth.
+Execution fails closed with `STALE_BASE` if the current file blob SHA, base commit SHA, or normalized base-content digest differs from the proposal. The system must not silently rebase, regenerate, or retry. The user must request or approve a new proposal.
 
-### Desktop
+## 14. Verification Model
 
-- Approval Review renders a diff (or new-file content, or path change) as the "Expected
-  effect" preview, with room for a genuinely readable diff view given desktop's available
-  width.
-- Execution Result and Evidence & Verification surface the PR link and its state alongside
-  the same required fields already defined for every other write tool.
+Mutation is successful only when all checks pass:
 
-### Mobile
+- GitHub returns a valid branch and commit identity;
+- the committed path matches the proposal;
+- read-back content is valid UTF-8 and has the proposed-content digest;
+- read-back file blob SHA is consistent with the committed content;
+- returned commit SHA is valid and matches the mutation response;
+- the resulting branch is not the default branch.
 
-- Per Wireframe Spec §18 ("Approval safety... must never be abbreviated to fit less
-  space"), a diff preview on a constrained device must remain fully inspectable — likely
-  requiring its own full-step view rather than an inline expansion, and internal scrolling
-  for a long diff rather than truncation. A diff that cannot be read in full on mobile
-  must not be approvable on mobile; it is not acceptable to abbreviate the very information
-  Wireframe Spec §12 makes mandatory.
-- Large diffs are a genuine mobile risk (§14) — this document does not resolve the
-  presentation mechanism (collapse-by-file, expand-on-demand, etc.), only the constraint
-  that content must never be omitted, only progressively disclosed (Wireframe Spec §18).
+Any failed check produces `verification_failed`, even if GitHub reports a successful mutation. Verification must never claim success from an unverified provider response.
 
----
+## 15. Audit Requirements
 
-## 14. Risks
+The existing in-memory `ExecutionAuditRecord` records `started` and one terminal status with sanitized metadata, request ID, step ID, tool ID, policy version, approval status, risk, and duration. Code metadata may include repository, path, branch, base SHA, commit SHA, verification status, and bounded diff statistics; it must not include secrets, tokens, raw authorization headers, or unbounded file content.
 
-**Product/trust**
+The Worker extends the existing `agent_write_log` lifecycle: insert `pending` before the GitHub mutation, then update to `executed` or `failed`. The durable row must include the user, tool, repository, path, branch, base revision, request correlation, and bounded response metadata. Raw file content and full diffs are not stored in the durable audit log.
 
-- A diff too large to meaningfully review invites rubber-stamp approval, which
-  undermines the entire approval boundary's purpose even though the mechanism is
-  technically intact. Bounding proposal size (one file, per §5.6) mitigates but does not
-  eliminate this.
-- Opening a pull request is very likely to trigger the repository's CI/CD as a side
-  effect. If this is not disclosed clearly in the approval preview (§8), the user is
-  approving a broader effect than they were shown.
+## 16. Failure, Retry, and Rollback Rules
 
-**Technical**
+- Validation, policy, approval, authentication, stale-base, protected-path, size, and encoding failures occur before mutation.
+- A provider error after no confirmed mutation is terminal for the request; no automatic retry is allowed.
+- A timeout or network interruption after the mutation may be uncertain. The system reports failure or uncertain verification and does not repeat the commit automatically.
+- If branch creation succeeds but commit creation fails, the branch is left for inspection and is recorded as a failed partial operation. SmartFlow does not silently delete it.
+- If commit succeeds but verification fails, the branch and commit remain; the result is `verification_failed` and the user must inspect or request a new action.
+- Rollback is a new, separately proposed and separately approved change. No automatic revert is performed.
 
-- Diff staleness between proposal and approval (§9) is a real, code-specific failure mode
-  with no existing analogue in EPIC-07's text-metadata writes; it must be solved, not
-  assumed away.
-- Partial success (branch/commit exist, PR does not) is a new state the existing
-  Execution Result model (built for atomic success/fail outcomes) must be able to
-  represent without forcing a false binary (§12).
-- Path validation must be robust against path traversal and writes intended for outside
-  the repository tree — a stricter validation surface than anything EPIC-07 required.
+## 17. Security Restrictions
 
-**Security**
+- Only verified GitHub App installations and repositories accessible to that installation are allowed.
+- No local filesystem paths, absolute paths, path traversal, URL paths, or encoded traversal are accepted.
+- Paths are repository-relative POSIX paths and are normalized before validation.
+- Protected paths are denied by default: `.env*`, credentials, private keys, certificates, token files, lockfile-independent secrets, `.git/**`, and repository administration files. The first implementation also denies workflow files and generated deployment configuration.
+- Binary content, non-UTF-8 content, and files over **128 KiB** are rejected in the MVP.
+- One file and one commit per proposal; `operationCount` must equal `1`.
+- Maximum proposed content is **128 KiB** and maximum diff is **256 KiB**.
+- The existing five GitHub writes per hour per user remains the shared ceiling; code writes consume the same budget as issue writes.
+- Secrets never enter browser audit metadata, prompts, logs, or returned error details.
 
-- A file-write tool is a materially larger attack surface than a comment/label-update
-  tool if the deterministic validator has any gap — file content could carry secrets, or a
-  path could target a sensitive file (e.g., CI configuration, secrets files) inside the
-  repository. The validator's scope must explicitly account for this, not merely reuse
-  EPIC-07's issue/label validation logic unchanged.
+## 18. UX Requirements
 
-**Scope discipline**
+The approval review must show the repository, file path, source branch, generated target branch, base revision, exact diff, operation count, risk, reversibility boundary, and expected verification. The primary action is explicit `Run`; preview and approval are separate from execution. Success must show commit identity and verification status. Failure must distinguish rejected, stale, denied, provider failure, partial mutation, and verification failure without exposing raw provider internals.
 
-- The clearest risk to this epic succeeding as scoped is quiet expansion: multi-file
-  changes, autonomous merge, or autonomous retry each individually look like small,
-  reasonable extensions once file-writing exists at all. §15 exists specifically to name
-  these so they are recognized as deferred, not rediscovered as "obviously fine to add
-  while we're in here."
+## 19. Implementation Slices
 
----
+### Slice 1 - Read, Propose, Diff, and Approval Preview
 
-## 15. Deferred Features
+- **Objective:** establish the smallest useful code-change vertical path without mutation.
+- **Capability:** read one existing UTF-8 text file, build one bounded proposal, generate the exact diff, detect stale base, and render an approval-ready preview.
+- **Affected systems:** GitHub Worker read routing, GitHub integration client pattern, tool definition, proposal/validation types, approval presentation, tests.
+- **New types/handlers:** `github.files.read` read contract; code proposal and diff types; deterministic file validator; no mutation handler.
+- **Safety boundary:** no branch, commit, or file mutation; one file; protected paths and size/encoding limits enforced.
+- **Tests:** Worker route/auth/path/size/encoding tests; deterministic diff tests; stale-base tests; proposal validation tests; approval binding tests; no-mutation assertion.
+- **Completion:** a real file can be fetched and displayed as an exact diff attached to a single-step approval contract, and all invalid/stale inputs fail closed.
 
-Everything reserved for EPIC-09 (Agent Autonomy) or otherwise explicitly out of this
-epic's scope:
+### Slice 2 - Code Approval and Write-Runtime Contract
 
-- **Open-ended multi-file changes.** §5.6's bounded exception (a small, explicit,
-  enumerated file set for one coupled change) is the only multi-file allowance even
-  proposed here, and it remains an open decision, not a default. Arbitrary-scope,
-  repository-wide, or refactor-scale changes are EPIC-09 territory at the earliest, once
-  bounded autonomy is actually defined (Product Direction §13, §16).
-- **Autonomous merge.** SmartFlow opens pull requests; it never merges them, in this epic
-  or any currently-scoped future one, absent a dedicated future decision this document
-  does not make.
-- **Autonomous retry or self-correction.** If execution or verification fails, SmartFlow
-  does not automatically attempt a different approach — every retry is a fresh, separately
-  approved proposal (§12).
-- **Autonomous chaining.** A code-change proposal never triggers a second proposal
-  automatically (e.g., "and also update the tests") — each is its own Reason → Proposal →
-  Approval cycle (§6), consistent with the Assistant boundary already established (UX
-  Architecture §10).
-- **Running build tooling, tests, or scripts as part of execution.** Execution writes file
-  content and opens a PR; it does not invoke the repository's own tooling.
-- **Any capability for Learning Project or Personal Project types.** Software Project
-  remains the only Project type in scope anywhere in the current phase (Product Direction
-  §3); EPIC-08 does not anticipate the others.
-- **Any provider beyond GitHub.** Consistent with every other document in this set —
-  GitHub remains the only implemented Project connection (Product Direction §7, §10).
-- **Schema, migration, and tool-implementation design.** This document does not decide
-  `agent_write_log` column changes, new tool ID names, or Worker code structure — that is
-  engineering work for after the required ADR (§1).
+- **Objective:** connect the code proposal to the existing approval and write runtime without enabling provider mutation yet.
+- **Capability:** code-specific approval expiry, digest binding, policy mapping, typed blocked results, and audit correlation.
+- **Affected systems:** `approvalInteraction.ts`, `executionPolicy.ts`, `writeRuntime.ts`, `executionAuditTypes.ts`, approval UI.
+- **New types/handlers:** code proposal target and approval-preview contract; disabled code write tool definition until handler support exists.
+- **Safety boundary:** an approval cannot execute a stale, changed, expired, mismatched, or multi-file proposal.
+- **Tests:** expiry, digest mismatch, stale base, step/tool/path mismatch, scope escalation, duplicate request, and no-handler denial tests.
+- **Completion:** the runtime accepts and correctly blocks code-shaped requests deterministically, with no GitHub mutation.
 
----
+### Slice 3 - Non-Default Branch and Single Commit Mutation
 
-## 16. Success Criteria
+- **Objective:** execute one approved existing-file edit through GitHub.
+- **Capability:** create a collision-safe generated branch and one commit containing the approved file content.
+- **Affected systems:** `writeRuntime.ts`, `writeHandlers.ts`, GitHub tool registry, GitHub client, Worker routes, durable write log.
+- **New types/handlers:** `github.files.update` write handler and authenticated Worker branch/content/commit route(s).
+- **Safety boundary:** revalidate repository access and stale base immediately before mutation; never mutate default branch; no retry.
+- **Tests:** branch naming/collision, default-branch denial, commit payload, authentication, rate limit, stale race, durable pending/executed/failed logging, partial failure.
+- **Completion:** one approved proposal produces one commit on a new non-default branch or a clear terminal failure.
 
-This design succeeds when:
+### Slice 4 - Read-Back Verification and Evidence
 
-- A dedicated ADR can be written directly from this document's decisions (§5, §8, §9, §12)
-  without needing to re-derive product scope or re-litigate whether a capability belongs
-  in EPIC-08 versus EPIC-09.
-- Every capability candidate the roadmap named has an explicit, justified verdict (§5) —
-  none silently assumed in or out.
-- The open decisions this document deliberately does not resolve (§5.6's bounded
-  multi-file exception, §9's proposal-freshness mechanism, §10's rate-limit sizing) are
-  named clearly enough that the ADR can resolve them without rediscovering the tradeoff
-  from scratch.
-- Nothing in this document requires modifying the Approval Model, Execution Engine, or
-  Execution Audit in kind — every new capability is additive tool definitions and
-  compositions consumed by those existing systems, consistent with the constraint this
-  task was given.
-- EPIC-09 (Agent Autonomy) remains exactly as frozen and unscoped as it was before this
-  document, with a clearly named boundary (§15) between what EPIC-08 does and what would
-  require EPIC-09 instead.
+- **Objective:** prove the committed result rather than trusting the mutation response.
+- **Capability:** read file and commit metadata back and compare content digest, blob identity, path, branch, and commit SHA.
+- **Affected systems:** code handler result types, Worker response, `writeRuntime.ts`, audit metadata, result presenter.
+- **New types/handlers:** verified code mutation result and bounded evidence shape.
+- **Safety boundary:** provider success without matching evidence is `verification_failed`.
+- **Tests:** successful verification, altered content, wrong path, wrong branch, missing commit identity, timeout/uncertain outcome.
+- **Completion:** success is impossible without all required verification checks.
 
-Success for the *capability itself* (post-implementation, out of scope for this document
-but stated for continuity): a user can ask Flow AI to make a real, small code change, see
-exactly what it proposes, approve it once, and see a real, verified pull request — without
-that trust boundary ever being thinner than the one already proven for `tasks.complete`
-and EPIC-07's GitHub writes.
+### Slice 5 - Portfolio-Quality History and Optional Pull Request Action
 
----
+- **Objective:** expose completed code-change evidence and, only if separately approved, propose PR creation.
+- **Capability:** readable history over existing audit evidence; optional one-branch-to-one-PR proposal.
+- **Affected systems:** project workspace composition, history/evidence presentation, GitHub pull request integration if approved.
+- **New types/handlers:** bounded history projection; PR write tool only if product scope is later accepted.
+- **Safety boundary:** no merge, no automatic review approval, no autonomous follow-up.
+- **Tests:** history filtering, redaction, evidence rendering, PR approval/branch binding if implemented.
+- **Completion:** users can inspect what changed and why; PR creation remains independently gated.
+
+## 20. Slice 1 Specification
+
+Slice 1 is intentionally mutation-free. It should implement one real path:
+
+1. User selects or names one connected repository and one existing text file.
+2. A bounded authenticated read fetches file content, blob SHA, and current branch commit.
+3. The proposal builder accepts one proposed text content and computes content digests.
+4. The validator rejects path traversal, protected paths, binary/non-UTF-8 content, oversized content, and more than one target.
+5. The deterministic diff generator produces the preview.
+6. The proposal is attached to one existing approval interaction with exact step/tool/target/digest binding.
+7. The UI displays the diff and expected effect, but `Run` returns a deliberately blocked/not-yet-supported result because Slice 1 has no mutation handler.
+
+Slice 1 must not create a branch, commit, audit a mutation, or alter GitHub state. Its value is proving the proposal and trust boundary before any irreversible external effect exists.
+
+## 21. Testing Strategy
+
+Testing follows the repository's existing Vitest style and Worker unit-test patterns. Each slice requires focused unit tests for validators, policy mappings, handlers, client request construction, Worker route behavior, and audit redaction. Integration tests must use dependency-injected fetchers and synthetic GitHub responses. No test may require a real production GitHub installation or real mutation. The full existing test suite and build remain regression gates after implementation slices.
+
+## 22. Deferred EPIC-09 Work
+
+EPIC-09 owns autonomous chaining, multiple dependent actions, unrestricted or broader execution, background operation, multi-provider coding intelligence, broad multi-file changes, automatic retries, automatic PR/merge workflows, and any policy that acts without a fresh user approval for each external effect.
+
+## 23. Definition of Done
+
+- The design is implemented only through existing Planner, Approval, Write Runtime, Policy, GitHub Worker, Verification, and Audit boundaries.
+- One existing text file is the only MVP mutation target.
+- Every mutation has an exact diff and explicit approval.
+- Default branches are never directly mutated.
+- One proposal produces at most one file mutation and one commit.
+- Stale proposals, expired approvals, protected paths, binary/oversized files, and uncertain outcomes fail closed.
+- Read-back verification proves content and commit identity.
+- Browser and durable audit records are bounded and redacted.
+- No autonomous chaining, silent retry, automatic merge, or unrestricted shell execution exists.
+- Focused tests and the existing regression gates pass.
+
+## 24. Remaining Open Decisions
+
+None. The document deliberately chooses one-file existing-file edits, GitHub-backed mutation, generated non-default branches, direct single commit without PR creation, 15-minute approval expiry, one operation per proposal, deterministic SmartFlow-owned diffs, stale-base rejection, read-back verification, no automatic retry, preserved partial branches, fresh-proposal rollback, protected-path denial, and strict text/size limits.
 
 ## References
 
 - [`docs/product/product-direction-v1.md`](../product/product-direction-v1.md)
 - [`docs/design/ux/ux-architecture-v1.md`](../design/ux/ux-architecture-v1.md)
 - [`docs/design/ux/project-workspace-wireframe-spec-v1.md`](../design/ux/project-workspace-wireframe-spec-v1.md)
-- [`docs/design/ux/project-workspace-low-fidelity-wireframes-v1.md`](../design/ux/project-workspace-low-fidelity-wireframes-v1.md)
 - [`docs/roadmap/project-workspace-implementation-roadmap-v1.md`](project-workspace-implementation-roadmap-v1.md)
 - [`docs/adr/ADR-0004-write-boundaries.md`](../adr/ADR-0004-write-boundaries.md)
-- [`docs/decisions/ADR/ADR-0001-architecture-decision-record-policy.md`](../decisions/ADR/ADR-0001-architecture-decision-record-policy.md)
-- [`PROJECT_STATUS.md`](../../PROJECT_STATUS.md)
-- [`CLAUDE.md`](../../CLAUDE.md)
+- `src/features/workspace/plannerEngine.ts`
+- `src/features/agent/approvalInteraction.ts`
+- `src/features/agent/executionPolicy.ts`
+- `src/features/agent/executionEngine.ts`
+- `src/features/agent/writeRuntime.ts`
+- `src/features/agent/writeHandlers.ts`
+- `src/features/agent/executionAudit.ts`
+- `src/features/agent/executionAuditTypes.ts`
+- `src/features/agent/toolRegistry.ts`
+- `src/features/agent/executionTypes.ts`
+- `agent/worker/github-integration.ts`

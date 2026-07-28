@@ -100,6 +100,7 @@ describe("toolRegistry", () => {
       "github.epics.list",
       "github.issues.comment",
       "github.issues.update",
+      "github.files.read",
       "github.pulls.list",
       "github.workflow_runs.list",
       "tasks.create",

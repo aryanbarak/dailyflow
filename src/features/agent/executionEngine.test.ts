@@ -455,6 +455,7 @@ describe("executionEngine", () => {
       "github.epics.list",
       "github.pulls.list",
       "github.workflow_runs.list",
+      "github.files.read",
     ]);
   });
 });

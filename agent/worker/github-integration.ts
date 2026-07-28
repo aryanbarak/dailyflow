@@ -28,6 +28,12 @@ const MAX_REPOSITORY_LABELS = 100
 const MAX_WRITES_PER_HOUR = 5
 const WRITE_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000
 
+// EPIC-08 Slice 1 -- see docs/roadmap/epic-08-write-code-design-v1.md.
+// This is a read (GET, no request body), so MAX_WRITE_BODY_BYTES above does
+// not apply -- this bounds the file GitHub returns, not a caller-sent body.
+const MAX_FILE_READ_BYTES = 128 * 1024
+const MAX_REPOSITORY_RELATIVE_PATH_LENGTH = 400
+
 type Fetcher = typeof fetch
 
 interface GitHubIntegrationDependencies {
@@ -509,11 +515,15 @@ type GitHubProviderContext =
   | 'verification' | 'user-token-exchange' | 'installation-token-mint' | 'repositories'
   | 'issues' | 'epics' | 'pulls' | 'workflow_runs'
   | 'repository-access' | 'labels' | 'issue-comment' | 'issue-update'
+  // EPIC-08 Slice 1 -- see docs/roadmap/epic-08-write-code-design-v1.md.
+  | 'branch' | 'file-content'
 
 const NOT_FOUND_ERROR_BY_CONTEXT: Partial<Record<GitHubProviderContext, { code: string; message: string }>> = {
   verification: { code: 'INSTALLATION_NOT_ACCESSIBLE', message: 'The GitHub App installation is not available.' },
   'user-token-exchange': { code: 'GITHUB_TOKEN_EXCHANGE_FAILED', message: 'GitHub could not exchange the authorization code for a user token.' },
   'repository-access': { code: 'REPOSITORY_NOT_ACCESSIBLE', message: 'The requested repository is not part of the verified GitHub App installation.' },
+  branch: { code: 'BRANCH_NOT_FOUND', message: 'The repository default branch could not be found.' },
+  'file-content': { code: 'FILE_NOT_FOUND', message: 'The requested file was not found on the default branch.' },
 }
 
 function providerError(
@@ -1396,12 +1406,16 @@ function parseRepoIdentifier(value: unknown): { owner: string; name: string } | 
   return match ? { owner: match[1], name: match[2] } : undefined
 }
 
+// Returns the repository's default branch so callers that also need it
+// (EPIC-08 Slice 1's file read) do not have to mint a second, redundant
+// GET /repos/{owner}/{name} call -- existing EPIC-07 callers simply do not
+// use the return value.
 async function verifyRepositoryAccess(
   owner: string,
   name: string,
   token: string,
   deps: GitHubIntegrationDependencies,
-) {
+): Promise<{ defaultBranch: string }> {
   const response = await githubFetch(
     deps,
     `${GITHUB_API_ORIGIN}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`,
@@ -1415,6 +1429,12 @@ async function verifyRepositoryAccess(
     },
   )
   if (!response.ok) throw providerError(response, 'repository-access')
+  const body = await providerJson<{ default_branch?: unknown }>(response)
+  const defaultBranch = boundedString(body.default_branch, 250)
+  if (!defaultBranch) {
+    throw new GitHubIntegrationError('GITHUB_RESPONSE_INVALID', 502, 'GitHub returned an invalid repository response.')
+  }
+  return { defaultBranch }
 }
 
 async function fetchRepositoryLabels(
@@ -1702,6 +1722,193 @@ async function handleIssueUpdate(
   }
 }
 
+// ---------------------------------------------------------------------------
+// EPIC-08 Slice 1 -- see docs/roadmap/epic-08-write-code-design-v1.md.
+// Authenticated, bounded, single-file read only: no branch, no commit, no
+// pull request, no mutation of any kind, and no agent_write_log row (this is
+// a read, not a write -- it does not consume the 5-writes/hour budget).
+// ---------------------------------------------------------------------------
+
+const PROTECTED_DIRECTORY_SEGMENTS = ['.git', '.github/workflows']
+const PROTECTED_FILENAME_EXACT = new Set([
+  'credentials',
+  'credentials.json',
+  'secrets.json',
+  'secrets.yml',
+  'secrets.yaml',
+  '.npmrc',
+  '.netrc',
+  '.pgpass',
+])
+const PROTECTED_FILENAME_PREFIXES = ['.env']
+const PROTECTED_FILENAME_EXTENSIONS = ['.pem', '.key', '.p12', '.pfx', '.crt', '.cer', '.der']
+const PROTECTED_PRIVATE_KEY_BASENAMES = new Set(['id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519'])
+
+// Mirrors src/features/agent/codeChange/codeProposalValidator.ts's denylist.
+// Kept as an independently-maintained copy rather than a shared import --
+// the Worker package and the frontend package are separate deployables with
+// no existing shared-module boundary (see MAX_COMMENT_BODY_LENGTH's own
+// duplication against githubTools.ts's inputSchema description for
+// precedent). The Worker copy is authoritative; the frontend copy exists for
+// fail-fast UI feedback only.
+function isProtectedRepositoryPath(path: string): boolean {
+  const normalized = path.trim().replace(/^\/+/, '')
+  const lower = normalized.toLowerCase()
+  if (PROTECTED_DIRECTORY_SEGMENTS.some((segment) => lower === segment || lower.startsWith(`${segment}/`) || lower.includes(`/${segment}/`))) {
+    return true
+  }
+  const segments = normalized.split('/')
+  const filename = (segments[segments.length - 1] ?? '').toLowerCase()
+  if (PROTECTED_FILENAME_EXACT.has(filename)) return true
+  if (PROTECTED_FILENAME_PREFIXES.some((prefix) => filename === prefix || filename.startsWith(`${prefix}.`))) return true
+  if (PROTECTED_FILENAME_EXTENSIONS.some((extension) => filename.endsWith(extension))) return true
+  if (PROTECTED_PRIVATE_KEY_BASENAMES.has(filename)) return true
+  return false
+}
+
+function parseRepositoryRelativePath(value: unknown): string | undefined {
+  const path = boundedString(value, MAX_REPOSITORY_RELATIVE_PATH_LENGTH + 1)
+  if (!path || path.length > MAX_REPOSITORY_RELATIVE_PATH_LENGTH) return undefined
+  if (path.includes('\\')) return undefined
+  if (path.startsWith('/') || /^[A-Za-z]:/.test(path) || /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(path)) return undefined
+  if (path.includes('//')) return undefined
+  const segments = path.split('/')
+  if (segments.some((segment) => segment === '.' || segment === '..' || segment.length === 0)) return undefined
+  if (isProtectedRepositoryPath(path)) return undefined
+  return path
+}
+
+async function fetchBranchHeadCommit(
+  owner: string,
+  name: string,
+  branch: string,
+  token: string,
+  deps: GitHubIntegrationDependencies,
+): Promise<string> {
+  const response = await githubFetch(
+    deps,
+    `${GITHUB_API_ORIGIN}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/branches/${encodeURIComponent(branch)}`,
+    {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${token}`,
+        'X-GitHub-Api-Version': API_VERSION,
+        'User-Agent': 'SmartFlow-GitHub-App',
+      },
+    },
+  )
+  if (!response.ok) throw providerError(response, 'branch')
+  const body = await providerJson<{ commit?: { sha?: unknown } }>(response)
+  const commitSha = boundedString(body.commit?.sha, 64)
+  if (!commitSha) {
+    throw new GitHubIntegrationError('GITHUB_RESPONSE_INVALID', 502, 'GitHub returned an invalid branch response.')
+  }
+  return commitSha
+}
+
+interface GitHubContentsResponse {
+  type?: unknown
+  sha?: unknown
+  size?: unknown
+  content?: unknown
+  encoding?: unknown
+}
+
+async function fetchFileContent(
+  owner: string,
+  name: string,
+  path: string,
+  branch: string,
+  token: string,
+  deps: GitHubIntegrationDependencies,
+): Promise<{ blobSha: string; content: string; size: number }> {
+  const response = await githubFetch(
+    deps,
+    `${GITHUB_API_ORIGIN}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/contents/${path.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(branch)}`,
+    {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${token}`,
+        'X-GitHub-Api-Version': API_VERSION,
+        'User-Agent': 'SmartFlow-GitHub-App',
+      },
+    },
+  )
+  if (!response.ok) throw providerError(response, 'file-content')
+  const body = await providerJson<GitHubContentsResponse>(response)
+  if (Array.isArray(body) || body.type !== 'file') {
+    throw new GitHubIntegrationError('FILE_NOT_A_TEXT_FILE', 400, 'The requested path is not a single text file.')
+  }
+  const blobSha = boundedString(body.sha, 64)
+  const encoding = boundedString(body.encoding, 16)
+  const rawContent = typeof body.content === 'string' ? body.content : undefined
+  const size = positiveInteger(body.size) ?? (rawContent === '' ? 0 : undefined)
+  if (!blobSha || encoding !== 'base64' || rawContent === undefined || size === undefined) {
+    throw new GitHubIntegrationError('GITHUB_RESPONSE_INVALID', 502, 'GitHub returned an invalid file content response.')
+  }
+  if (size > MAX_FILE_READ_BYTES) {
+    throw new GitHubIntegrationError('FILE_TOO_LARGE', 400, `File must not exceed ${MAX_FILE_READ_BYTES} bytes.`)
+  }
+
+  let bytes: Uint8Array
+  try {
+    const binary = atob(rawContent.replace(/\s/g, ''))
+    bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
+  } catch {
+    throw new GitHubIntegrationError('FILE_NOT_DECODABLE', 400, 'The file content could not be decoded.')
+  }
+  if (bytes.byteLength > MAX_FILE_READ_BYTES) {
+    throw new GitHubIntegrationError('FILE_TOO_LARGE', 400, `File must not exceed ${MAX_FILE_READ_BYTES} bytes.`)
+  }
+
+  let content: string
+  try {
+    content = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  } catch {
+    throw new GitHubIntegrationError('FILE_NOT_UTF8', 400, 'The file is not valid UTF-8 text.')
+  }
+  // TextDecoder({fatal:true}) rejects invalid byte sequences, but a NUL byte is technically valid UTF-8 -- reject it separately as a binary marker.
+  if (content.includes('\u0000')) {
+    throw new GitHubIntegrationError('FILE_NOT_UTF8', 400, 'The file is not valid UTF-8 text.')
+  }
+
+  return { blobSha, content, size: bytes.byteLength }
+}
+
+async function readFileContent(
+  request: Request,
+  config: GitHubConfig,
+  deps: GitHubIntegrationDependencies,
+) {
+  const { userId, authorization } = await requireUser(request, config, deps)
+  const url = new URL(request.url)
+  const repoIdentifier = parseRepoIdentifier(url.searchParams.get('repo'))
+  const path = parseRepositoryRelativePath(url.searchParams.get('path'))
+  if (!repoIdentifier || !path) {
+    throw new GitHubIntegrationError('WRITE_INPUT_INVALID', 400, 'repo and a valid repository-relative path are required.')
+  }
+
+  const connection = await loadConnection(userId, authorization, config, deps)
+  const installationId = positiveInteger(connection.installation_id)
+  if (!installationId) {
+    throw new GitHubIntegrationError('CONNECTION_RECORD_INVALID', 500, 'Verified connection metadata is invalid.')
+  }
+  const token = await installationToken(installationId, config, deps)
+  const { defaultBranch } = await verifyRepositoryAccess(repoIdentifier.owner, repoIdentifier.name, token, deps)
+  const commitSha = await fetchBranchHeadCommit(repoIdentifier.owner, repoIdentifier.name, defaultBranch, token, deps)
+  const file = await fetchFileContent(repoIdentifier.owner, repoIdentifier.name, path, defaultBranch, token, deps)
+
+  return {
+    repo: `${repoIdentifier.owner}/${repoIdentifier.name}`,
+    path,
+    branch: defaultBranch,
+    blobSha: file.blobSha,
+    commitSha,
+    content: file.content,
+    size: file.size,
+  }
+}
+
 export async function handleGitHubIntegrationRequest(
   request: Request,
   env: Env,
@@ -1763,6 +1970,9 @@ export async function handleGitHubIntegrationRequest(
     if (url.pathname === '/github/issues/update' && request.method === 'PATCH') {
       return json(await handleIssueUpdate(request, config, deps), 200, origin, config)
     }
+    if (url.pathname === '/github/files/read' && request.method === 'GET') {
+      return json(await readFileContent(request, config, deps), 200, origin, config)
+    }
     if (
       url.pathname === '/github/connect/start' ||
       url.pathname === '/github/connect/setup' ||
@@ -1774,6 +1984,7 @@ export async function handleGitHubIntegrationRequest(
       url.pathname === '/github/workflow_runs' ||
       url.pathname === '/github/issues/comment' ||
       url.pathname === '/github/issues/update' ||
+      url.pathname === '/github/files/read' ||
       url.pathname === '/github/disconnect' ||
       url.pathname === '/github/connection' ||
       url.pathname === '/github/repository-inventory'

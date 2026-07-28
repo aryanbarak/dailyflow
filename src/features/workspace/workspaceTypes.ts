@@ -291,6 +291,19 @@ export type WorkspaceApprovalRiskLevel =
   | "medium"
   | "high";
 
+// EPIC-08 Slice 1 -- see docs/roadmap/epic-08-write-code-design-v1.md.
+// The exact base/proposed identifiers a code-change approval is bound to.
+// Distinct from previewText (the human-readable diff) because these fields
+// must be independently comparable (stale-base detection) without re-parsing
+// free text.
+export interface WorkspaceCodeProposalBinding {
+  repo: string;
+  path: string;
+  baseBlobSha: string;
+  baseCommitSha: string;
+  proposedContentDigest: string;
+}
+
 export interface WorkspaceStepApproval {
   stepId: string;
   targetId?: string;
@@ -312,6 +325,9 @@ export interface WorkspaceStepApproval {
   // summary) shown in the approval dialog before Run is enabled. Absent for
   // tasks.complete, which has no free-text payload to preview.
   previewText?: string;
+  // EPIC-08 Slice 1 -- see docs/roadmap/epic-08-write-code-design-v1.md.
+  // Present only for a code-change proposal. Absent for every other tool.
+  codeProposalBinding?: WorkspaceCodeProposalBinding;
 }
 
 export interface WorkspaceApprovalModel {
