@@ -1,0 +1,62 @@
+name: Feature or implementation
+description: Propose a scoped SmartFlow feature or implementation slice
+title: "[Feature] "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: What product or architecture context makes this work necessary?
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the user or system problem, not only the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: Desired outcome
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      placeholder: "- ..."
+    validations:
+      required: true
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Out of scope
+      placeholder: "- ..."
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      placeholder: "- [ ] ..."
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies and related issues
+      description: Link parent Epic, blocking work, ADRs, designs, or prior issues.
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation plan
+      description: Tests, build, browser QA, security review, migration checks, or evidence required.
+    validations:
+      required: true
+  - type: textarea
+    id: risks
+    attributes:
+      label: Risks and rollback
