@@ -810,5 +810,5 @@ Specification's own Open Decisions section (§23), not invented here to fill spa
 - [`docs/product/product-direction-v1.md`](../../product/product-direction-v1.md)
 - [`docs/design/ux/ux-architecture-v1.md`](ux-architecture-v1.md)
 - [`docs/design/ux/project-workspace-wireframe-spec-v1.md`](project-workspace-wireframe-spec-v1.md)
-- [`docs/adr/ADR-0004-write-boundaries.md`](../../adr/ADR-0004-write-boundaries.md)
+- [`docs/decisions/adr/ADR-0004-write-boundaries.md`](../../decisions/adr/ADR-0004-write-boundaries.md)
 - [`PROJECT_STATUS.md`](../../../PROJECT_STATUS.md)

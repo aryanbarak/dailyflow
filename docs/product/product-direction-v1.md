@@ -55,7 +55,7 @@ same trust model to the rest of life until the loop is proven here first.
 ## 3. Product Identity
 
 SmartFlow remains one product with one AI identity, Flow AI, as defined by
-[ADR-0002](../decisions/ADR/ADR-0002%20—%20Flow%20AI%20Presence%20Architecture.md) and the
+[ADR-0002](../decisions/adr/ADR-0002%20—%20Flow%20AI%20Presence%20Architecture.md) and the
 Product Bible. Nothing in this phase changes the Orb, the presence model, or the "AI
 first, calm technology" philosophy.
 
@@ -180,7 +180,7 @@ new:
 
 1. **The safety architecture is already project-shaped.** Tool Registry, Execution
    Policy, the approval dialog, and Execution Audit (see
-   [ADR-0004](../adr/ADR-0004-write-boundaries.md)) were built and validated against
+   [ADR-0004](../decisions/adr/ADR-0004-write-boundaries.md)) were built and validated against
    GitHub repository/issue operations — inherently project data. Extending them to more
    life domains before proving the full Observe→Understand→Act→Verify loop on the domain
    they already fit best would spend new UX and engineering effort before the existing
@@ -254,7 +254,7 @@ Execution Policy, Execution Engine, and Execution Audit — as documented in
 [`01-architecture-baseline.md`](../architecture/01-architecture-baseline.md) — remain the
 technical foundation. A Project domain is a new product-level composition of what these
 engines and the GitHub integration ([`github-read-only-integration-v1.md`](../architecture/github-read-only-integration-v1.md),
-[ADR-0004](../adr/ADR-0004-write-boundaries.md)) already produce; it is not a new engine,
+[ADR-0004](../decisions/adr/ADR-0004-write-boundaries.md)) already produce; it is not a new engine,
 and it does not require re-litigating deterministic validation, the LLM-proposes/user-
 approves boundary, or the audit trail. Any UX Architecture work that follows this document
 must consume these systems as-is, not redesign them.
@@ -378,15 +378,11 @@ expand this task's scope:
 1. **Documentation Standard does not list `docs/product/`.**
    `DOCUMENTATION_STANDARD_V1.0.md`'s folder structure should be updated now that
    `docs/product/` is approved as canonical (§1).
-2. **`ADR_INDEX.md` does not list ADR-0004.** The index should be updated to include it.
-3. **ADR-0004 is filed at a nonstandard path.** `ADR-0004-write-boundaries.md` lives at
-   `docs/adr/` (lowercase, singular) instead of `docs/decisions/ADR/`, as ADR-0001
-   prescribes. This document links to ADR-0004 at its actual current path; a future
-   change should either move the file or update the standard to reflect where ADRs
-   referencing write boundaries actually live.
-4. **Empty duplicate roadmap file.** `docs/design/vision/07_product_roadmap.md` is empty
-   while `docs/roadmap/product-roadmap.md` holds the real, current roadmap content. It
-   should be deleted or consolidated as routine documentation maintenance.
+2. **ADR index alignment.** Resolved by consolidating ADRs under
+   `docs/decisions/adr/` and listing ADR-0004 in that folder's `README.md`.
+3. **Empty duplicate roadmap file.** Resolved by removing the empty
+   `docs/design/vision/07_product_roadmap.md` placeholder. The canonical roadmap remains
+   `docs/roadmap/product-roadmap.md`.
 
 ---
 
@@ -397,9 +393,9 @@ expand this task's scope:
 - [`docs/design/system/06_module_philosophy.md`](../design/system/06_module_philosophy.md)
 - [`docs/architecture/01-architecture-baseline.md`](../architecture/01-architecture-baseline.md)
 - [`docs/architecture/github-read-only-integration-v1.md`](../architecture/github-read-only-integration-v1.md)
-- [`docs/adr/ADR-0004-write-boundaries.md`](../adr/ADR-0004-write-boundaries.md)
-- [`docs/decisions/ADR/ADR-0001-architecture-decision-record-policy.md`](../decisions/ADR/ADR-0001-architecture-decision-record-policy.md)
-- [`docs/decisions/ADR/ADR-0002 — Flow AI Presence Architecture.md`](../decisions/ADR/ADR-0002%20—%20Flow%20AI%20Presence%20Architecture.md)
-- [`docs/decisions/ADR/ADR-0003-agent-reason-local-qa-only.md`](../decisions/ADR/ADR-0003-agent-reason-local-qa-only.md)
+- [`docs/decisions/adr/ADR-0004-write-boundaries.md`](../decisions/adr/ADR-0004-write-boundaries.md)
+- [`docs/decisions/adr/ADR-0001-architecture-decision-record-policy.md`](../decisions/adr/ADR-0001-architecture-decision-record-policy.md)
+- [`docs/decisions/adr/ADR-0002 — Flow AI Presence Architecture.md`](../decisions/adr/ADR-0002%20—%20Flow%20AI%20Presence%20Architecture.md)
+- [`docs/decisions/adr/ADR-0003-agent-reason-local-qa-only.md`](../decisions/adr/ADR-0003-agent-reason-local-qa-only.md)
 - [`PROJECT_STATUS.md`](../../PROJECT_STATUS.md)
 - [`CLAUDE.md`](../../CLAUDE.md)

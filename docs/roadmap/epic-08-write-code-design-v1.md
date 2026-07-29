@@ -302,7 +302,7 @@ None. The document deliberately chooses one-file existing-file edits, GitHub-bac
 - [`docs/design/ux/ux-architecture-v1.md`](../design/ux/ux-architecture-v1.md)
 - [`docs/design/ux/project-workspace-wireframe-spec-v1.md`](../design/ux/project-workspace-wireframe-spec-v1.md)
 - [`docs/roadmap/project-workspace-implementation-roadmap-v1.md`](project-workspace-implementation-roadmap-v1.md)
-- [`docs/adr/ADR-0004-write-boundaries.md`](../adr/ADR-0004-write-boundaries.md)
+- [`docs/decisions/adr/ADR-0004-write-boundaries.md`](../decisions/adr/ADR-0004-write-boundaries.md)
 - `src/features/workspace/plannerEngine.ts`
 - `src/features/agent/approvalInteraction.ts`
 - `src/features/agent/executionPolicy.ts`

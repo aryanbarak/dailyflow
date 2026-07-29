@@ -160,7 +160,7 @@ resolved UX decision, not an open question:
   user moves between Home, Projects, Tasks, Learning, Assistant, and Connections (§3). It
   is structural chrome, not an Assistant surface.
 - **Flow AI Presence** — the persistent manifestation already established in
-  [ADR-0002](../../decisions/ADR/ADR-0002%20—%20Flow%20AI%20Presence%20Architecture.md) —
+  [ADR-0002](../../decisions/adr/ADR-0002%20—%20Flow%20AI%20Presence%20Architecture.md) —
   represents contextual Assistant access, support, proposals, and awareness. This document
   does not redesign Presence; it fixes how navigation must relate to it.
 - **Flow AI Presence must not own or replace Primary Navigation.** Presence is not an
@@ -529,6 +529,6 @@ section will be reopened then rather than speculatively populated now.
 - [`docs/design/experience/03_flow_ai_personality.md`](../experience/03_flow_ai_personality.md)
 - [`docs/design/experience/04_flow_ai_conversation.md`](../experience/04_flow_ai_conversation.md)
 - [`docs/design/system/06_module_philosophy.md`](../system/06_module_philosophy.md)
-- [`docs/decisions/ADR/ADR-0002 — Flow AI Presence Architecture.md`](../../decisions/ADR/ADR-0002%20—%20Flow%20AI%20Presence%20Architecture.md)
-- [`docs/adr/ADR-0004-write-boundaries.md`](../../adr/ADR-0004-write-boundaries.md)
+- [`docs/decisions/adr/ADR-0002 — Flow AI Presence Architecture.md`](../../decisions/adr/ADR-0002%20—%20Flow%20AI%20Presence%20Architecture.md)
+- [`docs/decisions/adr/ADR-0004-write-boundaries.md`](../../decisions/adr/ADR-0004-write-boundaries.md)
 - [`PROJECT_STATUS.md`](../../../PROJECT_STATUS.md)

@@ -396,7 +396,7 @@ concepts to change.
   and the two Write Light tools (`github.issues.comment`, `github.issues.update`), exactly
   as shipped and documented in
   [`github-read-only-integration-v1.md`](../architecture/github-read-only-integration-v1.md)
-  and [ADR-0004](../adr/ADR-0004-write-boundaries.md).
+  and [ADR-0004](../decisions/adr/ADR-0004-write-boundaries.md).
 - **Enhancement (this roadmap):** binding an existing connection's repository to a Project
   entity (S1); a project-scoped presentation of that same connection's status (S7);
   Recent Activity, Health, and History composing over the same four read tools and the
@@ -518,10 +518,10 @@ Gradual, additive, never big-bang:
   implementation proceeds; a slice that discovers a genuine gap in one of them should
   update that document explicitly (through its own review process) rather than have
   implementation quietly drift from what was approved.
-- The already-recorded documentation-alignment follow-ups (Product Direction §17–§18: the
-  duplicate empty roadmap file, ADR-0004's nonstandard path, `ADR_INDEX.md` missing
-  ADR-0004) remain unresolved and unrelated to this roadmap — noted here only so
-  implementation work does not confuse "not yet fixed" with "not known."
+- The already-recorded documentation-alignment follow-ups from Product Direction §17–§18
+  were resolved by the documentation-structure cleanup: ADRs now live under
+  `docs/decisions/adr/`, ADR-0004 is listed in the ADR README, and the empty duplicate
+  roadmap placeholder was removed.
 
 ---
 
@@ -638,6 +638,6 @@ Named for continuity with the canonical documents' own deferred scope, not desig
 - [`docs/design/ux/project-workspace-wireframe-spec-v1.md`](../design/ux/project-workspace-wireframe-spec-v1.md)
 - [`docs/design/ux/project-workspace-low-fidelity-wireframes-v1.md`](../design/ux/project-workspace-low-fidelity-wireframes-v1.md)
 - [`docs/architecture/github-read-only-integration-v1.md`](../architecture/github-read-only-integration-v1.md)
-- [`docs/adr/ADR-0004-write-boundaries.md`](../adr/ADR-0004-write-boundaries.md)
+- [`docs/decisions/adr/ADR-0004-write-boundaries.md`](../decisions/adr/ADR-0004-write-boundaries.md)
 - [`PROJECT_STATUS.md`](../../PROJECT_STATUS.md)
 - [`CLAUDE.md`](../../CLAUDE.md)

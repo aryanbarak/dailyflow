@@ -727,6 +727,6 @@ of which this document resolves or overrides:
 - [`docs/design/ux/ux-architecture-v1.md`](ux-architecture-v1.md)
 - [`docs/design/experience/02_living_workspace.md`](../experience/02_living_workspace.md)
 - [`docs/design/experience/04_flow_ai_conversation.md`](../experience/04_flow_ai_conversation.md)
-- [`docs/adr/ADR-0004-write-boundaries.md`](../../adr/ADR-0004-write-boundaries.md)
-- [`docs/decisions/ADR/ADR-0002 — Flow AI Presence Architecture.md`](../../decisions/ADR/ADR-0002%20—%20Flow%20AI%20Presence%20Architecture.md)
+- [`docs/decisions/adr/ADR-0004-write-boundaries.md`](../../decisions/adr/ADR-0004-write-boundaries.md)
+- [`docs/decisions/adr/ADR-0002 — Flow AI Presence Architecture.md`](../../decisions/adr/ADR-0002%20—%20Flow%20AI%20Presence%20Architecture.md)
 - [`PROJECT_STATUS.md`](../../../PROJECT_STATUS.md)

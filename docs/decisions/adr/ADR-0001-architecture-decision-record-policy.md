@@ -37,7 +37,7 @@ Without a formal decision process:
 | Chat history only | Rely on Claude/ChatGPT conversation history | Not persistent, not searchable, lost between sessions |
 | README only | Document decisions in README | Gets too long, no lifecycle management, no traceability |
 | Wiki / Notion | External documentation tool | Adds dependency, disconnected from codebase |
-| ADR system | Structured decision records in `docs/decisions/ADR/` | **Chosen** — traceable, scalable, lives in the repo |
+| ADR system | Structured decision records in `docs/decisions/adr/` | **Chosen** — traceable, scalable, lives in the repo |
 
 ---
 
@@ -50,7 +50,7 @@ An ADR is required whenever a decision affects the project's architecture, infra
 Each ADR must be stored in:
 
 ```
-docs/decisions/ADR/
+docs/decisions/adr/
 ```
 
 Each ADR follows this standard template:

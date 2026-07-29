@@ -9,12 +9,12 @@
 - `MASTER_CONTEXT.md`
 - `CLAUDE_CONTEXT.md`
 - `AUDIT_REPORT.md`
-- `docs/DOCUMENTATION_INDEX.md`
-- `docs/architecture/ARCHITECTURE_INDEX.md`
+- `docs/README.md`
+- `docs/architecture/README.md`
 - `docs/architecture/01-architecture-baseline.md`
-- `docs/decisions/ADR/README.md`
-- `docs/decisions/ADR/ADR-0001-architecture-decision-record-policy.md`
-- `docs/decisions/ADR/ADR-0002 — Flow AI Presence Architecture.md`
+- `docs/decisions/adr/README.md`
+- `docs/decisions/adr/ADR-0001-architecture-decision-record-policy.md`
+- `docs/decisions/adr/ADR-0002 — Flow AI Presence Architecture.md`
 - `docs/standards/DOCUMENTATION_STANDARD_V1.0.md`
 - `docs/standards/gpt-knowledge-mapping-v1.md`
 - `docs/testing/README.md`
