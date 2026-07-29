@@ -6,6 +6,7 @@ and historical baselines.
 
 ## Current Implementation
 
+- [current-architecture.md](current-architecture.md) - canonical current implementation architecture.
 - [../PROJECT_STATUS.md](../../PROJECT_STATUS.md) - current project status and implementation notes.
 - [Generated architecture knowledge](../../.knowledge/docs/02_architecture.md) - generated current architecture context when present.
 
@@ -17,21 +18,26 @@ and historical baselines.
 
 - [01-architecture-baseline.md](01-architecture-baseline.md) - draft early stabilization baseline from 2026-07-06. This is not labeled current architecture.
 
-## Planned Canonical Architecture
+## Remaining Planned Canonical Architecture
 
-The following canonical documents are planned and should be added only when
-their content is established:
+Future canonical architecture documents must be created in this order because
+each document depends on the current architecture baseline and the one before it:
 
-- `current-architecture.md`
+- `authority-model.md`
+- `execution-intent.md`
+- `smartflow-smart-automation-boundary.md`
 - `target-architecture.md`
 - `representative-engine.md`
 - `agent-orchestration.md`
-- `authority-model.md`
-- `knowledge-model.md`
-- `smartflow-smart-automation-boundary.md`
+
+`current-architecture.md` is the baseline for the remaining planned architecture
+documents. Do not create the remaining planned files until their content has
+been established through architecture discussion and, where needed, an ADR.
 
 ## Rules
 
 - Architecture documents describe system design, boundaries, and consequences.
 - Significant architectural decisions require an ADR in [../decisions/adr/](../decisions/adr/).
 - Future architecture must be labeled Planned or Conceptual until implemented or formally approved.
+- Architecture must lead implementation. Runtime code and implementation prompts
+  should follow approved architecture rather than becoming the source of truth.

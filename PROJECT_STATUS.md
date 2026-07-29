@@ -1,6 +1,6 @@
 # SmartFlow - Project Status
 
-Last updated: 2026-07-26
+Last updated: 2026-07-30
 
 ---
 
@@ -8,8 +8,9 @@ Last updated: 2026-07-26
 
 SmartFlow has moved beyond a static productivity dashboard. It is now an AI
 Personal Operating System with a deterministic workspace pipeline, explicit
-agent safety boundaries, read-only execution, one approved write vertical slice,
-reflection, context synthesis, and deterministic response composition.
+agent safety boundaries, read-only execution, bounded approval-gated write
+execution, reflection, context synthesis, and deterministic response
+composition.
 
 The current system remains intentionally bounded. It does not perform
 autonomous execution, does not run hidden tool chains, does not let the LLM
@@ -22,6 +23,14 @@ validation. GitHub Read-only Integration V1 Slice 1 is complete and live in
 production: a natural-language GitHub repository request now resolves to the
 `inspect_github_repositories` intent, routes through explicit user Run, and
 returns a real repository list from the connected GitHub App installation.
+
+Documentation focus: SmartFlow documentation structure has been standardized,
+the SmartFlow ChatGPT Project has been established, and repository
+documentation governance now defines how canonical context, architecture,
+roadmap, ADRs, implementation status and assistant knowledge relate to each
+other. The canonical current architecture is
+`docs/architecture/current-architecture.md`. Future architecture documents
+remain planned, not complete.
 
 ---
 
@@ -38,7 +47,7 @@ Engineering posture:
 - approval is not execution,
 - explicit user action is required before runtime execution,
 - read-only execution remains the default safe path,
-- `tasks.complete` is the only enabled write tool,
+- bounded writes are limited to explicitly supported, approval-gated tools,
 - runtime results are authoritative during response synthesis,
 - Dashboard remains presentation-focused.
 
@@ -246,24 +255,32 @@ Supported read-only executable tools:
 - `workspace.get_context`
 - `github.repositories.list`
 - `github.issues.list`
+- `github.epics.list`
 - `github.pulls.list`
 - `github.workflow_runs.list`
 
 Supported write executable tools:
 
-- `tasks.complete` only
+- `tasks.complete`
+- `github.issues.comment`
+- `github.issues.update`
+- `github.files.update`
 
-Write execution guarantees for `tasks.complete`:
+Write execution guarantees:
 
 - exact step, tool, and target approval binding is required,
 - approval and execution are separate user actions,
 - authenticated user identity is injected by the runtime,
-- task completion is state-idempotent,
-- post-write verification is required,
+- task completion is state-idempotent and requires post-write verification,
+- GitHub issue writes require verified GitHub App access, bounded inputs,
+  rate limiting, and `agent_write_log` audit records,
+- `github.files.update` is high risk and requires a server-verifiable
+  `agent_code_proposal_approvals` record before mutation,
 - no automatic retry,
 - no chained execution,
 - no autonomous execution,
-- no other write tool is enabled.
+- no registry-only write tool is executable without a registered handler and
+  explicit runtime support.
 
 Execution handlers are explicit. They remain framework-independent and must not
 import React hooks, UI components, route components, Supabase clients in UI
@@ -294,7 +311,7 @@ TasksPage AI and Flow AI Chat have been browser-validated in English, German,
 and Persian.
 
 Response Composer V1 is a deterministic presentation layer that runs after
-verified runtime and reflection output. It supports the six current tools,
+verified runtime and reflection output. It supports the current bounded tools,
 creates a headline, summary, bounded details, and optional safe suggestion. It
 does not call another LLM, does not inspect raw handler payloads, does not alter
 runtime results, does not expose policy/audit/request IDs/raw JSON/internal
@@ -320,7 +337,7 @@ Supported synthesis domains:
 - workspace
 - github
 
-`tasks.complete` receives only verified safe response facts and currently no
+Write execution receives only verified safe response facts and currently no
 broad cross-context synthesis.
 
 Context synthesis safeguards:
@@ -457,8 +474,10 @@ Current Agent Response UX Validation V1 status:
 
 ## 9. Technical Debt
 
-- `tasks.complete` is the only write slice; additional write tools require
-  separate safety review.
+- Write execution is intentionally narrow: `tasks.complete`, GitHub issue
+  comment/update, and bounded GitHub file update are the only supported write
+  tools. Other registry write definitions remain contract-only unless a
+  handler, policy path, tests, and safety review make them executable.
 - Conversation memory is not yet implemented.
 - Semantic memory, vector memory, and RAG are not active.
 - Right-rail learning/recommendation content still includes static placeholders.
