@@ -7,6 +7,7 @@ and historical baselines.
 ## Current Implementation
 
 - [current-architecture.md](current-architecture.md) - canonical current implementation architecture.
+- [authority-model.md](authority-model.md) - canonical authority model governing observation, reasoning, approval, execution, audit, and delegation boundaries.
 - [../PROJECT_STATUS.md](../../PROJECT_STATUS.md) - current project status and implementation notes.
 - [Generated architecture knowledge](../../.knowledge/docs/02_architecture.md) - generated current architecture context when present.
 
@@ -21,18 +22,19 @@ and historical baselines.
 ## Remaining Planned Canonical Architecture
 
 Future canonical architecture documents must be created in this order because
-each document depends on the current architecture baseline and the one before it:
+each document depends on the current architecture baseline, the authority model,
+and the one before it:
 
-- `authority-model.md`
 - `execution-intent.md`
 - `smartflow-smart-automation-boundary.md`
 - `target-architecture.md`
 - `representative-engine.md`
 - `agent-orchestration.md`
 
-`current-architecture.md` is the baseline for the remaining planned architecture
-documents. Do not create the remaining planned files until their content has
-been established through architecture discussion and, where needed, an ADR.
+`current-architecture.md` and `authority-model.md` are the baseline for the
+remaining planned architecture documents. Do not create the remaining planned
+files until their content has been established through architecture discussion
+and, where needed, an ADR.
 
 ## Rules
 

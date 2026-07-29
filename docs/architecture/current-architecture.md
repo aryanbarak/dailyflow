@@ -655,7 +655,7 @@ authenticated users where appropriate.
 | General task/calendar/habit/document/message/finance write execution | Not Implemented |
 | Autonomous agent loop | Not Implemented |
 | Target architecture | Not Implemented |
-| Authority model canonical document | Not Implemented |
+| Authority model canonical document | Implemented |
 | Execution intent canonical document | Not Implemented |
 | Smart automation boundary canonical document | Not Implemented |
 | Representative engine canonical document | Not Implemented |
