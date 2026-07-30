@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, XCircle } from "lucide-react";
 import {
   approveWorkspaceStep,
@@ -6,6 +6,7 @@ import {
   rejectWorkspaceStep,
   type ApprovalInteractionResult,
 } from "@/features/agent/approvalInteraction";
+import { approvalFailureMessage } from "./stepApprovalMessages";
 import type { AgentToolDefinition } from "@/features/agent/toolTypes";
 import { Button } from "@/components/ui/button";
 import { useT } from "@/i18n";
@@ -21,7 +22,7 @@ export interface StepApprovalDialogProps {
   tool?: AgentToolDefinition | null;
   disabled?: boolean;
   onClose: () => void;
-  onDecision: (result: ApprovalInteractionResult) => void;
+  onDecision: (result: ApprovalInteractionResult) => void | Promise<void>;
 }
 
 export function StepApprovalDialog({
@@ -35,6 +36,8 @@ export function StepApprovalDialog({
 }: Readonly<StepApprovalDialogProps>) {
   const { t, isRTL } = useT();
   const [isDeciding, setIsDeciding] = useState(false);
+  const [approvalError, setApprovalError] = useState("");
+  const decidingRef = useRef(false);
   const titleId = "workspace-step-approval-title";
   const descriptionId = "workspace-step-approval-description";
   const displayValue = (value: string | boolean | undefined) => {
@@ -74,20 +77,35 @@ export function StepApprovalDialog({
 
   const handleClose = () => {
     onDecision(closeWorkspaceStepApproval());
+    setApprovalError("");
     onClose();
   };
 
-  const handleApprove = () => {
-    if (!canDecide) return;
+  const handleApprove = async () => {
+    if (!canDecide || decidingRef.current) return;
+    decidingRef.current = true;
     setIsDeciding(true);
-    onDecision(approveWorkspaceStep({ step, stepApproval, tool }));
-    onClose();
-    setIsDeciding(false);
+    setApprovalError("");
+    try {
+      const decision = await approveWorkspaceStep({ step, stepApproval, tool });
+      await onDecision(decision);
+      if (decision.ok && decision.decision === "approved") {
+        onClose();
+      } else {
+        setApprovalError(approvalFailureMessage(decision));
+      }
+    } catch {
+      setApprovalError("Approval service is temporarily unavailable. Try again.");
+    } finally {
+      decidingRef.current = false;
+      setIsDeciding(false);
+    }
   };
 
   const handleReject = () => {
     if (!canDecide) return;
     setIsDeciding(true);
+    setApprovalError("");
     onDecision(rejectWorkspaceStep({ step, stepApproval, tool }));
     onClose();
     setIsDeciding(false);
@@ -135,6 +153,11 @@ export function StepApprovalDialog({
               {stepApproval.approvalReason}
             </p>
           )}
+          {approvalError && (
+            <p role="alert" className="mt-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs leading-5 text-destructive">
+              {approvalError}
+            </p>
+          )}
           {stepApproval?.previewText && (
             <div className="mt-3 rounded-lg border border-border/35 bg-background/40 px-3 py-2">
               <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -149,7 +172,7 @@ export function StepApprovalDialog({
 
         <dl className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
           {diagnosticRows.map(([label, value]) => (
-            <div key={label} className="rounded-lg border border-border/25 bg-secondary/[0.07] px-3 py-2">
+            <div key={String(label)} className="rounded-lg border border-border/25 bg-secondary/[0.07] px-3 py-2">
               <dt className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                 {label}
               </dt>

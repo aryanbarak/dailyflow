@@ -1,4 +1,13 @@
 import { executeAgentTool } from "./executionEngine";
+import { evaluateExecutionPolicy } from "./executionPolicy";
+import {
+  assertIntentExecutionReady,
+  createCanonicalExecutionIntent,
+  createExecutionAttempt,
+  createExecutionResultReference,
+  createIntentPolicyDecision,
+  ExecutionIntentError,
+} from "./executionIntent";
 import { getToolById } from "./toolRegistry";
 import { presentReadOnlyResult } from "./readOnlyResultPresenter";
 import { processReadOnlyReflection } from "./reflectionIntegration";
@@ -140,6 +149,10 @@ function validateApprovalBoundary(request: ReadOnlyRuntimeRequest) {
   return null;
 }
 
+function shouldUseExecutionIntentLifecycle(toolId: SupportedReadOnlyToolId) {
+  return toolId === "github.repositories.list";
+}
+
 function createExecutionRequest(
   request: ReadOnlyRuntimeRequest,
   toolId: SupportedReadOnlyToolId,
@@ -215,8 +228,81 @@ export async function runReadOnlyTool(
   if (approvalBlock) return approvalBlock;
 
   const requestedAt = request.requestedAt ?? timestamp(request.currentTime);
+  let lifecycleAttempt:
+    | ReturnType<typeof createExecutionAttempt>
+    | undefined;
+  let lifecyclePolicy:
+    | ReturnType<typeof createIntentPolicyDecision>
+    | undefined;
+  let lifecycleIntent:
+    | Awaited<ReturnType<typeof createCanonicalExecutionIntent>>
+    | undefined;
+
+  if (shouldUseExecutionIntentLifecycle(toolId)) {
+    try {
+      lifecycleIntent = await createCanonicalExecutionIntent({
+        candidate: {
+          proposedToolId: toolId,
+          proposedOperation: request.step.actionType,
+          proposedArguments: request.executionInput ?? {},
+          sourceProposalReference: request.step.id,
+        },
+        tool,
+        step: request.step,
+        actorId: "runtime:read-only",
+        scopeId: "smartflow:local-runtime",
+        operation: request.step.actionType,
+        arguments: request.executionInput ?? {},
+        sourceProposalReference: request.step.id,
+        idempotencyKey: request.requestId,
+        createdAt: requestedAt,
+      });
+      const policyDecision = evaluateExecutionPolicy({
+        step: request.step,
+        tool,
+        approval: request.approval,
+        currentTime: request.currentTime,
+        context: request.executionContext?.policyContext,
+      });
+      lifecyclePolicy = createIntentPolicyDecision(lifecycleIntent, policyDecision);
+      assertIntentExecutionReady({
+        intent: lifecycleIntent,
+        policyDecision: lifecyclePolicy,
+        now: request.currentTime ?? new Date(),
+      });
+      lifecycleAttempt = createExecutionAttempt({
+        intent: lifecycleIntent,
+        attemptId: request.requestId ?? `attempt:${lifecycleIntent.intentId}:${requestedAt}`,
+        startedAt: requestedAt,
+        runtimeTarget: toolId,
+      });
+    } catch (caught) {
+      const reason = caught instanceof ExecutionIntentError
+        ? caught.message
+        : "Execution intent lifecycle validation failed.";
+      return blocked(request, "policy_denied", "Run blocked by execution intent lifecycle.", [reason]);
+    }
+  }
+
   const executionRequest = createExecutionRequest(request, toolId, requestedAt);
   const executionResult = await executeAgentTool(executionRequest, dependencies);
+  if (lifecycleIntent && lifecycleAttempt && lifecyclePolicy) {
+    const resultReference = createExecutionResultReference({
+      intent: lifecycleIntent,
+      attempt: lifecycleAttempt,
+      status: executionResult.success ? "succeeded" : "failed",
+      completedAt: executionResult.completedAt,
+      resultReference: { requestId: executionResult.requestId, toolId: executionResult.toolId },
+      errorCode: executionResult.error?.code,
+    });
+    executionResult.metadata.executionIntent = {
+      intentId: lifecycleIntent.intentId,
+      canonicalHash: lifecycleIntent.canonicalHash,
+      policyDecisionId: lifecyclePolicy.decisionId,
+      attemptId: lifecycleAttempt.attemptId,
+      resultStatus: resultReference.status,
+    };
+  }
   const presentation = presentReadOnlyResult(executionResult);
   let reflection: AgentReflectionResult | undefined;
   let memoryEvidenceRetained = false;

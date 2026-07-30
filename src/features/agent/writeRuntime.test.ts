@@ -34,6 +34,18 @@ import {
 import { getToolById } from "./toolRegistry";
 import { getWriteHandlerByToolId } from "./writeHandlers";
 import {
+  clearExecutionIntentLifecycleRegistry,
+  createCanonicalExecutionIntent,
+  getStoredCanonicalExecutionIntent,
+  issueExecutionIntentApproval,
+  resolveExecutionIntentApproval,
+  revokeExecutionIntentApproval,
+  storeCanonicalExecutionIntent,
+  type CanonicalExecutionIntent,
+  type IntentApprovalBinding,
+} from "./executionIntent";
+import { approveWorkspaceStep } from "./approvalInteraction";
+import {
   clearWriteRuntimeRequestHistory,
   runWriteTool,
   validateApprovalBoundary,
@@ -41,6 +53,7 @@ import {
 } from "./writeRuntime";
 import { runReadOnlyTool } from "./readOnlyRuntime";
 import type {
+  AgentWriteToolExecutionResult,
   AgentWriteToolHandler,
   ExecutionContext,
   ExecutionInputValidationResult,
@@ -113,6 +126,79 @@ function approval(
   };
 }
 
+async function canonicalIntentFor(sourceStep = step(), actorId = "user-1") {
+  return createCanonicalExecutionIntent({
+    candidate: {
+      proposedToolId: "tasks.complete",
+      proposedOperation: "complete",
+      proposedArguments: { taskId: sourceStep.targetId },
+      sourceProposalReference: sourceStep.id,
+    },
+    tool: getToolById("tasks.complete"),
+    step: sourceStep,
+    actorId,
+    scopeId: `user:${actorId}`,
+    operation: "complete",
+    arguments: { taskId: sourceStep.targetId },
+    sourceProposalReference: sourceStep.id,
+    idempotencyKey: "write:test",
+    createdAt: now.toISOString(),
+  });
+}
+
+async function replaceStoredApproval(
+  approvalId: string,
+  sourceIntent: CanonicalExecutionIntent,
+  overrides: Partial<IntentApprovalBinding>,
+) {
+  const replacementIntent = {
+    ...sourceIntent,
+    ...(overrides.intentId ? { intentId: overrides.intentId } : {}),
+    ...(overrides.canonicalHash ? { canonicalHash: overrides.canonicalHash } : {}),
+    ...(overrides.canonicalizationVersion ? { intentVersion: overrides.canonicalizationVersion } : {}),
+    ...(overrides.hashAlgorithm ? { hashAlgorithm: overrides.hashAlgorithm } : {}),
+    ...(overrides.scope ? { approvalRequirement: overrides.scope } : {}),
+  } as CanonicalExecutionIntent;
+  storeCanonicalExecutionIntent(replacementIntent);
+  await issueExecutionIntentApproval({
+    intent: replacementIntent,
+    actorId: overrides.actorId ?? replacementIntent.actorId,
+    approvedAt: overrides.approvedAt ?? now.toISOString(),
+    approvalId,
+    expiresAt: overrides.expiresAt,
+  });
+  if (overrides.revokedAt) {
+    revokeExecutionIntentApproval(approvalId, overrides.revokedAt);
+  }
+}
+
+async function serverApproval(
+  sourceStep = step(),
+  overrides: Partial<IntentApprovalBinding> = {},
+): Promise<WorkspaceStepApproval> {
+  const actorId = overrides.actorId ?? "user-1";
+  const intent = await canonicalIntentFor(sourceStep, actorId);
+  const issued = await issueExecutionIntentApproval({
+    intent,
+    actorId,
+    approvedAt: overrides.approvedAt ?? now.toISOString(),
+    approvalId: overrides.approvalId,
+    expiresAt: overrides.expiresAt,
+  });
+  if (
+    overrides.intentId ||
+    overrides.canonicalHash ||
+    overrides.canonicalizationVersion ||
+    overrides.hashAlgorithm ||
+    overrides.scope ||
+    overrides.actorId ||
+    overrides.revokedAt
+  ) {
+    await replaceStoredApproval(issued.approvalId, intent, overrides);
+  }
+  return approval(sourceStep, { executionIntentApprovalId: issued.approvalId });
+}
+
 function writeHandler(overrides: Partial<AgentWriteToolHandler> = {}): AgentWriteToolHandler {
   return {
     toolId: "tasks.complete",
@@ -151,6 +237,29 @@ function writeHandler(overrides: Partial<AgentWriteToolHandler> = {}): AgentWrit
   };
 }
 
+function trustedAuthority(actorId = "user-1") {
+  return {
+    getAuthenticatedActor: async () => ({ id: actorId }),
+    resolveAuthoritativeScope: async () => `user:${actorId}`,
+  };
+}
+
+async function productionApprovedStep(sourceStep = step(), overrides: Parameters<typeof approveWorkspaceStep>[0] = {}) {
+  const decision = await approveWorkspaceStep({
+    now,
+    step: sourceStep,
+    stepApproval: approval(sourceStep, { status: "pending" }),
+    tool: getToolById("tasks.complete"),
+    authorityContext: {
+      getAuthenticatedActor: async () => ({ id: "user-1" }),
+      resolveAuthoritativeScope: async () => "user:user-1",
+    },
+    ...overrides,
+  });
+  if (!decision.ok || !decision.approval) throw new Error("expected production approval to succeed");
+  return decision.approval;
+}
+
 function request(overrides: Partial<WriteRuntimeRequest> = {}): WriteRuntimeRequest {
   const sourceStep = overrides.step ?? step();
   return {
@@ -168,12 +277,19 @@ describe("writeRuntime", () => {
   beforeEach(() => {
     clearExecutionAuditRecords();
     clearWriteRuntimeRequestHistory();
+    clearExecutionIntentLifecycleRegistry();
   });
 
   it("executes one approved tasks.complete request through the write boundary", async () => {
     const handler = writeHandler();
-    const result = await runWriteTool(request({ requestId: "write:success" }), {
-      getAuthenticatedUserId: () => "user-1",
+    const sourceStep = step();
+    const result = await runWriteTool(request({
+      requestId: "write:success",
+      step: sourceStep,
+      toolResolution: resolution(sourceStep),
+      approval: await serverApproval(sourceStep),
+    }), {
+      authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
       getWriteHandlerByToolId: () => handler,
       now: () => now,
     });
@@ -184,6 +300,13 @@ describe("writeRuntime", () => {
     expect(result.alreadyCompleted).toBe(false);
     expect(result.runtimeVersion).toBe("write-runtime-v1");
     expect(result.safeSummary).toBe("Task was marked complete.");
+    expect(result.executionIntent).toMatchObject({
+      intentId: expect.stringMatching(/^intent:/),
+      canonicalHash: expect.any(String),
+      approvalId: expect.stringMatching(/^approval:/),
+      attemptId: "write:success",
+      resultStatus: "succeeded",
+    });
     expect(handler.execute).toHaveBeenCalledTimes(1);
     expect(handler.execute).toHaveBeenCalledWith({
       userId: "user-1",
@@ -230,7 +353,7 @@ describe("writeRuntime", () => {
         toolResolution: resolution(sourceStep),
         approval: sourceApproval,
       }), {
-        getAuthenticatedUserId: () => "user-1",
+        authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
         getWriteHandlerByToolId: () => handler,
         now: () => now,
       });
@@ -238,6 +361,307 @@ describe("writeRuntime", () => {
       expect(result.status).toBe(expectedStatus);
     }
 
+    expect(handler.execute).not.toHaveBeenCalled();
+  });
+
+  it("issues an opaque intent-bound approval through the production approval function", async () => {
+    const sourceStep = step();
+    const approved = await productionApprovedStep(sourceStep);
+
+    expect(approved.executionIntentApprovalId).toMatch(/^approval:/);
+    const binding = resolveExecutionIntentApproval(approved.executionIntentApprovalId);
+    expect(binding).toMatchObject({
+      actorId: "user-1",
+      scope: "single_step",
+      hashAlgorithm: "SHA-256",
+    });
+    const storedIntent = getStoredCanonicalExecutionIntent(binding?.intentId);
+    expect(storedIntent).toMatchObject({
+      toolId: "tasks.complete",
+      operation: "complete",
+      normalizedArguments: { taskId: "task-1" },
+      targetScope: { taskId: "task-1" },
+    });
+  });
+
+  it("approves through the production function and then executes the handler once through Run", async () => {
+    const handler = writeHandler();
+    const sourceStep = step();
+    const approved = await productionApprovedStep(sourceStep);
+
+    const result = await runWriteTool(request({
+      requestId: "write:production-approve-run",
+      step: sourceStep,
+      toolResolution: resolution(sourceStep),
+      approval: approved,
+    }), {
+      authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
+      getWriteHandlerByToolId: () => handler,
+      now: () => now,
+    });
+
+    expect(result.status).toBe("success");
+    expect(handler.execute).toHaveBeenCalledTimes(1);
+    expect(handler.execute).toHaveBeenCalledWith({ userId: "user-1", taskId: "task-1" }, expect.any(Object));
+  });
+
+  it("rejects Run without a trusted runtime actor before claim or handler execution", async () => {
+    const handler = writeHandler();
+    const claim = vi.fn(() => true);
+    const sourceStep = step();
+    const result = await runWriteTool(request({
+      requestId: "write:runtime-auth-missing",
+      step: sourceStep,
+      toolResolution: resolution(sourceStep),
+      approval: await serverApproval(sourceStep),
+    }), {
+      authorityContext: {
+        getAuthenticatedActor: async () => null,
+        resolveAuthoritativeScope: async () => "user:attacker",
+      },
+      claimExecutionIntent: claim,
+      getWriteHandlerByToolId: () => handler,
+      now: () => now,
+    });
+
+    expect(result.status).toBe("failed");
+    expect(claim).not.toHaveBeenCalled();
+    expect(handler.execute).not.toHaveBeenCalled();
+  });
+
+  it("ignores browser actor spoofing at Run and uses the trusted runtime actor", async () => {
+    const originalStorage = globalThis.localStorage;
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: vi.fn(() => "attacker"),
+        key: vi.fn(() => "smartflow.auth.userId"),
+        length: 1,
+      },
+    });
+    const handler = writeHandler();
+    const sourceStep = step();
+    const result = await runWriteTool(request({
+      requestId: "write:runtime-auth-localstorage-spoof",
+      step: sourceStep,
+      toolResolution: resolution(sourceStep),
+      approval: await serverApproval(sourceStep),
+    }), {
+      authorityContext: trustedAuthority("user-1"),
+      getWriteHandlerByToolId: () => handler,
+      now: () => now,
+    });
+
+    expect(result.status).toBe("success");
+    expect(handler.execute).toHaveBeenCalledWith({ userId: "user-1", taskId: "task-1" }, expect.any(Object));
+    expect(globalThis.localStorage.getItem).not.toHaveBeenCalled();
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: originalStorage,
+    });
+  });
+
+  it("rejects Run when the trusted runtime actor differs from the approved actor before claim", async () => {
+    const handler = writeHandler();
+    const claim = vi.fn(() => true);
+    const sourceStep = step();
+    const result = await runWriteTool(request({
+      requestId: "write:runtime-auth-actor-mismatch",
+      step: sourceStep,
+      toolResolution: resolution(sourceStep),
+      approval: await serverApproval(sourceStep),
+    }), {
+      authorityContext: trustedAuthority("user-2"),
+      claimExecutionIntent: claim,
+      getWriteHandlerByToolId: () => handler,
+      now: () => now,
+    });
+
+    expect(result.status).toBe("approval_required");
+    expect(claim).not.toHaveBeenCalled();
+    expect(handler.execute).not.toHaveBeenCalled();
+  });
+
+  it("ignores client actor injection and keeps trusted runtime actor authoritative", async () => {
+    const handler = writeHandler();
+    const sourceStep = step({ actorId: "attacker" } as Partial<WorkspacePlanStep>);
+    const result = await runWriteTool(request({
+      requestId: "write:runtime-auth-client-injection",
+      step: sourceStep,
+      toolResolution: resolution(sourceStep),
+      approval: await serverApproval(sourceStep),
+      executionContext: { userId: "attacker" } as never,
+    }), {
+      authorityContext: trustedAuthority("user-1"),
+      getWriteHandlerByToolId: () => handler,
+      now: () => now,
+    });
+
+    expect(result.status).toBe("success");
+    expect(handler.execute).toHaveBeenCalledWith({ userId: "user-1", taskId: "task-1" }, expect.any(Object));
+    expect(handler.execute).not.toHaveBeenCalledWith(expect.objectContaining({ userId: "attacker" }), expect.any(Object));
+  });
+
+  it("fails closed when runtime auth resolution throws before claim or handler execution", async () => {
+    const handler = writeHandler();
+    const claim = vi.fn(() => true);
+    const sourceStep = step();
+    const result = await runWriteTool(request({
+      requestId: "write:runtime-auth-throws",
+      step: sourceStep,
+      toolResolution: resolution(sourceStep),
+      approval: await serverApproval(sourceStep),
+    }), {
+      authorityContext: {
+        getAuthenticatedActor: async () => {
+          throw new Error("auth unavailable");
+        },
+        resolveAuthoritativeScope: async () => "user:user-1",
+      },
+      claimExecutionIntent: claim,
+      getWriteHandlerByToolId: () => handler,
+      now: () => now,
+    });
+
+    expect(result.status).toBe("failed");
+    expect(claim).not.toHaveBeenCalled();
+    expect(handler.execute).not.toHaveBeenCalled();
+  });
+
+  it("rejects Run when authoritative runtime scope cannot be validated before claim", async () => {
+    const handler = writeHandler();
+    const claim = vi.fn(() => true);
+    const sourceStep = step();
+    const result = await runWriteTool(request({
+      requestId: "write:runtime-scope-missing",
+      step: sourceStep,
+      toolResolution: resolution(sourceStep),
+      approval: await serverApproval(sourceStep),
+    }), {
+      authorityContext: {
+        getAuthenticatedActor: async () => ({ id: "user-1" }),
+        resolveAuthoritativeScope: async () => null,
+      },
+      claimExecutionIntent: claim,
+      getWriteHandlerByToolId: () => handler,
+      now: () => now,
+    });
+
+    expect(result.status).toBe("approval_required");
+    expect(claim).not.toHaveBeenCalled();
+    expect(handler.execute).not.toHaveBeenCalled();
+  });
+
+  it("denies approval before issuing an opaque reference when policy blocks the intent", async () => {
+    const sourceStep = step();
+    const decision = await approveWorkspaceStep({
+      now,
+      step: sourceStep,
+      stepApproval: approval(sourceStep, { status: "pending" }),
+      tool: getToolById("tasks.complete"),
+      authorityContext: {
+        getAuthenticatedActor: async () => ({ id: "user-1" }),
+        resolveAuthoritativeScope: async () => "user:user-1",
+      },
+      policyContext: { stepRiskLevel: "high" },
+    });
+
+    expect(decision.ok).toBe(false);
+    if (!("errorCode" in decision)) throw new Error("expected policy denial");
+    expect(decision.errorCode).toBe("POLICY_DENIED");
+  });
+
+  it("rejects tasks.complete with legacy approval but no server-owned exact binding", async () => {
+    const handler = writeHandler();
+    const sourceStep = step();
+    const result = await runWriteTool(request({
+      requestId: "write:intent-binding:missing",
+      step: sourceStep,
+      toolResolution: resolution(sourceStep),
+      approval: approval(sourceStep),
+    }), {
+      authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
+      getWriteHandlerByToolId: () => handler,
+      now: () => now,
+    });
+
+    expect(result.status).toBe("approval_required");
+    expect(handler.execute).not.toHaveBeenCalled();
+  });
+
+  it("rejects fabricated or unknown client approval references", async () => {
+    const handler = writeHandler();
+    const sourceStep = step();
+    const result = await runWriteTool(request({
+      requestId: "write:intent-binding:fabricated",
+      step: sourceStep,
+      toolResolution: resolution(sourceStep),
+      approval: approval(sourceStep, { executionIntentApprovalId: "approval:fabricated" }),
+    }), {
+      authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
+      getWriteHandlerByToolId: () => handler,
+      now: () => now,
+    });
+
+    expect(result.status).toBe("approval_required");
+    expect(handler.execute).not.toHaveBeenCalled();
+  });
+
+  it("rejects tasks.complete approval records for another intent, hash, version, actor, scope, expired, or revoked state", async () => {
+    const handler = writeHandler();
+    const sourceStep = step();
+    const intent = await canonicalIntentFor(sourceStep);
+    const issued = await issueExecutionIntentApproval({
+      intent,
+      actorId: "user-1",
+      approvedAt: now.toISOString(),
+    });
+    const cases: Array<[string, IntentApprovalBinding]> = [
+      ["other-intent", { ...issued, intentId: "intent:other" }],
+      ["old-hash", { ...issued, canonicalHash: "0".repeat(64) }],
+      ["old-version", { ...issued, canonicalizationVersion: "execution-intent-canonical-old" as never }],
+      ["other-actor", { ...issued, actorId: "user-2" }],
+      ["other-scope", { ...issued, scope: "entire_plan" }],
+      ["expired", { ...issued, expiresAt: "2026-07-10T08:30:00.000Z" }],
+      ["revoked", { ...issued, revokedAt: now.toISOString() }],
+    ];
+
+    for (const [label, storedApproval] of cases) {
+      const result = await runWriteTool(request({
+        requestId: `write:intent-binding:${label}`,
+        step: sourceStep,
+        toolResolution: resolution(sourceStep),
+        approval: approval(sourceStep, { executionIntentApprovalId: issued.approvalId }),
+      }), {
+        authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
+        getWriteHandlerByToolId: () => handler,
+        getStoredCanonicalExecutionIntent: () => intent,
+        resolveExecutionIntentApproval: () => storedApproval,
+        now: () => now,
+      });
+
+      expect(["policy_denied", "approval_required", "rejected"], label).toContain(result.status);
+    }
+
+    expect(handler.execute).not.toHaveBeenCalled();
+  });
+
+  it("rejects client target substitution against the server-owned canonical intent", async () => {
+    const handler = writeHandler();
+    const approvedStep = step({ targetId: "task-1" });
+    const requestedStep = step({ targetId: "task-2" });
+    const result = await runWriteTool(request({
+      requestId: "write:intent-binding:substitution",
+      step: requestedStep,
+      toolResolution: resolution(requestedStep),
+      approval: await serverApproval(approvedStep),
+    }), {
+      authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
+      getWriteHandlerByToolId: () => handler,
+      now: () => now,
+    });
+
+    expect(result.status).toBe("approval_required");
     expect(handler.execute).not.toHaveBeenCalled();
   });
 
@@ -252,7 +676,7 @@ describe("writeRuntime", () => {
       toolResolution: resolution(missingTarget),
       approval: approval(missingTarget),
     }), {
-      getAuthenticatedUserId: () => "user-1",
+      authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
       getWriteHandlerByToolId: () => handler,
       now: () => now,
     });
@@ -262,7 +686,7 @@ describe("writeRuntime", () => {
       toolResolution: resolution(wrongDomain),
       approval: approval(wrongDomain),
     }), {
-      getAuthenticatedUserId: () => "user-1",
+      authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
       getWriteHandlerByToolId: () => handler,
       now: () => now,
     });
@@ -288,7 +712,7 @@ describe("writeRuntime", () => {
       toolResolution: resolution(sourceStep, toolId),
       approval: approval(sourceStep, { toolId }),
     }), {
-      getAuthenticatedUserId: () => "user-1",
+      authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
       getWriteHandlerByToolId: () => writeHandler(),
       now: () => now,
     });
@@ -307,7 +731,7 @@ describe("writeRuntime", () => {
         },
       } as ExecutionContext,
     }), {
-      getAuthenticatedUserId: () => "user-1",
+      authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
       getWriteHandlerByToolId: getWriteHandler,
       now: () => now,
     });
@@ -318,15 +742,52 @@ describe("writeRuntime", () => {
 
   it("rejects duplicate request ids without invoking the handler twice", async () => {
     const handler = writeHandler();
-    const sourceRequest = request({ requestId: "write:duplicate" });
+    const sourceStep = step();
+    const sourceRequest = request({
+      requestId: "write:duplicate",
+      step: sourceStep,
+      toolResolution: resolution(sourceStep),
+      approval: await serverApproval(sourceStep),
+    });
 
     const first = await runWriteTool(sourceRequest, {
-      getAuthenticatedUserId: () => "user-1",
+      authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
       getWriteHandlerByToolId: () => handler,
       now: () => now,
     });
     const second = await runWriteTool(sourceRequest, {
-      getAuthenticatedUserId: () => "user-1",
+      authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
+      getWriteHandlerByToolId: () => handler,
+      now: () => now,
+    });
+
+    expect(first.status).toBe("success");
+    expect(second.status).toBe("duplicate_request");
+    expect(handler.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a reused approved intent even when the second Run uses a different request id", async () => {
+    const handler = writeHandler();
+    const sourceStep = step();
+    const approved = await productionApprovedStep(sourceStep);
+
+    const first = await runWriteTool(request({
+      requestId: "write:intent-duplicate:first",
+      step: sourceStep,
+      toolResolution: resolution(sourceStep),
+      approval: approved,
+    }), {
+      authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
+      getWriteHandlerByToolId: () => handler,
+      now: () => now,
+    });
+    const second = await runWriteTool(request({
+      requestId: "write:intent-duplicate:second",
+      step: sourceStep,
+      toolResolution: resolution(sourceStep),
+      approval: approved,
+    }), {
+      authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
       getWriteHandlerByToolId: () => handler,
       now: () => now,
     });
@@ -364,15 +825,21 @@ describe("writeRuntime", () => {
         };
       }),
     });
-    const sourceRequest = request({ requestId: "write:duplicate-in-flight" });
+    const sourceStep = step();
+    const sourceRequest = request({
+      requestId: "write:duplicate-in-flight",
+      step: sourceStep,
+      toolResolution: resolution(sourceStep),
+      approval: await serverApproval(sourceStep),
+    });
 
     const first = runWriteTool(sourceRequest, {
-      getAuthenticatedUserId: () => "user-1",
+      authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
       getWriteHandlerByToolId: () => handler,
       now: () => now,
     });
     const second = await runWriteTool(sourceRequest, {
-      getAuthenticatedUserId: () => "user-1",
+      authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
       getWriteHandlerByToolId: () => handler,
       now: () => now,
     });
@@ -383,13 +850,77 @@ describe("writeRuntime", () => {
     expect(handler.execute).toHaveBeenCalledTimes(1);
   });
 
+  it("rejects concurrent Runs that reuse the same approved intent", async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const handler = writeHandler({
+      execute: vi.fn(async (): Promise<AgentWriteToolExecutionResult> => {
+        await pending;
+        return {
+          status: "success",
+          success: true,
+          data: {
+            taskId: "task-1",
+            completed: true,
+            completedAt: now.toISOString(),
+            alreadyCompleted: false,
+            verified: true,
+          },
+          auditMetadata: {
+            taskId: "task-1",
+            alreadyCompleted: false,
+            verified: true,
+            resultShape: "object",
+            redacted: true,
+          },
+        };
+      }),
+    });
+    const sourceStep = step();
+    const approved = await productionApprovedStep(sourceStep);
+
+    const first = runWriteTool(request({
+      requestId: "write:intent-concurrent:first",
+      step: sourceStep,
+      toolResolution: resolution(sourceStep),
+      approval: approved,
+    }), {
+      authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
+      getWriteHandlerByToolId: () => handler,
+      now: () => now,
+    });
+    const second = runWriteTool(request({
+      requestId: "write:intent-concurrent:second",
+      step: sourceStep,
+      toolResolution: resolution(sourceStep),
+      approval: approved,
+    }), {
+      authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
+      getWriteHandlerByToolId: () => handler,
+      now: () => now,
+    });
+    const results = await Promise.all([second, Promise.resolve().then(() => {
+      release();
+      return first;
+    })]);
+
+    expect(results.map((result) => result.status).sort()).toEqual(["duplicate_request", "success"]);
+    expect(handler.execute).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps the authenticated user boundary inside runtime dependencies", async () => {
     const handler = writeHandler();
+    const sourceStep = step();
     await runWriteTool(request({
       requestId: "write:auth-boundary",
+      step: sourceStep,
+      toolResolution: resolution(sourceStep),
+      approval: await serverApproval(sourceStep),
       executionContext: { userId: "attacker" } as never,
     }), {
-      getAuthenticatedUserId: () => "user-1",
+      authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
       getWriteHandlerByToolId: () => handler,
       now: () => now,
     });
@@ -424,8 +955,14 @@ describe("writeRuntime", () => {
       })),
     });
 
-    const result = await runWriteTool(request({ requestId: "write:verification" }), {
-      getAuthenticatedUserId: () => "user-1",
+    const sourceStep = step();
+    const result = await runWriteTool(request({
+      requestId: "write:verification",
+      step: sourceStep,
+      toolResolution: resolution(sourceStep),
+      approval: await serverApproval(sourceStep),
+    }), {
+      authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
       getWriteHandlerByToolId: () => handler,
       now: () => now,
     });
@@ -440,20 +977,21 @@ describe("writeRuntime", () => {
   });
 
   it("times out a slow write handler without retrying or leaking raw errors", async () => {
-    vi.useFakeTimers();
     const handler = writeHandler({
-      timeoutMs: 50,
-      execute: vi.fn(() => new Promise(() => undefined)),
+      timeoutMs: 1,
+      execute: vi.fn((): Promise<AgentWriteToolExecutionResult> => new Promise(() => undefined)),
     });
-    const resultPromise = runWriteTool(request({ requestId: "write:timeout" }), {
-      getAuthenticatedUserId: () => "user-1",
+    const sourceStep = step();
+    const result = await runWriteTool(request({
+      requestId: "write:timeout",
+      step: sourceStep,
+      toolResolution: resolution(sourceStep),
+      approval: await serverApproval(sourceStep),
+    }), {
+      authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
       getWriteHandlerByToolId: () => handler,
       now: () => now,
     });
-
-    await vi.advanceTimersByTimeAsync(51);
-    const result = await resultPromise;
-    vi.useRealTimers();
 
     expect(result.status).toBe("timeout");
     expect(result.success).toBe(false);
@@ -465,8 +1003,14 @@ describe("writeRuntime", () => {
 
   it("isolates audit and reflection failures", async () => {
     const handler = writeHandler();
-    const result = await runWriteTool(request({ requestId: "write:isolated-failures" }), {
-      getAuthenticatedUserId: () => "user-1",
+    const sourceStep = step();
+    const result = await runWriteTool(request({
+      requestId: "write:isolated-failures",
+      step: sourceStep,
+      toolResolution: resolution(sourceStep),
+      approval: await serverApproval(sourceStep),
+    }), {
+      authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
       getWriteHandlerByToolId: () => handler,
       appendExecutionAuditRecord: () => {
         throw new Error("Audit unavailable.");
@@ -526,7 +1070,7 @@ describe("writeRuntime", () => {
         githubIssueCommentClient: { createComment },
       } as ExecutionContext,
     }), {
-      getAuthenticatedUserId: () => "user-1",
+      authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
       now: () => now,
     });
 
@@ -575,7 +1119,7 @@ describe("writeRuntime", () => {
         githubIssueUpdateClient: { updateIssue },
       } as ExecutionContext,
     }), {
-      getAuthenticatedUserId: () => "user-1",
+      authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
       now: () => now,
     });
 
@@ -635,7 +1179,7 @@ describe("writeRuntime", () => {
         githubFileUpdateClient: { updateFile },
       } as ExecutionContext,
     }), {
-      getAuthenticatedUserId: () => "user-1",
+      authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
       now: () => now,
     });
 
@@ -678,7 +1222,7 @@ describe("writeRuntime", () => {
       target: { proposalId: "p", repo: "aryan/smartflow", path: "README.md", proposedContent: "x" },
       executionContext: { githubFileUpdateClient: { updateFile } } as ExecutionContext,
     }), {
-      getAuthenticatedUserId: () => "user-1",
+      authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
       now: () => now,
     });
 
@@ -695,11 +1239,14 @@ describe("writeRuntime", () => {
   describe("approval risk comparison is >=, not an exact match", () => {
     it("accepts a higher-than-required approval risk level (medium-risk tool, high-risk approval)", async () => {
       const handler = writeHandler();
+      const sourceStep = step();
       const result = await runWriteTool(request({
         requestId: "write:risk-high-approval",
-        approval: approval(step(), { riskLevel: "high", reversible: false }),
+        step: sourceStep,
+        toolResolution: resolution(sourceStep),
+        approval: await serverApproval(sourceStep),
       }), {
-        getAuthenticatedUserId: () => "user-1",
+        authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
         getWriteHandlerByToolId: () => handler,
         now: () => now,
       });
@@ -714,7 +1261,7 @@ describe("writeRuntime", () => {
         requestId: "write:risk-low-approval",
         approval: approval(step(), { riskLevel: "low" }),
       }), {
-        getAuthenticatedUserId: () => "user-1",
+        authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
         getWriteHandlerByToolId: () => handler,
         now: () => now,
       });

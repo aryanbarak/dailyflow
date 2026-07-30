@@ -11,6 +11,13 @@ import type {
   ExecutionPolicyDecision,
 } from "./toolTypes";
 import type { ExecutionAuditRecord } from "./executionAuditTypes";
+import type {
+  CanonicalExecutionIntent,
+  ExecutionAttempt,
+  ExecutionResultReference,
+  IntentApprovalBinding,
+  IntentPolicyDecision,
+} from "./executionIntent";
 
 export type ExecutionStatus =
   | "success"
@@ -284,7 +291,22 @@ export interface ExecutionResult {
     readOnly: boolean;
     handlerId?: string;
     effectiveRiskLevel: WorkspaceApprovalRiskLevel;
+    executionIntent?: {
+      intentId: string;
+      canonicalHash: string;
+      policyDecisionId?: string;
+      attemptId?: string;
+      resultStatus?: string;
+    };
   };
+}
+
+export interface ExecutionIntentLifecycleArtifacts {
+  intent: CanonicalExecutionIntent;
+  policyDecision: IntentPolicyDecision;
+  approvalBinding?: IntentApprovalBinding;
+  attempt?: ExecutionAttempt;
+  resultReference?: ExecutionResultReference;
 }
 
 export interface ExecutionRecord {

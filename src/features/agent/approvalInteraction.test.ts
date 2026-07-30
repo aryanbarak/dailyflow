@@ -1,10 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import {
   approveWorkspaceStep,
   closeWorkspaceStepApproval,
   findApprovalPresentationTool,
   rejectWorkspaceStep,
 } from "./approvalInteraction";
+import {
+  clearExecutionIntentLifecycleRegistry,
+  createCanonicalExecutionIntent,
+  getStoredCanonicalExecutionIntent,
+  resolveExecutionIntentApproval,
+} from "./executionIntent";
 import { getToolById } from "./toolRegistry";
 import type { AgentToolDefinition } from "./toolTypes";
 import type {
@@ -15,6 +21,26 @@ import type {
 } from "../workspace/workspaceTypes";
 
 const now = new Date("2026-07-10T09:00:00.000Z");
+
+async function expectedCompleteIntentId(sourceStep: WorkspacePlanStep, actorId: string, scopeId: string) {
+  const intent = await createCanonicalExecutionIntent({
+    candidate: {
+      proposedToolId: "tasks.complete",
+      proposedOperation: sourceStep.actionType,
+      proposedArguments: { taskId: sourceStep.targetId?.trim() },
+      sourceProposalReference: sourceStep.id,
+    },
+    tool: tool("tasks.complete"),
+    step: sourceStep,
+    actorId,
+    scopeId,
+    operation: sourceStep.actionType,
+    arguments: { taskId: sourceStep.targetId?.trim() },
+    sourceProposalReference: sourceStep.id,
+    createdAt: now.toISOString(),
+  });
+  return intent.intentId;
+}
 
 function tool(id: string): AgentToolDefinition {
   const found = getToolById(id);
@@ -58,8 +84,12 @@ function stepApproval(
 }
 
 describe("approvalInteraction", () => {
-  it("approves an exact step with a typed immutable approval", () => {
-    const result = approveWorkspaceStep({
+  beforeEach(() => {
+    clearExecutionIntentLifecycleRegistry();
+  });
+
+  it("approves an exact step with a typed immutable approval", async () => {
+    const result = await approveWorkspaceStep({
       now,
       step: step(),
       stepApproval: stepApproval(),
@@ -108,8 +138,8 @@ describe("approvalInteraction", () => {
     expect(result.approval).toBeNull();
   });
 
-  it("fails safely for a missing step id", () => {
-    const result = approveWorkspaceStep({
+  it("fails safely for a missing step id", async () => {
+    const result = await approveWorkspaceStep({
       now,
       step: step({ id: "" }),
       stepApproval: stepApproval(),
@@ -119,8 +149,8 @@ describe("approvalInteraction", () => {
     expect(result.errorCode).toBe("MISSING_STEP");
   });
 
-  it("does not accept mismatched step approval", () => {
-    const result = approveWorkspaceStep({
+  it("does not accept mismatched step approval", async () => {
+    const result = await approveWorkspaceStep({
       now,
       step: step({ id: "step-a" }),
       stepApproval: stepApproval({ stepId: "step-b" }),
@@ -130,8 +160,8 @@ describe("approvalInteraction", () => {
     expect(result.errorCode).toBe("STEP_MISMATCH");
   });
 
-  it("does not accept mismatched target approval", () => {
-    const result = approveWorkspaceStep({
+  it("does not accept mismatched target approval", async () => {
+    const result = await approveWorkspaceStep({
       now,
       step: step({ actionType: "complete", targetId: "task-a" }),
       stepApproval: stepApproval({ targetId: "task-b" }),
@@ -142,8 +172,8 @@ describe("approvalInteraction", () => {
     expect(result.errorCode).toBe("TARGET_MISMATCH");
   });
 
-  it("does not accept mismatched resolved tool approval", () => {
-    const result = approveWorkspaceStep({
+  it("does not accept mismatched resolved tool approval", async () => {
+    const result = await approveWorkspaceStep({
       now,
       step: step(),
       stepApproval: stepApproval({ toolId: "tasks.create" }),
@@ -154,8 +184,8 @@ describe("approvalInteraction", () => {
     expect(result.errorCode).toBe("TOOL_MISMATCH");
   });
 
-  it("rejects unsupported approval scope at runtime", () => {
-    const result = approveWorkspaceStep({
+  it("rejects unsupported approval scope at runtime", async () => {
+    const result = await approveWorkspaceStep({
       now,
       step: step(),
       stepApproval: stepApproval(),
@@ -166,8 +196,8 @@ describe("approvalInteraction", () => {
     expect(result.errorCode).toBe("UNSUPPORTED_SCOPE");
   });
 
-  it("rejects scope escalation", () => {
-    const result = approveWorkspaceStep({
+  it("rejects scope escalation", async () => {
+    const result = await approveWorkspaceStep({
       now,
       step: step(),
       stepApproval: stepApproval({ approvalScope: "single_step" }),
@@ -178,8 +208,8 @@ describe("approvalInteraction", () => {
     expect(result.errorCode).toBe("SCOPE_ESCALATION");
   });
 
-  it("rejects risk understatement when tool risk is higher", () => {
-    const result = approveWorkspaceStep({
+  it("rejects risk understatement when tool risk is higher", async () => {
+    const result = await approveWorkspaceStep({
       now,
       step: step({ domain: "finance", actionType: "pay" }),
       stepApproval: stepApproval({
@@ -194,8 +224,8 @@ describe("approvalInteraction", () => {
     expect(result.errorCode).toBe("RISK_UNDERSTATEMENT");
   });
 
-  it("preserves effective higher risk when approving", () => {
-    const result = approveWorkspaceStep({
+  it("preserves effective higher risk when approving", async () => {
+    const result = await approveWorkspaceStep({
       now,
       step: step({ domain: "finance", actionType: "pay" }),
       stepApproval: stepApproval({
@@ -210,21 +240,21 @@ describe("approvalInteraction", () => {
     expect(result.approval?.riskLevel).toBe("high");
   });
 
-  it("does not copy arbitrary planner payloads or mutate inputs", () => {
+  it("does not copy arbitrary planner payloads or mutate inputs", async () => {
     const sourceStep = step({
       description: "A sensitive planner payload should not be copied.",
     });
     const sourceApproval = stepApproval();
     const before = JSON.stringify({ sourceStep, sourceApproval });
 
-    const first = approveWorkspaceStep({
+    const first = await approveWorkspaceStep({
       now,
       step: sourceStep,
       stepApproval: sourceApproval,
       tool: tool("tasks.create"),
       requestedRiskLevel: "medium" as WorkspaceApprovalRiskLevel,
     });
-    const second = approveWorkspaceStep({
+    const second = await approveWorkspaceStep({
       now,
       step: sourceStep,
       stepApproval: sourceApproval,
@@ -245,7 +275,7 @@ describe("approvalInteraction", () => {
   });
 
   // EPIC-08 Slice 1/2 -- see docs/roadmap/epic-08-write-code-design-v1.md.
-  it("carries a code proposal's binding (proposal id, base blob/commit SHA, digest, expiry) through approve and reject unchanged", () => {
+  it("carries a code proposal's binding (proposal id, base blob/commit SHA, digest, expiry) through approve and reject unchanged", async () => {
     const binding = {
       repo: "aryan/smartflow",
       path: "README.md",
@@ -261,7 +291,7 @@ describe("approvalInteraction", () => {
       codeProposalBinding: binding,
     });
 
-    const approved = approveWorkspaceStep({ now, step: step(), stepApproval: approval });
+    const approved = await approveWorkspaceStep({ now, step: step(), stepApproval: approval });
     expect(approved.ok).toBe(true);
     if (approved.ok) {
       expect(approved.approval?.codeProposalBinding).toEqual(binding);
@@ -275,11 +305,119 @@ describe("approvalInteraction", () => {
     }
   });
 
-  it("omits codeProposalBinding entirely for approvals that never had one (e.g. tasks.complete)", () => {
-    const result = approveWorkspaceStep({ now, step: step(), stepApproval: stepApproval() });
+  it("omits codeProposalBinding entirely for approvals that never had one (e.g. tasks.complete)", async () => {
+    const result = await approveWorkspaceStep({ now, step: step(), stepApproval: stepApproval() });
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.approval).not.toHaveProperty("codeProposalBinding");
     }
+  });
+
+  it("issues tasks.complete approval from trusted actor and authoritative scope", async () => {
+    const result = await approveWorkspaceStep({
+      now,
+      step: step({ actionType: "complete", targetId: "task-1" }),
+      stepApproval: stepApproval({ targetId: "task-1", toolId: "tasks.complete" }),
+      tool: tool("tasks.complete"),
+      authorityContext: {
+        getAuthenticatedActor: async () => ({ id: "trusted-user" }),
+        resolveAuthoritativeScope: async () => "user:trusted-user",
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected approval");
+    expect(result.approval?.executionIntentApprovalId).toMatch(/^approval:/);
+    const binding = resolveExecutionIntentApproval(result.approval?.executionIntentApprovalId);
+    const intent = getStoredCanonicalExecutionIntent(binding?.intentId);
+    expect(binding?.actorId).toBe("trusted-user");
+    expect(intent?.scopeId).toBe("user:trusted-user");
+  });
+
+  it("rejects tasks.complete approval without a trusted authenticated actor", async () => {
+    const sourceStep = step({ actionType: "complete", targetId: "task-1" });
+    const result = await approveWorkspaceStep({
+      now,
+      step: sourceStep,
+      stepApproval: stepApproval({ targetId: "task-1", toolId: "tasks.complete" }),
+      tool: tool("tasks.complete"),
+      authorityContext: {
+        getAuthenticatedActor: async () => null,
+        resolveAuthoritativeScope: async () => "user:attacker",
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    if ("approval" in result) expect(result.approval).toBeNull();
+    expect(getStoredCanonicalExecutionIntent(await expectedCompleteIntentId(sourceStep, "attacker", "user:attacker"))).toBeUndefined();
+    expect(resolveExecutionIntentApproval("approval:missing")).toBeUndefined();
+  });
+
+  it("ignores browser actor spoofing and uses the trusted actor", async () => {
+    const originalStorage = globalThis.localStorage;
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: () => "attacker",
+        setItem: () => undefined,
+        removeItem: () => undefined,
+      },
+    });
+    const result = await approveWorkspaceStep({
+      now,
+      step: step({ actionType: "complete", targetId: "task-1" }),
+      stepApproval: stepApproval({ targetId: "task-1", toolId: "tasks.complete" }),
+      tool: tool("tasks.complete"),
+      authorityContext: {
+        getAuthenticatedActor: async () => ({ id: "trusted-user" }),
+        resolveAuthoritativeScope: async ({ actor }) => `user:${actor.id}`,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected approval");
+    const binding = resolveExecutionIntentApproval(result.approval?.executionIntentApprovalId);
+    expect(binding?.actorId).toBe("trusted-user");
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: originalStorage,
+    });
+  });
+
+  it("uses trusted scope resolution instead of client-requested scope", async () => {
+    const result = await approveWorkspaceStep({
+      now,
+      step: step({ actionType: "complete", targetId: "task-1" }),
+      stepApproval: stepApproval({ targetId: "task-1", toolId: "tasks.complete" }),
+      tool: tool("tasks.complete"),
+      authorityContext: {
+        getAuthenticatedActor: async () => ({ id: "trusted-user" }),
+        resolveAuthoritativeScope: async () => "user:trusted-user:scope-a",
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected approval");
+    const binding = resolveExecutionIntentApproval(result.approval?.executionIntentApprovalId);
+    const intent = getStoredCanonicalExecutionIntent(binding?.intentId);
+    expect(intent?.scopeId).toBe("user:trusted-user:scope-a");
+  });
+
+  it("rejects approval when authoritative scope cannot be resolved", async () => {
+    const sourceStep = step({ actionType: "complete", targetId: "task-1" });
+    const result = await approveWorkspaceStep({
+      now,
+      step: sourceStep,
+      stepApproval: stepApproval({ targetId: "task-1", toolId: "tasks.complete" }),
+      tool: tool("tasks.complete"),
+      authorityContext: {
+        getAuthenticatedActor: async () => ({ id: "trusted-user" }),
+        resolveAuthoritativeScope: async () => null,
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(getStoredCanonicalExecutionIntent(await expectedCompleteIntentId(sourceStep, "trusted-user", "user:trusted-user"))).toBeUndefined();
+    expect(resolveExecutionIntentApproval("approval:missing")).toBeUndefined();
   });
 });

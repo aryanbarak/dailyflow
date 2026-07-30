@@ -1221,8 +1221,6 @@ export default function ChatPage() {
         }),
       },
       currentTime,
-    }, {
-      getAuthenticatedUserId: () => user?.id,
     })
 
     setReasoningProposal(prev => prev
@@ -1255,7 +1253,7 @@ export default function ChatPage() {
       ),
       current.result.responseLanguage,
     )
-  }, [appendAssistantResult, reasoningProposal, tasks, user?.id, workerUrl, workspace])
+  }, [appendAssistantResult, reasoningProposal, tasks, workerUrl, workspace])
 
   const firstName =
     profile?.displayName?.trim()?.split(' ')[0] ||

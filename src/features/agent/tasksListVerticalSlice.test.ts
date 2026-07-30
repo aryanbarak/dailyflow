@@ -66,10 +66,10 @@ describe("tasksListVerticalSlice", () => {
     expect(result.toolId).toBe("tasks.list");
   });
 
-  it("approval alone does not execute", () => {
+  it("approval alone does not execute", async () => {
     clearExecutionAuditRecords();
     const step = taskReviewStep({ requiresApproval: true });
-    const approved = approveWorkspaceStep({
+    const approved = await approveWorkspaceStep({
       now,
       step,
       stepApproval: approval({

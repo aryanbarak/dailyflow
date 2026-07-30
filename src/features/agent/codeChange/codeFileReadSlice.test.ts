@@ -60,6 +60,13 @@ function connectedClient(overrides: Partial<GitHubFileContentFile> = {}): GitHub
   };
 }
 
+function trustedAuthority() {
+  return {
+    getAuthenticatedActor: async () => ({ id: "user-1" }),
+    resolveAuthoritativeScope: async () => "user:user-1",
+  };
+}
+
 describe("github.files.read registered contract", () => {
   it("registers one enabled, bounded, read-only, no-approval contract", () => {
     const tool = getToolById("github.files.read");
@@ -217,7 +224,7 @@ describe("no mutation path exists yet (Slice 1 boundary)", () => {
     });
     if (!result.approval) throw new Error("expected a built approval");
 
-    const decision = approveWorkspaceStep({
+    const decision = await approveWorkspaceStep({
       step: step(),
       stepApproval: result.approval,
     });
@@ -288,7 +295,7 @@ describe("no mutation path exists yet (Slice 1 boundary)", () => {
     });
     if (!proposed.approval || !proposed.proposal) throw new Error("expected a built proposal and approval");
 
-    const approved = approveWorkspaceStep({ step: step(), stepApproval: proposed.approval });
+    const approved = await approveWorkspaceStep({ step: step(), stepApproval: proposed.approval });
     if (approved.ok === false || !approved.approval?.codeProposalBinding) {
       throw new Error("expected the approval to succeed and carry a binding");
     }
@@ -317,14 +324,20 @@ describe("no mutation path exists yet (Slice 1 boundary)", () => {
         resolverVersion: "tool-resolver-v1",
       },
       approval: { ...approved.approval, targetId: "aryan/smartflow:README.md" },
+    }, {
+      authorityContext: trustedAuthority(),
+      getWriteHandlerByToolId: () => undefined,
     });
 
-    // Fails at the authenticated-user boundary (no injected dependencies,
-    // no runtime-authenticated identity in this test environment) --
+    // Fails before mutation because this isolated slice test deliberately
+    // provides no write handler or Worker-backed approval record --
     // whichever boundary it fails at, the point is it never reaches a
     // successful mutation, and it emits no audit activity doing so.
-    expect(writeResult.status).toBe("failed");
+    expect(writeResult.status).toBe("handler_not_found");
     expect(writeResult.success).toBe(false);
-    expect(getExecutionAuditRecordsByRequestId(writeRequestId)).toEqual([]);
+    expect(getExecutionAuditRecordsByRequestId(writeRequestId).map((record) => record.status)).toEqual([
+      "started",
+      "handler_not_found",
+    ]);
   });
 });

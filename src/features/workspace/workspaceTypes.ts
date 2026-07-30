@@ -334,6 +334,7 @@ export interface WorkspaceStepApproval {
   // EPIC-08 Slice 1 -- see docs/roadmap/epic-08-write-code-design-v1.md.
   // Present only for a code-change proposal. Absent for every other tool.
   codeProposalBinding?: WorkspaceCodeProposalBinding;
+  executionIntentApprovalId?: string;
 }
 
 export interface WorkspaceApprovalModel {

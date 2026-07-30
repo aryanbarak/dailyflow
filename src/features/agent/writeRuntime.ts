@@ -4,6 +4,19 @@ import {
 } from "./executionAudit";
 import { EXECUTION_AUDIT_VERSION } from "./executionAudit";
 import { compareRiskLevels, evaluateExecutionPolicy } from "./executionPolicy";
+import {
+  assertIntentExecutionReady,
+  bindApprovalToIntent,
+  claimExecutionIntent,
+  createCanonicalExecutionIntent,
+  createExecutionAttempt,
+  createExecutionResultReference,
+  createIntentPolicyDecision,
+  ExecutionIntentError,
+  getStoredCanonicalExecutionIntent,
+  resolveExecutionIntentApproval,
+} from "./executionIntent";
+import { defaultExecutionAuthorityContext, type ExecutionAuthorityContext } from "./authority";
 import { getToolById } from "./toolRegistry";
 import { getWriteHandlerByToolId } from "./writeHandlers";
 import { processReadOnlyReflection } from "./reflectionIntegration";
@@ -107,12 +120,23 @@ export interface WriteRuntimeResult {
   completedAt: string;
   durationMs: number;
   runtimeVersion: typeof WRITE_RUNTIME_VERSION;
+  executionIntent?: {
+    intentId: string;
+    canonicalHash: string;
+    policyDecisionId?: string;
+    approvalId?: string;
+    attemptId?: string;
+    resultStatus?: string;
+  };
 }
 
 export interface WriteRuntimeDependencies {
-  getAuthenticatedUserId(): string | null | undefined | Promise<string | null | undefined>;
+  authorityContext: ExecutionAuthorityContext;
   getToolById(toolId: string): AgentToolDefinition | undefined;
   getWriteHandlerByToolId(toolId: string): AgentWriteToolHandler | undefined;
+  getStoredCanonicalExecutionIntent(intentId: string | undefined): ReturnType<typeof getStoredCanonicalExecutionIntent>;
+  resolveExecutionIntentApproval(approvalId: string | undefined): ReturnType<typeof resolveExecutionIntentApproval>;
+  claimExecutionIntent(intentId: string): boolean;
   appendExecutionAuditRecord(record: ExecutionAuditRecord): ExecutionAuditRecord;
   processReflection(input: Parameters<typeof processReadOnlyReflection>[0]): ReturnType<typeof processReadOnlyReflection>;
   now(): Date;
@@ -121,36 +145,16 @@ export interface WriteRuntimeDependencies {
 const completedRequestIds = new Set<string>();
 
 const defaultDependencies: WriteRuntimeDependencies = {
-  getAuthenticatedUserId: getStoredSupabaseUserId,
+  authorityContext: defaultExecutionAuthorityContext,
   getToolById,
   getWriteHandlerByToolId,
+  getStoredCanonicalExecutionIntent,
+  resolveExecutionIntentApproval,
+  claimExecutionIntent,
   appendExecutionAuditRecord,
   processReflection: processReadOnlyReflection,
   now: () => new Date(),
 };
-
-function getStoredSupabaseUserId() {
-  const storage = globalThis.localStorage;
-  if (!storage) return undefined;
-
-  for (let index = 0; index < storage.length; index += 1) {
-    const key = storage.key(index);
-    if (!key?.startsWith("sb-") || !key.endsWith("-auth-token")) continue;
-
-    try {
-      const parsed = JSON.parse(storage.getItem(key) ?? "null") as {
-        user?: { id?: unknown };
-        currentSession?: { user?: { id?: unknown } };
-      } | null;
-      const userId = parsed?.user?.id ?? parsed?.currentSession?.user?.id;
-      if (typeof userId === "string" && userId.trim()) return userId.trim();
-    } catch {
-      return undefined;
-    }
-  }
-
-  return undefined;
-}
 
 function timestamp(currentTime?: Date) {
   return (currentTime ?? new Date()).toISOString();
@@ -515,12 +519,12 @@ function writeTargetIsValid(request: WriteRuntimeRequest, toolId: SupportedWrite
 // unrecognized/missing fields.
 function buildHandlerInput(
   toolId: SupportedWriteToolId,
-  authenticatedUserId: string,
+  runtimeActorId: string,
   request: WriteRuntimeRequest,
 ): Record<string, unknown> {
   if (toolId === "tasks.complete") {
     return {
-      userId: authenticatedUserId,
+      userId: runtimeActorId,
       taskId: request.step?.targetId?.trim(),
     };
   }
@@ -551,6 +555,10 @@ function buildHandlerInput(
     ...(target?.updateBody !== undefined ? { body: target.updateBody } : {}),
     ...(target?.updateLabels !== undefined ? { labels: target.updateLabels } : {}),
   };
+}
+
+function shouldUseExecutionIntentLifecycle(toolId: SupportedWriteToolId) {
+  return toolId === "tasks.complete";
 }
 
 export function clearWriteRuntimeRequestHistory() {
@@ -587,9 +595,95 @@ export async function runWriteTool(
     return blocked(request, approvalStatus, safeSummaryFor(approvalStatus), startedAt, resolved.toolId);
   }
 
-  const authenticatedUserId = await deps.getAuthenticatedUserId();
-  if (!authenticatedUserId?.trim()) {
+  let trustedActorId: string | undefined;
+  try {
+    trustedActorId = (await deps.authorityContext.getAuthenticatedActor())?.id.trim();
+  } catch {
+    trustedActorId = undefined;
+  }
+  if (!trustedActorId) {
     return blocked(request, "failed", "Authenticated runtime user is required.", startedAt, resolved.toolId);
+  }
+  const actorId = trustedActorId;
+
+  let lifecycleIntent:
+    | Awaited<ReturnType<typeof createCanonicalExecutionIntent>>
+    | undefined;
+  let lifecyclePolicy:
+    | ReturnType<typeof createIntentPolicyDecision>
+    | undefined;
+  let lifecycleApproval:
+    | ReturnType<typeof bindApprovalToIntent>
+    | undefined;
+  let lifecycleAttempt:
+    | ReturnType<typeof createExecutionAttempt>
+    | undefined;
+  let canonicalHandlerInput: Record<string, unknown> | undefined;
+
+  if (shouldUseExecutionIntentLifecycle(resolved.toolId)) {
+    try {
+      const candidateArguments = {
+        taskId: request.step.targetId?.trim(),
+      };
+      const requestIntent = await createCanonicalExecutionIntent({
+        candidate: {
+          proposedToolId: resolved.toolId,
+          proposedOperation: request.step.actionType,
+          proposedArguments: candidateArguments,
+          sourceProposalReference: request.step.id,
+        },
+        tool: resolved.tool,
+        step: request.step,
+        actorId,
+        scopeId: `user:${actorId}`,
+        operation: request.step.actionType,
+        arguments: candidateArguments,
+        sourceProposalReference: request.step.id,
+        idempotencyKey: request.requestId,
+        createdAt: startedAt,
+      });
+      const approvalId = request.approval?.executionIntentApprovalId;
+      const storedApproval = deps.resolveExecutionIntentApproval(approvalId);
+      if (!storedApproval) {
+        return blocked(request, "approval_required", "Write action requires server-owned execution intent approval.", startedAt, resolved.toolId);
+      }
+      const storedIntent = deps.getStoredCanonicalExecutionIntent(storedApproval.intentId);
+      if (!storedIntent) {
+        return blocked(request, "approval_required", "Approved execution intent was not found.", startedAt, resolved.toolId);
+      }
+      const currentScopeId = await deps.authorityContext.resolveAuthoritativeScope({ actor: { id: actorId }, step: request.step });
+      if (!currentScopeId?.trim()) {
+        return blocked(request, "approval_required", "Runtime authority scope could not be validated.", startedAt, resolved.toolId);
+      }
+      if (
+        storedIntent.intentId !== requestIntent.intentId ||
+        storedIntent.canonicalHash !== requestIntent.canonicalHash ||
+        storedIntent.actorId !== actorId ||
+        storedApproval.actorId !== actorId ||
+        storedIntent.scopeId !== currentScopeId.trim() ||
+        storedIntent.toolId !== resolved.toolId ||
+        storedIntent.operation !== request.step.actionType ||
+        storedIntent.targetScope.targetId !== request.step.targetId?.trim()
+      ) {
+        return blocked(request, "approval_required", "Run request does not match the approved execution intent.", startedAt, resolved.toolId);
+      }
+      lifecycleIntent = storedIntent;
+      lifecycleApproval = bindApprovalToIntent({
+        intent: lifecycleIntent,
+        approval: storedApproval,
+        actorId,
+        now: deps.now(),
+      });
+      canonicalHandlerInput = {
+        userId: actorId,
+        ...lifecycleIntent.normalizedArguments,
+      };
+    } catch (caught) {
+      const summary = caught instanceof ExecutionIntentError
+        ? caught.message
+        : "Execution intent canonicalization failed.";
+      return blocked(request, "policy_denied", summary, startedAt, resolved.toolId);
+    }
   }
 
   const policyDecision = evaluateExecutionPolicy({
@@ -620,6 +714,26 @@ export async function runWriteTool(
         terminalAuditId: terminal?.auditId,
       },
     };
+  }
+
+  if (lifecycleIntent && lifecycleApproval) {
+    try {
+      lifecyclePolicy = createIntentPolicyDecision(lifecycleIntent, policyDecision);
+      assertIntentExecutionReady({
+        intent: lifecycleIntent,
+        policyDecision: lifecyclePolicy,
+        approvalBinding: lifecycleApproval,
+        now: deps.now(),
+      });
+    } catch (caught) {
+      const status = caught instanceof ExecutionIntentError && caught.code === "APPROVAL_REVOKED"
+        ? "rejected"
+        : "approval_required";
+      const summary = caught instanceof ExecutionIntentError
+        ? caught.message
+        : safeSummaryFor(status);
+      return blocked(request, status, summary, startedAt, resolved.toolId);
+    }
   }
 
   const started = appendAuditSafely(
@@ -659,7 +773,7 @@ export async function runWriteTool(
     };
   }
 
-  const handlerInput = buildHandlerInput(resolved.toolId, authenticatedUserId.trim(), request);
+  const handlerInput = canonicalHandlerInput ?? buildHandlerInput(resolved.toolId, actorId, request);
   const validation = handler.validateInput(handlerInput, resolved.tool.inputSchema);
   if (!validation.valid) {
     const completedAt = timestamp(deps.now());
@@ -682,6 +796,18 @@ export async function runWriteTool(
         terminalAuditId: terminal?.auditId,
       },
     };
+  }
+
+  if (lifecycleIntent) {
+    if (!deps.claimExecutionIntent(lifecycleIntent.intentId)) {
+      return blocked(request, "duplicate_request", safeSummaryFor("duplicate_request"), startedAt, resolved.toolId);
+    }
+    lifecycleAttempt = createExecutionAttempt({
+      intent: lifecycleIntent,
+      attemptId: request.requestId,
+      startedAt,
+      runtimeTarget: resolved.toolId,
+    });
   }
 
   const handlerResult = await executeWithTimeout(handler, handlerInput, {
@@ -714,6 +840,23 @@ export async function runWriteTool(
     startedAt,
     completedAt,
   );
+  if (lifecycleIntent && lifecycleAttempt && lifecyclePolicy) {
+    const resultReference = createExecutionResultReference({
+      intent: lifecycleIntent,
+      attempt: lifecycleAttempt,
+      status: writeStatus === "success" ? "succeeded" : "failed",
+      completedAt,
+      resultReference: { requestId: request.requestId, toolId: resolved.toolId },
+      errorCode: handlerResult.error?.code,
+    });
+    executionResult.metadata.executionIntent = {
+      intentId: lifecycleIntent.intentId,
+      canonicalHash: lifecycleIntent.canonicalHash,
+      policyDecisionId: lifecyclePolicy.decisionId,
+      attemptId: lifecycleAttempt.attemptId,
+      resultStatus: resultReference.status,
+    };
+  }
 
   let reflection: AgentReflectionResult | undefined;
   try {
@@ -749,5 +892,17 @@ export async function runWriteTool(
     completedAt,
     durationMs: duration(startedAt, completedAt),
     runtimeVersion: WRITE_RUNTIME_VERSION,
+    ...(lifecycleIntent
+      ? {
+          executionIntent: {
+            intentId: lifecycleIntent.intentId,
+            canonicalHash: lifecycleIntent.canonicalHash,
+            policyDecisionId: lifecyclePolicy?.decisionId,
+            approvalId: lifecycleApproval?.approvalId,
+            attemptId: lifecycleAttempt?.attemptId,
+            resultStatus: writeStatus === "success" ? "succeeded" : "failed",
+          },
+        }
+      : {}),
   };
 }

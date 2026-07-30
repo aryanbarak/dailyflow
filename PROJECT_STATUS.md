@@ -98,6 +98,14 @@ Completed workspace and agent architecture milestones:
 - Multilingual reasoning-domain correction
 - Response Composer V1
 - Context Synthesis V1
+- Unified Execution Intent Lifecycle Foundation Slice 1: canonical
+  execution-intent contracts, deterministic canonicalization with standard
+  SHA-256, lifecycle transition helpers, server-owned exact approval-binding
+  validation, defensive authority-record copying/freezing, trusted application
+  actor/scope resolution for `tasks.complete` approval and Run, strict
+  JSON-compatible canonical value validation, visible approval failure
+  handling, duplicate approval-submit interaction coverage, and
+  read-runtime lifecycle metadata for `github.repositories.list`
 - GitHub Read-only Integration: all four tools (`github.repositories.list`,
   `github.issues.list`, `github.pulls.list`, `github.workflow_runs.list`) live
   in production — natural-language request -> intent -> explicit Run works
@@ -268,6 +276,32 @@ Supported write executable tools:
 
 Write execution guarantees:
 
+- `tasks.complete` routes through the canonical execution-intent lifecycle
+  foundation before handler execution. The production approval action
+  resolves the authenticated actor from the trusted Supabase auth boundary,
+  resolves authoritative scope outside UI authority, canonicalizes the intent,
+  evaluates policy, stores immutable authority records, and returns only an
+  opaque approval reference before Run is enabled. Run resolves the current
+  actor through the same trusted authority boundary, revalidates authoritative
+  scope, and requires that pre-existing server-owned exact intent approval
+  reference; legacy
+  step/tool/target approval remains UI-compatible but is not sufficient to
+  execute the pilot.
+- Client-facing approval state carries only a display-safe execution-intent
+  approval reference for the pilot; authoritative canonical intent and approval
+  binding records are held in the in-memory, single-process runtime lifecycle
+  registry and are defensively copied/frozen at storage and retrieval
+  boundaries. Browser storage no longer owns lifecycle actor authority;
+  unsupported, unsafe, or cyclic canonical values fail closed before hashing or
+  storage; approval failures remain visible to the user; duplicate approval
+  submits are covered by DOM interaction tests; the approval failure mapper no
+  longer expands the component module's public API. Durable lifecycle persistence,
+  restart-safe claims, distributed concurrency, durable audit, retries,
+  scheduling, Gmail expansion, GitHub expansion, Smart Automation, and all-tool
+  migration remain deferred.
+- Duplicate protection for the pilot is keyed by canonical intent ID before
+  handler invocation. A claimed intent is single-attempt for this slice; retry
+  requires a newly approved intent.
 - exact step, tool, and target approval binding is required,
 - approval and execution are separate user actions,
 - authenticated user identity is injected by the runtime,

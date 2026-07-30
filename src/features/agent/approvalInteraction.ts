@@ -1,6 +1,17 @@
 import { compareRiskLevels } from "./executionPolicy";
+import { evaluateExecutionPolicy } from "./executionPolicy";
+import {
+  createCanonicalExecutionIntent,
+  issueExecutionIntentApproval,
+} from "./executionIntent";
+import {
+  defaultExecutionAuthorityContext,
+  type AuthenticatedActor,
+  type ExecutionAuthorityContext,
+} from "./authority";
 import { resolveToolForStep } from "./toolResolver";
 import type { AgentToolDefinition } from "./toolTypes";
+import type { ExecutionPolicyContext } from "./toolTypes";
 import type {
   WorkspaceApprovalRiskLevel,
   WorkspaceApprovalScope,
@@ -20,7 +31,8 @@ export type ApprovalInteractionErrorCode =
   | "TOOL_MISMATCH"
   | "UNSUPPORTED_SCOPE"
   | "SCOPE_ESCALATION"
-  | "RISK_UNDERSTATEMENT";
+  | "RISK_UNDERSTATEMENT"
+  | "POLICY_DENIED";
 
 export interface ApprovalInteractionInput {
   step?: WorkspacePlanStep | null;
@@ -28,8 +40,13 @@ export interface ApprovalInteractionInput {
   tool?: AgentToolDefinition | null;
   requestedApprovalScope?: WorkspaceApprovalScope;
   requestedRiskLevel?: WorkspaceApprovalRiskLevel;
+  policyContext?: ExecutionPolicyContext;
+  authorityContext?: ExecutionAuthorityContext;
   now?: Date;
 }
+
+export type AuthenticatedApprovalActor = AuthenticatedActor;
+export type ApprovalAuthorityContext = ExecutionAuthorityContext;
 
 export interface ApprovalInteractionSuccess {
   ok: true;
@@ -113,6 +130,12 @@ function cloneApproval(
   });
 }
 
+function shouldIssueExecutionIntentApproval(step: WorkspacePlanStep, tool?: AgentToolDefinition | null) {
+  return tool?.id === "tasks.complete" && step.domain === "tasks" && step.actionType === "complete";
+}
+
+export const defaultApprovalAuthorityContext = defaultExecutionAuthorityContext;
+
 function maxRisk(
   left: WorkspaceApprovalRiskLevel,
   right: WorkspaceApprovalRiskLevel,
@@ -174,22 +197,87 @@ function validateInteraction(
   };
 }
 
-export function approveWorkspaceStep(
+export async function approveWorkspaceStep(
   input: ApprovalInteractionInput,
-): ApprovalInteractionResult {
+): Promise<ApprovalInteractionResult> {
   const validation = validateInteraction(input);
   if ("ok" in validation) return validation;
+
+  const approved = cloneApproval(
+    validation.stepApproval,
+    "approved",
+    validation.requestedRisk,
+    validation.requestedScope,
+    input.tool,
+  );
+  const step = input.step;
+  const tool = input.tool;
+  if (step && shouldIssueExecutionIntentApproval(step, tool)) {
+    const authorityContext = input.authorityContext ?? defaultApprovalAuthorityContext;
+    const actor = await authorityContext.getAuthenticatedActor();
+    const actorId = actor?.id.trim();
+    if (!actor || !actorId) {
+      return failure(input, "POLICY_DENIED", "Approval requires an authenticated actor.");
+    }
+    const scopeId = await authorityContext.resolveAuthoritativeScope({ actor: { id: actorId }, step });
+    if (!scopeId?.trim()) {
+      return failure(input, "POLICY_DENIED", "Approval is not permitted for this workspace scope.");
+    }
+    const now = timestamp(input.now);
+    const candidateArguments = {
+      taskId: step.targetId?.trim(),
+    };
+    try {
+      const intent = await createCanonicalExecutionIntent({
+        candidate: {
+          proposedToolId: tool.id,
+          proposedOperation: step.actionType,
+          proposedArguments: candidateArguments,
+          sourceProposalReference: step.id,
+        },
+        tool,
+        step,
+        actorId,
+        scopeId: scopeId.trim(),
+        operation: step.actionType,
+        arguments: candidateArguments,
+        sourceProposalReference: step.id,
+        createdAt: now,
+      });
+      const policyDecision = evaluateExecutionPolicy({
+        step,
+        tool,
+        approval: approved,
+        currentTime: input.now,
+        context: input.policyContext,
+      });
+      if (!policyDecision.allowed) {
+        return failure(input, "POLICY_DENIED", "Execution policy denied approval for this intent.");
+      }
+      const issued = await issueExecutionIntentApproval({
+        intent,
+        actorId,
+        approvedAt: now,
+      });
+      return {
+        ok: true,
+        decision: "approved",
+        approval: Object.freeze({
+          ...approved,
+          executionIntentApprovalId: issued.approvalId,
+        }),
+        decidedAt: now,
+        interactionVersion: APPROVAL_INTERACTION_VERSION,
+      };
+    } catch {
+      return failure(input, "POLICY_DENIED", "Execution intent approval could not be issued.");
+    }
+  }
 
   return {
     ok: true,
     decision: "approved",
-    approval: cloneApproval(
-      validation.stepApproval,
-      "approved",
-      validation.requestedRisk,
-      validation.requestedScope,
-      input.tool,
-    ),
+    approval: approved,
     decidedAt: timestamp(input.now),
     interactionVersion: APPROVAL_INTERACTION_VERSION,
   };

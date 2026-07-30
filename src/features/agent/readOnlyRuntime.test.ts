@@ -160,6 +160,61 @@ describe("readOnlyRuntime", () => {
     expect(workspace.safeSummary).toBe("Workspace context loaded.");
   });
 
+  it("executes github.repositories.list through the canonical execution intent lifecycle", async () => {
+    const sourceStep = step("github.repositories.list", { domain: "github", actionType: "inspect" });
+    const result = await runReadOnlyTool({
+      requestId: "request:runtime:github-repositories",
+      step: sourceStep,
+      toolResolution: resolution("github.repositories.list", sourceStep),
+      executionContext: {
+        githubRepositoriesClient: {
+          listRepositories: async () => ({
+            connectionStatus: "connected",
+            repositories: [{
+              id: "repo-1",
+              name: "smartflow",
+              owner: "aryan",
+              visibility: "private",
+              defaultBranch: "main",
+              archived: false,
+            }],
+          }),
+        },
+      },
+      currentTime: now,
+    }, { now: () => now });
+
+    expect(result.status).toBe("success");
+    expect(result.executionResult?.metadata.executionIntent).toMatchObject({
+      intentId: expect.stringMatching(/^intent:/),
+      canonicalHash: expect.any(String),
+      attemptId: "request:runtime:github-repositories",
+      resultStatus: "succeeded",
+    });
+  });
+
+  it("blocks github.repositories.list when canonicalization fails without a legacy fallback", async () => {
+    const sourceStep = step("github.repositories.list", { domain: "github", actionType: "inspect" });
+    let handlerCalled = false;
+    const result = await runReadOnlyTool({
+      requestId: "request:runtime:github-repositories:bad",
+      step: sourceStep,
+      toolResolution: resolution("github.repositories.list", sourceStep),
+      executionInput: { unexpected: "client-field" },
+      currentTime: now,
+    }, {
+      now: () => now,
+      getHandlerByToolId: () => {
+        handlerCalled = true;
+        return undefined;
+      },
+    });
+
+    expect(result.status).toBe("policy_denied");
+    expect(result.safeSummary).toBe("Run blocked by execution intent lifecycle.");
+    expect(handlerCalled).toBe(false);
+  });
+
   it("rejects unsupported and write tools before handler resolution", async () => {
     let handlerResolved = false;
     const writeStep = step("tasks.create", { actionType: "create" as WorkspacePlanActionType });
@@ -235,10 +290,10 @@ describe("readOnlyRuntime", () => {
     expect(result.status).toBe("approval_required");
   });
 
-  it("approval alone does not execute", () => {
+  it("approval alone does not execute", async () => {
     clearExecutionAuditRecords();
     const sourceStep = step("tasks.list", { requiresApproval: true });
-    const approved = approveWorkspaceStep({
+    const approved = await approveWorkspaceStep({
       now,
       step: sourceStep,
       stepApproval: approval(sourceStep, {
