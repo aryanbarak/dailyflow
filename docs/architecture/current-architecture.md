@@ -658,7 +658,7 @@ authenticated users where appropriate.
 | Authority model canonical document | Implemented |
 | Execution intent canonical document | Implemented |
 | Smart automation boundary canonical document | Implemented |
-| Representative engine canonical document | Not Implemented |
+| Representative engine canonical document | Implemented |
 | Agent orchestration canonical document | Not Implemented |
 
 ## Related ADRs
