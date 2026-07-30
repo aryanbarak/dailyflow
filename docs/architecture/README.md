@@ -10,6 +10,7 @@ and historical baselines.
 - [authority-model.md](authority-model.md) - canonical authority model governing observation, reasoning, approval, execution, audit, and delegation boundaries.
 - [execution-intent.md](execution-intent.md) - canonical execution intent model governing exact executable meaning, approval binding, policy binding, freshness, replay, and audit correlation.
 - [smartflow-smart-automation-boundary.md](smartflow-smart-automation-boundary.md) - canonical boundary between SmartFlow and Smart Automation responsibility, authority, intent, execution, credentials, policy, approval, result, and audit ownership.
+- [target-architecture.md](target-architecture.md) - canonical target architecture defining SmartFlow's intended layered end-state, direct/delegated execution model, state and memory boundaries, audit, persistence, observability, and evolution constraints.
 - [../PROJECT_STATUS.md](../../PROJECT_STATUS.md) - current project status and implementation notes.
 - [Generated architecture knowledge](../../.knowledge/docs/02_architecture.md) - generated current architecture context when present.
 
@@ -26,17 +27,16 @@ and historical baselines.
 Future canonical architecture documents must be created in this order because
 each document depends on the current architecture baseline, the authority model,
 the execution intent model, the SmartFlow to Smart Automation boundary, and the
-one before it:
+target architecture:
 
-- `target-architecture.md`
 - `representative-engine.md`
 - `agent-orchestration.md`
 
 `current-architecture.md`, `authority-model.md`, `execution-intent.md`, and
-`smartflow-smart-automation-boundary.md` are the baseline for the remaining
-planned architecture documents. Do not create the remaining planned files until
-their content has been established through architecture discussion and, where
-needed, an ADR.
+`smartflow-smart-automation-boundary.md`, and `target-architecture.md` are the
+baseline for the remaining planned architecture documents. Do not create the
+remaining planned files until their content has been established through
+architecture discussion and, where needed, an ADR.
 
 ## Rules
 

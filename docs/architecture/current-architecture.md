@@ -654,7 +654,7 @@ authenticated users where appropriate.
 | GitHub bounded file update | Implemented |
 | General task/calendar/habit/document/message/finance write execution | Not Implemented |
 | Autonomous agent loop | Not Implemented |
-| Target architecture | Not Implemented |
+| Target architecture | Implemented |
 | Authority model canonical document | Implemented |
 | Execution intent canonical document | Implemented |
 | Smart automation boundary canonical document | Implemented |
