@@ -657,7 +657,7 @@ authenticated users where appropriate.
 | Target architecture | Not Implemented |
 | Authority model canonical document | Implemented |
 | Execution intent canonical document | Implemented |
-| Smart automation boundary canonical document | Not Implemented |
+| Smart automation boundary canonical document | Implemented |
 | Representative engine canonical document | Not Implemented |
 | Agent orchestration canonical document | Not Implemented |
 
