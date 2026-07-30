@@ -659,7 +659,7 @@ authenticated users where appropriate.
 | Execution intent canonical document | Implemented |
 | Smart automation boundary canonical document | Implemented |
 | Representative engine canonical document | Implemented |
-| Agent orchestration canonical document | Not Implemented |
+| Agent orchestration canonical document | Implemented |
 
 ## Related ADRs
 

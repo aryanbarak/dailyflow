@@ -12,6 +12,7 @@ and historical baselines.
 - [smartflow-smart-automation-boundary.md](smartflow-smart-automation-boundary.md) - canonical boundary between SmartFlow and Smart Automation responsibility, authority, intent, execution, credentials, policy, approval, result, and audit ownership.
 - [target-architecture.md](target-architecture.md) - canonical target architecture defining SmartFlow's intended layered end-state, direct/delegated execution model, state and memory boundaries, audit, persistence, observability, and evolution constraints.
 - [representative-engine.md](representative-engine.md) - canonical target contract for bounded, explainable workspace and project representation, prioritization, recommendation, provenance, and context assembly.
+- [agent-orchestration.md](agent-orchestration.md) - canonical target contract for bounded orchestration of reasoning, planning, proposal, intent, policy, approval, execution ownership, verification, audit, and explanation.
 - [../PROJECT_STATUS.md](../../PROJECT_STATUS.md) - current project status and implementation notes.
 - [Generated architecture knowledge](../../.knowledge/docs/02_architecture.md) - generated current architecture context when present.
 
@@ -23,21 +24,20 @@ and historical baselines.
 
 - [01-architecture-baseline.md](01-architecture-baseline.md) - draft early stabilization baseline from 2026-07-06. This is not labeled current architecture.
 
-## Remaining Planned Canonical Architecture
+## Canonical Architecture Sequence
 
-Future canonical architecture documents must be created in this order because
-each document depends on the current architecture baseline, the authority model,
-the execution intent model, the SmartFlow to Smart Automation boundary, and the
-target architecture:
+The canonical architecture sequence is complete:
 
-- `agent-orchestration.md`
+1. `current-architecture.md`
+2. `authority-model.md`
+3. `execution-intent.md`
+4. `smartflow-smart-automation-boundary.md`
+5. `target-architecture.md`
+6. `representative-engine.md`
+7. `agent-orchestration.md`
 
-`current-architecture.md`, `authority-model.md`, `execution-intent.md`,
-`smartflow-smart-automation-boundary.md`, `target-architecture.md`, and
-`representative-engine.md` are the baseline for the remaining planned
-architecture document. Do not create the remaining planned file until its
-content has been established through architecture discussion and, where needed,
-an ADR.
+Future canonical architecture documents require architecture discussion and,
+where needed, an ADR.
 
 ## Rules
 
