@@ -1,6 +1,6 @@
 # SmartFlow - Project Status
 
-Last updated: 2026-07-30
+Last updated: 2026-07-31
 
 ---
 
@@ -17,12 +17,30 @@ autonomous execution, does not run hidden tool chains, does not let the LLM
 approve or execute actions, and does not expose internal policy, audit, memory,
 or engine metadata to users.
 
-Current focus: production-readiness review of the proposal boundary after
-completing both controlled browser integration and local real-worker reasoning
-validation. GitHub Read-only Integration V1 Slice 1 is complete and live in
-production: a natural-language GitHub repository request now resolves to the
+Current focus: Software Project Context Foundation (Slice 2A) -- a
+deterministic, typed, read-only domain foundation (`src/features/projects/`)
+for representing a Software Project's identity, objective, milestones,
+accepted decisions, capability status, risks, canonical sources, and
+non-authoritative candidate next actions. This slice adds no execution
+authority: it is purely representational, validated input to normalized
+output, with no LLM, no tool execution, and no browser-storage authority
+anywhere in the pipeline.
+
+Unified Execution Intent Lifecycle Foundation Slice 1 is complete, committed,
+and pushed to `main` (`26f342b`): canonical execution-intent contracts,
+deterministic canonicalization, lifecycle transition helpers, server-owned
+exact approval-binding validation, and trusted actor/scope resolution for
+`tasks.complete` and GitHub read-only tools are all in place. Lifecycle state
+itself remains in-memory and single-process; durable, restart-safe
+persistence and distributed concurrency remain deferred (see Technical Debt
+and Slice 2A non-goals below).
+
+GitHub Read-only Integration V1 Slice 1 is complete and live in production: a
+natural-language GitHub repository request now resolves to the
 `inspect_github_repositories` intent, routes through explicit user Run, and
 returns a real repository list from the connected GitHub App installation.
+Broader integration expansion (additional providers, Gmail, Calendar) remains
+deferred.
 
 Documentation focus: SmartFlow documentation structure has been standardized,
 the SmartFlow ChatGPT Project has been established, and repository
@@ -36,8 +54,28 @@ remain planned, not complete.
 
 ## 2. Current Project Phase
 
-Current phase: deterministic AI Personal Operating System foundation complete;
-safe agent response and execution infrastructure in validation.
+Current phase: Software Project Context Foundation (Slice 2A), building on a
+completed deterministic AI Personal Operating System foundation and a
+completed trusted execution-intent lifecycle (Slice 1).
+
+Slice 2A scope: a deterministic, typed, read-only Software Project Context
+domain (`src/features/projects/`) -- `SoftwareProject`, `ProjectContext`,
+`ProjectObjective`, `ProjectMilestone`, `ProjectDecision`,
+`ProjectCapability`, `ProjectRisk`, `ProjectSource`, and
+`CandidateProjectAction` -- plus a deterministic builder
+(`buildProjectContext`) that validates structured input and normalizes it
+into an immutable, JSON-safe `ProjectContext`. Only the Software Project
+project type is implemented; Learning Project and Personal Project remain
+named-but-not-implemented per `docs/product/product-direction-v1.md`.
+
+Slice 2A non-goals (explicitly not built in this slice): Project Dashboard or
+any UI, new navigation, new GitHub/Gmail/Calendar permissions or write
+expansion, Smart Automation, autonomous execution, durable execution
+persistence, scheduling/retries, distributed locks or claims,
+multi-project orchestration, LLM-based context extraction, automatic
+document ingestion, embeddings/vector storage, or conversational memory as
+canonical truth. This slice does not increase SmartFlow's execution
+authority in any way.
 
 Engineering posture:
 
@@ -47,6 +85,7 @@ Engineering posture:
 - approval is not execution,
 - explicit user action is required before runtime execution,
 - read-only execution remains the default safe path,
+- project context is representational only and is not runtime authority,
 - bounded writes are limited to explicitly supported, approval-gated tools,
 - runtime results are authoritative during response synthesis,
 - Dashboard remains presentation-focused.
@@ -638,7 +677,16 @@ Current Agent Response UX Validation V1 status:
 
 ## 10. Next Sprint
 
-Current next milestones: production proposal-boundary readiness review.
+Current next milestone: Software Project Context Foundation (Slice 2A) --
+implementation and tests complete in `src/features/projects/`, pending
+independent review before it is recorded as a completed milestone in §3.
+Slice 2A does not include a Project Dashboard, navigation, or any UI; those
+remain the separate Project Workspace Implementation Roadmap
+(`docs/roadmap/project-workspace-implementation-roadmap-v1.md`), which this
+slice's `ProjectContext` domain is intended to underpin but does not itself
+schedule or implement.
+
+Also outstanding: production proposal-boundary readiness review.
 GitHub Read-only Integration V1 Slice 1 is complete and live; remaining
 GitHub-related work (OAuth callback redirect, `handleSetup` `setup_action`
 handling) is tracked under Technical Debt rather than as a blocking
