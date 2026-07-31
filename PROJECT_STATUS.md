@@ -17,14 +17,29 @@ autonomous execution, does not run hidden tool chains, does not let the LLM
 approve or execute actions, and does not expose internal policy, audit, memory,
 or engine metadata to users.
 
-Current focus: Software Project Context Foundation (Slice 2A) -- a
-deterministic, typed, read-only domain foundation (`src/features/projects/`)
-for representing a Software Project's identity, objective, milestones,
-accepted decisions, capability status, risks, canonical sources, and
-non-authoritative candidate next actions. This slice adds no execution
-authority: it is purely representational, validated input to normalized
-output, with no LLM, no tool execution, and no browser-storage authority
-anywhere in the pipeline.
+Software Project Context Foundation (Slice 2A) is complete, committed, and
+pushed to `main` (`6ab3613`): a deterministic, typed, read-only domain
+foundation (`src/features/projects/`) for representing a Software Project's
+identity, objective, milestones, accepted decisions, capability status,
+risks, canonical sources, and non-authoritative candidate next actions. This
+slice adds no execution authority: it is purely representational, validated
+input to normalized output, with no LLM, no tool execution, and no
+browser-storage authority anywhere in the pipeline.
+
+Slice 2B (Project Record and Project Context Architecture Consolidation) --
+an architecture-only review reconciling Slice 2A's implemented `ProjectContext`
+domain with the separate Project Workspace Implementation Roadmap's
+not-yet-built "Project entity" -- was reviewed and accepted. No code changed
+for Slice 2B.
+
+Current focus: Slice 2B.1 -- converting the accepted Slice 2B consolidation
+into a canonical architecture document,
+[`docs/architecture/project-domain.md`](docs/architecture/project-domain.md),
+defining `ProjectRecord`, `ProjectEvidence`, `ProjectContextBuilder`,
+`ProjectContext`, and Project Workspace ownership boundaries and their
+separation from the Execution Lifecycle. Documentation only: no persistence
+implementation has begun, no UI implementation has begun, and Gmail, GitHub
+expansion, and Smart Automation all remain deferred exactly as before.
 
 Unified Execution Intent Lifecycle Foundation Slice 1 is complete, committed,
 and pushed to `main` (`26f342b`): canonical execution-intent contracts,
@@ -54,13 +69,15 @@ remain planned, not complete.
 
 ## 2. Current Project Phase
 
-Current phase: Software Project Context Foundation (Slice 2A), building on a
-completed deterministic AI Personal Operating System foundation and a
-completed trusted execution-intent lifecycle (Slice 1).
+Current phase: Slice 2B.1 -- Canonical Project Domain Architecture, building
+on a completed deterministic AI Personal Operating System foundation, a
+completed trusted execution-intent lifecycle (Slice 1), a completed Software
+Project Context Foundation (Slice 2A), and an accepted architecture
+consolidation review (Slice 2B).
 
-Slice 2A scope: a deterministic, typed, read-only Software Project Context
-domain (`src/features/projects/`) -- `SoftwareProject`, `ProjectContext`,
-`ProjectObjective`, `ProjectMilestone`, `ProjectDecision`,
+Slice 2A scope (complete): a deterministic, typed, read-only Software Project
+Context domain (`src/features/projects/`) -- `SoftwareProject`,
+`ProjectContext`, `ProjectObjective`, `ProjectMilestone`, `ProjectDecision`,
 `ProjectCapability`, `ProjectRisk`, `ProjectSource`, and
 `CandidateProjectAction` -- plus a deterministic builder
 (`buildProjectContext`) that validates structured input and normalizes it
@@ -68,14 +85,27 @@ into an immutable, JSON-safe `ProjectContext`. Only the Software Project
 project type is implemented; Learning Project and Personal Project remain
 named-but-not-implemented per `docs/product/product-direction-v1.md`.
 
-Slice 2A non-goals (explicitly not built in this slice): Project Dashboard or
-any UI, new navigation, new GitHub/Gmail/Calendar permissions or write
-expansion, Smart Automation, autonomous execution, durable execution
-persistence, scheduling/retries, distributed locks or claims,
-multi-project orchestration, LLM-based context extraction, automatic
-document ingestion, embeddings/vector storage, or conversational memory as
-canonical truth. This slice does not increase SmartFlow's execution
-authority in any way.
+Slice 2B (complete, architecture-only): an independent review reconciling
+Slice 2A's implemented `ProjectContext` domain with the separate Project
+Workspace Implementation Roadmap's not-yet-built "Project entity," producing
+an accepted ownership model (`ProjectRecord` / `ProjectEvidence` /
+`ProjectContextBuilder` / `ProjectContext` / Project Workspace / Execution
+Lifecycle) with no code changes.
+
+Slice 2B.1 scope (in progress): converting the accepted Slice 2B model into
+the canonical architecture document
+[`docs/architecture/project-domain.md`](docs/architecture/project-domain.md).
+Documentation only -- not marked complete until the document exists and
+passes architecture review.
+
+Non-goals shared by Slice 2A, 2B, and 2B.1 (explicitly not built): persisted
+`ProjectRecord`, Project Dashboard or any UI, new navigation, new
+GitHub/Gmail/Calendar permissions or write expansion, Smart Automation,
+autonomous execution, durable execution persistence, scheduling/retries,
+distributed locks or claims, multi-project orchestration, LLM-based context
+extraction, automatic document ingestion, embeddings/vector storage, or
+conversational memory as canonical truth. None of this work increases
+SmartFlow's execution authority in any way.
 
 Engineering posture:
 
@@ -166,6 +196,19 @@ Completed workspace and agent architecture milestones:
 - Multi-candidate disambiguation cards: a genuinely ambiguous request (2-3
   specific read-only intents) can render one validated proposal card per
   candidate instead of a single generic clarification prompt
+- Software Project Context Foundation Slice 2A: deterministic, typed,
+  read-only `ProjectContext` domain (`src/features/projects/`) -- committed
+  and pushed to `main` (`6ab3613`) after independent review confirmed all
+  identified blockers (shared-reference input mutation, malformed
+  collection-entry crashes, repository path traversal, and a
+  getter/setter-accessor crash found during re-review) were resolved with
+  passing regression coverage
+- Slice 2B — Project Record and Project Context Architecture Consolidation:
+  architecture-only review reconciling Slice 2A's `ProjectContext` domain
+  with the Project Workspace roadmap's not-yet-built "Project entity";
+  accepted ownership model established.
+  The canonical Project Domain document is being produced
+  as Slice 2B.1 and remains pending architecture review.
 
 Completed validation milestone:
 
@@ -677,14 +720,17 @@ Current Agent Response UX Validation V1 status:
 
 ## 10. Next Sprint
 
-Current next milestone: Software Project Context Foundation (Slice 2A) --
-implementation and tests complete in `src/features/projects/`, pending
-independent review before it is recorded as a completed milestone in §3.
-Slice 2A does not include a Project Dashboard, navigation, or any UI; those
-remain the separate Project Workspace Implementation Roadmap
-(`docs/roadmap/project-workspace-implementation-roadmap-v1.md`), which this
-slice's `ProjectContext` domain is intended to underpin but does not itself
-schedule or implement.
+Current next milestone: Slice 2B.1 -- Canonical Project Domain Architecture.
+`docs/architecture/project-domain.md` has been authored and
+`docs/architecture/README.md` updated to index it, but Slice 2B.1 is not
+recorded as a completed milestone in §3 until it passes architecture review.
+No persistence implementation, no `ProjectRecord` implementation, and no UI
+implementation have begun. Project Dashboard, navigation, and any UI remain
+the separate Project Workspace Implementation Roadmap
+(`docs/roadmap/project-workspace-implementation-roadmap-v1.md`), which
+`project-domain.md` now reconciles terminology with but does not itself
+schedule or implement. Gmail, GitHub expansion, and Smart Automation remain
+deferred, unchanged by this work.
 
 Also outstanding: production proposal-boundary readiness review.
 GitHub Read-only Integration V1 Slice 1 is complete and live; remaining

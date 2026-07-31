@@ -12,6 +12,7 @@ and historical baselines.
 - [smartflow-smart-automation-boundary.md](smartflow-smart-automation-boundary.md) - canonical boundary between SmartFlow and Smart Automation responsibility, authority, intent, execution, credentials, policy, approval, result, and audit ownership.
 - [target-architecture.md](target-architecture.md) - canonical target architecture defining SmartFlow's intended layered end-state, direct/delegated execution model, state and memory boundaries, audit, persistence, observability, and evolution constraints.
 - [representative-engine.md](representative-engine.md) - canonical target contract for bounded, explainable workspace and project representation, prioritization, recommendation, provenance, and context assembly.
+- [project-domain.md](project-domain.md) - canonical Project Domain architecture defining ProjectRecord, ProjectEvidence, ProjectContextBuilder, ProjectContext, and Project Workspace ownership boundaries, and their complete separation from the Execution Lifecycle.
 - [agent-orchestration.md](agent-orchestration.md) - canonical target contract for bounded orchestration of reasoning, planning, proposal, intent, policy, approval, execution ownership, verification, audit, and explanation.
 - [../PROJECT_STATUS.md](../../PROJECT_STATUS.md) - current project status and implementation notes.
 - [Generated architecture knowledge](../../.knowledge/docs/02_architecture.md) - generated current architecture context when present.
@@ -34,7 +35,16 @@ The canonical architecture sequence is complete:
 4. `smartflow-smart-automation-boundary.md`
 5. `target-architecture.md`
 6. `representative-engine.md`
-7. `agent-orchestration.md`
+7. `project-domain.md`
+8. `agent-orchestration.md`
+
+`project-domain.md` is placed after `representative-engine.md` because it is
+a concrete domain instantiation of the general workspace/project
+representation contract that document already defines (provenance,
+freshness, project isolation), and before `agent-orchestration.md` because
+that document's future orchestration work may consume Project Domain output
+the same way it may consume Representative Engine output, and must not
+bypass either.
 
 Future canonical architecture documents require architecture discussion and,
 where needed, an ADR.

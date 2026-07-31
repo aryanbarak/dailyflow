@@ -15,6 +15,15 @@ Draft),
 **Scope:** Implementation and migration planning only. No code, no schema, no routes, no
 components, no visual design.
 
+**Terminology note (added post Slice 2B/2B.1, not a rewrite of this roadmap):** this
+document's "Project entity" (§2, §4, §6 S1, §9) is superseded in name only by
+`ProjectRecord`, and "Project" used as a bare, undifferentiated noun elsewhere in this
+document should be read as either `ProjectRecord` (identity/configuration) or
+`ProjectContext` (derived state), per the canonical ownership model in
+[`docs/architecture/project-domain.md`](../architecture/project-domain.md). This roadmap's
+sequencing and slice content are not otherwise changed by that document; see its §18 for
+the full reconciliation.
+
 ---
 
 ## 1. Purpose
