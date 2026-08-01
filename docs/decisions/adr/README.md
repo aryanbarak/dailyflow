@@ -14,6 +14,7 @@ and must not be reused.
 - [ADR-0003: /agent/reason Remains Local-QA-Only](ADR-0003-agent-reason-local-qa-only.md) - Accepted
 - [ADR-0004: Write Boundaries for SmartFlow GitHub Integration](ADR-0004-write-boundaries.md) - Accepted
 - [ADR-0005: EPIC-08 Code Write Mutation Boundary](ADR-0005-code-write-mutation-boundary.md) - Accepted
+- [ADR-0006: Canonical Product Identity](ADR-0006-canonical-product-identity.md) - Accepted
 
 ## ADR vs Decision Log
 

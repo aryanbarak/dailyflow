@@ -26,6 +26,19 @@ The goal is not only to store information, but to **transform information into a
 
 ---
 
+## Canonical Product Purpose
+
+> SmartFlow is Aryan's Personal Digital Representative: a continuously evolving, user-governed representation of his knowledge, goals, priorities, working style, and decision patterns, designed to advise, collaborate, coordinate, and perform explicitly approved actions on his behalf.
+
+- It is not Aryan, and it does not claim complete or perfect knowledge of him.
+- It holds no independent authority and never approves its own actions — Aryan always retains final authority.
+- It does not act without applicable policy and explicit approval.
+- Future voice or avatar presentation is an interface, not a source of identity, consent, approval, or execution authority.
+
+This is a canonical, Accepted Product Owner decision — see [ADR-0006: Canonical Product Identity](docs/decisions/adr/ADR-0006-canonical-product-identity.md). Long-term vision language elsewhere in this document ("Life Operating System") remains compatible mission framing, not a competing identity.
+
+---
+
 ## Screenshots
 
 ### Dashboard

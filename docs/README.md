@@ -55,10 +55,15 @@ external systems, APIs, commands, and lookup material.
 Documentation should clearly label material as one of: Implemented, Current,
 Approved, Planned, Conceptual, Historical, Superseded, or Draft.
 
-Future concepts such as a Personal Digital Representative, Representative
-Engine, broad agent orchestration, or delegated Smart Automation execution
-must not be presented as implemented unless a current canonical document and
-the implementation both prove that state.
+Personal Digital Representative is SmartFlow's Accepted canonical product
+identity as of [ADR-0006](decisions/adr/ADR-0006-canonical-product-identity.md)
+(2026-08-01) — it is no longer an open future concept. The *identity decision*
+is Accepted; the underlying capabilities (rich personal knowledge/memory,
+decision-pattern modelling, broader delegated operation, voice/avatar
+presentation) remain future concepts and, like Representative Engine, broad
+agent orchestration, or delegated Smart Automation execution, must not be
+presented as implemented unless a current canonical document and the
+implementation both prove that state.
 
 ## Documentation Principles
 

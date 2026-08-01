@@ -54,9 +54,13 @@ same trust model to the rest of life until the loop is proven here first.
 
 ## 3. Product Identity
 
-SmartFlow remains one product with one AI identity, Flow AI, as defined by
+SmartFlow's canonical product-level identity — **Personal Digital
+Representative** — is formally recorded in
+[ADR-0006: Canonical Product Identity](../decisions/adr/ADR-0006-canonical-product-identity.md)
+(Accepted, 2026-08-01). SmartFlow remains one product with one AI identity, Flow AI, as defined by
 [ADR-0002](../decisions/adr/ADR-0002%20—%20Flow%20AI%20Presence%20Architecture.md) and the
-Product Bible. Nothing in this phase changes the Orb, the presence model, or the "AI
+Product Bible; ADR-0002 describes Flow AI's presentation (the Orb), not a competing product
+identity. Nothing in this phase changes the Orb, the presence model, or the "AI
 first, calm technology" philosophy.
 
 What changes is *emphasis*, not the product's name or long-term identity. Where the

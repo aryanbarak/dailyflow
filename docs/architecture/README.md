@@ -4,6 +4,11 @@ This folder contains architecture documents for SmartFlow. It includes current
 implementation context, approved integration designs, conceptual architecture,
 and historical baselines.
 
+SmartFlow's canonical product identity — Personal Digital Representative — is
+recorded in [ADR-0006: Canonical Product Identity](../decisions/adr/ADR-0006-canonical-product-identity.md)
+(Accepted). The architecture sequence below is compatible with, and was
+already serving, that identity before it was formally named.
+
 ## Current Implementation
 
 - [current-architecture.md](current-architecture.md) - canonical current implementation architecture.

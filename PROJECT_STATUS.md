@@ -1,10 +1,25 @@
 # SmartFlow - Project Status
 
-Last updated: 2026-07-31
+Last updated: 2026-08-01
 
 ---
 
 ## 1. Executive Summary
+
+**Product identity (2026-08-01):** the Product Owner approved **Personal
+Digital Representative** as SmartFlow's canonical product identity, recorded
+in [ADR-0006: Canonical Product Identity](docs/decisions/adr/ADR-0006-canonical-product-identity.md)
+(Accepted). This is compatible with, and does not replace, the long-term
+Personal Life Operating System vision already stated in
+`docs/product/product-direction-v1.md`. Software Projects / Project
+Intelligence remain the current proving ground for this identity, not the
+full permanent identity. Digital Co-Founder was evaluated and is explicitly
+not the canonical identity. Voice representation, a visual avatar, richer
+personal knowledge/memory modelling, decision-pattern modelling,
+digital-avatar generation, voice cloning, and broader delegated operation
+remain future/planned capabilities only and are not claimed as implemented
+today. This was a documentation-only governance update: no code, migration,
+UI, or integration changed, and Slice 3 has not begun as part of it.
 
 SmartFlow has moved beyond a static productivity dashboard. It is now an AI
 Personal Operating System with a deterministic workspace pipeline, explicit
