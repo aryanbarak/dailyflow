@@ -211,6 +211,13 @@ section 5 and `PROJECT_STATUS.md`. S1's "objective" field is
 (S2) and a `ProjectContext` rebuild service both remain separate,
 not-yet-scheduled work.
 
+*Status note (Slice 4A, 2026-08-02):* the canonical architecture for how
+evidence would eventually back a `ProjectContext` rebuild is now recorded in
+[`docs/architecture/project-evidence-acquisition.md`](../architecture/project-evidence-acquisition.md)
+(documentation only, pending review) — no evidence acquisition, adapter, or
+`ProjectContext` rebuild service exists yet; this roadmap's S2 still depends
+on that not-yet-scheduled work.
+
 **S2 — Project List / Project Overview (read-only)**
 *Objective:* render the list of Projects and, on selecting one, a read-only Overview:
 identity/context (Wireframe Spec §7), connection status (via existing

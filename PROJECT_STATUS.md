@@ -1,6 +1,6 @@
 # SmartFlow - Project Status
 
-Last updated: 2026-08-01
+Last updated: 2026-08-02
 
 ---
 
@@ -47,14 +47,28 @@ domain with the separate Project Workspace Implementation Roadmap's
 not-yet-built "Project entity" -- was reviewed and accepted. No code changed
 for Slice 2B.
 
-Current focus: Slice 2B.1 -- converting the accepted Slice 2B consolidation
-into a canonical architecture document,
+Slice 2B.1 -- the canonical Project Domain architecture document,
 [`docs/architecture/project-domain.md`](docs/architecture/project-domain.md),
 defining `ProjectRecord`, `ProjectEvidence`, `ProjectContextBuilder`,
 `ProjectContext`, and Project Workspace ownership boundaries and their
-separation from the Execution Lifecycle. Documentation only: no persistence
-implementation has begun, no UI implementation has begun, and Gmail, GitHub
-expansion, and Smart Automation all remain deferred exactly as before.
+separation from the Execution Lifecycle -- is complete, committed, and
+pushed to `main` (`ae14be6`).
+
+Slice 3 -- the durable, owner-editable `ProjectRecord` aggregate root -- is
+complete, independently reviewed (two confirmed blockers found and fixed:
+a concurrency/archive-race gap in the optimistic-concurrency update path,
+and an uncaught-exception path from hostile input getters), and committed
+and pushed to `main` (`cec2be9`). See §2 for full scope.
+
+Current focus: Slice 4A -- the canonical
+[`docs/architecture/project-evidence-acquisition.md`](docs/architecture/project-evidence-acquisition.md)
+architecture document, defining the Evidence Source Adapter boundary,
+acquisition-attempt lifecycle, provenance/classification model, and the
+boundary to the future Context Rebuild service and to Smart Automation.
+Documentation only, pending canonical architecture review: no
+`ProjectEvidence` persistence, no acquisition service, no adapter, no
+Context Rebuild, no Project Workspace UI, no provider expansion (GitHub,
+Gmail, Calendar, Slack), and no Smart Automation work have begun.
 
 Unified Execution Intent Lifecycle Foundation Slice 1 is complete, committed,
 and pushed to `main` (`26f342b`): canonical execution-intent contracts,
@@ -84,12 +98,15 @@ remain planned, not complete.
 
 ## 2. Current Project Phase
 
-Current phase: Slice 3 -- ProjectRecord Foundation, building on a completed
-deterministic AI Personal Operating System foundation, a completed trusted
-execution-intent lifecycle (Slice 1), a completed Software Project Context
-Foundation (Slice 2A), an accepted architecture consolidation review
-(Slice 2B), and the canonical Project Domain architecture document
-(Slice 2B.1, [`docs/architecture/project-domain.md`](docs/architecture/project-domain.md)).
+Current phase: Slice 4A -- canonical ProjectEvidence Acquisition
+architecture, building on a completed deterministic AI Personal Operating
+System foundation, a completed trusted execution-intent lifecycle
+(Slice 1), a completed Software Project Context Foundation (Slice 2A), an
+accepted architecture consolidation review (Slice 2B), the canonical
+Project Domain architecture document (Slice 2B.1,
+[`docs/architecture/project-domain.md`](docs/architecture/project-domain.md)),
+and the completed, independently reviewed `ProjectRecord` Foundation
+(Slice 3).
 
 Slice 2A scope (complete): a deterministic, typed, read-only Software Project
 Context domain (`src/features/projects/`) -- `SoftwareProject`,
@@ -108,11 +125,11 @@ an accepted ownership model (`ProjectRecord` / `ProjectEvidence` /
 `ProjectContextBuilder` / `ProjectContext` / Project Workspace / Execution
 Lifecycle) with no code changes.
 
-Slice 2B.1 scope (in progress): converting the accepted Slice 2B model into
-the canonical architecture document
-[`docs/architecture/project-domain.md`](docs/architecture/project-domain.md).
-Documentation only -- not marked complete until the document exists and
-passes architecture review.
+Slice 2B.1 scope (complete): the canonical architecture document
+[`docs/architecture/project-domain.md`](docs/architecture/project-domain.md),
+defining `ProjectRecord`, `ProjectEvidence`, `ProjectContextBuilder`,
+`ProjectContext`, and Project Workspace ownership boundaries. Committed and
+pushed to `main` (`ae14be6`).
 
 Non-goals shared by Slice 2A, 2B, and 2B.1 (explicitly not built): persisted
 `ProjectRecord`, Project Dashboard or any UI, new navigation, new
@@ -123,8 +140,17 @@ extraction, automatic document ingestion, embeddings/vector storage, or
 conversational memory as canonical truth. None of this work increases
 SmartFlow's execution authority in any way.
 
-Slice 3 scope (implemented, pending independent review): the durable,
-owner-editable `ProjectRecord` aggregate root defined by
+Slice 3 scope (complete, committed, and pushed to `main` -- `cec2be9`,
+after independent review found and confirmed fixed two blockers: a
+concurrency/archive-race gap where `updateConfig`'s conditional update did
+not require `status = active` alongside `id`/`user_id`/`version`, allowing
+an update to race past a concurrent archive; and an uncaught-exception path
+where `create()`/`update()` called their validators without guarding
+against a throwing/accessor input, letting a hostile getter escape as a raw
+untyped error instead of a typed `ProjectRecordError`. Both are fixed with
+passing regression tests, and a final re-review confirmed both resolved
+with no new blocking findings): the durable, owner-editable `ProjectRecord`
+aggregate root defined by
 [`docs/architecture/project-domain.md`](docs/architecture/project-domain.md)
 section 5 -- `src/features/projects/projectRecordTypes.ts`,
 `projectRecordValidation.ts`, `projectRecordRepository.ts`, and
@@ -137,13 +163,13 @@ lifecycle, provider-extensible repository-binding *configuration* (not
 connection status or credentials), and evidence-source-kind *configuration*
 (not evidence acquisition). The trusted authenticated owner is resolved from
 the Supabase Auth session inside the service layer itself, never accepted
-from caller input. 78 new tests across six files
-(`projectRecordValidation.test.ts`: 23, `projectRecordService.test.ts`: 23,
-`projectRecordRepository.test.ts`: 14, `projectRecordBoundaries.test.ts`: 5,
+from caller input. 82 new tests across six files
+(`projectRecordValidation.test.ts`: 23, `projectRecordService.test.ts`: 25,
+`projectRecordRepository.test.ts`: 16, `projectRecordBoundaries.test.ts`: 5,
 `supabase/tests/project_records.test.ts`: 8,
 `supabase/tests/project_records.rls.test.ts`: 5, gated and skipped by default
 against a live local Supabase instance, exactly like the existing GitHub RLS
-tests) pass locally; the full existing suite (1103 passed, 10 skipped, 1113
+tests) pass locally; the full existing suite (1107 passed, 10 skipped, 1117
 total) continues to pass unchanged; `npm run typecheck`, `npm run lint`, and
 `npm run build` all pass with no new or regressed issues. Explicitly not built in this slice:
 `ProjectContext` rebuild service, `ProjectEvidence` acquisition, Project
@@ -152,6 +178,26 @@ expansion, and Smart Automation -- unchanged from the shared non-goals above.
 `ProjectRecord` remains outside execution authority: it carries no approval
 state, execution intent, runtime result, or provider credential, and no
 execution intent yet references a `projectId` anywhere in the codebase.
+
+Slice 4A scope (documentation only, in progress -- pending canonical
+architecture review): the canonical architecture document
+[`docs/architecture/project-evidence-acquisition.md`](docs/architecture/project-evidence-acquisition.md),
+defining how `ProjectEvidence` (named but not designed by
+`project-domain.md` §6) enters SmartFlow -- the Evidence Source Adapter
+boundary, acquisition-attempt lifecycle, provenance/classification model
+(explicitly non-ordinal, no "Tier 1/2/3" ranking), immutability and
+supersession rules, project isolation, and the boundary to a future
+Context Rebuild service and to Smart Automation. `ProjectEvidence` is
+recorded as the first domain-specific specialization of a future general
+Evidence architecture, not the final cross-domain model. No
+`ProjectEvidence` persistence, no acquisition service, no adapter of any
+kind, no Context Rebuild, no Project Workspace UI, no provider expansion
+(GitHub, Gmail, Calendar, Slack), and no Smart Automation work have begun.
+Several positions in the document (no cross-project evidence sharing,
+per-adapter-declared acquisition atomicity, durable append-only storage)
+are recorded as Proposed, not yet Product-Owner-ratified canonical
+decisions -- consistent with how `project-domain.md` §19 itself records
+open decisions without silently resolving them.
 
 Engineering posture:
 
@@ -766,17 +812,18 @@ Current Agent Response UX Validation V1 status:
 
 ## 10. Next Sprint
 
-Current next milestone: Slice 2B.1 -- Canonical Project Domain Architecture.
-`docs/architecture/project-domain.md` has been authored and
-`docs/architecture/README.md` updated to index it, but Slice 2B.1 is not
-recorded as a completed milestone in §3 until it passes architecture review.
-No persistence implementation, no `ProjectRecord` implementation, and no UI
-implementation have begun. Project Dashboard, navigation, and any UI remain
-the separate Project Workspace Implementation Roadmap
-(`docs/roadmap/project-workspace-implementation-roadmap-v1.md`), which
-`project-domain.md` now reconciles terminology with but does not itself
-schedule or implement. Gmail, GitHub expansion, and Smart Automation remain
-deferred, unchanged by this work.
+Current next milestone: Slice 4A -- Canonical ProjectEvidence Acquisition
+Architecture. `docs/architecture/project-evidence-acquisition.md` has been
+authored and `docs/architecture/README.md` updated to index it (placed
+directly after `project-domain.md`), but Slice 4A is not recorded as a
+completed milestone in §3 until it passes canonical architecture review. No
+`ProjectEvidence` persistence, no acquisition service, no adapter
+implementation, no Context Rebuild, and no UI implementation have begun.
+Project Dashboard, navigation, and any UI remain the separate Project
+Workspace Implementation Roadmap
+(`docs/roadmap/project-workspace-implementation-roadmap-v1.md`). Gmail,
+GitHub expansion, and Smart Automation remain deferred, unchanged by this
+work.
 
 Also outstanding: production proposal-boundary readiness review.
 GitHub Read-only Integration V1 Slice 1 is complete and live; remaining
