@@ -15,6 +15,7 @@ and must not be reused.
 - [ADR-0004: Write Boundaries for SmartFlow GitHub Integration](ADR-0004-write-boundaries.md) - Accepted
 - [ADR-0005: EPIC-08 Code Write Mutation Boundary](ADR-0005-code-write-mutation-boundary.md) - Accepted
 - [ADR-0006: Canonical Product Identity](ADR-0006-canonical-product-identity.md) - Accepted
+- [ADR-0007: ProjectEvidence Observation Model](ADR-0007-projectevidence-observation-model.md) - Accepted
 
 ## ADR vs Decision Log
 

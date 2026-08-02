@@ -67,13 +67,43 @@ acquisition-attempt lifecycle, provenance/classification model, and the
 boundary to the future Context Rebuild service and to Smart Automation --
 is complete, committed, and pushed to `main` (`a8a462b`).
 
-Current focus: Slice 4B -- ProjectEvidence Foundation: the durable,
-immutable, owner- and project-scoped persistence and validation half of the
-Slice 4A architecture, with no live Evidence Source Adapter, no source
-reading, and no Context Rebuild. See §2 for full scope. Pending independent
-review: no adapter, no acquisition service that reads a real source, no
-Context Rebuild, no Project Workspace UI, no provider expansion, and no
-Smart Automation work have begun.
+Slice 4B -- ProjectEvidence Foundation: the durable, immutable, owner- and
+project-scoped persistence and validation half of the Slice 4A architecture --
+is complete, independently reviewed (one confirmed blocker found and fixed:
+the INSERT RLS policy's supersession subquery did not validate ownership/
+project match, and a follow-up SQL name-resolution defect in the first fix
+attempt was itself caught by a second, empirically-verified re-review before
+being corrected), and committed to `main` (`9b40a4d`).
+
+An independent review of the uncommitted Repository Documents Adapter (see
+below) found that `ProjectEvidence` persisted identity, provenance, and a
+content hash, but no consumable observation payload -- a gap that would leave
+a future Context Rebuild with no lawful way to read what was actually
+observed, since it may never fetch the original source directly
+(`project-evidence-acquisition.md` section 22). The Product Owner has now
+approved the resolution in
+[`ADR-0007: ProjectEvidence Observation Model`](docs/decisions/adr/ADR-0007-projectevidence-observation-model.md):
+a separate, immutable `ProjectEvidenceObservation` aggregate, 1:1 with
+`ProjectEvidence`, owning the consumable payload (text-only in its first
+implementation), created atomically with its `ProjectEvidence` row, with
+duplicate identity based on content hash rather than `collectedAt`. **This
+ADR is a documentation-only decision record -- no implementation has begun as
+part of recording it.**
+
+Current focus: the Repository Documents Adapter -- the first real,
+credential-free Evidence Source Adapter
+(`docs/architecture/project-evidence-acquisition.md` section 8), reading
+exactly one allowlisted, in-repo Markdown document at a time -- remains
+implemented but **uncommitted and blocked**: it does not yet persist a
+consumable observation payload, per ADR-0007's finding. The next
+implementation slice is **ProjectEvidence Observation Foundation**: the new
+`ProjectEvidenceObservation` aggregate (text payload only), atomic
+evidence+observation persistence, and the content-hash-based duplicate-
+identity correction to `ProjectEvidence` itself. See §2 for full scope. Still
+not begun: that foundation slice itself, an acquisition service that
+orchestrates multiple adapters, any provider-backed adapter, evidence
+snapshot selection, Context Rebuild, Project Workspace UI, and Smart
+Automation.
 
 Unified Execution Intent Lifecycle Foundation Slice 1 is complete, committed,
 and pushed to `main` (`26f342b`): canonical execution-intent contracts,
@@ -202,9 +232,9 @@ Proposed, not yet Product-Owner-ratified canonical decisions -- consistent
 with how `project-domain.md` §19 itself records open decisions without
 silently resolving them.
 
-Slice 4B scope (implemented, pending independent review): the durable,
-immutable, owner- and project-scoped `ProjectEvidence` persistence and
-validation half of the Slice 4A architecture --
+Slice 4B scope (complete, independently reviewed, committed to `main` --
+`9b40a4d`): the durable, immutable, owner- and project-scoped `ProjectEvidence`
+persistence and validation half of the Slice 4A architecture --
 `src/features/projects/projectEvidenceTypes.ts`,
 `projectEvidenceValidation.ts`, `projectEvidenceRepository.ts`, and
 `projectEvidenceService.ts` -- backed by a new owner- and project-scoped,
@@ -248,6 +278,70 @@ execution authority: it carries no approval state, execution intent,
 runtime result, provider credential, or mutable freshness/trust-tier
 field, and it never calls `ProjectContextBuilder`, an Evidence Source
 Adapter, policy, approval, execution, Smart Automation, or an LLM.
+
+Repository Documents Adapter scope (implemented, uncommitted, blocked on
+`ProjectEvidence Observation Foundation` per
+[`ADR-0007`](docs/decisions/adr/ADR-0007-projectevidence-observation-model.md)):
+the first real, credential-free Evidence Source Adapter
+(`docs/architecture/project-evidence-acquisition.md` section 8) --
+`src/features/projects/repositoryDocumentPathSecurity.ts` (pure,
+deterministic allowlist and path-security rules, no I/O),
+`repositoryDocumentFileReader.ts` (the only module that touches the real
+filesystem: `fs.realpath`-based symlink-containment verification, bounded
+UTF-8 reading, SHA-256 content hashing, and an optional local Git-revision
+lookup that reads `.git/HEAD` and refs directly rather than shelling out),
+`repositoryDocumentAdapterTypes.ts`, and `repositoryDocumentAdapter.ts`
+(orchestration via `createRepositoryDocumentAdapter().ingestRepositoryDocument(...)`).
+Reads only an explicit, fixed allowlist -- `README.md`, `PROJECT_STATUS.md`,
+and any Markdown file under `docs/architecture/`, `docs/decisions/adr/`,
+`docs/product/`, or `docs/roadmap/` -- each mapped to exactly one
+`ProjectSourceKind`; every other path, extension, or source kind fails
+closed, including `.git/`, `node_modules/`, absolute paths, UNC paths,
+Windows drive prefixes, backslashes, percent-encoding, and `.`/`..`
+segments. The trusted repository root is a required, injected dependency
+(`RepositoryRootResolver`) with no default and no production singleton in
+this slice -- `project-evidence-acquisition.md` section 25's still-open
+question of where a repository-document adapter physically executes is not
+resolved here, only given the smallest testable seam. Every acquisition
+performs the trusted owner/project/archive/enabled-kind checks (mirroring
+`projectEvidenceService.ts`'s own checks) before any filesystem access, then
+validates the path, resolves it via real-path containment inside the
+repository root (never string-prefix comparison alone), reads bounded UTF-8
+content (512 KiB ceiling, never truncated), computes a mandatory SHA-256
+content hash stored in the existing `sourceRevision` field, and calls
+`projectEvidenceService.create(...)` -- it never writes through
+`projectEvidenceRepository.ts` directly. An optional local Git revision is recorded in the existing `notes` field as
+`git-revision:<sha>` when available -- an independent review found this
+adapter does not yet persist a consumable observation payload at all (only
+identity, provenance, and a hash), which `ADR-0007` now resolves by
+introducing a separate `ProjectEvidenceObservation` aggregate; this adapter
+must be updated to populate it, and the `notes`-embedded Git revision
+convention must move to the structured field `ADR-0007` specifies, before
+this diff can be committed. Duplicate acquisition of byte-identical content
+for the same project/source-kind/reference returns an explicit
+`{ outcome: "unchanged" }` result instead of creating a new record; changed
+content always creates a new one -- `ADR-0007` additionally requires this
+duplicate check to become content-hash-based at the database level rather
+than `collectedAt`-based, which is not yet implemented.
+Classification is always `canonical_document_observation`; `title` is
+deliberately the exact relative path, never parsed from document content,
+since this adapter performs acquisition only and does not interpret
+meaning. New tests covering the allowlist/path-security rules, the
+filesystem reader (temp-directory-backed, including a symlink-escape
+check), the orchestration flow (auth/project/archive/enabled-kind ordering,
+duplicate/no-change semantics, Git-revision behavior), and execution/UI/
+LLM/Smart-Automation/child-process/repository-write boundaries pass locally
+(`npx vitest run src/features/projects/repositoryDocument`); the full
+existing suite continues to pass unchanged (`npm test`); `npm run
+typecheck`, `npm run lint`, and `npm run build` all pass with no new or
+regressed issues. Explicitly not built in this slice: an acquisition
+service that orchestrates multiple adapters or selects among them, any
+provider-backed adapter, evidence snapshot selection, `ProjectContext`
+rebuild, Project Workspace UI, GitHub API ingestion, LLM extraction,
+embeddings, scheduling, retries, and Smart Automation. This adapter remains
+outside execution authority: it never calls `ProjectContextBuilder`, never
+writes to the repository, never shells out, and never grants, implies, or
+derives execution authority from document content.
 
 Engineering posture:
 
@@ -862,16 +956,22 @@ Current Agent Response UX Validation V1 status:
 
 ## 10. Next Sprint
 
-Current next milestone: Slice 4B -- ProjectEvidence Foundation. The
-`ProjectEvidence` domain, validation, repository, and service have been
-implemented per the Slice 4A architecture, but Slice 4B is not recorded as
-a completed milestone in §3 until it passes independent review. No
-Evidence Source Adapter, no acquisition service that reads a real source,
-no Context Rebuild, and no UI implementation have begun. Project Dashboard,
-navigation, and any UI remain the separate Project Workspace Implementation
-Roadmap (`docs/roadmap/project-workspace-implementation-roadmap-v1.md`).
-Gmail, GitHub expansion, and Smart Automation remain deferred, unchanged by
-this work.
+Current next milestone: **ProjectEvidence Observation Foundation**, per
+[`ADR-0007: ProjectEvidence Observation Model`](docs/decisions/adr/ADR-0007-projectevidence-observation-model.md)
+(Accepted; documentation-only, no implementation begun as part of recording
+it). Slice 4B (`ProjectEvidence` domain, validation, repository, service) is
+complete, independently reviewed, and committed to `main` (`9b40a4d`). The
+Repository Documents Adapter is implemented but uncommitted and blocked: it
+does not yet persist a consumable observation payload, which the next slice
+must add (a new, immutable `ProjectEvidenceObservation` aggregate, text
+payload only, created atomically with its `ProjectEvidence` row, plus a
+content-hash-based duplicate-identity correction). No acquisition service
+that orchestrates multiple adapters, no Context Rebuild, and no UI
+implementation have begun. Project Dashboard, navigation, and any UI remain
+the separate Project Workspace Implementation Roadmap
+(`docs/roadmap/project-workspace-implementation-roadmap-v1.md`). Gmail,
+GitHub expansion, and Smart Automation remain deferred, unchanged by this
+work.
 
 Also outstanding: production proposal-boundary readiness review.
 GitHub Read-only Integration V1 Slice 1 is complete and live; remaining
