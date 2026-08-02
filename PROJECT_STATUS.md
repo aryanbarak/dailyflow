@@ -60,15 +60,20 @@ a concurrency/archive-race gap in the optimistic-concurrency update path,
 and an uncaught-exception path from hostile input getters), and committed
 and pushed to `main` (`cec2be9`). See §2 for full scope.
 
-Current focus: Slice 4A -- the canonical
+Slice 4A -- the canonical
 [`docs/architecture/project-evidence-acquisition.md`](docs/architecture/project-evidence-acquisition.md)
 architecture document, defining the Evidence Source Adapter boundary,
 acquisition-attempt lifecycle, provenance/classification model, and the
-boundary to the future Context Rebuild service and to Smart Automation.
-Documentation only, pending canonical architecture review: no
-`ProjectEvidence` persistence, no acquisition service, no adapter, no
-Context Rebuild, no Project Workspace UI, no provider expansion (GitHub,
-Gmail, Calendar, Slack), and no Smart Automation work have begun.
+boundary to the future Context Rebuild service and to Smart Automation --
+is complete, committed, and pushed to `main` (`a8a462b`).
+
+Current focus: Slice 4B -- ProjectEvidence Foundation: the durable,
+immutable, owner- and project-scoped persistence and validation half of the
+Slice 4A architecture, with no live Evidence Source Adapter, no source
+reading, and no Context Rebuild. See §2 for full scope. Pending independent
+review: no adapter, no acquisition service that reads a real source, no
+Context Rebuild, no Project Workspace UI, no provider expansion, and no
+Smart Automation work have begun.
 
 Unified Execution Intent Lifecycle Foundation Slice 1 is complete, committed,
 and pushed to `main` (`26f342b`): canonical execution-intent contracts,
@@ -98,15 +103,16 @@ remain planned, not complete.
 
 ## 2. Current Project Phase
 
-Current phase: Slice 4A -- canonical ProjectEvidence Acquisition
-architecture, building on a completed deterministic AI Personal Operating
-System foundation, a completed trusted execution-intent lifecycle
-(Slice 1), a completed Software Project Context Foundation (Slice 2A), an
-accepted architecture consolidation review (Slice 2B), the canonical
-Project Domain architecture document (Slice 2B.1,
+Current phase: Slice 4B -- ProjectEvidence Foundation, building on a
+completed deterministic AI Personal Operating System foundation, a
+completed trusted execution-intent lifecycle (Slice 1), a completed
+Software Project Context Foundation (Slice 2A), an accepted architecture
+consolidation review (Slice 2B), the canonical Project Domain architecture
+document (Slice 2B.1,
 [`docs/architecture/project-domain.md`](docs/architecture/project-domain.md)),
-and the completed, independently reviewed `ProjectRecord` Foundation
-(Slice 3).
+the completed, independently reviewed `ProjectRecord` Foundation (Slice 3),
+and the canonical ProjectEvidence Acquisition architecture (Slice 4A,
+[`docs/architecture/project-evidence-acquisition.md`](docs/architecture/project-evidence-acquisition.md)).
 
 Slice 2A scope (complete): a deterministic, typed, read-only Software Project
 Context domain (`src/features/projects/`) -- `SoftwareProject`,
@@ -179,8 +185,8 @@ expansion, and Smart Automation -- unchanged from the shared non-goals above.
 state, execution intent, runtime result, or provider credential, and no
 execution intent yet references a `projectId` anywhere in the codebase.
 
-Slice 4A scope (documentation only, in progress -- pending canonical
-architecture review): the canonical architecture document
+Slice 4A scope (complete, documentation only, committed and pushed to
+`main` -- `a8a462b`): the canonical architecture document
 [`docs/architecture/project-evidence-acquisition.md`](docs/architecture/project-evidence-acquisition.md),
 defining how `ProjectEvidence` (named but not designed by
 `project-domain.md` §6) enters SmartFlow -- the Evidence Source Adapter
@@ -189,15 +195,59 @@ boundary, acquisition-attempt lifecycle, provenance/classification model
 supersession rules, project isolation, and the boundary to a future
 Context Rebuild service and to Smart Automation. `ProjectEvidence` is
 recorded as the first domain-specific specialization of a future general
-Evidence architecture, not the final cross-domain model. No
-`ProjectEvidence` persistence, no acquisition service, no adapter of any
-kind, no Context Rebuild, no Project Workspace UI, no provider expansion
-(GitHub, Gmail, Calendar, Slack), and no Smart Automation work have begun.
-Several positions in the document (no cross-project evidence sharing,
-per-adapter-declared acquisition atomicity, durable append-only storage)
-are recorded as Proposed, not yet Product-Owner-ratified canonical
-decisions -- consistent with how `project-domain.md` §19 itself records
-open decisions without silently resolving them.
+Evidence architecture, not the final cross-domain model. Several positions
+in the document (no cross-project evidence sharing, per-adapter-declared
+acquisition atomicity, durable append-only storage) are recorded as
+Proposed, not yet Product-Owner-ratified canonical decisions -- consistent
+with how `project-domain.md` §19 itself records open decisions without
+silently resolving them.
+
+Slice 4B scope (implemented, pending independent review): the durable,
+immutable, owner- and project-scoped `ProjectEvidence` persistence and
+validation half of the Slice 4A architecture --
+`src/features/projects/projectEvidenceTypes.ts`,
+`projectEvidenceValidation.ts`, `projectEvidenceRepository.ts`, and
+`projectEvidenceService.ts` -- backed by a new owner- and project-scoped,
+RLS-protected `project_evidence` Supabase table
+(`supabase/migrations/20260802000000_project_evidence.sql`). Supports
+create, read-by-id, and list-by-project only; there is no update operation
+anywhere in this domain, its validation, its repository, or its service --
+a correction or newer observation is always a new record, optionally
+linked to the one it replaces via `supersedesId`, which is validated to
+exist, belong to the same owner, and belong to the same project (a
+cross-project or nonexistent reference is rejected with the identical
+error, never distinguishing the two). Every evidence record is validated
+via full descriptor-based scanning for accessor/getter properties, cycles,
+class instances, and unsafe keys before any field is read -- a direct,
+deliberate correction of the narrower validation approach Slice 3 shipped
+with, which is what let a hostile getter escape as an uncaught exception
+until an independent review caught and fixed it. Source references are
+validated per source kind (a path-segment rule for document-like kinds, a
+different bounded-string rule for provider-like kinds), not by one
+permissive global regex. Accidental duplicate submission of the exact same
+evidence candidate is prevented by a SHA-256 fingerprint over the
+canonical immutable fields (project, source kind, reference, collection
+time, adapter identity/version), enforced by a unique database constraint;
+a legitimate re-observation at a different time is never blocked. Evidence
+creation is rejected for an archived project and for a source kind not
+enabled on the project's configuration; reads remain unrestricted by
+project lifecycle state. The trusted authenticated owner is resolved from
+the Supabase Auth session inside the service layer itself, exactly like
+`projectRecordService.ts`, never accepted from caller input. New tests
+covering domain/validation, create, read/list, persistence/RLS, and
+execution/acquisition/authority boundaries pass locally
+(`npx vitest run src/features/projects/projectEvidence supabase/tests/project_evidence`);
+the full existing suite continues to pass unchanged (`npm test`);
+`npm run typecheck`, `npm run lint`, and `npm run build` all pass with no
+new or regressed issues. Explicitly not built in this slice: any Evidence
+Source Adapter, an acquisition service that reads a real source, evidence
+snapshot selection, `ProjectContext` rebuild, Project Workspace UI, hard
+delete/erasure/tombstoning, scheduling, retries, and Smart Automation --
+unchanged from the Slice 4A non-goals. `ProjectEvidence` remains outside
+execution authority: it carries no approval state, execution intent,
+runtime result, provider credential, or mutable freshness/trust-tier
+field, and it never calls `ProjectContextBuilder`, an Evidence Source
+Adapter, policy, approval, execution, Smart Automation, or an LLM.
 
 Engineering posture:
 
@@ -812,18 +862,16 @@ Current Agent Response UX Validation V1 status:
 
 ## 10. Next Sprint
 
-Current next milestone: Slice 4A -- Canonical ProjectEvidence Acquisition
-Architecture. `docs/architecture/project-evidence-acquisition.md` has been
-authored and `docs/architecture/README.md` updated to index it (placed
-directly after `project-domain.md`), but Slice 4A is not recorded as a
-completed milestone in §3 until it passes canonical architecture review. No
-`ProjectEvidence` persistence, no acquisition service, no adapter
-implementation, no Context Rebuild, and no UI implementation have begun.
-Project Dashboard, navigation, and any UI remain the separate Project
-Workspace Implementation Roadmap
-(`docs/roadmap/project-workspace-implementation-roadmap-v1.md`). Gmail,
-GitHub expansion, and Smart Automation remain deferred, unchanged by this
-work.
+Current next milestone: Slice 4B -- ProjectEvidence Foundation. The
+`ProjectEvidence` domain, validation, repository, and service have been
+implemented per the Slice 4A architecture, but Slice 4B is not recorded as
+a completed milestone in §3 until it passes independent review. No
+Evidence Source Adapter, no acquisition service that reads a real source,
+no Context Rebuild, and no UI implementation have begun. Project Dashboard,
+navigation, and any UI remain the separate Project Workspace Implementation
+Roadmap (`docs/roadmap/project-workspace-implementation-roadmap-v1.md`).
+Gmail, GitHub expansion, and Smart Automation remain deferred, unchanged by
+this work.
 
 Also outstanding: production proposal-boundary readiness review.
 GitHub Read-only Integration V1 Slice 1 is complete and live; remaining

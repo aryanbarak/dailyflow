@@ -1287,6 +1287,72 @@ export type Database = {
         }
         Relationships: []
       }
+      project_evidence: {
+        Row: {
+          acquisition_attempt_id: string | null
+          adapter_identity: string
+          adapter_version: string
+          candidate_fingerprint: string
+          classification: string
+          collected_at: string
+          confidence: number | null
+          created_at: string
+          id: string
+          notes: string | null
+          project_id: string
+          reference: string
+          source_kind: string
+          source_revision: string | null
+          supersedes_id: string | null
+          title: string
+          uncertainty: string | null
+          user_id: string
+          verification_method: string
+        }
+        Insert: {
+          acquisition_attempt_id?: string | null
+          adapter_identity: string
+          adapter_version: string
+          candidate_fingerprint: string
+          classification: string
+          collected_at: string
+          confidence?: number | null
+          created_at?: string
+          id?: string
+          notes?: string | null
+          project_id: string
+          reference: string
+          source_kind: string
+          source_revision?: string | null
+          supersedes_id?: string | null
+          title: string
+          uncertainty?: string | null
+          user_id: string
+          verification_method: string
+        }
+        Update: {
+          acquisition_attempt_id?: string | null
+          adapter_identity?: string
+          adapter_version?: string
+          candidate_fingerprint?: string
+          classification?: string
+          collected_at?: string
+          confidence?: number | null
+          created_at?: string
+          id?: string
+          notes?: string | null
+          project_id?: string
+          reference?: string
+          source_kind?: string
+          source_revision?: string | null
+          supersedes_id?: string | null
+          title?: string
+          uncertainty?: string | null
+          user_id?: string
+          verification_method?: string
+        }
+        Relationships: []
+      }
       project_records: {
         Row: {
           created_at: string

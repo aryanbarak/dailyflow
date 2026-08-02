@@ -218,6 +218,14 @@ evidence would eventually back a `ProjectContext` rebuild is now recorded in
 `ProjectContext` rebuild service exists yet; this roadmap's S2 still depends
 on that not-yet-scheduled work.
 
+*Status note (Slice 4B, 2026-08-02):* the durable `ProjectEvidence`
+persistence and validation half of that architecture is implemented
+(`src/features/projects/projectEvidenceService.ts`, pending independent
+review) — there is still no Evidence Source Adapter, no acquisition
+service that reads a real source, and no `ProjectContext` rebuild service;
+this roadmap's S2 remains unaffected and still depends on that not-yet-
+scheduled work.
+
 **S2 — Project List / Project Overview (read-only)**
 *Objective:* render the list of Projects and, on selecting one, a read-only Overview:
 identity/context (Wireframe Spec §7), connection status (via existing

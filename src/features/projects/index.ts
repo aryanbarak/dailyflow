@@ -18,6 +18,30 @@ export type { ProjectRecordRepository } from "./projectRecordRepository";
 export { createProjectRecordService, projectRecordService } from "./projectRecordService";
 export type { OwnerIdResolver, ProjectRecordService, ProjectRecordServiceDependencies } from "./projectRecordService";
 export { PROJECT_RECORD_EVIDENCE_SOURCE_KINDS, ProjectRecordError } from "./projectRecordTypes";
+
+// Slice 4B -- ProjectEvidence Foundation.
+export { validateCreateProjectEvidenceInput } from "./projectEvidenceValidation";
+export {
+  createSupabaseProjectEvidenceRepository,
+  projectEvidenceRepository,
+  ProjectEvidenceConflictError,
+  ProjectEvidencePersistenceError,
+} from "./projectEvidenceRepository";
+export type { ProjectEvidenceRepository } from "./projectEvidenceRepository";
+export { createProjectEvidenceService, projectEvidenceService } from "./projectEvidenceService";
+export type { ProjectEvidenceService, ProjectEvidenceServiceDependencies } from "./projectEvidenceService";
+export { PROJECT_EVIDENCE_CLASSIFICATIONS, ProjectEvidenceError } from "./projectEvidenceTypes";
+export type {
+  CreateProjectEvidenceInput,
+  ListProjectEvidenceOptions,
+  NormalizedCreateProjectEvidenceInput,
+  ProjectEvidence,
+  ProjectEvidenceClassification,
+  ProjectEvidenceErrorCode,
+  ProjectEvidenceValidationErrorCode,
+  ProjectEvidenceValidationIssue,
+  ProjectEvidenceValidationResult,
+} from "./projectEvidenceTypes";
 export type {
   CreateProjectRecordInput,
   ListProjectRecordsOptions,
