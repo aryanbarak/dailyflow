@@ -84,11 +84,12 @@ remain planned, not complete.
 
 ## 2. Current Project Phase
 
-Current phase: Slice 2B.1 -- Canonical Project Domain Architecture, building
-on a completed deterministic AI Personal Operating System foundation, a
-completed trusted execution-intent lifecycle (Slice 1), a completed Software
-Project Context Foundation (Slice 2A), and an accepted architecture
-consolidation review (Slice 2B).
+Current phase: Slice 3 -- ProjectRecord Foundation, building on a completed
+deterministic AI Personal Operating System foundation, a completed trusted
+execution-intent lifecycle (Slice 1), a completed Software Project Context
+Foundation (Slice 2A), an accepted architecture consolidation review
+(Slice 2B), and the canonical Project Domain architecture document
+(Slice 2B.1, [`docs/architecture/project-domain.md`](docs/architecture/project-domain.md)).
 
 Slice 2A scope (complete): a deterministic, typed, read-only Software Project
 Context domain (`src/features/projects/`) -- `SoftwareProject`,
@@ -121,6 +122,36 @@ distributed locks or claims, multi-project orchestration, LLM-based context
 extraction, automatic document ingestion, embeddings/vector storage, or
 conversational memory as canonical truth. None of this work increases
 SmartFlow's execution authority in any way.
+
+Slice 3 scope (implemented, pending independent review): the durable,
+owner-editable `ProjectRecord` aggregate root defined by
+[`docs/architecture/project-domain.md`](docs/architecture/project-domain.md)
+section 5 -- `src/features/projects/projectRecordTypes.ts`,
+`projectRecordValidation.ts`, `projectRecordRepository.ts`, and
+`projectRecordService.ts` -- backed by a new owner-scoped, RLS-protected
+`project_records` Supabase table
+(`supabase/migrations/20260801000000_project_records.sql`). Supports create,
+read, list, update, and archive for the Software Project type only, with
+optimistic-concurrency version checks, a closed `active`/`archived`
+lifecycle, provider-extensible repository-binding *configuration* (not
+connection status or credentials), and evidence-source-kind *configuration*
+(not evidence acquisition). The trusted authenticated owner is resolved from
+the Supabase Auth session inside the service layer itself, never accepted
+from caller input. 78 new tests across six files
+(`projectRecordValidation.test.ts`: 23, `projectRecordService.test.ts`: 23,
+`projectRecordRepository.test.ts`: 14, `projectRecordBoundaries.test.ts`: 5,
+`supabase/tests/project_records.test.ts`: 8,
+`supabase/tests/project_records.rls.test.ts`: 5, gated and skipped by default
+against a live local Supabase instance, exactly like the existing GitHub RLS
+tests) pass locally; the full existing suite (1103 passed, 10 skipped, 1113
+total) continues to pass unchanged; `npm run typecheck`, `npm run lint`, and
+`npm run build` all pass with no new or regressed issues. Explicitly not built in this slice:
+`ProjectContext` rebuild service, `ProjectEvidence` acquisition, Project
+Workspace UI, hard delete, record restore/reactivation, GitHub/Gmail/Calendar
+expansion, and Smart Automation -- unchanged from the shared non-goals above.
+`ProjectRecord` remains outside execution authority: it carries no approval
+state, execution intent, runtime result, or provider credential, and no
+execution intent yet references a `projectId` anywhere in the codebase.
 
 Engineering posture:
 

@@ -1287,6 +1287,54 @@ export type Database = {
         }
         Relationships: []
       }
+      project_records: {
+        Row: {
+          created_at: string
+          description: string | null
+          enabled_evidence_source_kinds: string[]
+          id: string
+          name: string
+          project_type: string
+          repo_name: string | null
+          repo_owner: string | null
+          repo_provider: string | null
+          status: string
+          updated_at: string
+          user_id: string
+          version: number
+        }
+        Insert: {
+          created_at?: string
+          description?: string | null
+          enabled_evidence_source_kinds?: string[]
+          id?: string
+          name: string
+          project_type: string
+          repo_name?: string | null
+          repo_owner?: string | null
+          repo_provider?: string | null
+          status?: string
+          updated_at?: string
+          user_id: string
+          version?: number
+        }
+        Update: {
+          created_at?: string
+          description?: string | null
+          enabled_evidence_source_kinds?: string[]
+          id?: string
+          name?: string
+          project_type?: string
+          repo_name?: string | null
+          repo_owner?: string | null
+          repo_provider?: string | null
+          status?: string
+          updated_at?: string
+          user_id?: string
+          version?: number
+        }
+        Relationships: []
+      }
       recurring_transactions: {
         Row: {
           amount: number

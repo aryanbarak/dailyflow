@@ -200,6 +200,17 @@ or writes to it yet.
 programmatically; no schema or migration design is decided in this roadmap — that is a
 separate, later engineering task.
 
+*Status note (Slice 3, 2026-08-01):* the identity/configuration half of S1 —
+create, read, list, update, and archive — is implemented as `ProjectRecord`
+(`src/features/projects/projectRecordService.ts`), backed by the
+`project_records` migration, per
+[`docs/architecture/project-domain.md`](../architecture/project-domain.md)
+section 5 and `PROJECT_STATUS.md`. S1's "objective" field is
+`ProjectContext`-derived state (project-domain.md section 8), not
+`ProjectRecord` configuration, and remains unbuilt — Project List/Overview UI
+(S2) and a `ProjectContext` rebuild service both remain separate,
+not-yet-scheduled work.
+
 **S2 — Project List / Project Overview (read-only)**
 *Objective:* render the list of Projects and, on selecting one, a read-only Overview:
 identity/context (Wireframe Spec §7), connection status (via existing
