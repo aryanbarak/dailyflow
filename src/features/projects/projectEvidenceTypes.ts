@@ -15,6 +15,11 @@
 // record is never mutated.
 
 import type { ProjectSourceKind } from "./projectContextTypes";
+import type {
+  CreateProjectEvidenceObservationTextInput,
+  ProjectEvidenceObservation,
+  ValidatedProjectEvidenceObservationTextInput,
+} from "./projectEvidenceObservationTypes";
 
 /**
  * Canonical, non-ordinal classification
@@ -74,6 +79,12 @@ export interface ProjectEvidence {
  * deliberately absent: identity is server-generated and ownership is
  * resolved from the trusted authentication boundary, never accepted from
  * caller-supplied input.
+ *
+ * `observation` is mandatory (ADR-0007,
+ * docs/decisions/adr/ADR-0007-projectevidence-observation-model.md): every
+ * ProjectEvidence created through this contract is created atomically with
+ * its consumable ProjectEvidenceObservation. There is no public path that
+ * creates a ProjectEvidence row without one.
  */
 export interface CreateProjectEvidenceInput {
   projectId: string;
@@ -91,10 +102,24 @@ export interface CreateProjectEvidenceInput {
   notes?: string;
   supersedesId?: string;
   acquisitionAttemptId?: string;
+  observation: CreateProjectEvidenceObservationTextInput;
 }
 
-/** A normalized, safe-to-persist create input: trimmed strings, no unknown or unsafe fields. */
-export type NormalizedCreateProjectEvidenceInput = CreateProjectEvidenceInput;
+/** A normalized, safe-to-persist create input: trimmed strings, no unknown or unsafe fields, and a shape-validated (but not yet hashed -- see projectEvidenceRepository.ts) observation payload. */
+export type NormalizedCreateProjectEvidenceInput = Omit<CreateProjectEvidenceInput, "observation"> & {
+  observation: ValidatedProjectEvidenceObservationTextInput;
+};
+
+/** The atomic create result: the ProjectEvidence identity/provenance record paired with its immutable ProjectEvidenceObservation. Returned together because they are created together (ADR-0007) -- there is no reachable state where one exists without the other. */
+export interface ProjectEvidenceWithObservation {
+  evidence: ProjectEvidence;
+  observation: ProjectEvidenceObservation;
+}
+
+/** The atomic create outcome: either a genuinely new pair, or the existing pair for an unchanged, byte-identical re-acquisition (content-hash-based duplicate identity, ADR-0007) -- never a second pair for the same content. */
+export type CreateProjectEvidenceResult =
+  | ({ outcome: "created" } & ProjectEvidenceWithObservation)
+  | ({ outcome: "unchanged" } & ProjectEvidenceWithObservation);
 
 export type ProjectEvidenceValidationErrorCode =
   | "UNSAFE_VALUE"
@@ -120,7 +145,8 @@ export type ProjectEvidenceValidationErrorCode =
   | "UNCERTAINTY_TOO_LONG"
   | "NOTES_TOO_LONG"
   | "INVALID_SUPERSEDES_ID"
-  | "INVALID_ACQUISITION_ATTEMPT_ID";
+  | "INVALID_ACQUISITION_ATTEMPT_ID"
+  | "INVALID_OBSERVATION";
 
 export interface ProjectEvidenceValidationIssue {
   code: ProjectEvidenceValidationErrorCode;
@@ -144,6 +170,18 @@ export type ProjectEvidenceValidationResult<T> =
  * exists. `SUPERSEDED_EVIDENCE_NOT_FOUND` follows the same rule: it is
  * returned identically whether the referenced id does not exist at all or
  * exists but belongs to a different owner or a different project.
+ *
+ * `INVALID_INPUT` covers every validation-shape rejection, including an
+ * invalid or oversized observation payload -- exactly like every other
+ * per-field validation failure already collapses to this one code, with the
+ * specific field/reason distinguished via `issues`, not a dedicated
+ * top-level code per field. `DUPLICATE_EVIDENCE` should not normally be
+ * reachable for a create that goes through the atomic
+ * `create_project_evidence_with_observation` transaction (ADR-0007): that
+ * transaction resolves a content-identity collision gracefully as an
+ * `{ outcome: "unchanged" }` result, never a thrown conflict -- this code is
+ * retained only as a defensive fallback for an unexpected conflict the
+ * transaction did not itself resolve.
  */
 export type ProjectEvidenceErrorCode =
   | "UNAUTHENTICATED"
@@ -156,11 +194,18 @@ export type ProjectEvidenceErrorCode =
   | "DUPLICATE_EVIDENCE"
   | "PERSISTENCE_FAILED";
 
+/** A structural superset covering both `ProjectEvidenceValidationIssue` (evidence-shape rejection) and `ProjectEvidenceObservationValidationIssue` (observation-payload rejection) -- `ProjectEvidenceError` may carry either origin's issues under one typed error. */
+export interface ProjectEvidenceErrorIssue {
+  code: string;
+  message: string;
+  path?: string;
+}
+
 export class ProjectEvidenceError extends Error {
   readonly code: ProjectEvidenceErrorCode;
-  readonly issues?: readonly ProjectEvidenceValidationIssue[];
+  readonly issues?: readonly ProjectEvidenceErrorIssue[];
 
-  constructor(code: ProjectEvidenceErrorCode, message: string, issues?: readonly ProjectEvidenceValidationIssue[]) {
+  constructor(code: ProjectEvidenceErrorCode, message: string, issues?: readonly ProjectEvidenceErrorIssue[]) {
     super(message);
     this.name = "ProjectEvidenceError";
     this.code = code;

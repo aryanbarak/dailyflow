@@ -27,6 +27,8 @@ import {
   type ProjectEvidenceValidationIssue,
   type ProjectEvidenceValidationResult,
 } from "./projectEvidenceTypes";
+import { validateCreateProjectEvidenceObservationTextInput } from "./projectEvidenceObservationValidation";
+import type { ValidatedProjectEvidenceObservationTextInput } from "./projectEvidenceObservationTypes";
 import type { ProjectSourceKind } from "./projectContextTypes";
 
 const VALID_SOURCE_KINDS = new Set<ProjectSourceKind>([
@@ -83,6 +85,7 @@ const CREATE_INPUT_KEYS = new Set([
   "notes",
   "supersedesId",
   "acquisitionAttemptId",
+  "observation",
 ]);
 
 /** Built via fromCharCode rather than a literal escape so the source text never has to contain an actual embedded NUL character. */
@@ -428,6 +431,23 @@ export function validateCreateProjectEvidenceInput(
     );
   }
 
+  // The observation payload is mandatory (ADR-0007): every ProjectEvidence
+  // created through this contract is created atomically with its
+  // consumable ProjectEvidenceObservation. Delegated to
+  // projectEvidenceObservationValidation.ts rather than reimplemented here
+  // -- its issues are folded into this collector under one outer code
+  // (INVALID_OBSERVATION) so callers see a single, consistent error-code
+  // union regardless of which layer actually rejected the input.
+  let validatedObservation: ValidatedProjectEvidenceObservationTextInput | undefined;
+  const observationResult = validateCreateProjectEvidenceObservationTextInput(input.observation);
+  if (observationResult.valid === false) {
+    for (const issue of observationResult.errors) {
+      collector.add("INVALID_OBSERVATION", issue.message, `observation${issue.path ? `.${issue.path}` : ""}`);
+    }
+  } else {
+    validatedObservation = observationResult.value;
+  }
+
   if (collector.hasIssues) {
     return { valid: false, errors: collector.issues };
   }
@@ -442,6 +462,10 @@ export function validateCreateProjectEvidenceInput(
     adapterIdentity: (input.adapterIdentity as string).trim(),
     adapterVersion: (input.adapterVersion as string).trim(),
     verificationMethod: (input.verificationMethod as string).trim(),
+    // Safe: collector.hasIssues is false at this point, which is only
+    // possible if the observation validation above also succeeded and set
+    // this value.
+    observation: validatedObservation as ValidatedProjectEvidenceObservationTextInput,
   };
   if (input.sourceRevision !== undefined) normalized.sourceRevision = (input.sourceRevision as string).trim();
   if (input.confidence !== undefined) normalized.confidence = input.confidence as number;

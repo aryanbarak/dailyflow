@@ -1353,6 +1353,48 @@ export type Database = {
         }
         Relationships: []
       }
+      project_evidence_observations: {
+        Row: {
+          byte_length: number
+          content_hash: string
+          created_at: string
+          evidence_id: string
+          git_revision: string | null
+          id: string
+          mime_type: string
+          payload_kind: string
+          project_id: string
+          text_content: string
+          user_id: string
+        }
+        Insert: {
+          byte_length: number
+          content_hash: string
+          created_at?: string
+          evidence_id: string
+          git_revision?: string | null
+          id?: string
+          mime_type: string
+          payload_kind?: string
+          project_id: string
+          text_content: string
+          user_id: string
+        }
+        Update: {
+          byte_length?: number
+          content_hash?: string
+          created_at?: string
+          evidence_id?: string
+          git_revision?: string | null
+          id?: string
+          mime_type?: string
+          payload_kind?: string
+          project_id?: string
+          text_content?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       project_records: {
         Row: {
           created_at: string
@@ -1648,7 +1690,32 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      create_project_evidence_with_observation: {
+        Args: {
+          p_acquisition_attempt_id?: string | null
+          p_adapter_identity: string
+          p_adapter_version: string
+          p_byte_length: number
+          p_candidate_fingerprint: string
+          p_classification: string
+          p_collected_at: string
+          p_confidence?: number | null
+          p_content_hash: string
+          p_git_revision?: string | null
+          p_mime_type: string
+          p_notes?: string | null
+          p_project_id: string
+          p_reference: string
+          p_source_kind: string
+          p_source_revision?: string | null
+          p_supersedes_id?: string | null
+          p_text_content: string
+          p_title: string
+          p_uncertainty?: string | null
+          p_verification_method: string
+        }
+        Returns: Json
+      }
     }
     Enums: {
       [_ in never]: never

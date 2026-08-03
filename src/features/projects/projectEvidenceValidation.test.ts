@@ -4,6 +4,14 @@ import { validateCreateProjectEvidenceInput } from "./projectEvidenceValidation"
 const VALID_PROJECT_ID = "11111111-1111-4111-8111-111111111111";
 const VALID_SUPERSEDES_ID = "22222222-2222-4222-8222-222222222222";
 
+function validObservation(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    textContent: "# Project Domain\n",
+    mimeType: "text/markdown",
+    ...overrides,
+  };
+}
+
 function validInput(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     projectId: VALID_PROJECT_ID,
@@ -15,6 +23,7 @@ function validInput(overrides: Record<string, unknown> = {}): Record<string, unk
     adapterIdentity: "repository-document-adapter",
     adapterVersion: "1.0.0",
     verificationMethod: "deterministic file read",
+    observation: validObservation(),
     ...overrides,
   };
 }
@@ -31,7 +40,15 @@ describe("validateCreateProjectEvidenceInput", () => {
   it("accepts a minimal valid input and normalizes it", () => {
     const result = validateCreateProjectEvidenceInput(validInput());
     expectValid(result);
-    expect(result.value).toEqual(validInput());
+    expect(result.value).toEqual({
+      ...validInput(),
+      observation: {
+        payloadKind: "text",
+        textContent: "# Project Domain\n",
+        mimeType: "text/markdown",
+        byteLength: new TextEncoder().encode("# Project Domain\n").length,
+      },
+    });
   });
 
   it("accepts a full valid input with every optional field", () => {
@@ -285,6 +302,81 @@ describe("validateCreateProjectEvidenceInput", () => {
     validateCreateProjectEvidenceInput(raw);
     expect(Object.isFrozen(raw)).toBe(frozenBefore);
     expect(raw).toEqual(validInput());
+  });
+
+  describe("observation payload (ADR-0007)", () => {
+    it("rejects a missing observation", () => {
+      const raw = validInput();
+      delete raw.observation;
+      const result = validateCreateProjectEvidenceInput(raw);
+      expectInvalid(result);
+      expect(result.errors).toContainEqual(expect.objectContaining({ code: "INVALID_OBSERVATION" }));
+    });
+
+    it("rejects empty observation text content, folded under INVALID_OBSERVATION with an observation-prefixed path", () => {
+      const result = validateCreateProjectEvidenceInput(validInput({ observation: validObservation({ textContent: "" }) }));
+      expectInvalid(result);
+      expect(result.errors).toContainEqual(
+        expect.objectContaining({ code: "INVALID_OBSERVATION", path: "observation.textContent" }),
+      );
+    });
+
+    it("rejects an unsupported observation MIME type", () => {
+      const result = validateCreateProjectEvidenceInput(
+        validInput({ observation: validObservation({ mimeType: "application/pdf" }) }),
+      );
+      expectInvalid(result);
+      expect(result.errors).toContainEqual(expect.objectContaining({ code: "INVALID_OBSERVATION" }));
+    });
+
+    it("rejects oversized observation text content", () => {
+      const result = validateCreateProjectEvidenceInput(
+        validInput({ observation: validObservation({ textContent: "x".repeat(600_000) }) }),
+      );
+      expectInvalid(result);
+      expect(result.errors).toContainEqual(expect.objectContaining({ code: "INVALID_OBSERVATION" }));
+    });
+
+    it("accepts a valid optional gitRevision and rejects a malformed one", () => {
+      expectValid(
+        validateCreateProjectEvidenceInput(
+          validInput({ observation: validObservation({ gitRevision: "a".repeat(40) }) }),
+        ),
+      );
+      const result = validateCreateProjectEvidenceInput(
+        validInput({ observation: validObservation({ gitRevision: "not-a-sha" }) }),
+      );
+      expectInvalid(result);
+      expect(result.errors).toContainEqual(expect.objectContaining({ code: "INVALID_OBSERVATION" }));
+    });
+
+    it("rejects a throwing getter on a nested observation field without crashing", () => {
+      const raw = validInput();
+      const observation = { ...validObservation() };
+      Object.defineProperty(observation, "textContent", {
+        enumerable: true,
+        get() {
+          throw new Error("hostile nested getter");
+        },
+      });
+      raw.observation = observation;
+      expect(() => validateCreateProjectEvidenceInput(raw)).not.toThrow();
+      const result = validateCreateProjectEvidenceInput(raw);
+      expectInvalid(result);
+      expect(result.errors).toContainEqual(expect.objectContaining({ code: "UNSAFE_VALUE" }));
+    });
+
+    it("computes byteLength server-side rather than trusting a caller-supplied value", () => {
+      const raw = validInput({ observation: { ...validObservation(), byteLength: 999999 } });
+      const result = validateCreateProjectEvidenceInput(raw);
+      // byteLength is not an accepted field on the observation input shape at
+      // all -- an extra field here is a validation-shape input to the
+      // *outer* candidate, but the observation validator's own allowlist
+      // rejects it as unknown, proving there is no path by which a
+      // caller-supplied byteLength can reach the normalized value.
+      expectInvalid(result);
+      expect(result.errors).toContainEqual(expect.objectContaining({ code: "INVALID_OBSERVATION" }));
+    });
   });
 
   it("returns a normalized value that shares no mutable reference with the input", () => {

@@ -1,33 +1,39 @@
-// SmartFlow Slice 4B -- ProjectEvidence Foundation.
+// SmartFlow -- ProjectEvidence Foundation (Slice 4B) and Observation
+// Foundation (ADR-0007).
 //
 // Orchestration layer: resolves the trusted authenticated owner, validates
-// input (projectEvidenceValidation.ts), verifies the owning ProjectRecord,
-// and calls the persistence boundary (projectEvidenceRepository.ts),
-// translating every failure into a typed `ProjectEvidenceError`. This
-// module never accepts an owner id from a caller-supplied argument or input
-// payload -- it resolves one itself from the Supabase Auth session, exactly
-// like `projectRecordService.ts`'s existing convention.
+// input (projectEvidenceValidation.ts, which now also validates the
+// mandatory observation payload via projectEvidenceObservationValidation.ts),
+// verifies the owning ProjectRecord, and calls the atomic persistence
+// boundary (projectEvidenceRepository.ts), translating every failure into a
+// typed `ProjectEvidenceError`. This module never accepts an owner id from a
+// caller-supplied argument or input payload -- it resolves one itself from
+// the Supabase Auth session, exactly like `projectRecordService.ts`'s
+// existing convention.
 //
 // This module is the ProjectEvidence Acquisition Service's persistence-and-
 // validation half only (docs/architecture/project-evidence-acquisition.md
 // section 9), with no live Evidence Source Adapter behind it in this slice:
-// callers submit an already-formed evidence candidate (as a future adapter
-// would), and this module validates, verifies, and durably stores it. It
-// never reads a real source, never calls an adapter, never calls
-// `ProjectContextBuilder`, never resolves an evidence conflict, and never
-// touches policy, approval, execution, Smart Automation, or an LLM.
+// callers submit an already-formed evidence-and-observation candidate (as
+// the Repository Documents Adapter now does), and this module validates,
+// verifies, and durably stores it atomically. It never reads a real source,
+// never calls `ProjectContextBuilder`, never resolves an evidence conflict,
+// and never touches policy, approval, execution, Smart Automation, or an
+// LLM.
 
 import { supabase } from "@/integrations/supabase/client";
 import {
   ProjectEvidenceError,
   type CreateProjectEvidenceInput,
+  type CreateProjectEvidenceResult,
   type ListProjectEvidenceOptions,
-  type ProjectEvidence,
+  type ProjectEvidenceWithObservation,
 } from "./projectEvidenceTypes";
 import { validateCreateProjectEvidenceInput } from "./projectEvidenceValidation";
 import {
   ProjectEvidenceConflictError,
   ProjectEvidencePersistenceError,
+  ProjectEvidenceTransactionError,
   projectEvidenceRepository,
   type ProjectEvidenceRepository,
 } from "./projectEvidenceRepository";
@@ -50,8 +56,22 @@ export interface ProjectEvidenceServiceDependencies {
   resolveOwnerId?: OwnerIdResolver;
 }
 
+/** The `create_project_evidence_with_observation` transaction's own typed codes map 1:1 onto existing `ProjectEvidenceErrorCode` values -- the function replicates the identical checks this service already performs, as defense in depth. */
+const TRANSACTION_ERROR_MAP: Record<string, ProjectEvidenceError["code"] | undefined> = {
+  UNAUTHENTICATED: "UNAUTHENTICATED",
+  PROJECT_NOT_FOUND: "PROJECT_NOT_FOUND",
+  PROJECT_ARCHIVED: "PROJECT_ARCHIVED",
+  SOURCE_KIND_NOT_ENABLED: "SOURCE_KIND_NOT_ENABLED",
+  SUPERSEDED_EVIDENCE_NOT_FOUND: "SUPERSEDED_EVIDENCE_NOT_FOUND",
+};
+
 function toProjectEvidenceError(error: unknown, fallbackMessage: string): ProjectEvidenceError {
   if (error instanceof ProjectEvidenceError) return error;
+  if (error instanceof ProjectEvidenceTransactionError) {
+    const code = TRANSACTION_ERROR_MAP[error.code];
+    if (code) return new ProjectEvidenceError(code, fallbackMessage);
+    return new ProjectEvidenceError("PERSISTENCE_FAILED", fallbackMessage);
+  }
   if (error instanceof ProjectEvidenceConflictError) {
     return new ProjectEvidenceError("DUPLICATE_EVIDENCE", error.message);
   }
@@ -62,9 +82,9 @@ function toProjectEvidenceError(error: unknown, fallbackMessage: string): Projec
 }
 
 export interface ProjectEvidenceService {
-  create(input: unknown): Promise<ProjectEvidence>;
-  getById(id: string): Promise<ProjectEvidence>;
-  listByProject(projectId: string, options?: ListProjectEvidenceOptions): Promise<ProjectEvidence[]>;
+  create(input: unknown): Promise<CreateProjectEvidenceResult>;
+  getById(id: string): Promise<ProjectEvidenceWithObservation>;
+  listByProject(projectId: string, options?: ListProjectEvidenceOptions): Promise<ProjectEvidenceWithObservation[]>;
 }
 
 export function createProjectEvidenceService(
@@ -83,7 +103,7 @@ export function createProjectEvidenceService(
   }
 
   return {
-    async create(input: unknown): Promise<ProjectEvidence> {
+    async create(input: unknown): Promise<CreateProjectEvidenceResult> {
       const ownerId = await requireOwnerId();
 
       let validation: ReturnType<typeof validateCreateProjectEvidenceInput>;
@@ -91,8 +111,9 @@ export function createProjectEvidenceService(
         validation = validateCreateProjectEvidenceInput(input);
       } catch {
         // A property access inside the validator (e.g. a throwing getter on
-        // the input object) must still surface as a typed validation
-        // failure, never as a raw, untyped exception.
+        // the input object, including a nested getter on `observation`)
+        // must still surface as a typed validation failure, never as a raw,
+        // untyped exception.
         throw new ProjectEvidenceError("INVALID_INPUT", "Project evidence input is invalid.");
       }
       if (validation.valid === false) {
@@ -126,7 +147,7 @@ export function createProjectEvidenceService(
       }
 
       if (value.supersedesId !== undefined) {
-        let superseded: ProjectEvidence | null;
+        let superseded: ProjectEvidenceWithObservation | null;
         try {
           superseded = await repository.findById(ownerId, value.supersedesId);
         } catch (error) {
@@ -140,7 +161,7 @@ export function createProjectEvidenceService(
         // structurally impossible here: `id` is server-generated only after
         // this check completes, so no candidate can ever reference itself or
         // a record that does not yet exist.
-        if (!superseded || superseded.projectId !== value.projectId) {
+        if (!superseded || superseded.evidence.projectId !== value.projectId) {
           throw new ProjectEvidenceError(
             "SUPERSEDED_EVIDENCE_NOT_FOUND",
             "The referenced superseded evidence record was not found for this project.",
@@ -148,6 +169,14 @@ export function createProjectEvidenceService(
         }
       }
 
+      // The atomic create_project_evidence_with_observation transaction
+      // (ADR-0007) re-verifies ownership/project/archive/enabled-kind/
+      // supersession itself, as defense in depth -- exactly as the removed
+      // direct-INSERT RLS policy used to. This service's own checks above
+      // are not redundant scaffolding: they let a rejected create fail fast
+      // with a typed error before any database round trip for the common
+      // cases, and they preserve this service's existing, already-tested
+      // error contract regardless of how the persistence layer enforces it.
       try {
         return await repository.insert(ownerId, value.projectId, value);
       } catch (error) {
@@ -155,9 +184,9 @@ export function createProjectEvidenceService(
       }
     },
 
-    async getById(id: string): Promise<ProjectEvidence> {
+    async getById(id: string): Promise<ProjectEvidenceWithObservation> {
       const ownerId = await requireOwnerId();
-      let record: ProjectEvidence | null;
+      let record: ProjectEvidenceWithObservation | null;
       try {
         record = await repository.findById(ownerId, id);
       } catch (error) {
@@ -169,7 +198,10 @@ export function createProjectEvidenceService(
       return record;
     },
 
-    async listByProject(projectId: string, options: ListProjectEvidenceOptions = {}): Promise<ProjectEvidence[]> {
+    async listByProject(
+      projectId: string,
+      options: ListProjectEvidenceOptions = {},
+    ): Promise<ProjectEvidenceWithObservation[]> {
       const ownerId = await requireOwnerId();
 
       let project;

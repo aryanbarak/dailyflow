@@ -219,12 +219,31 @@ evidence would eventually back a `ProjectContext` rebuild is now recorded in
 on that not-yet-scheduled work.
 
 *Status note (Slice 4B, 2026-08-02):* the durable `ProjectEvidence`
-persistence and validation half of that architecture is implemented
-(`src/features/projects/projectEvidenceService.ts`, pending independent
-review) — there is still no Evidence Source Adapter, no acquisition
-service that reads a real source, and no `ProjectContext` rebuild service;
-this roadmap's S2 remains unaffected and still depends on that not-yet-
-scheduled work.
+persistence and validation half of that architecture is complete,
+independently reviewed, and committed to `main`
+(`src/features/projects/projectEvidenceService.ts`) — there was still no
+Evidence Source Adapter, no acquisition service that reads a real source,
+and no `ProjectContext` rebuild service.
+
+*Status note (Repository Documents Adapter, 2026-08-02):* the first real,
+credential-free Evidence Source Adapter is implemented
+(`src/features/projects/repositoryDocumentAdapter.ts`, pending independent
+review) — it reads exactly one allowlisted, in-repo Markdown document at a
+time and persists it via the existing `ProjectEvidence` service.
+
+*Status note (ProjectEvidence Observation Foundation, ADR-0007, 2026-08-02):*
+an independent review of the adapter above found `ProjectEvidence` persisted
+no consumable observation payload. Per
+[`ADR-0007`](../decisions/adr/ADR-0007-projectevidence-observation-model.md)
+(Accepted), a separate, immutable `ProjectEvidenceObservation` aggregate is
+now implemented (text payload only), created atomically with its
+`ProjectEvidence` row via a `SECURITY DEFINER` Postgres function, with
+duplicate identity based on content hash rather than `collectedAt`; the
+Repository Documents Adapter is updated accordingly. Pending independent
+review, uncommitted. There is still no acquisition service that orchestrates
+or selects among multiple adapters, no provider-backed adapter, and no
+`ProjectContext` rebuild service; this roadmap's S2 remains unaffected and
+still depends on that not-yet-scheduled work.
 
 **S2 — Project List / Project Overview (read-only)**
 *Objective:* render the list of Projects and, on selecting one, a read-only Overview:

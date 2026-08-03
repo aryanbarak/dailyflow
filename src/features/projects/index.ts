@@ -26,6 +26,7 @@ export {
   projectEvidenceRepository,
   ProjectEvidenceConflictError,
   ProjectEvidencePersistenceError,
+  ProjectEvidenceTransactionError,
 } from "./projectEvidenceRepository";
 export type { ProjectEvidenceRepository } from "./projectEvidenceRepository";
 export { createProjectEvidenceService, projectEvidenceService } from "./projectEvidenceService";
@@ -33,15 +34,58 @@ export type { ProjectEvidenceService, ProjectEvidenceServiceDependencies } from 
 export { PROJECT_EVIDENCE_CLASSIFICATIONS, ProjectEvidenceError } from "./projectEvidenceTypes";
 export type {
   CreateProjectEvidenceInput,
+  CreateProjectEvidenceResult,
   ListProjectEvidenceOptions,
   NormalizedCreateProjectEvidenceInput,
   ProjectEvidence,
   ProjectEvidenceClassification,
   ProjectEvidenceErrorCode,
+  ProjectEvidenceErrorIssue,
   ProjectEvidenceValidationErrorCode,
   ProjectEvidenceValidationIssue,
   ProjectEvidenceValidationResult,
+  ProjectEvidenceWithObservation,
 } from "./projectEvidenceTypes";
+
+// ProjectEvidence Observation Foundation (ADR-0007).
+export { validateCreateProjectEvidenceObservationTextInput } from "./projectEvidenceObservationValidation";
+export {
+  MAX_TEXT_OBSERVATION_BYTES,
+  PROJECT_EVIDENCE_OBSERVATION_PAYLOAD_KINDS,
+  PROJECT_EVIDENCE_OBSERVATION_TEXT_MIME_TYPES,
+} from "./projectEvidenceObservationTypes";
+export type {
+  CreateProjectEvidenceObservationTextInput,
+  ProjectEvidenceObservation,
+  ProjectEvidenceObservationPayloadKind,
+  ProjectEvidenceObservationTextMimeType,
+  ProjectEvidenceObservationValidationErrorCode,
+  ProjectEvidenceObservationValidationIssue,
+  ProjectEvidenceObservationValidationResult,
+  ValidatedProjectEvidenceObservationTextInput,
+} from "./projectEvidenceObservationTypes";
+
+// Repository Documents Adapter -- the first real Evidence Source Adapter.
+export {
+  DOCUMENT_ADAPTER_SUPPORTED_SOURCE_KINDS,
+  validateRepositoryDocumentPath,
+} from "./repositoryDocumentPathSecurity";
+export type { PathRejectionReason, PathValidationResult } from "./repositoryDocumentPathSecurity";
+export { MAX_DOCUMENT_BYTES, readLocalGitRevision, readRepositoryDocument } from "./repositoryDocumentFileReader";
+export type { FileReadFailureReason, FileReadResult } from "./repositoryDocumentFileReader";
+export { RepositoryDocumentAdapterError } from "./repositoryDocumentAdapterTypes";
+export type {
+  IngestRepositoryDocumentInput,
+  IngestRepositoryDocumentResult,
+  RepositoryDocumentAdapterErrorCode,
+  RepositoryRootResolver,
+} from "./repositoryDocumentAdapterTypes";
+export {
+  createRepositoryDocumentAdapter,
+  REPOSITORY_DOCUMENT_ADAPTER_IDENTITY,
+  REPOSITORY_DOCUMENT_ADAPTER_VERSION,
+} from "./repositoryDocumentAdapter";
+export type { RepositoryDocumentAdapter, RepositoryDocumentAdapterDependencies } from "./repositoryDocumentAdapter";
 export type {
   CreateProjectRecordInput,
   ListProjectRecordsOptions,
