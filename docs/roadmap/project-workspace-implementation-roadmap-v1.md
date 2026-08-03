@@ -226,24 +226,40 @@ Evidence Source Adapter, no acquisition service that reads a real source,
 and no `ProjectContext` rebuild service.
 
 *Status note (Repository Documents Adapter, 2026-08-02):* the first real,
-credential-free Evidence Source Adapter is implemented
-(`src/features/projects/repositoryDocumentAdapter.ts`, pending independent
-review) — it reads exactly one allowlisted, in-repo Markdown document at a
-time and persists it via the existing `ProjectEvidence` service.
+credential-free Evidence Source Adapter is complete, independently
+reviewed, and committed to `main`
+(`src/features/projects/repositoryDocumentAdapter.ts`) — it reads exactly one
+allowlisted, in-repo Markdown document at a time and persists it via the
+existing `ProjectEvidence` service. Not wired into any production entry
+point — a tested, injectable library only.
 
 *Status note (ProjectEvidence Observation Foundation, ADR-0007, 2026-08-02):*
 an independent review of the adapter above found `ProjectEvidence` persisted
 no consumable observation payload. Per
 [`ADR-0007`](../decisions/adr/ADR-0007-projectevidence-observation-model.md)
-(Accepted), a separate, immutable `ProjectEvidenceObservation` aggregate is
-now implemented (text payload only), created atomically with its
+(Accepted), a separate, immutable `ProjectEvidenceObservation` aggregate was
+implemented (text payload only), created atomically with its
 `ProjectEvidence` row via a `SECURITY DEFINER` Postgres function, with
 duplicate identity based on content hash rather than `collectedAt`; the
-Repository Documents Adapter is updated accordingly. Pending independent
-review, uncommitted. There is still no acquisition service that orchestrates
+Repository Documents Adapter was updated accordingly. Independently
+reviewed (two confirmed RPC exception-handling blockers found and fixed)
+and committed to `main`.
+
+*Status note (Context Rebuild Foundation, 2026-08-03):* deterministic
+evidence-snapshot construction, freshness/snapshot-identity metadata, and a
+trusted read-only `rebuildProjectContext(projectId)` service are now
+implemented (`src/features/projects/evidenceSnapshotBuilder.ts`,
+`contextRebuildService.ts`), pending independent review, uncommitted. It
+does not yet produce a real `ProjectContext` from evidence — `buildProjectContext`
+requires pre-structured objectives/milestones/decisions/capabilities/risks/
+candidate actions that no deterministic transformation from raw evidence
+text can currently produce without an LLM or a semantic document parser;
+every rebuild today honestly returns
+`{ status: "snapshot_ready_context_not_derivable" }` rather than a
+fabricated context. There is still no acquisition service that orchestrates
 or selects among multiple adapters, no provider-backed adapter, and no
-`ProjectContext` rebuild service; this roadmap's S2 remains unaffected and
-still depends on that not-yet-scheduled work.
+actual evidence-to-context derivation; this roadmap's S2 remains unaffected
+and still depends on that not-yet-scheduled work.
 
 **S2 — Project List / Project Overview (read-only)**
 *Objective:* render the list of Projects and, on selecting one, a read-only Overview:

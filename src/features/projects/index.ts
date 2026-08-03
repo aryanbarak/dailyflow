@@ -86,6 +86,41 @@ export {
   REPOSITORY_DOCUMENT_ADAPTER_VERSION,
 } from "./repositoryDocumentAdapter";
 export type { RepositoryDocumentAdapter, RepositoryDocumentAdapterDependencies } from "./repositoryDocumentAdapter";
+
+// Context Rebuild Foundation.
+export { buildEvidenceSnapshot } from "./evidenceSnapshotBuilder";
+export type { SnapshotProjectIdentity } from "./evidenceSnapshotBuilder";
+export { EVIDENCE_SNAPSHOT_SCHEMA_VERSION } from "./evidenceSnapshotTypes";
+export type {
+  EvidenceSnapshot,
+  EvidenceSnapshotBuildFailureCode,
+  EvidenceSnapshotBuildIssue,
+  EvidenceSnapshotBuildResult,
+  EvidenceSnapshotItem,
+} from "./evidenceSnapshotTypes";
+export {
+  mapEvidenceSnapshotToProjectContextInput,
+  mapProjectToSoftwareProject,
+  mapSnapshotItemToProjectSource,
+} from "./contextRebuildProjectContextInput";
+export type { ContextRebuildProjectIdentity } from "./contextRebuildProjectContextInput";
+export { ContextRebuildError } from "./contextRebuildTypes";
+export type {
+  ContextNotDerivableReasonCode,
+  ContextRebuildErrorCode,
+  ContextRebuildErrorIssue,
+  ContextRebuildMetadata,
+  RebuildProjectContextNotDerivableResult,
+  RebuildProjectContextReadyResult,
+  RebuildProjectContextResult,
+} from "./contextRebuildTypes";
+export {
+  canDeriveProjectContextFromSnapshot,
+  contextRebuildService,
+  createContextRebuildService,
+} from "./contextRebuildService";
+export type { ContextRebuildService, ContextRebuildServiceDependencies, EvidenceToContextCapabilityCheck } from "./contextRebuildService";
+
 export type {
   CreateProjectRecordInput,
   ListProjectRecordsOptions,

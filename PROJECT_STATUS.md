@@ -1,6 +1,6 @@
 # SmartFlow - Project Status
 
-Last updated: 2026-08-02
+Last updated: 2026-08-03
 
 ---
 
@@ -85,26 +85,36 @@ the resolution in
 [`ADR-0007: ProjectEvidence Observation Model`](docs/decisions/adr/ADR-0007-projectevidence-observation-model.md)
 (Accepted).
 
-**ProjectEvidence Observation Foundation (ADR-0007) is now implemented,
-uncommitted:** a separate, immutable `ProjectEvidenceObservation` aggregate,
-1:1 with `ProjectEvidence`, owning the consumable text payload; `ProjectEvidence`
+**ProjectEvidence Observation Foundation (ADR-0007) is complete, independently
+reviewed, and committed to `main`** (`fddceb0` docs, `bc87a60` implementation):
+a separate, immutable `ProjectEvidenceObservation` aggregate, 1:1 with
+`ProjectEvidence`, owning the consumable text payload; `ProjectEvidence`
 and its `ProjectEvidenceObservation` are created atomically via a single
 `SECURITY DEFINER` Postgres function (`create_project_evidence_with_observation`)
--- direct client `INSERT` on either table is now revoked, so no path can
-create a "hash-only" evidence row without its observation. Duplicate identity
-is now based on content hash rather than `collectedAt`, closing the
-concurrency gap the independent review found in Slice 4B's original
-fingerprint formula (empirically verified against a disposable PostgreSQL
-instance, including genuinely concurrent inserts of identical content -- see
-§2). The Repository Documents Adapter is updated to persist the exact
-normalized text it reads and to record Git revision in a structured field
-instead of free-text `notes`.
+-- direct client `INSERT` on either table is revoked, so no path can create
+a "hash-only" evidence row without its observation. Duplicate identity is
+based on content hash rather than `collectedAt`, closing the concurrency gap
+the independent review found in Slice 4B's original fingerprint formula. The
+independent review found two confirmed blockers in the RPC's exception
+handling (an unscoped `unique_violation` catch that could have misreported an
+unrelated constraint conflict as a benign duplicate, and a conflict-lookup
+path that did not fail closed when the colliding row or its observation
+could not actually be found) -- both were fixed, verified against a real,
+disposable PostgreSQL 17 container (constraint-scoped handling and both
+fail-closed paths reproduced directly), and re-reviewed before being
+approved and committed. The Repository Documents Adapter is updated to
+persist the exact normalized text it reads and to record Git revision in a
+structured field instead of free-text `notes`.
 
-Current focus: none of this has been committed yet. The next step is
-independent review of the Observation Foundation implementation. See §2 for
-full scope. Still not begun: an acquisition service that orchestrates
-multiple adapters, any provider-backed adapter, evidence snapshot selection,
-Context Rebuild, Project Workspace UI, and Smart Automation.
+**Context Rebuild Foundation is now implemented, uncommitted:** the
+deterministic evidence-snapshot and freshness infrastructure named as
+future work in `project-evidence-acquisition.md` section 22. It is
+honestly partial by design -- see §2 for exactly what it can and cannot
+produce today, and why. Current focus: none of this has been committed yet.
+The next step is independent review. Still not begun: an acquisition service
+that orchestrates multiple adapters, any provider-backed adapter, LLM
+extraction, a semantic document parser, Project Brief, Project Workspace UI,
+and Smart Automation.
 
 Unified Execution Intent Lifecycle Foundation Slice 1 is complete, committed,
 and pushed to `main` (`26f342b`): canonical execution-intent contracts,
@@ -280,8 +290,8 @@ runtime result, provider credential, or mutable freshness/trust-tier
 field, and it never calls `ProjectContextBuilder`, an Evidence Source
 Adapter, policy, approval, execution, Smart Automation, or an LLM.
 
-ProjectEvidence Observation Foundation scope (implemented, uncommitted,
-pending independent review --
+ProjectEvidence Observation Foundation scope (complete, independently
+reviewed, committed to `main` --
 [`ADR-0007`](docs/decisions/adr/ADR-0007-projectevidence-observation-model.md)):
 a new, separate, immutable `project_evidence_observations` table
 (`supabase/migrations/20260803000000_project_evidence_observations.sql`),
@@ -314,14 +324,28 @@ independent review of the Repository Documents Adapter found that formula
 let two concurrent acquisitions of byte-identical content both succeed. No
 existing row's stored fingerprint value needed to change (old- and
 new-formula values coexist safely under the same unique index). This
-correction was verified empirically against a disposable PostgreSQL 16
+correction was verified empirically against a disposable PostgreSQL
 container built solely for this review (not the project's own Supabase
 instance, which remains unavailable in this environment): the transaction's
 atomicity, its rollback-on-failure behavior, its graceful
 `{ outcome: "unchanged" }` handling of a fingerprint collision, and -- using
 two genuinely concurrent client connections -- that identical concurrent
 creates produce exactly one `"created"` and one `"unchanged"` outcome and
-exactly one stored pair, never two. `projectEvidenceService.create(...)`
+exactly one stored pair, never two. A follow-up independent review then
+found two confirmed blockers in the RPC's `unique_violation` handler: it
+treated every unique-constraint violation on the `project_evidence` insert
+as the intended fingerprint collision (never checking `GET STACKED
+DIAGNOSTICS ... CONSTRAINT_NAME`), and its conflict-lookup path did not fail
+closed if the colliding row -- or its paired observation -- could not
+actually be found, both of which could have misreported an unrelated
+integrity failure as a benign "unchanged" outcome. Both were fixed
+(constraint-name scoping plus two explicit fail-closed guards,
+`EVIDENCE_CONFLICT_LOOKUP_FAILED` and `EVIDENCE_MISSING_OBSERVATION`) and
+re-verified against a second disposable PostgreSQL 17 container: an
+unrelated unique conflict now re-raises as a real error, a missing colliding
+row now fails closed, a missing paired observation now fails closed, and a
+genuine duplicate still returns the complete original pair.
+`projectEvidenceService.create(...)`
 now returns `{ outcome, evidence, observation }`; `getById`/`listByProject`
 return the evidence/observation pair together. New tests covering the
 observation domain/validation, atomic persistence semantics (via a fake
@@ -338,8 +362,8 @@ built in this slice: structured JSON payload, object storage, binary/
 multimodal evidence, payload erasure/redaction, Context Rebuild, Project
 Workspace UI, and Smart Automation -- all remain deferred per `ADR-0007`.
 
-Repository Documents Adapter scope (implemented, uncommitted, pending
-independent review): the first real, credential-free Evidence Source
+Repository Documents Adapter scope (complete, independently reviewed,
+committed to `main`): the first real, credential-free Evidence Source
 Adapter (`docs/architecture/project-evidence-acquisition.md` section 8) --
 `src/features/projects/repositoryDocumentPathSecurity.ts` (pure,
 deterministic allowlist and path-security rules, no I/O),
@@ -393,6 +417,77 @@ writes to the repository, never shells out, and never grants, implies, or
 derives execution authority from document content. It is not wired into
 any production entry point -- no production code path currently invokes it;
 it exists as a tested, injectable library only.
+
+Context Rebuild Foundation scope (implemented, uncommitted, pending
+independent review -- `project-evidence-acquisition.md` section 22):
+`src/features/projects/evidenceSnapshotTypes.ts` and
+`evidenceSnapshotBuilder.ts` (a deterministic, reproducible
+`EvidenceSnapshot` from an already owner/project-scoped
+`ProjectEvidence`+`ProjectEvidenceObservation` pair list -- stable sort order
+by source kind, then reference, then `collectedAt`, then evidence id as a
+final tie-breaker; explicit supersession exclusion that records *why* an
+item was excluded rather than silently dropping it; per-item structural
+re-validation of the observation payload as defense in depth; and a
+deterministic SHA-256 snapshot identity hash over project id, `ProjectRecord`
+version, ordered evidence ids/content hashes/supersession references, and a
+schema version -- deliberately excluding `collectedAt`, the same
+content-identity lesson ADR-0007 already applied to `candidate_fingerprint`),
+`contextRebuildTypes.ts` (typed errors and the `RebuildProjectContextResult`
+contract), `contextRebuildProjectContextInput.ts` (a pure mapping from a
+snapshot to `ProjectContextInput`'s mechanically-derivable fields --
+`project` identity and `sources`, both lossless, non-interpretive carries of
+already-recorded provenance), and `contextRebuildService.ts`
+(`rebuildProjectContext(projectId)`: trusted owner resolution before any
+read, one owned *active* `ProjectRecord`, evidence read via the existing
+`projectEvidenceRepository`, snapshot construction, then a single explicit
+capability gate). **Honest capability finding, not a limitation hidden in
+prose:** `ProjectContextBuilder` (`projectContextBuilder.ts`) requires
+pre-structured `objectives`, `milestones`, `decisions`, `capabilities`,
+`risks`, and `candidateActions` -- each with real semantic fields (`status`,
+`summary`/`title`, `sourceIds`) -- not raw text. Every evidence classification
+persisted today carries only raw observed text; there is no deterministic
+transformation from that text into those structured entities without either
+an LLM (forbidden, `project-domain.md` section 6) or a semantic document
+parser (not implemented, deliberately -- fragile regex-based Markdown
+parsing was rejected as a way to manufacture a claim of completion). This
+implementation therefore does not fake a successful rebuild: `evidence`
+classification, source kind, and payload text all flow correctly through a
+real, tested pipeline, but `rebuildProjectContext` returns
+`{ status: "snapshot_ready_context_not_derivable", project, snapshot,
+rebuildMetadata, reasonCode, reason }` for every project today, never a
+fabricated context with empty `objectives`/`milestones`/etc. presented as if
+they had been genuinely evaluated and found absent. The `context_ready` path
+(`{ status: "context_ready", project, snapshot, context, rebuildMetadata }`)
+is real, not stubbed -- `canDeriveProjectContextFromSnapshot`, the single
+explicit gate, is injectable for testing and is proven end to end
+(`contextRebuildService.test.ts` exercises the real service method through
+it; `contextRebuildProjectContextInput.test.ts` proves the mapper's output
+is genuinely accepted by the real `buildProjectContext`, and that a
+malformed mapping surfaces as a typed builder validation failure) -- a
+future slice that adds a real deterministic evidence-to-fact transformation
+changes only that one function. Freshness metadata
+(`projectRecordVersion`, `snapshotCreatedAt`, `newestEvidenceCollectedAt`,
+`includedEvidenceCount`, `excludedSupersededEvidenceCount`, `snapshotHash`,
+`status`) is computed at rebuild time and never persisted or cached. This
+slice is read-only end to end: no evidence, observation, or `ProjectRecord`
+write of any kind, no filesystem/GitHub/Gmail/Calendar/Slack/LLM/Smart-
+Automation import, and `ProjectContext` is never persisted -- every result is
+in-memory only. New tests covering snapshot determinism (ordering,
+supersession, fail-closed malformed/unsupported-classification handling,
+hash identity including the `collectedAt`-exclusion proof), the
+mapper/builder integration boundary, the full service contract (auth,
+ownership, archived-project rejection, freshness metadata, the honest
+not-derivable outcome, and the injected context-ready path), and execution/
+UI/LLM/adapter/write boundaries pass locally (`npx vitest run
+src/features/projects/evidenceSnapshotBuilder.test.ts
+src/features/projects/contextRebuild*`); the full existing suite continues
+to pass unchanged (`npm test`); `npm run typecheck`, `npm run lint`, and
+`npm run build` all pass with no new or regressed issues. Explicitly not
+built in this slice: any actual `ProjectContext` production from real
+evidence (blocked on the honest gap above), an acquisition service, any
+provider-backed adapter, LLM extraction, a semantic document parser, Project
+Brief, Project Workspace UI, `ProjectContext` persistence/caching, and Smart
+Automation.
 
 Engineering posture:
 
@@ -1007,21 +1102,25 @@ Current Agent Response UX Validation V1 status:
 
 ## 10. Next Sprint
 
-Current next milestone: independent review of **ProjectEvidence Observation
+Current next milestone: independent review of **Context Rebuild
 Foundation**, per
-[`ADR-0007: ProjectEvidence Observation Model`](docs/decisions/adr/ADR-0007-projectevidence-observation-model.md)
-(Accepted). Slice 4B (`ProjectEvidence` domain, validation, repository,
-service) is complete, independently reviewed, and committed to `main`
-(`9b40a4d`). The Observation Foundation itself -- the new, immutable
-`ProjectEvidenceObservation` aggregate (text payload only), atomic
-evidence+observation persistence via a `SECURITY DEFINER` Postgres function,
-and the content-hash-based duplicate-identity correction -- is now
-implemented, along with the corresponding Repository Documents Adapter
-update to persist real text payloads; both remain **uncommitted**, pending
-independent review. No acquisition service that orchestrates multiple
-adapters, no Context Rebuild, and no UI implementation have begun. Project
-Dashboard, navigation, and any UI remain the separate Project Workspace
-Implementation Roadmap
+[`project-evidence-acquisition.md`](docs/architecture/project-evidence-acquisition.md)
+section 22. Slice 4B (`ProjectEvidence` domain, validation, repository,
+service, `9b40a4d`), ProjectEvidence Observation Foundation (ADR-0007,
+`fddceb0`/`bc87a60`), and the Repository Documents Adapter are all complete,
+independently reviewed, and committed to `main`. Context Rebuild Foundation
+itself -- deterministic evidence snapshot construction, freshness/snapshot-
+identity metadata, and a trusted read-only rebuild service -- is now
+implemented, **uncommitted**, pending independent review. It honestly does
+not yet produce a real `ProjectContext` from evidence: `ProjectContextBuilder`
+requires pre-structured objectives/milestones/decisions/capabilities/risks/
+candidate actions that no deterministic transformation from raw evidence
+text can currently produce without an LLM or a semantic document parser,
+neither of which this slice implements -- see §2 for the full honest-
+capability finding. No acquisition service that orchestrates multiple
+adapters, no LLM extraction, no semantic document parser, no Project Brief,
+and no UI implementation have begun. Project Dashboard, navigation, and any
+UI remain the separate Project Workspace Implementation Roadmap
 (`docs/roadmap/project-workspace-implementation-roadmap-v1.md`). Gmail,
 GitHub expansion, and Smart Automation remain deferred, unchanged by this
 work.
