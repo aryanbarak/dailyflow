@@ -121,6 +121,34 @@ export {
 } from "./contextRebuildService";
 export type { ContextRebuildService, ContextRebuildServiceDependencies, EvidenceToContextCapabilityCheck } from "./contextRebuildService";
 
+// Project Brief Foundation.
+export {
+  MAX_BRIEF_ITEMS_PER_FIELD,
+  MAX_BRIEF_ITEM_TEXT_LENGTH,
+  PROJECT_BRIEF_VERSION,
+} from "./projectBriefTypes";
+export type {
+  BriefProvenance,
+  ProjectBrief,
+  ProjectBriefBuildResult,
+  ProjectBriefExtractionWarning,
+  ProjectBriefExtractionWarningCode,
+  ProjectBriefSingleValueField,
+  ProjectBriefTextItem,
+  ProjectBriefValidationErrorCode,
+  ProjectBriefValidationIssue,
+} from "./projectBriefTypes";
+export { buildProjectBriefFromSnapshot, type ProjectBriefIdentity } from "./projectBriefAssembler";
+export { extractProjectStatusDocument } from "./projectBriefProjectStatusExtractor";
+export { extractAdrDocument } from "./projectBriefAdrExtractor";
+export { extractRoadmapDocument } from "./projectBriefRoadmapExtractor";
+export { extractArchitectureDocument } from "./projectBriefArchitectureExtractor";
+export { extractProductDirectionDocument } from "./projectBriefProductDirectionExtractor";
+export { ProjectBriefError } from "./projectBriefServiceTypes";
+export type { ProjectBriefErrorCode, ProjectBriefErrorIssue } from "./projectBriefServiceTypes";
+export { createProjectBriefService, projectBriefService } from "./projectBriefService";
+export type { ProjectBriefService, ProjectBriefServiceDependencies } from "./projectBriefService";
+
 export type {
   CreateProjectRecordInput,
   ListProjectRecordsOptions,

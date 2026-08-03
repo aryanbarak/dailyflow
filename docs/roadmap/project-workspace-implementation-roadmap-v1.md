@@ -247,19 +247,38 @@ and committed to `main`.
 
 *Status note (Context Rebuild Foundation, 2026-08-03):* deterministic
 evidence-snapshot construction, freshness/snapshot-identity metadata, and a
-trusted read-only `rebuildProjectContext(projectId)` service are now
-implemented (`src/features/projects/evidenceSnapshotBuilder.ts`,
-`contextRebuildService.ts`), pending independent review, uncommitted. It
-does not yet produce a real `ProjectContext` from evidence — `buildProjectContext`
-requires pre-structured objectives/milestones/decisions/capabilities/risks/
-candidate actions that no deterministic transformation from raw evidence
-text can currently produce without an LLM or a semantic document parser;
-every rebuild today honestly returns
+trusted read-only `rebuildProjectContext(projectId)` service
+(`src/features/projects/evidenceSnapshotBuilder.ts`,
+`contextRebuildService.ts`) are complete, independently reviewed, and
+committed to `main` (`ae2a0d5`). It does not yet produce a real
+`ProjectContext` from evidence — `buildProjectContext` requires
+pre-structured objectives/milestones/decisions/capabilities/risks/candidate
+actions that no deterministic transformation from raw evidence text can
+currently produce without an LLM or a semantic document parser; every
+rebuild today honestly returns
 `{ status: "snapshot_ready_context_not_derivable" }` rather than a
 fabricated context. There is still no acquisition service that orchestrates
 or selects among multiple adapters, no provider-backed adapter, and no
 actual evidence-to-context derivation; this roadmap's S2 remains unaffected
 and still depends on that not-yet-scheduled work.
+
+*Status note (Project Brief Foundation, 2026-08-03):* a deterministic,
+evidence-backed `ProjectBrief` (`src/features/projects/projectBriefService.ts`
+and its extractors) is now implemented, pending independent review,
+uncommitted. It answers a narrower question than full `ProjectContext`
+derivation: rather than deriving structured objectives/milestones/decisions,
+it extracts only explicit, labeled facts (current phase, current focus,
+completed milestones, open/accepted decisions, risks, explicit next
+actions, decision consequences, and — kept as five distinct, never-merged
+fields — limitations, technical debt, non-goals, deferred items, and
+out-of-scope items) from a small, explicit set of canonical document
+shapes — PROJECT_STATUS.md, ADRs, roadmap documents, architecture
+documents, and product-direction documents — never from arbitrary
+Markdown, and never via an LLM. `repository_document` evidence (including
+this roadmap file, if ever ingested as evidence) is unsupported by default
+in this slice. This does not change S2's dependency on real
+`ProjectContext` derivation, which Project Brief does not attempt to
+provide.
 
 **S2 — Project List / Project Overview (read-only)**
 *Objective:* render the list of Projects and, on selecting one, a read-only Overview:

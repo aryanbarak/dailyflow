@@ -106,15 +106,21 @@ approved and committed. The Repository Documents Adapter is updated to
 persist the exact normalized text it reads and to record Git revision in a
 structured field instead of free-text `notes`.
 
-**Context Rebuild Foundation is now implemented, uncommitted:** the
-deterministic evidence-snapshot and freshness infrastructure named as
-future work in `project-evidence-acquisition.md` section 22. It is
-honestly partial by design -- see §2 for exactly what it can and cannot
-produce today, and why. Current focus: none of this has been committed yet.
-The next step is independent review. Still not begun: an acquisition service
-that orchestrates multiple adapters, any provider-backed adapter, LLM
-extraction, a semantic document parser, Project Brief, Project Workspace UI,
-and Smart Automation.
+**Context Rebuild Foundation is complete, independently reviewed, and
+committed to `main` (`ae2a0d5`):** the deterministic evidence-snapshot and
+freshness infrastructure named as future work in
+`project-evidence-acquisition.md` section 22. It is honestly partial by
+design -- see §2 for exactly what it can and cannot produce today, and why.
+
+**Project Brief Foundation is now implemented, uncommitted:** a
+deterministic, evidence-backed `ProjectBrief` built entirely from an
+already-selected `EvidenceSnapshot` via the existing Context Rebuild
+Foundation -- see §2 for the full scope, its five small document extractors,
+and what it explicitly does not attempt. Current focus: none of this has
+been committed yet. The next step is independent review. Still not begun:
+an acquisition service that orchestrates multiple adapters, any
+provider-backed adapter, LLM extraction, general Markdown/document
+understanding, Project Workspace UI, and Smart Automation.
 
 Unified Execution Intent Lifecycle Foundation Slice 1 is complete, committed,
 and pushed to `main` (`26f342b`): canonical execution-intent contracts,
@@ -418,8 +424,9 @@ derives execution authority from document content. It is not wired into
 any production entry point -- no production code path currently invokes it;
 it exists as a tested, injectable library only.
 
-Context Rebuild Foundation scope (implemented, uncommitted, pending
-independent review -- `project-evidence-acquisition.md` section 22):
+Context Rebuild Foundation scope (complete, independently reviewed,
+committed to `main` (`ae2a0d5`) -- `project-evidence-acquisition.md`
+section 22):
 `src/features/projects/evidenceSnapshotTypes.ts` and
 `evidenceSnapshotBuilder.ts` (a deterministic, reproducible
 `EvidenceSnapshot` from an already owner/project-scoped
@@ -488,6 +495,80 @@ evidence (blocked on the honest gap above), an acquisition service, any
 provider-backed adapter, LLM extraction, a semantic document parser, Project
 Brief, Project Workspace UI, `ProjectContext` persistence/caching, and Smart
 Automation.
+
+Project Brief Foundation scope (implemented, uncommitted, pending
+independent review): the first deterministic, evidence-backed
+`ProjectBrief`, built entirely from an already-selected `EvidenceSnapshot`
+(via the existing Context Rebuild Foundation -- this slice adds no owner
+resolution, project loading, or evidence reading of its own) --
+`projectBriefTypes.ts` (the `ProjectBrief` model: `currentPhase`/
+`currentFocus` as an explicit known/unknown/conflicted value, evidence-backed
+`completedMilestones`/`openDecisions`/`acceptedDecisions`/`knownRisks`,
+typed `extractionWarnings`, and `sourceReferences` -- every item carries a
+`BriefProvenance`, no item exists without one), `projectBriefMarkdownSections.ts`
+(a bounded heading/bullet/labeled-sentence parser -- not a general Markdown
+parser: no free-form prose interpretation, no nested-list resolution), five
+small, explicit extractors (`projectBriefProjectStatusExtractor.ts`,
+`projectBriefAdrExtractor.ts`, `projectBriefRoadmapExtractor.ts`,
+`projectBriefArchitectureExtractor.ts`,
+`projectBriefProductDirectionExtractor.ts` -- each a pure function of one
+evidence-backed document, recognizing only an explicit heading-name
+allowlist and a small number of literal labels/markers, e.g. `"Current
+phase:"`, `"Next action:"`, `"[in progress]"`), `projectBriefAssembler.ts`
+(deterministic ordering never dependent on source array order, single-value
+conflict detection for `currentPhase`/`currentFocus` across multiple
+evidence items, cross-field conflict detection between a completed
+milestone and a same-named deferred/out-of-scope item only, and a
+fail-closed `NO_SUPPORTED_CONTENT` result rather than an empty "successful"
+brief when no evidence produced anything extractable), and
+`projectBriefService.ts` (`buildProjectBrief(projectId)`, delegating owner
+resolution and snapshot construction entirely to
+`contextRebuildService.rebuildProjectContext`, mapping every failure into a
+typed, non-disclosing `ProjectBriefError`).
+
+An independent architecture review found two blockers, both fixed in this
+same uncommitted slice: (1) ADR "Consequences" bullets were routed
+unconditionally into `explicitNextActions`, treating section membership
+alone as proof of an action, when a consequence can be a scope/boundary
+statement rather than an action (ADR-0007's own real Consequences section
+has exactly this case) -- fixed by adding a distinct `decisionConsequences`
+field holding every Consequences bullet verbatim, and narrowing
+`explicitNextActions` to only the bullets (in PROJECT_STATUS.md's Next
+Sprint section or an ADR's Consequences section) that additionally carry
+the literal, per-item `"Next action:"` label; (2) the single `limitations`
+field silently merged five distinct source concepts (architecture/product
+non-goals, roadmap deferred items, roadmap/architecture out-of-scope items,
+and PROJECT_STATUS.md's Technical Debt) that the source documents never
+state are equivalent -- fixed by splitting into five distinct fields,
+`limitations` (now genuinely narrow: only an explicit "Limitations"/"Known
+Limitations" heading, which no currently-committed canonical document
+uses yet -- a real, tested capability that is honestly dormant in practice
+today), `technicalDebt`, `nonGoals`, `deferredItems`, and `outOfScope`,
+each populated only by the one heading name that literally denotes it.
+Milestone-conflict detection was narrowed to match: only `deferredItems`
+and `outOfScope` are checked against `completedMilestones` for a same-named
+contradiction; `nonGoals`, `limitations`, and `technicalDebt` are never
+treated as conflict partners, since a scope decision or a technical-debt
+note is not a claim about a specific item's completion status.
+
+`repository_document` evidence is unsupported by default in this slice
+(ignored with a typed warning), per its own explicit "only where the
+format is explicitly supported" rule -- no per-reference allowlisting
+(e.g. README.md specifically) is implemented. Explicitly not built: any
+general Markdown/document understanding, AI-generated advice or ranking,
+semantic risk inference, mission/positioning/proving-ground extraction from
+product-direction documents, architecture invariants/ownership-boundary
+extraction, Project Workspace UI, `ProjectBrief` persistence or caching,
+and background generation. Tests cover the shared markdown-section parser,
+each extractor (including malformed/missing/duplicate-heading,
+non-accepted/superseded-ADR behavior, and -- per the architecture-review
+fix -- that a Consequences boundary statement never becomes a next action
+and that non-goals/limitations/technical-debt never become milestone
+conflicts), the assembler (contract, determinism, conflict detection,
+honesty), the service (trusted delegation, every mapped error code,
+no-supported-content, and a full successful build), and execution/UI/
+LLM/adapter/write boundaries -- 91 tests across 9 test files, all passing
+locally, with the full existing suite (`npm test`) unchanged.
 
 Engineering posture:
 
@@ -1102,25 +1183,28 @@ Current Agent Response UX Validation V1 status:
 
 ## 10. Next Sprint
 
-Current next milestone: independent review of **Context Rebuild
-Foundation**, per
-[`project-evidence-acquisition.md`](docs/architecture/project-evidence-acquisition.md)
-section 22. Slice 4B (`ProjectEvidence` domain, validation, repository,
+Current next milestone: independent review of **Project Brief
+Foundation**. Slice 4B (`ProjectEvidence` domain, validation, repository,
 service, `9b40a4d`), ProjectEvidence Observation Foundation (ADR-0007,
-`fddceb0`/`bc87a60`), and the Repository Documents Adapter are all complete,
-independently reviewed, and committed to `main`. Context Rebuild Foundation
-itself -- deterministic evidence snapshot construction, freshness/snapshot-
-identity metadata, and a trusted read-only rebuild service -- is now
-implemented, **uncommitted**, pending independent review. It honestly does
-not yet produce a real `ProjectContext` from evidence: `ProjectContextBuilder`
-requires pre-structured objectives/milestones/decisions/capabilities/risks/
-candidate actions that no deterministic transformation from raw evidence
-text can currently produce without an LLM or a semantic document parser,
-neither of which this slice implements -- see §2 for the full honest-
-capability finding. No acquisition service that orchestrates multiple
-adapters, no LLM extraction, no semantic document parser, no Project Brief,
-and no UI implementation have begun. Project Dashboard, navigation, and any
-UI remain the separate Project Workspace Implementation Roadmap
+`fddceb0`/`bc87a60`), the Repository Documents Adapter, and Context Rebuild
+Foundation (`ae2a0d5`) are all complete, independently reviewed, and
+committed to `main`. Context Rebuild honestly does not yet produce a real
+`ProjectContext` from evidence: `ProjectContextBuilder` requires
+pre-structured objectives/milestones/decisions/capabilities/risks/candidate
+actions that no deterministic transformation from raw evidence text can
+currently produce without an LLM or a semantic document parser -- see §2's
+Context Rebuild paragraph for the full honest-capability finding, unchanged
+by this slice. Project Brief Foundation is a separate, narrower answer to
+that same gap: not a general document-understanding capability, but a
+deterministic extraction of explicit, labeled facts from a small set of
+canonical document shapes (PROJECT_STATUS.md, ADRs, roadmap, architecture,
+and product-direction documents) into a typed, evidence-traceable
+`ProjectBrief` -- implemented, **uncommitted**, pending independent review;
+see §2's new Project Brief Foundation paragraph. No acquisition service
+that orchestrates multiple adapters, no LLM extraction, no general
+Markdown/document understanding, and no UI implementation have begun.
+Project Dashboard, navigation, and any UI remain the separate Project
+Workspace Implementation Roadmap
 (`docs/roadmap/project-workspace-implementation-roadmap-v1.md`). Gmail,
 GitHub expansion, and Smart Automation remain deferred, unchanged by this
 work.
