@@ -31,15 +31,37 @@ function isLocalSupabaseUrl(value: string) {
   }
 }
 
+function productionConfig(): SupabaseClientConfig {
+  return {
+    mode: "production",
+    url: PRODUCTION_SUPABASE_URL,
+    anonKey: PRODUCTION_SUPABASE_ANON_KEY,
+  };
+}
+
 export function resolveSupabaseClientConfig(env: SupabaseEnv): SupabaseClientConfig {
-  const requestedMode = String(env.VITE_SMARTFLOW_SUPABASE_MODE || "production");
+  const requestedModeRaw = env.VITE_SMARTFLOW_SUPABASE_MODE;
+
+  if (requestedModeRaw === undefined || requestedModeRaw === "") {
+    // `npm run dev` (import.meta.env.DEV) must never silently pick production --
+    // only a built/deployed bundle (DEV false) keeps the old implicit default,
+    // so Cloudflare Pages and `vite preview` are unaffected.
+    if (env.DEV === true) {
+      throw new Error(
+        "VITE_SMARTFLOW_SUPABASE_MODE is required when running `npm run dev`. " +
+          "Set VITE_SMARTFLOW_SUPABASE_MODE=local-qa to use a local Supabase stack, " +
+          "or VITE_SMARTFLOW_SUPABASE_MODE=production to explicitly opt in to the " +
+          "production database. See docs/testing/local-supabase-qa.md.",
+      );
+    }
+
+    return productionConfig();
+  }
+
+  const requestedMode = String(requestedModeRaw);
 
   if (requestedMode === "production") {
-    return {
-      mode: "production",
-      url: PRODUCTION_SUPABASE_URL,
-      anonKey: PRODUCTION_SUPABASE_ANON_KEY,
-    };
+    return productionConfig();
   }
 
   if (requestedMode !== "local-qa") {

@@ -2,12 +2,61 @@ import { describe, expect, it } from "vitest";
 import { resolveSupabaseClientConfig } from "./supabaseConfig";
 
 describe("resolveSupabaseClientConfig", () => {
-  it("uses the production client by default", () => {
+  it("preserves the production default for a deployed build (DEV false/absent) when mode is unset", () => {
     const config = resolveSupabaseClientConfig({});
 
     expect(config.mode).toBe("production");
     expect(config.url).toBe("https://taqxwnlwllbywaklwyno.supabase.co");
     expect(config.anonKey.length).toBeGreaterThan(20);
+  });
+
+  it("fails closed in dev (DEV true) when mode is unset", () => {
+    expect(() => resolveSupabaseClientConfig({ DEV: true })).toThrow(
+      /VITE_SMARTFLOW_SUPABASE_MODE is required/,
+    );
+  });
+
+  it("fails closed in dev when mode is an empty string", () => {
+    expect(() =>
+      resolveSupabaseClientConfig({ DEV: true, VITE_SMARTFLOW_SUPABASE_MODE: "" }),
+    ).toThrow(/VITE_SMARTFLOW_SUPABASE_MODE is required/);
+  });
+
+  it("does not leak secrets in the dev fail-closed error", () => {
+    try {
+      resolveSupabaseClientConfig({ DEV: true });
+      throw new Error("expected resolveSupabaseClientConfig to throw");
+    } catch (error) {
+      const message = (error as Error).message;
+      expect(message).not.toMatch(/eyJ/); // no JWT-shaped anon key
+      expect(message).not.toContain("taqxwnlwllbywaklwyno");
+      expect(message).not.toMatch(/supabase\.co/);
+    }
+  });
+
+  it("explicit production opt-in still works in dev", () => {
+    const config = resolveSupabaseClientConfig({
+      DEV: true,
+      VITE_SMARTFLOW_SUPABASE_MODE: "production",
+    });
+
+    expect(config.mode).toBe("production");
+    expect(config.url).toBe("https://taqxwnlwllbywaklwyno.supabase.co");
+  });
+
+  it("explicit local-qa still selects only the approved local configuration in dev", () => {
+    const config = resolveSupabaseClientConfig({
+      DEV: true,
+      VITE_SMARTFLOW_SUPABASE_MODE: "local-qa",
+      VITE_SUPABASE_URL: "http://127.0.0.1:54321",
+      VITE_SUPABASE_ANON_KEY: "local-anon-key",
+    });
+
+    expect(config).toEqual({
+      mode: "local-qa",
+      url: "http://127.0.0.1:54321",
+      anonKey: "local-anon-key",
+    });
   });
 
   it("uses explicit loopback local QA config", () => {

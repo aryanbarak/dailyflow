@@ -12,6 +12,12 @@ Use only the local URLs printed by the CLI, normally `http://127.0.0.1:54321`.
 
 ## Run The App Against Local Supabase
 
+`npm run dev` requires `VITE_SMARTFLOW_SUPABASE_MODE` to be set explicitly --
+it fails closed with a configuration error if the variable is unset, rather
+than defaulting to production. This only applies to `npm run dev`; a
+deployed/built bundle (Cloudflare Pages) still defaults to production when
+the variable is absent, so no deployment configuration changes are needed.
+
 Set browser-safe Vite values before starting the dev server:
 
 ```bash
@@ -21,7 +27,30 @@ VITE_SUPABASE_ANON_KEY=<local anon key from supabase start>
 npm run dev
 ```
 
-Production remains the default when `VITE_SMARTFLOW_SUPABASE_MODE` is not set. Local QA mode fails closed if the URL is not loopback or if the anon key is missing.
+On Windows PowerShell:
+
+```powershell
+$env:VITE_SMARTFLOW_SUPABASE_MODE = "local-qa"
+$env:VITE_SUPABASE_URL = "http://127.0.0.1:54321"
+$env:VITE_SUPABASE_ANON_KEY = "<local anon key from supabase start>"
+npm run dev
+```
+
+Local QA mode fails closed if the URL is not loopback or if the anon key is
+missing.
+
+To deliberately run the dev server against the real production database
+instead (rare -- only when you explicitly mean to), opt in explicitly:
+
+```bash
+VITE_SMARTFLOW_SUPABASE_MODE=production
+npm run dev
+```
+
+```powershell
+$env:VITE_SMARTFLOW_SUPABASE_MODE = "production"
+npm run dev
+```
 
 ## Seed A Named Scenario
 
