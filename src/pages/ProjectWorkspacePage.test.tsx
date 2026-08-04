@@ -55,6 +55,36 @@ describe("ProjectWorkspacePage", () => {
     expect(html).not.toContain("Sources / provenance");
   });
 
+  it("uses live labels without sample wording for live workspace models", () => {
+    const model: ProjectWorkspaceModel = {
+      ...smartflowProjectWorkspaceFixture,
+      integration: "live",
+      briefAvailable: true,
+      generatedAt: "2026-08-04T08:01:00.000Z",
+      refresh: {
+        status: "completed",
+        label: "Last evidence snapshot",
+        lastRefreshAt: "2026-08-04T08:00:00.000Z",
+        createdCount: 3,
+        unchangedCount: 1,
+        failedCount: 0,
+        message: "Live persisted Project Brief loaded from existing ProjectEvidence. Browser refresh is not implemented.",
+      },
+    };
+
+    const html = render(model);
+
+    expect(html).toContain("Live persisted data");
+    expect(html).toContain("Live brief available");
+    expect(html).toContain("Sources / provenance");
+    expect(html).toContain("Included evidence");
+    expect(html).toContain("Excluded superseded");
+    expect(html).toContain("Reload data");
+    expect(html).not.toContain("Demo fixture only");
+    expect(html).not.toContain("Sample brief preview");
+    expect(html).not.toContain("Sample provenance");
+  });
+
   it("preserves known, unknown, and conflicted states", () => {
     const model: ProjectWorkspaceModel = {
       ...smartflowProjectWorkspaceFixture,

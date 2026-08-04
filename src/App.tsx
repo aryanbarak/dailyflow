@@ -15,7 +15,7 @@ import SettingsPage from "./pages/SettingsPage";
 import HabitsPage from "./pages/HabitsPage";
 import JournalPage from "./pages/JournalPage";
 import ChatPage from "./pages/ChatPage";
-import ProjectWorkspacePage from "./pages/ProjectWorkspacePage";
+import ProjectWorkspacePage, { DemoProjectWorkspacePage } from "./pages/ProjectWorkspacePage";
 
 const DocumentsPage = lazy(() => import("./pages/DocumentsPage"));
 const PhotosPage    = lazy(() => import("./pages/PhotosPage"));
@@ -136,7 +136,8 @@ const App = () => (
               <Route path="/journal" element={<JournalPage />} />
               <Route path="/briefing/weekly" element={<Suspense fallback={<AppLoader />}><WeeklyBriefingPage /></Suspense>} />
               <Route path="/chat" element={<ChatPage />} />
-              <Route path="/projects/smartflow" element={<ProjectWorkspacePage />} />
+              <Route path="/projects/demo/smartflow" element={<DemoProjectWorkspacePage />} />
+              <Route path="/projects/:projectId" element={<ProjectWorkspacePage />} />
               <Route path="/settings" element={<SettingsPage />} />
             </Route>
             <Route path="/offline" element={<OfflinePage />} />

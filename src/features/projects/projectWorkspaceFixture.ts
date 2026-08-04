@@ -29,7 +29,7 @@ export type ProjectWorkspaceRefreshStatus =
     };
 
 export interface ProjectWorkspaceModel {
-  readonly integration: "fixture";
+  readonly integration: "fixture" | "live";
   readonly projectId: string;
   readonly projectName: string;
   readonly briefAvailable: boolean;

@@ -141,21 +141,21 @@ CI acquisition, multi-repository orchestration, semantic memory,
 embeddings/RAG, LLM extraction, general Markdown/document understanding,
 Project Workspace UI, and Smart Automation.
 
-**Sprint 1 Deliverable 2 -- SmartFlow UX Phase 1 is implemented,
-uncommitted:** `/projects/smartflow` adds one authenticated Project Workspace
-page for SmartFlow, using a clearly labeled fixture/dev Project Brief adapter
-because no browser-safe persisted Project Brief read endpoint exists yet. The
-page presents project identity, current phase/focus, explicit next actions,
-milestones, accepted/open decisions, risks, technical debt, limitations,
-non-goals, deferred and out-of-scope items, conflicts, source/provenance
-drill-down, refresh state, and a right-side conversation panel that links to
-the existing `/chat` experience. Refresh is honest and instructional only:
-the browser does not read the local filesystem, does not run the local CLI,
-does not expose tokens or local paths, and does not claim live browser refresh.
-Not implemented: live browser filesystem refresh, semantic memory,
-embeddings/RAG, LLM extraction or recommendations, background refresh,
-avatar/voice/notifications, Project Brief prompt injection, and Smart
-Automation.
+**Sprint 1 Deliverable 3 -- Live Persisted Project Brief Read Path is
+implemented, uncommitted:** `/projects/:projectId` now loads an authenticated,
+owner-scoped active `ProjectRecord`, reads already-persisted
+`ProjectEvidence`/`ProjectEvidenceObservation`, runs the existing Context
+Rebuild/Evidence Snapshot and Project Brief services, and renders the real
+Project Brief with snapshot metadata when supported evidence exists. The
+former fixture remains only as the explicit demo route
+`/projects/demo/smartflow`, with the prominent "Demo fixture only - not live
+or persisted" label. Browser refresh remains unimplemented: the page only
+shows the safe Local Project Refresh CLI template and a browser "Reload data"
+action that re-runs the persisted Supabase read. Not implemented: browser
+repository/filesystem refresh, Project Brief persistence/cache, semantic
+memory, embeddings/RAG, LLM extraction or recommendations, background
+refresh, avatar/voice/notifications, Project Brief prompt injection, and
+Smart Automation.
 
 Unified Execution Intent Lifecycle Foundation Slice 1 is complete, committed,
 and pushed to `main` (`26f342b`): canonical execution-intent contracts,

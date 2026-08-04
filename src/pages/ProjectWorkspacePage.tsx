@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link, useParams } from "react-router-dom";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils";
 import { usePageTitle } from "@/contexts/PageTitleContext";
 import type { BriefProvenance, ProjectBrief, ProjectBriefSingleValueField, ProjectBriefTextItem } from "@/features/projects/projectBriefTypes";
 import { smartflowProjectWorkspaceFixture, type ProjectWorkspaceModel, type ProjectWorkspaceRefreshStatus } from "@/features/projects/projectWorkspaceFixture";
+import type { ProjectWorkspaceReadResult } from "@/features/projects/projectWorkspaceReadService";
 
 type SemanticTone = "neutral" | "success" | "warning" | "danger";
 
@@ -50,11 +51,15 @@ function provenanceLabel(provenance: BriefProvenance) {
   return [provenance.sourceReference, provenance.sectionHeading].filter(Boolean).join(" - ");
 }
 
-function ProvenanceDetails({ provenance, conflictedWith }: Readonly<{ provenance: BriefProvenance; conflictedWith?: readonly BriefProvenance[] }>) {
+function ProvenanceDetails({
+  provenance,
+  conflictedWith,
+  sample,
+}: Readonly<{ provenance: BriefProvenance; conflictedWith?: readonly BriefProvenance[]; sample: boolean }>) {
   return (
     <details className="group mt-3 rounded-md border border-border bg-background/60 px-3 py-2 text-xs">
       <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-        <span>Sample provenance</span>
+        <span>{sample ? "Sample provenance" : "Sources / provenance"}</span>
         <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" aria-hidden="true" />
       </summary>
       <dl className="mt-3 grid gap-2 text-foreground sm:grid-cols-2">
@@ -91,7 +96,7 @@ function ProvenanceDetails({ provenance, conflictedWith }: Readonly<{ provenance
   );
 }
 
-function SingleValueField({ label, field }: Readonly<{ label: string; field: ProjectBriefSingleValueField<string> }>) {
+function SingleValueField({ label, field, sample }: Readonly<{ label: string; field: ProjectBriefSingleValueField<string>; sample: boolean }>) {
   if (field.status === "unknown") {
     return (
       <section className="rounded-lg border border-border bg-card p-4" aria-label={label}>
@@ -115,7 +120,7 @@ function SingleValueField({ label, field }: Readonly<{ label: string; field: Pro
           {field.candidates.map((candidate) => (
             <li key={`${candidate.value}:${candidate.provenance.sourceEvidenceId}`}>
               <p className="text-base font-medium text-foreground">{candidate.value}</p>
-              <ProvenanceDetails provenance={candidate.provenance} />
+              <ProvenanceDetails provenance={candidate.provenance} sample={sample} />
             </li>
           ))}
         </ul>
@@ -130,7 +135,7 @@ function SingleValueField({ label, field }: Readonly<{ label: string; field: Pro
         <StateBadge tone="success">Known</StateBadge>
       </div>
       <p className="text-base font-medium text-foreground">{field.value}</p>
-      <ProvenanceDetails provenance={field.provenance} />
+      <ProvenanceDetails provenance={field.provenance} sample={sample} />
     </section>
   );
 }
@@ -140,7 +145,8 @@ function ItemList({
   items,
   emptyLabel,
   tone = "neutral",
-}: Readonly<{ title: string; items: readonly ProjectBriefTextItem[]; emptyLabel: string; tone?: SemanticTone }>) {
+  sample,
+}: Readonly<{ title: string; items: readonly ProjectBriefTextItem[]; emptyLabel: string; tone?: SemanticTone; sample: boolean }>) {
   return (
     <section className="rounded-lg border border-border bg-card p-4" aria-labelledby={`${title.replace(/\s+/g, "-").toLowerCase()}-heading`}>
       <div className="mb-3 flex items-center justify-between gap-3">
@@ -163,7 +169,7 @@ function ItemList({
                 )}
                 <p className="text-sm leading-6 text-foreground">{itemValue.text}</p>
               </div>
-              <ProvenanceDetails provenance={itemValue.provenance} conflictedWith={itemValue.conflictedWith} />
+              <ProvenanceDetails provenance={itemValue.provenance} conflictedWith={itemValue.conflictedWith} sample={sample} />
             </li>
           ))}
         </ul>
@@ -172,7 +178,12 @@ function ItemList({
   );
 }
 
-function RefreshPanel({ refresh, cliCommand }: Readonly<{ refresh: ProjectWorkspaceRefreshStatus; cliCommand: string }>) {
+function RefreshPanel({
+  refresh,
+  cliCommand,
+  sample,
+  onReload,
+}: Readonly<{ refresh: ProjectWorkspaceRefreshStatus; cliCommand: string; sample: boolean; onReload?: () => void }>) {
   const tone: SemanticTone =
     refresh.status === "completed" ? "success" : refresh.status === "failed" || refresh.status === "failed_partial" ? "danger" : "warning";
   const hasCounts = "createdCount" in refresh;
@@ -193,11 +204,11 @@ function RefreshPanel({ refresh, cliCommand }: Readonly<{ refresh: ProjectWorksp
       {hasCounts && (
         <dl className="mt-4 grid grid-cols-3 gap-2 text-sm">
           <div className="rounded-md border border-border bg-background/60 p-2">
-            <dt className="text-muted-foreground">Created</dt>
+            <dt className="text-muted-foreground">{sample ? "Created" : "Included evidence"}</dt>
             <dd className="font-semibold">{refresh.createdCount}</dd>
           </div>
           <div className="rounded-md border border-border bg-background/60 p-2">
-            <dt className="text-muted-foreground">Unchanged</dt>
+            <dt className="text-muted-foreground">{sample ? "Unchanged" : "Excluded superseded"}</dt>
             <dd className="font-semibold">{refresh.unchangedCount}</dd>
           </div>
           <div className="rounded-md border border-border bg-background/60 p-2">
@@ -209,15 +220,15 @@ function RefreshPanel({ refresh, cliCommand }: Readonly<{ refresh: ProjectWorksp
       {"errorCode" in refresh && <p className="mt-3 text-sm text-destructive">Error: {refresh.errorCode}</p>}
       <div className="mt-4 rounded-md border border-warning/30 bg-warning/10 p-3">
         <p className="text-sm font-medium text-foreground">Run local refresh</p>
-        <p className="mt-1 text-sm text-muted-foreground">Browser refresh is not wired. Run the trusted local command outside the browser when a persisted read path exists.</p>
+        <p className="mt-1 text-sm text-muted-foreground">Browser refresh is not wired. Run the trusted local command outside the browser, then reload persisted data.</p>
         <code className="mt-3 block overflow-x-auto rounded-md bg-background px-3 py-2 text-xs text-foreground">{cliCommand}</code>
         <div className="mt-3 flex flex-wrap gap-2">
           <Button type="button" disabled aria-label="Run local refresh is unavailable in the browser">
             <RefreshCw className="h-4 w-4" aria-hidden="true" />
             Run local refresh
           </Button>
-          <Button type="button" variant="outline" onClick={() => window.location.reload()} aria-label="Reload sample workspace preview">
-            Reload sample preview
+          <Button type="button" variant="outline" onClick={onReload ?? (() => window.location.reload())} aria-label={sample ? "Reload sample workspace preview" : "Reload persisted project data"}>
+            {sample ? "Reload sample preview" : "Reload data"}
           </Button>
         </div>
       </div>
@@ -279,7 +290,7 @@ function ConflictPanel({ brief }: Readonly<{ brief: ProjectBrief }>) {
   );
 }
 
-function ConversationPanel({ model }: Readonly<{ model: ProjectWorkspaceModel }>) {
+function ConversationPanel({ model, sample }: Readonly<{ model: ProjectWorkspaceModel; sample: boolean }>) {
   return (
     <aside className="rounded-lg border border-border bg-card p-4 lg:sticky lg:top-6" aria-labelledby="conversation-heading">
       <div className="flex items-start justify-between gap-3">
@@ -290,7 +301,7 @@ function ConversationPanel({ model }: Readonly<{ model: ProjectWorkspaceModel }>
             SmartFlow chat
           </h2>
         </div>
-        <StateBadge tone="warning">Sample brief preview</StateBadge>
+        <StateBadge tone={model.briefAvailable && !sample ? "success" : "warning"}>{sample ? "Sample brief preview" : model.briefAvailable ? "Live brief available" : "No live brief"}</StateBadge>
       </div>
       <div className="mt-4 rounded-lg border border-border bg-background/60 p-3">
         <p className="text-sm font-medium text-foreground">Project: {model.projectName}</p>
@@ -311,7 +322,7 @@ function ConversationPanel({ model }: Readonly<{ model: ProjectWorkspaceModel }>
   );
 }
 
-function SourceIndex({ brief }: Readonly<{ brief: ProjectBrief }>) {
+function SourceIndex({ brief, sample }: Readonly<{ brief: ProjectBrief; sample: boolean }>) {
   const sources = useMemo(
     () =>
       [...brief.sourceReferences].sort((a, b) => a.sourceReference.localeCompare(b.sourceReference) || a.sourceEvidenceId.localeCompare(b.sourceEvidenceId)),
@@ -322,7 +333,7 @@ function SourceIndex({ brief }: Readonly<{ brief: ProjectBrief }>) {
     <section className="rounded-lg border border-border bg-card p-4" aria-labelledby="sources-heading">
       <h2 id="sources-heading" className="flex items-center gap-2 text-sm font-semibold text-foreground">
         <FileText className="h-4 w-4" aria-hidden="true" />
-        Sample provenance
+        {sample ? "Sample provenance" : "Sources / provenance"}
       </h2>
       <ul className="mt-3 grid gap-2 md:grid-cols-2">
         {sources.map((source) => (
@@ -337,10 +348,11 @@ function SourceIndex({ brief }: Readonly<{ brief: ProjectBrief }>) {
   );
 }
 
-export function ProjectWorkspaceView({ model = smartflowProjectWorkspaceFixture }: Readonly<{ model?: ProjectWorkspaceModel }>) {
+export function ProjectWorkspaceView({ model = smartflowProjectWorkspaceFixture, onReload }: Readonly<{ model?: ProjectWorkspaceModel; onReload?: () => void }>) {
   const [secondaryOpen, setSecondaryOpen] = useState(true);
   const { setPageTitle } = usePageTitle();
   const topAction = model.brief.explicitNextActions[0];
+  const sample = model.integration === "fixture";
 
   useEffect(() => {
     setPageTitle({ title: "Project Workspace", subtitle: model.projectName });
@@ -352,7 +364,7 @@ export function ProjectWorkspaceView({ model = smartflowProjectWorkspaceFixture 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]" data-testid="project-workspace-layout">
         <div className="space-y-5">
           <header className="rounded-lg border border-border bg-card p-5">
-            {model.integration === "fixture" && (
+            {sample && (
               <section className="mb-5 rounded-lg border border-warning/35 bg-warning/10 p-4" aria-label="Demo fixture notice">
                 <p className="text-sm font-semibold text-foreground">Demo fixture only - not live or persisted</p>
                 <p className="mt-1 text-sm leading-6 text-muted-foreground">
@@ -365,17 +377,19 @@ export function ProjectWorkspaceView({ model = smartflowProjectWorkspaceFixture 
                 <p className="text-xs uppercase tracking-wide text-muted-foreground">Project Workspace</p>
                 <h1 className="mt-2 text-2xl font-semibold text-foreground">{model.projectName}</h1>
                 <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
-                  Sample project situation first. Conversation stays visible, but this fixture does not represent live persisted project state.
+                  {sample
+                    ? "Sample project situation first. Conversation stays visible, but this fixture does not represent live persisted project state."
+                    : "Project situation first. Conversation stays visible, but the Project Brief is not injected into prompts in this slice."}
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
-                <StateBadge tone={model.integration === "fixture" ? "warning" : "success"}>Fixture/dev adapter</StateBadge>
-                <StateBadge tone="warning">Sample brief preview</StateBadge>
+                <StateBadge tone={sample ? "warning" : "success"}>{sample ? "Fixture/dev adapter" : "Live persisted data"}</StateBadge>
+                <StateBadge tone={sample ? "warning" : "success"}>{sample ? "Sample brief preview" : "Live brief available"}</StateBadge>
               </div>
             </div>
             <div className="mt-5 grid gap-3 md:grid-cols-3">
-              <SingleValueField label="Current phase" field={model.brief.currentPhase} />
-              <SingleValueField label="Current focus" field={model.brief.currentFocus} />
+              <SingleValueField label="Current phase" field={model.brief.currentPhase} sample={sample} />
+              <SingleValueField label="Current focus" field={model.brief.currentFocus} sample={sample} />
               <section className="rounded-lg border border-border bg-background/60 p-4" aria-label="Top explicit next action">
                 <div className="mb-2 flex items-center justify-between gap-3">
                   <h2 className="text-sm font-medium text-muted-foreground">Top explicit next action</h2>
@@ -384,7 +398,7 @@ export function ProjectWorkspaceView({ model = smartflowProjectWorkspaceFixture 
                 {topAction ? (
                   <>
                     <p className="text-base font-medium text-foreground">{topAction.text}</p>
-                    <ProvenanceDetails provenance={topAction.provenance} />
+                    <ProvenanceDetails provenance={topAction.provenance} sample={sample} />
                   </>
                 ) : (
                   <p className="text-base text-foreground">No explicit next action exists in the brief.</p>
@@ -393,11 +407,11 @@ export function ProjectWorkspaceView({ model = smartflowProjectWorkspaceFixture 
             </div>
           </header>
 
-          <RefreshPanel refresh={model.refresh} cliCommand={model.cliCommand} />
+          <RefreshPanel refresh={model.refresh} cliCommand={model.cliCommand} sample={sample} onReload={onReload} />
 
           <section className="grid gap-4 lg:grid-cols-2" aria-label="Primary project brief sections">
-            <ItemList title="Explicit next actions" items={model.brief.explicitNextActions} emptyLabel="No explicit next actions were extracted." tone="success" />
-            <ItemList title="Completed milestones" items={model.brief.completedMilestones} emptyLabel="No completed milestones were extracted." tone="success" />
+            <ItemList title="Explicit next actions" items={model.brief.explicitNextActions} emptyLabel="No explicit next actions were extracted." tone="success" sample={sample} />
+            <ItemList title="Completed milestones" items={model.brief.completedMilestones} emptyLabel="No completed milestones were extracted." tone="success" sample={sample} />
           </section>
 
           <section className="rounded-lg border border-border bg-card p-4">
@@ -416,21 +430,21 @@ export function ProjectWorkspaceView({ model = smartflowProjectWorkspaceFixture 
             </button>
             {secondaryOpen && (
               <div id="secondary-project-brief" className="mt-4 grid gap-4 lg:grid-cols-2">
-                <ItemList title="Accepted decisions" items={model.brief.acceptedDecisions} emptyLabel="No accepted decisions were extracted." tone="success" />
-                <ItemList title="Open decisions" items={model.brief.openDecisions} emptyLabel="No open decisions were extracted." tone="warning" />
-                <ItemList title="Risks" items={model.brief.knownRisks} emptyLabel="No known risks were extracted." tone="warning" />
-                <ItemList title="Technical debt" items={model.brief.technicalDebt} emptyLabel="No technical debt was extracted." tone="warning" />
-                <ItemList title="Limitations" items={model.brief.limitations} emptyLabel="No limitations were extracted." />
-                <ItemList title="Decision consequences" items={model.brief.decisionConsequences} emptyLabel="No decision consequences were extracted." />
-                <ItemList title="Non-goals" items={model.brief.nonGoals} emptyLabel="No non-goals were extracted." />
-                <ItemList title="Deferred items" items={model.brief.deferredItems} emptyLabel="No deferred items were extracted." />
-                <ItemList title="Out of scope" items={model.brief.outOfScope} emptyLabel="No out-of-scope items were extracted." />
+                <ItemList title="Accepted decisions" items={model.brief.acceptedDecisions} emptyLabel="No accepted decisions were extracted." tone="success" sample={sample} />
+                <ItemList title="Open decisions" items={model.brief.openDecisions} emptyLabel="No open decisions were extracted." tone="warning" sample={sample} />
+                <ItemList title="Risks" items={model.brief.knownRisks} emptyLabel="No known risks were extracted." tone="warning" sample={sample} />
+                <ItemList title="Technical debt" items={model.brief.technicalDebt} emptyLabel="No technical debt was extracted." tone="warning" sample={sample} />
+                <ItemList title="Limitations" items={model.brief.limitations} emptyLabel="No limitations were extracted." sample={sample} />
+                <ItemList title="Decision consequences" items={model.brief.decisionConsequences} emptyLabel="No decision consequences were extracted." sample={sample} />
+                <ItemList title="Non-goals" items={model.brief.nonGoals} emptyLabel="No non-goals were extracted." sample={sample} />
+                <ItemList title="Deferred items" items={model.brief.deferredItems} emptyLabel="No deferred items were extracted." sample={sample} />
+                <ItemList title="Out of scope" items={model.brief.outOfScope} emptyLabel="No out-of-scope items were extracted." sample={sample} />
                 <ConflictPanel brief={model.brief} />
               </div>
             )}
           </section>
 
-          <SourceIndex brief={model.brief} />
+          <SourceIndex brief={model.brief} sample={sample} />
 
           <section className="rounded-lg border border-border bg-card p-4" aria-labelledby="honest-states-heading">
             <h2 id="honest-states-heading" className="flex items-center gap-2 text-sm font-semibold text-foreground">
@@ -446,7 +460,7 @@ export function ProjectWorkspaceView({ model = smartflowProjectWorkspaceFixture 
         </div>
 
         <div className="space-y-5">
-          <ConversationPanel model={model} />
+          <ConversationPanel model={model} sample={sample} />
           <section className="rounded-lg border border-border bg-card p-4" aria-labelledby="identity-heading">
             <h2 id="identity-heading" className="flex items-center gap-2 text-sm font-semibold text-foreground">
               <GitBranch className="h-4 w-4" aria-hidden="true" />
@@ -470,7 +484,9 @@ export function ProjectWorkspaceView({ model = smartflowProjectWorkspaceFixture 
               <div className="flex gap-2">
                 <ClipboardList className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
                 <p className="text-sm leading-6 text-muted-foreground">
-                  Sample identifiers are available only inside provenance drill-downs, not as primary page labels.
+                  {sample
+                    ? "Sample identifiers are available only inside provenance drill-downs, not as primary page labels."
+                    : "Evidence identifiers are available only inside provenance drill-downs, not as primary page labels."}
                 </p>
               </div>
             </div>
@@ -481,6 +497,115 @@ export function ProjectWorkspaceView({ model = smartflowProjectWorkspaceFixture 
   );
 }
 
-export default function ProjectWorkspacePage() {
+const LOCAL_REFRESH_COMMAND = "npm --silent run smartflow:refresh-project -- --project-id <project-id> --repo-root <trusted-local-repo-path> --json";
+
+function liveRefreshFor(result: ProjectWorkspaceReadResult): ProjectWorkspaceRefreshStatus {
+  if (result.status === "ready") {
+    return {
+      status: "completed",
+      label: "Last evidence snapshot",
+      lastRefreshAt: result.snapshotMetadata?.snapshotCreatedAt ?? new Date(0).toISOString(),
+      createdCount: result.snapshotMetadata?.includedEvidenceCount ?? 0,
+      unchangedCount: result.snapshotMetadata?.excludedSupersededEvidenceCount ?? 0,
+      failedCount: 0,
+      message: "Live persisted Project Brief loaded from existing ProjectEvidence. Browser refresh is not implemented.",
+    };
+  }
+  return {
+    status: result.status === "unavailable" ? "unavailable" : "not_yet_refreshed",
+    label: result.status === "not_refreshed" ? "Not refreshed" : result.status === "no_supported_content" ? "No supported content" : "Unavailable",
+    message: result.dataState,
+  };
+}
+
+function modelFromReadyResult(result: ProjectWorkspaceReadResult): ProjectWorkspaceModel {
+  if (!result.project || !result.brief) {
+    throw new Error("Project workspace result is not ready.");
+  }
+  return {
+    integration: "live",
+    projectId: result.project.id,
+    projectName: result.project.name,
+    briefAvailable: true,
+    generatedAt: result.brief.generatedAt,
+    cliCommand: LOCAL_REFRESH_COMMAND,
+    refresh: liveRefreshFor(result),
+    brief: result.brief,
+  };
+}
+
+function WorkspaceStatePanel({ result, onReload }: Readonly<{ result: ProjectWorkspaceReadResult; onReload: () => void }>) {
+  const projectName = result.project?.name ?? "Project workspace";
+  return (
+    <main className="mx-auto max-w-[960px] px-4 py-5 sm:px-6 lg:px-8 lg:py-6">
+      <section className="rounded-lg border border-border bg-card p-5" aria-labelledby="workspace-state-heading">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">Project Workspace</p>
+            <h1 id="workspace-state-heading" className="mt-2 text-2xl font-semibold text-foreground">
+              {projectName}
+            </h1>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">{result.dataState}</p>
+          </div>
+          <StateBadge tone={result.status === "failed" ? "danger" : "warning"}>{result.status.replace(/_/g, " ")}</StateBadge>
+        </div>
+        {result.error && <p className="mt-4 text-sm text-muted-foreground">{result.error.message}</p>}
+        <div className="mt-5 rounded-md border border-warning/30 bg-warning/10 p-3">
+          <p className="text-sm font-medium text-foreground">Run local refresh</p>
+          <p className="mt-1 text-sm text-muted-foreground">Browser refresh is not wired. Run the trusted local command outside the browser, then reload persisted data.</p>
+          <code className="mt-3 block overflow-x-auto rounded-md bg-background px-3 py-2 text-xs text-foreground">{LOCAL_REFRESH_COMMAND}</code>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button type="button" disabled aria-label="Run local refresh is unavailable in the browser">
+              <RefreshCw className="h-4 w-4" aria-hidden="true" />
+              Run local refresh
+            </Button>
+            <Button type="button" variant="outline" onClick={onReload} aria-label="Reload persisted project data">
+              Reload data
+            </Button>
+          </div>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function ProjectWorkspaceLoading() {
+  return (
+    <main className="mx-auto max-w-[960px] px-4 py-5 sm:px-6 lg:px-8 lg:py-6">
+      <section className="rounded-lg border border-border bg-card p-5" aria-live="polite">
+        <p className="text-xs uppercase tracking-wide text-muted-foreground">Project Workspace</p>
+        <h1 className="mt-2 text-2xl font-semibold text-foreground">Loading project workspace</h1>
+        <p className="mt-2 text-sm text-muted-foreground">Reading persisted ProjectRecord and ProjectEvidence data.</p>
+      </section>
+    </main>
+  );
+}
+
+export function DemoProjectWorkspacePage() {
   return <ProjectWorkspaceView />;
+}
+
+export default function ProjectWorkspacePage() {
+  const { projectId } = useParams();
+  const [result, setResult] = useState<ProjectWorkspaceReadResult | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  const reload = useCallback(() => setReloadKey((key) => key + 1), []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setResult(null);
+    import("@/features/projects/projectWorkspaceBrowserReadService").then(({ browserProjectWorkspaceReadService }) =>
+      browserProjectWorkspaceReadService.readProjectWorkspace(projectId ?? ""),
+    ).then((nextResult) => {
+      if (!cancelled) setResult(nextResult);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, reloadKey]);
+
+  if (!result) return <ProjectWorkspaceLoading />;
+  if (result.status !== "ready") return <WorkspaceStatePanel result={result} onReload={reload} />;
+  return <ProjectWorkspaceView model={modelFromReadyResult(result)} onReload={reload} />;
 }
