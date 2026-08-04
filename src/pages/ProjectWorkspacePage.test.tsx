@@ -83,6 +83,60 @@ describe("ProjectWorkspacePage", () => {
     expect(html).not.toContain("Demo fixture only");
     expect(html).not.toContain("Sample brief preview");
     expect(html).not.toContain("Sample provenance");
+    // Live mode has no persisted refresh-run history, so it must never claim
+    // a specific failed count -- the browser genuinely does not know one.
+    expect(html).not.toContain("Failed");
+    expect(html).not.toMatch(/<dt[^>]*>Failed<\/dt>/);
+  });
+
+  it("never renders a Failed tile or any numeric failed count for live workspace models, while preserving real snapshot metadata", () => {
+    const model: ProjectWorkspaceModel = {
+      ...smartflowProjectWorkspaceFixture,
+      integration: "live",
+      briefAvailable: true,
+      generatedAt: "2026-08-04T08:01:00.000Z",
+      refresh: {
+        status: "completed",
+        label: "Last evidence snapshot",
+        lastRefreshAt: "2026-08-04T08:00:00.000Z",
+        createdCount: 4,
+        unchangedCount: 2,
+        failedCount: 0,
+        message: "Live persisted Project Brief loaded from existing ProjectEvidence. Browser refresh is not implemented.",
+      },
+    };
+
+    const html = render(model);
+
+    expect(html).not.toContain("Failed");
+    expect(html).not.toMatch(/<dt[^>]*>Failed<\/dt>/);
+    // The two real, snapshot-derived counts remain present and correct.
+    expect(html).toContain("Included evidence");
+    expect(html).toContain("Excluded superseded");
+    expect(html).toMatch(/Included evidence<\/dt><dd[^>]*>4<\/dd>/);
+    expect(html).toMatch(/Excluded superseded<\/dt><dd[^>]*>2<\/dd>/);
+  });
+
+  it("still shows the demo fixture's Failed tile with real sample counts, unchanged", () => {
+    const model: ProjectWorkspaceModel = {
+      ...smartflowProjectWorkspaceFixture,
+      refresh: {
+        status: "completed",
+        label: "Demo refresh",
+        lastRefreshAt: "2026-08-04T08:00:00.000Z",
+        createdCount: 2,
+        unchangedCount: 1,
+        failedCount: 1,
+        message: "Sample fixture refresh result.",
+      },
+    };
+
+    const html = render(model);
+
+    expect(html).toContain("Created");
+    expect(html).toContain("Unchanged");
+    expect(html).toContain("Failed");
+    expect(html).toMatch(/Failed<\/dt><dd[^>]*>1<\/dd>/);
   });
 
   it("preserves known, unknown, and conflicted states", () => {

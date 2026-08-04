@@ -161,5 +161,5 @@ async function main(): Promise<number> {
 }
 
 main().then((code) => {
-  process.exit(code);
+  process.exitCode = code;
 });

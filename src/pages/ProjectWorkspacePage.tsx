@@ -202,7 +202,7 @@ function RefreshPanel({
       </div>
       <p className="mt-3 text-sm leading-6 text-foreground">{refresh.message}</p>
       {hasCounts && (
-        <dl className="mt-4 grid grid-cols-3 gap-2 text-sm">
+        <dl className={cn("mt-4 grid gap-2 text-sm", sample ? "grid-cols-3" : "grid-cols-2")}>
           <div className="rounded-md border border-border bg-background/60 p-2">
             <dt className="text-muted-foreground">{sample ? "Created" : "Included evidence"}</dt>
             <dd className="font-semibold">{refresh.createdCount}</dd>
@@ -211,10 +211,15 @@ function RefreshPanel({
             <dt className="text-muted-foreground">{sample ? "Unchanged" : "Excluded superseded"}</dt>
             <dd className="font-semibold">{refresh.unchangedCount}</dd>
           </div>
-          <div className="rounded-md border border-border bg-background/60 p-2">
-            <dt className="text-muted-foreground">Failed</dt>
-            <dd className="font-semibold">{refresh.failedCount}</dd>
-          </div>
+          {/* Live mode has no persisted refresh-run history, so a "Failed"
+              count here would be a fabricated claim, not a real observation
+              -- this tile is sample/demo-only, never rendered for live data. */}
+          {sample && (
+            <div className="rounded-md border border-border bg-background/60 p-2">
+              <dt className="text-muted-foreground">Failed</dt>
+              <dd className="font-semibold">{refresh.failedCount}</dd>
+            </div>
+          )}
         </dl>
       )}
       {"errorCode" in refresh && <p className="mt-3 text-sm text-destructive">Error: {refresh.errorCode}</p>}
