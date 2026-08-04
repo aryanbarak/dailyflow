@@ -122,8 +122,8 @@ an acquisition service that orchestrates multiple adapters, any
 provider-backed adapter, LLM extraction, general Markdown/document
 understanding, Project Workspace UI, and Smart Automation.
 
-**Sprint 1 Deliverable 1 -- Local Project Refresh CLI is implemented,
-uncommitted:** `npm run smartflow:refresh-project -- --project-id <uuid>
+**Sprint 1 Deliverable 1 -- Local Project Refresh CLI is complete and
+committed to `main` (`8a3f5c5`):** `npm run smartflow:refresh-project -- --project-id <uuid>
 --repo-root <path>` runs a local manual trusted-operator refresh, with
 `--json` output support; automated callers should use
 `npm --silent run smartflow:refresh-project -- --project-id <uuid>
@@ -140,6 +140,22 @@ button, hosted production filesystem access, background refresh, scheduler,
 CI acquisition, multi-repository orchestration, semantic memory,
 embeddings/RAG, LLM extraction, general Markdown/document understanding,
 Project Workspace UI, and Smart Automation.
+
+**Sprint 1 Deliverable 2 -- SmartFlow UX Phase 1 is implemented,
+uncommitted:** `/projects/smartflow` adds one authenticated Project Workspace
+page for SmartFlow, using a clearly labeled fixture/dev Project Brief adapter
+because no browser-safe persisted Project Brief read endpoint exists yet. The
+page presents project identity, current phase/focus, explicit next actions,
+milestones, accepted/open decisions, risks, technical debt, limitations,
+non-goals, deferred and out-of-scope items, conflicts, source/provenance
+drill-down, refresh state, and a right-side conversation panel that links to
+the existing `/chat` experience. Refresh is honest and instructional only:
+the browser does not read the local filesystem, does not run the local CLI,
+does not expose tokens or local paths, and does not claim live browser refresh.
+Not implemented: live browser filesystem refresh, semantic memory,
+embeddings/RAG, LLM extraction or recommendations, background refresh,
+avatar/voice/notifications, Project Brief prompt injection, and Smart
+Automation.
 
 Unified Execution Intent Lifecycle Foundation Slice 1 is complete, committed,
 and pushed to `main` (`26f342b`): canonical execution-intent contracts,
