@@ -122,6 +122,25 @@ an acquisition service that orchestrates multiple adapters, any
 provider-backed adapter, LLM extraction, general Markdown/document
 understanding, Project Workspace UI, and Smart Automation.
 
+**Sprint 1 Deliverable 1 -- Local Project Refresh CLI is implemented,
+uncommitted:** `npm run smartflow:refresh-project -- --project-id <uuid>
+--repo-root <path>` runs a local manual trusted-operator refresh, with
+`--json` output support; automated callers should use
+`npm --silent run smartflow:refresh-project -- --project-id <uuid>
+--repo-root <path> --json` for a single parseable JSON stdout object. It
+injects a trusted local repository root, acquires
+only the Repository Documents Adapter's canonical Markdown allowlist, persists
+ProjectEvidence/ProjectEvidenceObservation through the existing owner-scoped
+services, builds an Evidence Snapshot, and returns the existing typed Project
+Brief. It requires Supabase URL/anon-key configuration plus a user access
+token (`SMARTFLOW_SUPABASE_ACCESS_TOKEN`) so RLS/auth.uid() remain the
+identity boundary; it does not accept owner ids, hard-code Aryan's user id, or
+use service-role identity as the user. Not implemented: browser Refresh
+button, hosted production filesystem access, background refresh, scheduler,
+CI acquisition, multi-repository orchestration, semantic memory,
+embeddings/RAG, LLM extraction, general Markdown/document understanding,
+Project Workspace UI, and Smart Automation.
+
 Unified Execution Intent Lifecycle Foundation Slice 1 is complete, committed,
 and pushed to `main` (`26f342b`): canonical execution-intent contracts,
 deterministic canonicalization, lifecycle transition helpers, server-owned

@@ -10,12 +10,11 @@ export { PROJECT_CONTEXT_VERSION } from "./projectContextTypes";
 export { validateCreateProjectRecordInput, validateUpdateProjectRecordInput } from "./projectRecordValidation";
 export {
   createSupabaseProjectRecordRepository,
-  projectRecordRepository,
   ProjectRecordConflictError,
   ProjectRecordPersistenceError,
 } from "./projectRecordRepository";
 export type { ProjectRecordRepository } from "./projectRecordRepository";
-export { createProjectRecordService, projectRecordService } from "./projectRecordService";
+export { createProjectRecordService } from "./projectRecordService";
 export type { OwnerIdResolver, ProjectRecordService, ProjectRecordServiceDependencies } from "./projectRecordService";
 export { PROJECT_RECORD_EVIDENCE_SOURCE_KINDS, ProjectRecordError } from "./projectRecordTypes";
 
@@ -23,13 +22,12 @@ export { PROJECT_RECORD_EVIDENCE_SOURCE_KINDS, ProjectRecordError } from "./proj
 export { validateCreateProjectEvidenceInput } from "./projectEvidenceValidation";
 export {
   createSupabaseProjectEvidenceRepository,
-  projectEvidenceRepository,
   ProjectEvidenceConflictError,
   ProjectEvidencePersistenceError,
   ProjectEvidenceTransactionError,
 } from "./projectEvidenceRepository";
 export type { ProjectEvidenceRepository } from "./projectEvidenceRepository";
-export { createProjectEvidenceService, projectEvidenceService } from "./projectEvidenceService";
+export { createProjectEvidenceService } from "./projectEvidenceService";
 export type { ProjectEvidenceService, ProjectEvidenceServiceDependencies } from "./projectEvidenceService";
 export { PROJECT_EVIDENCE_CLASSIFICATIONS, ProjectEvidenceError } from "./projectEvidenceTypes";
 export type {
@@ -116,7 +114,6 @@ export type {
 } from "./contextRebuildTypes";
 export {
   canDeriveProjectContextFromSnapshot,
-  contextRebuildService,
   createContextRebuildService,
 } from "./contextRebuildService";
 export type { ContextRebuildService, ContextRebuildServiceDependencies, EvidenceToContextCapabilityCheck } from "./contextRebuildService";
@@ -146,8 +143,18 @@ export { extractArchitectureDocument } from "./projectBriefArchitectureExtractor
 export { extractProductDirectionDocument } from "./projectBriefProductDirectionExtractor";
 export { ProjectBriefError } from "./projectBriefServiceTypes";
 export type { ProjectBriefErrorCode, ProjectBriefErrorIssue } from "./projectBriefServiceTypes";
-export { createProjectBriefService, projectBriefService } from "./projectBriefService";
+export { createProjectBriefService } from "./projectBriefService";
 export type { ProjectBriefService, ProjectBriefServiceDependencies } from "./projectBriefService";
+
+// Local Project Refresh CLI orchestration.
+export { LocalProjectRefreshError, refreshLocalProject } from "./localProjectRefreshService";
+export type {
+  LocalProjectRefreshDependencies,
+  LocalProjectRefreshDocumentOutcome,
+  LocalProjectRefreshDocumentResult,
+  LocalProjectRefreshErrorCode,
+  LocalProjectRefreshResult,
+} from "./localProjectRefreshService";
 
 export type {
   CreateProjectRecordInput,

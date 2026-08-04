@@ -10,7 +10,7 @@
 // failure mode into a typed, non-disclosing ProjectBriefError. The brief is
 // always returned in-memory -- nothing here persists it.
 
-import { contextRebuildService, type ContextRebuildService } from "./contextRebuildService";
+import type { ContextRebuildService } from "./contextRebuildService";
 import { ContextRebuildError } from "./contextRebuildTypes";
 import { buildProjectBriefFromSnapshot } from "./projectBriefAssembler";
 import type { ProjectBrief } from "./projectBriefTypes";
@@ -18,7 +18,7 @@ import { ProjectBriefError, type ProjectBriefErrorCode } from "./projectBriefSer
 
 export interface ProjectBriefServiceDependencies {
   /** Only the read used here -- `rebuildProjectContext`. Defaults to the production Context Rebuild singleton. */
-  contextRebuildService?: Pick<ContextRebuildService, "rebuildProjectContext">;
+  contextRebuildService: Pick<ContextRebuildService, "rebuildProjectContext">;
   /** Injected clock. Defaults to the system clock; tests inject a fixed value. */
   now?: () => string;
 }
@@ -51,8 +51,8 @@ function toProjectBriefError(error: unknown): ProjectBriefError {
   return new ProjectBriefError("REBUILD_FAILED", "Unable to build a project brief for this project.");
 }
 
-export function createProjectBriefService(dependencies: ProjectBriefServiceDependencies = {}): ProjectBriefService {
-  const rebuildService = dependencies.contextRebuildService ?? contextRebuildService;
+export function createProjectBriefService(dependencies: ProjectBriefServiceDependencies): ProjectBriefService {
+  const rebuildService = dependencies.contextRebuildService;
   const now = dependencies.now ?? (() => new Date().toISOString());
 
   return {
@@ -88,6 +88,3 @@ export function createProjectBriefService(dependencies: ProjectBriefServiceDepen
     },
   };
 }
-
-/** Production singleton, backed by the real Context Rebuild service. */
-export const projectBriefService = createProjectBriefService();

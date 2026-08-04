@@ -15,7 +15,6 @@
 // Repository Documents Adapter or any other Evidence Source Adapter, and
 // never calls an LLM.
 
-import { supabase } from "@/integrations/supabase/client";
 import { buildProjectContext } from "./projectContextBuilder";
 import type { ProjectContextBuildResult } from "./projectContextTypes";
 import { buildEvidenceSnapshot } from "./evidenceSnapshotBuilder";
@@ -29,21 +28,13 @@ import {
 } from "./contextRebuildTypes";
 import {
   ProjectEvidencePersistenceError,
-  projectEvidenceRepository,
   type ProjectEvidenceRepository,
 } from "./projectEvidenceRepository";
-import { projectRecordRepository, type ProjectRecordRepository } from "./projectRecordRepository";
+import type { ProjectRecordRepository } from "./projectRecordRepository";
 import type { ProjectRecord } from "./projectRecordTypes";
 
 /** Resolves the current trusted authenticated user id, or `null` when unauthenticated. Never derived from request input, localStorage, or component state. */
 export type OwnerIdResolver = () => Promise<string | null>;
-
-async function resolveOwnerIdFromSupabaseAuth(): Promise<string | null> {
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  return user?.id ?? null;
-}
 
 /**
  * Whether a deterministic evidence-to-ProjectContext transformation exists
@@ -65,9 +56,9 @@ export function canDeriveProjectContextFromSnapshot(_snapshot: EvidenceSnapshot)
 export type EvidenceToContextCapabilityCheck = (snapshot: EvidenceSnapshot) => boolean;
 
 export interface ContextRebuildServiceDependencies {
-  projectRepository?: ProjectRecordRepository;
-  evidenceRepository?: ProjectEvidenceRepository;
-  resolveOwnerId?: OwnerIdResolver;
+  projectRepository: ProjectRecordRepository;
+  evidenceRepository: ProjectEvidenceRepository;
+  resolveOwnerId: OwnerIdResolver;
   /** Injected clock. Defaults to the system clock; tests inject a fixed value. Read exactly once per rebuild call. */
   now?: () => string;
   /**
@@ -133,12 +124,10 @@ function toRebuildMetadata(
   };
 }
 
-export function createContextRebuildService(
-  dependencies: ContextRebuildServiceDependencies = {},
-): ContextRebuildService {
-  const projectRepository = dependencies.projectRepository ?? projectRecordRepository;
-  const evidenceRepository = dependencies.evidenceRepository ?? projectEvidenceRepository;
-  const resolveOwnerId = dependencies.resolveOwnerId ?? resolveOwnerIdFromSupabaseAuth;
+export function createContextRebuildService(dependencies: ContextRebuildServiceDependencies): ContextRebuildService {
+  const projectRepository = dependencies.projectRepository;
+  const evidenceRepository = dependencies.evidenceRepository;
+  const resolveOwnerId = dependencies.resolveOwnerId;
   const now = dependencies.now ?? (() => new Date().toISOString());
   const canDeriveProjectContext = dependencies.canDeriveProjectContext ?? canDeriveProjectContextFromSnapshot;
 
@@ -246,6 +235,3 @@ export function createContextRebuildService(
     },
   };
 }
-
-/** Production singleton, backed by the real Supabase repositories and Supabase Auth session. */
-export const contextRebuildService = createContextRebuildService();

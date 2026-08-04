@@ -25,7 +25,7 @@
 // evidence+observation write and returns both rows, or the existing pair
 // when the content-hash-based candidate fingerprint already exists.
 
-import { supabase } from "@/integrations/supabase/client";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/integrations/supabase/types";
 import type { CreateProjectEvidenceResult, NormalizedCreateProjectEvidenceInput, ProjectEvidence } from "./projectEvidenceTypes";
 import type { ProjectEvidenceObservation } from "./projectEvidenceObservationTypes";
@@ -192,10 +192,11 @@ export interface ProjectEvidenceRepository {
 }
 
 async function fetchObservationsByEvidenceIds(
+  client: SupabaseClient<Database>,
   evidenceIds: readonly string[],
 ): Promise<Map<string, ProjectEvidenceObservation>> {
   if (evidenceIds.length === 0) return new Map();
-  const { data, error } = await supabase
+  const { data, error } = await client
     .from("project_evidence_observations")
     .select(PROJECT_EVIDENCE_OBSERVATION_SELECT_COLUMNS)
     .in("evidence_id", evidenceIds);
@@ -211,13 +212,13 @@ async function fetchObservationsByEvidenceIds(
   return byEvidenceId;
 }
 
-export function createSupabaseProjectEvidenceRepository(): ProjectEvidenceRepository {
+export function createSupabaseProjectEvidenceRepository(client: SupabaseClient<Database>): ProjectEvidenceRepository {
   return {
     async insert(_ownerId, projectId, input) {
       const contentHash = await sha256Hex(input.observation.textContent);
       const candidateFingerprint = await computeCandidateFingerprint(projectId, input, contentHash);
 
-      const { data, error } = await supabase.rpc("create_project_evidence_with_observation", {
+      const { data, error } = await client.rpc("create_project_evidence_with_observation", {
         p_project_id: projectId,
         p_source_kind: input.sourceKind,
         p_classification: input.classification,
@@ -278,7 +279,7 @@ export function createSupabaseProjectEvidenceRepository(): ProjectEvidenceReposi
     },
 
     async findById(ownerId, id) {
-      const { data, error } = await supabase
+      const { data, error } = await client
         .from("project_evidence")
         .select(PROJECT_EVIDENCE_SELECT_COLUMNS)
         .eq("id", id)
@@ -291,7 +292,7 @@ export function createSupabaseProjectEvidenceRepository(): ProjectEvidenceReposi
       if (!data) return null;
 
       const evidenceRow = data as ProjectEvidenceRow;
-      const observations = await fetchObservationsByEvidenceIds([evidenceRow.id]);
+      const observations = await fetchObservationsByEvidenceIds(client, [evidenceRow.id]);
       const observation = observations.get(evidenceRow.id);
       if (!observation) {
         // Every ProjectEvidence row is created atomically with its
@@ -304,7 +305,7 @@ export function createSupabaseProjectEvidenceRepository(): ProjectEvidenceReposi
     },
 
     async listByProject(ownerId, projectId, options) {
-      const query = supabase
+      const query = client
         .from("project_evidence")
         .select(PROJECT_EVIDENCE_SELECT_COLUMNS)
         .eq("user_id", ownerId)
@@ -322,7 +323,7 @@ export function createSupabaseProjectEvidenceRepository(): ProjectEvidenceReposi
         filteredRows = rows.filter((row) => !supersededIds.has(row.id));
       }
 
-      const observations = await fetchObservationsByEvidenceIds(filteredRows.map((row) => row.id));
+      const observations = await fetchObservationsByEvidenceIds(client, filteredRows.map((row) => row.id));
       return filteredRows.map((row) => {
         const observation = observations.get(row.id);
         if (!observation) {
@@ -333,6 +334,3 @@ export function createSupabaseProjectEvidenceRepository(): ProjectEvidenceReposi
     },
   };
 }
-
-/** Production singleton. Tests inject their own fake `ProjectEvidenceRepository` into `createProjectEvidenceService` instead of using this. */
-export const projectEvidenceRepository = createSupabaseProjectEvidenceRepository();

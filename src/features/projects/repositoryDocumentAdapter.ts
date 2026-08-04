@@ -33,11 +33,10 @@ import {
 import { ProjectEvidenceError, type ProjectEvidenceWithObservation } from "./projectEvidenceTypes";
 import type { ProjectSourceKind } from "./projectContextTypes";
 import {
-  projectEvidenceService,
   type OwnerIdResolver,
   type ProjectEvidenceService,
 } from "./projectEvidenceService";
-import { projectRecordRepository, type ProjectRecordRepository } from "./projectRecordRepository";
+import type { ProjectRecordRepository } from "./projectRecordRepository";
 
 /** Matches the identity already used in the Slice 4B RLS test fixtures for this exact future adapter -- kept as the real, stable value now that the adapter exists. */
 export const REPOSITORY_DOCUMENT_ADAPTER_IDENTITY = "repository-document-adapter";
@@ -51,8 +50,8 @@ export interface RepositoryDocumentAdapterDependencies {
   repositoryRoot: RepositoryRootResolver;
   /** Trusted owner-id resolution, mirroring projectEvidenceService.ts's own OwnerIdResolver contract exactly -- never derived from ingest input. */
   resolveOwnerId: OwnerIdResolver;
-  projectRepository?: ProjectRecordRepository;
-  evidenceService?: ProjectEvidenceService;
+  projectRepository: ProjectRecordRepository;
+  evidenceService: ProjectEvidenceService;
   /** Injected acquisition clock. Defaults to the system clock; tests inject a fixed value. */
   now?: () => string;
 }
@@ -114,8 +113,8 @@ export function createRepositoryDocumentAdapter(
   dependencies: RepositoryDocumentAdapterDependencies,
 ): RepositoryDocumentAdapter {
   const { repositoryRoot, resolveOwnerId } = dependencies;
-  const projectRepository = dependencies.projectRepository ?? projectRecordRepository;
-  const evidenceService = dependencies.evidenceService ?? projectEvidenceService;
+  const projectRepository = dependencies.projectRepository;
+  const evidenceService = dependencies.evidenceService;
   const now = dependencies.now ?? (() => new Date().toISOString());
 
   return {

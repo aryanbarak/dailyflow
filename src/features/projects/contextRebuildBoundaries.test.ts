@@ -140,14 +140,14 @@ describe("Context Rebuild source acquisition, execution, and authority boundarie
     }
   });
 
-  it("only the service module imports the Supabase client, and only for auth -- never a direct table query", () => {
+  it("context rebuild modules do not import the browser Supabase singleton", () => {
     for (const file of MODULE_FILES) {
       if (file === "contextRebuildService.ts") continue;
       expect(readModule(file)).not.toMatch(/integrations\/supabase/);
     }
     const serviceSource = readModule("contextRebuildService.ts");
-    expect(serviceSource).toMatch(/integrations\/supabase\/client/);
-    expect(serviceSource).toMatch(/supabase\s*\.\s*auth\s*\.\s*getUser/);
+    expect(serviceSource).not.toMatch(/integrations\/supabase\/client/);
+    expect(serviceSource).toMatch(/resolveOwnerId/);
     expect(serviceSource).not.toMatch(/supabase\s*\.\s*from\s*\(/);
   });
 

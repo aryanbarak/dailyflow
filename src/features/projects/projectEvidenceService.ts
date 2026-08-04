@@ -21,7 +21,6 @@
 // and never touches policy, approval, execution, Smart Automation, or an
 // LLM.
 
-import { supabase } from "@/integrations/supabase/client";
 import {
   ProjectEvidenceError,
   type CreateProjectEvidenceInput,
@@ -34,26 +33,18 @@ import {
   ProjectEvidenceConflictError,
   ProjectEvidencePersistenceError,
   ProjectEvidenceTransactionError,
-  projectEvidenceRepository,
   type ProjectEvidenceRepository,
 } from "./projectEvidenceRepository";
-import { projectRecordRepository, type ProjectRecordRepository } from "./projectRecordRepository";
+import type { ProjectRecordRepository } from "./projectRecordRepository";
 
 /** Resolves the current trusted authenticated user id, or `null` when unauthenticated. Never derived from request input, localStorage, or component state. */
 export type OwnerIdResolver = () => Promise<string | null>;
 
-async function resolveOwnerIdFromSupabaseAuth(): Promise<string | null> {
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  return user?.id ?? null;
-}
-
 export interface ProjectEvidenceServiceDependencies {
-  repository?: ProjectEvidenceRepository;
+  repository: ProjectEvidenceRepository;
   /** The ProjectRecord repository used only to load and verify project ownership/status/enabled evidence sources -- this module never writes through it. */
-  projectRepository?: ProjectRecordRepository;
-  resolveOwnerId?: OwnerIdResolver;
+  projectRepository: ProjectRecordRepository;
+  resolveOwnerId: OwnerIdResolver;
 }
 
 /** The `create_project_evidence_with_observation` transaction's own typed codes map 1:1 onto existing `ProjectEvidenceErrorCode` values -- the function replicates the identical checks this service already performs, as defense in depth. */
@@ -88,11 +79,11 @@ export interface ProjectEvidenceService {
 }
 
 export function createProjectEvidenceService(
-  dependencies: ProjectEvidenceServiceDependencies = {},
+  dependencies: ProjectEvidenceServiceDependencies,
 ): ProjectEvidenceService {
-  const repository = dependencies.repository ?? projectEvidenceRepository;
-  const projectRepository = dependencies.projectRepository ?? projectRecordRepository;
-  const resolveOwnerId = dependencies.resolveOwnerId ?? resolveOwnerIdFromSupabaseAuth;
+  const repository = dependencies.repository;
+  const projectRepository = dependencies.projectRepository;
+  const resolveOwnerId = dependencies.resolveOwnerId;
 
   async function requireOwnerId(): Promise<string> {
     const ownerId = await resolveOwnerId();
@@ -229,8 +220,5 @@ export function createProjectEvidenceService(
     },
   };
 }
-
-/** Production singleton, backed by the real Supabase repositories and Supabase Auth session. */
-export const projectEvidenceService = createProjectEvidenceService();
 
 export type { CreateProjectEvidenceInput };

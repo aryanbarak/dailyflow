@@ -64,14 +64,13 @@ describe("ProjectRecord execution and authority boundaries", () => {
     }
   });
 
-  it("the repository module is the only one that imports the Supabase client, and the service only for auth", () => {
+  it("repositories and services do not import the browser Supabase singleton", () => {
     expect(readModule("projectRecordTypes.ts")).not.toMatch(/integrations\/supabase/);
     expect(readModule("projectRecordValidation.ts")).not.toMatch(/integrations\/supabase/);
-    expect(readModule("projectRecordRepository.ts")).toMatch(/integrations\/supabase\/client/);
-    // The service resolves the authenticated owner via Supabase Auth directly
-    // (mirroring journalService.ts) but performs no other Supabase call itself.
+    expect(readModule("projectRecordRepository.ts")).not.toMatch(/integrations\/supabase\/client/);
     const serviceSource = readModule("projectRecordService.ts");
-    expect(serviceSource).toMatch(/integrations\/supabase\/client/);
+    expect(serviceSource).not.toMatch(/integrations\/supabase\/client/);
+    expect(serviceSource).toMatch(/resolveOwnerId/);
     expect(serviceSource).not.toMatch(/supabase\s*\.\s*from\s*\(/);
   });
 });

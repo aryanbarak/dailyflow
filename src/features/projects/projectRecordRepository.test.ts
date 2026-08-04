@@ -2,10 +2,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const fromMock = vi.hoisted(() => vi.fn());
 
-vi.mock("@/integrations/supabase/client", () => ({
-  supabase: { from: fromMock },
-}));
-
 import {
   createSupabaseProjectRecordRepository,
   ProjectRecordConflictError,
@@ -48,7 +44,7 @@ describe("createSupabaseProjectRecordRepository", () => {
 
   beforeEach(() => {
     fromMock.mockReset();
-    repository = createSupabaseProjectRecordRepository();
+    repository = createSupabaseProjectRecordRepository({ from: fromMock } as never);
   });
 
   describe("insert", () => {

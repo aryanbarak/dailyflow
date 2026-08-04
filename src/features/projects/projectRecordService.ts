@@ -14,7 +14,6 @@
 // docs/architecture/authority-model.md: a project record is configuration,
 // never execution authority.
 
-import { supabase } from "@/integrations/supabase/client";
 import {
   ProjectRecordError,
   type CreateProjectRecordInput,
@@ -23,26 +22,14 @@ import {
   type UpdateProjectRecordInput,
 } from "./projectRecordTypes";
 import { validateCreateProjectRecordInput, validateUpdateProjectRecordInput } from "./projectRecordValidation";
-import {
-  ProjectRecordConflictError,
-  ProjectRecordPersistenceError,
-  projectRecordRepository,
-  type ProjectRecordRepository,
-} from "./projectRecordRepository";
+import { ProjectRecordConflictError, ProjectRecordPersistenceError, type ProjectRecordRepository } from "./projectRecordRepository";
 
 /** Resolves the current trusted authenticated user id, or `null` when unauthenticated. Never derived from request input, localStorage, or component state. */
 export type OwnerIdResolver = () => Promise<string | null>;
 
-async function resolveOwnerIdFromSupabaseAuth(): Promise<string | null> {
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  return user?.id ?? null;
-}
-
 export interface ProjectRecordServiceDependencies {
-  repository?: ProjectRecordRepository;
-  resolveOwnerId?: OwnerIdResolver;
+  repository: ProjectRecordRepository;
+  resolveOwnerId: OwnerIdResolver;
 }
 
 function toProjectRecordError(error: unknown, fallbackMessage: string): ProjectRecordError {
@@ -65,10 +52,10 @@ export interface ProjectRecordService {
 }
 
 export function createProjectRecordService(
-  dependencies: ProjectRecordServiceDependencies = {},
+  dependencies: ProjectRecordServiceDependencies,
 ): ProjectRecordService {
-  const repository = dependencies.repository ?? projectRecordRepository;
-  const resolveOwnerId = dependencies.resolveOwnerId ?? resolveOwnerIdFromSupabaseAuth;
+  const repository = dependencies.repository;
+  const resolveOwnerId = dependencies.resolveOwnerId;
 
   async function requireOwnerId(): Promise<string> {
     const ownerId = await resolveOwnerId();
@@ -216,8 +203,5 @@ export function createProjectRecordService(
     },
   };
 }
-
-/** Production singleton, backed by the real Supabase repository and Supabase Auth session. */
-export const projectRecordService = createProjectRecordService();
 
 export type { CreateProjectRecordInput, UpdateProjectRecordInput };

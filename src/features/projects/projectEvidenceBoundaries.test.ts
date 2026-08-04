@@ -103,21 +103,22 @@ describe("ProjectEvidence execution, acquisition, and authority boundaries", () 
     }
   });
 
-  it("the repository module is the only one that imports the Supabase client, and the service only for auth plus the ProjectRecord repository", () => {
+  it("repositories and services do not import the browser Supabase singleton", () => {
     expect(readModule("projectEvidenceTypes.ts")).not.toMatch(/integrations\/supabase/);
     expect(readModule("projectEvidenceValidation.ts")).not.toMatch(/integrations\/supabase/);
     expect(readModule("projectEvidenceObservationTypes.ts")).not.toMatch(/integrations\/supabase/);
     expect(readModule("projectEvidenceObservationValidation.ts")).not.toMatch(/integrations\/supabase/);
-    expect(readModule("projectEvidenceRepository.ts")).toMatch(/integrations\/supabase\/client/);
+    expect(readModule("projectEvidenceRepository.ts")).not.toMatch(/integrations\/supabase\/client/);
     const serviceSource = readModule("projectEvidenceService.ts");
-    expect(serviceSource).toMatch(/integrations\/supabase\/client/);
+    expect(serviceSource).not.toMatch(/integrations\/supabase\/client/);
+    expect(serviceSource).toMatch(/resolveOwnerId/);
     expect(serviceSource).not.toMatch(/supabase\s*\.\s*from\s*\(/);
     expect(serviceSource).toMatch(/from ["']\.\/projectRecordRepository["']/);
   });
 
   it("the repository module never writes directly through a plain table insert on project_evidence -- only via the atomic RPC", () => {
     const repositorySource = readModule("projectEvidenceRepository.ts");
-    expect(repositorySource).toMatch(/supabase\s*\.\s*rpc\s*\(\s*["']create_project_evidence_with_observation["']/);
+    expect(repositorySource).toMatch(/(?:supabase|client)\s*\.\s*rpc\s*\(\s*["']create_project_evidence_with_observation["']/);
     expect(repositorySource).not.toMatch(/from\(\s*["']project_evidence["']\s*\)\s*\.\s*insert/);
   });
 });

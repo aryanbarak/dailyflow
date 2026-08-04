@@ -3,10 +3,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const fromMock = vi.hoisted(() => vi.fn());
 const rpcMock = vi.hoisted(() => vi.fn());
 
-vi.mock("@/integrations/supabase/client", () => ({
-  supabase: { from: fromMock, rpc: rpcMock },
-}));
-
 import {
   createSupabaseProjectEvidenceRepository,
   ProjectEvidenceConflictError,
@@ -97,7 +93,7 @@ describe("createSupabaseProjectEvidenceRepository", () => {
   beforeEach(() => {
     fromMock.mockReset();
     rpcMock.mockReset();
-    repository = createSupabaseProjectEvidenceRepository();
+    repository = createSupabaseProjectEvidenceRepository({ from: fromMock, rpc: rpcMock } as never);
   });
 
   describe("insert", () => {

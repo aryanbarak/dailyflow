@@ -12,7 +12,7 @@
 // (service, validation, or any future caller) ever sees a Supabase row or
 // Database type.
 
-import { supabase } from "@/integrations/supabase/client";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/integrations/supabase/types";
 import type {
   NormalizedCreateProjectRecordInput,
@@ -94,10 +94,10 @@ export interface ProjectRecordRepository {
   archiveActive(ownerId: string, id: string): Promise<ProjectRecord | "not_found">;
 }
 
-export function createSupabaseProjectRecordRepository(): ProjectRecordRepository {
+export function createSupabaseProjectRecordRepository(client: SupabaseClient<Database>): ProjectRecordRepository {
   return {
     async insert(ownerId, input) {
-      const { data, error } = await supabase
+      const { data, error } = await client
         .from("project_records")
         .insert({
           user_id: ownerId,
@@ -122,7 +122,7 @@ export function createSupabaseProjectRecordRepository(): ProjectRecordRepository
     },
 
     async findById(ownerId, id) {
-      const { data, error } = await supabase
+      const { data, error } = await client
         .from("project_records")
         .select(PROJECT_RECORD_SELECT_COLUMNS)
         .eq("id", id)
@@ -136,7 +136,7 @@ export function createSupabaseProjectRecordRepository(): ProjectRecordRepository
     },
 
     async listByOwner(ownerId, options) {
-      let query = supabase
+      let query = client
         .from("project_records")
         .select(PROJECT_RECORD_SELECT_COLUMNS)
         .eq("user_id", ownerId);
@@ -166,7 +166,7 @@ export function createSupabaseProjectRecordRepository(): ProjectRecordRepository
         patch.enabled_evidence_source_kinds = [...changes.enabledEvidenceSourceKinds];
       }
 
-      const { data, error } = await supabase
+      const { data, error } = await client
         .from("project_records")
         .update(patch)
         .eq("id", id)
@@ -186,7 +186,7 @@ export function createSupabaseProjectRecordRepository(): ProjectRecordRepository
     },
 
     async archiveActive(ownerId, id) {
-      const { data, error } = await supabase
+      const { data, error } = await client
         .from("project_records")
         .update({ status: "archived" })
         .eq("id", id)
@@ -202,6 +202,3 @@ export function createSupabaseProjectRecordRepository(): ProjectRecordRepository
     },
   };
 }
-
-/** Production singleton. Tests inject their own fake `ProjectRecordRepository` into `createProjectRecordService` instead of using this. */
-export const projectRecordRepository = createSupabaseProjectRecordRepository();

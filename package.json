@@ -20,7 +20,9 @@
     "tutor:prep": "npm run tutor:export && npm run tutor:sync && npm run tutor:verify",
     "dev:tutor": "npm run tutor:prep && vite",
     "build:tutor": "npm run tutor:prep && vite build",
-    "test": "vitest run"
+    "test": "vitest run",
+    "smartflow:refresh-project": "vite-node scripts/smartflow-refresh-project.ts",
+    "smartflow:refresh-project:json": "vite-node scripts/smartflow-refresh-project.ts --json"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
