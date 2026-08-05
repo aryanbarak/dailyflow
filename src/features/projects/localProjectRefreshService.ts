@@ -93,7 +93,15 @@ export interface LocalProjectRefreshDependencies {
   now?: () => string;
 }
 
-const REQUIRED_SOURCE_KINDS: readonly ProjectSourceKind[] = [
+/**
+ * The evidence source kinds a ProjectRecord must have enabled before this
+ * service will refresh it at all -- exported so any code that creates a
+ * ProjectRecord intended for local refresh (e.g.
+ * scripts/smartflow-create-project.ts) can depend on this exact list instead
+ * of maintaining its own duplicate literal that could silently drift out of
+ * sync with this requirement.
+ */
+export const REQUIRED_LOCAL_REFRESH_SOURCE_KINDS: readonly ProjectSourceKind[] = [
   "repository_document",
   "architecture_document",
   "adr",
@@ -270,7 +278,7 @@ export async function refreshLocalProject(
   }
   if (!project) throw new LocalProjectRefreshError("PROJECT_NOT_FOUND", "Project was not found for this user.");
   if (project.status === "archived") throw new LocalProjectRefreshError("PROJECT_ARCHIVED", "Project is archived.");
-  if (!REQUIRED_SOURCE_KINDS.every((kind) => project.enabledEvidenceSourceKinds.includes(kind))) {
+  if (!REQUIRED_LOCAL_REFRESH_SOURCE_KINDS.every((kind) => project.enabledEvidenceSourceKinds.includes(kind))) {
     throw new LocalProjectRefreshError("EVIDENCE_SOURCE_DISABLED", "Repository document evidence is not fully enabled for this project.");
   }
 
