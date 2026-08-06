@@ -12,9 +12,11 @@ describe("Project Workspace browser boundaries", () => {
   it("does not import filesystem, child process, CLI, refresh service, or Supabase client from browser page modules", () => {
     const sources = [
       read("src/pages/ProjectWorkspacePage.tsx"),
+      read("src/pages/ProjectsIndexPage.tsx"),
       read("src/features/projects/projectWorkspaceFixture.ts"),
       read("src/features/projects/projectWorkspaceReadService.ts"),
       read("src/features/projects/projectWorkspaceBrowserReadService.ts"),
+      read("src/features/projects/projectRecordBrowserReadService.ts"),
     ];
 
     for (const source of sources) {
@@ -22,6 +24,38 @@ describe("Project Workspace browser boundaries", () => {
       expect(source).not.toMatch(/smartflow-refresh-project|localProjectRefreshService/);
       expect(source).not.toMatch(/createClient|service_role|SERVICE_ROLE/);
     }
+  });
+
+  it("Projects index page and its read service do not import the Repository Documents Adapter, write ProjectEvidence, or mutate ProjectRecord", () => {
+    const sources = [read("src/pages/ProjectsIndexPage.tsx"), read("src/features/projects/projectRecordBrowserReadService.ts")];
+
+    for (const source of sources) {
+      expect(source).not.toMatch(/createRepositoryDocumentAdapter|RepositoryDocumentAdapter|repositoryDocumentAdapter/);
+      expect(source).not.toMatch(/createSupabaseProjectEvidenceRepository|ProjectEvidenceObservation|project_evidence/);
+      expect(source).not.toMatch(/\.create\(|\.archive\(|\.update\(|\.insert\(/);
+      expect(source).not.toMatch(/embedding|vector|RAG|runReadOnlyTool|runWriteTool|Smart Automation/);
+      expect(source).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i);
+    }
+  });
+
+  it("Projects index reaches the owner's records through one authenticated client and resolveOwnerId, never a caller-supplied owner id", () => {
+    const source = read("src/features/projects/projectRecordBrowserReadService.ts");
+
+    expect(source).toContain("createBrowserProjectRecordReadService(client");
+    expect(source).toContain("createSupabaseProjectRecordRepository(client)");
+    expect(source).toContain("client.auth.getUser()");
+    expect(source).not.toMatch(/ownerId\s*:\s*(query|params|localStorage)/i);
+  });
+
+  it("Sidebar and mobile navigation link to /projects with no hard-coded UUID and no direct demo-route link", () => {
+    const sources = [read("src/components/layout/Sidebar.tsx"), read("src/components/layout/MobileNav.tsx")];
+
+    for (const source of sources) {
+      expect(source).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i);
+      expect(source).not.toMatch(/\/projects\/demo/);
+    }
+    expect(sources[0]).toContain('path: "/projects"');
+    expect(sources[1]).toContain('path: "/projects"');
   });
 
   it("does not introduce semantic memory, vector, RAG, LLM, automation, approval, commit, or push behavior", () => {

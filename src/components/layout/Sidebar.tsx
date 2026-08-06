@@ -14,6 +14,7 @@ import {
   Flame,
   BookOpen,
   MessageSquare,
+  FolderKanban,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { GlobalSearch } from "@/features/search/GlobalSearch";
@@ -32,9 +33,11 @@ const navItems: {
   icon: React.ElementType;
   key: TranslationKey;
   path: string;
+  activeMatch?: "exact" | "prefix";
 }[] = [
   { icon: LayoutDashboard, key: 'nav_dashboard', path: "/" },
   { icon: MessageSquare, key: 'nav_chat', path: "/chat" },
+  { icon: FolderKanban, key: 'nav_projects', path: "/projects", activeMatch: "prefix" },
   { icon: Bot, key: 'nav_tutor_app', path: "/tutor/app", externalUrl: smartAcademyUrl },
   { icon: CheckSquare, key: 'nav_tasks', path: "/tasks" },
   { icon: Calendar, key: 'nav_calendar', path: "/calendar" },
@@ -161,7 +164,10 @@ export function Sidebar() {
       {/* Navigation — Context Rail: active pill slides between items via layoutId */}
       <nav className="relative z-10 flex-1 p-4 space-y-0.5 overflow-y-auto scrollbar-hide">
         {navItems.map((item) => {
-          const isActive = location.pathname === item.path;
+          const isActive =
+            item.activeMatch === "prefix"
+              ? location.pathname === item.path || location.pathname.startsWith(`${item.path}/`)
+              : location.pathname === item.path;
           return (
             <div key={item.path} className="relative">
               {isActive && (

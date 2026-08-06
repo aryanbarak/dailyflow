@@ -13,15 +13,26 @@ function render(model: ProjectWorkspaceModel = smartflowProjectWorkspaceFixture)
 }
 
 describe("ProjectWorkspacePage", () => {
-  it("renders the Project Brief hierarchy with project identity first", () => {
+  it("renders project identity and the new primary situation section", () => {
     const html = render();
 
     expect(html).toContain("Project Workspace");
     expect(html).toContain("SmartFlow");
+    expect(html).toContain("Current situation");
     expect(html).toContain("Current phase");
     expect(html).toContain("Current focus");
-    expect(html).toContain("Top explicit next action");
+    expect(html).toContain("Next explicit action");
+    expect(html).not.toContain("Top explicit next action");
     expect(html).toContain("Last refresh:");
+  });
+
+  it("does not use the previous narrow three-card grid for phase/focus/next action", () => {
+    const html = render();
+
+    // The old layout squeezed Phase/Focus/Next-Action into a 3-column grid
+    // inside the header; the new situation section stacks them full-width.
+    expect(html).not.toMatch(/mt-5 grid gap-3 md:grid-cols-3/);
+    expect(html).toContain("divide-y divide-border");
   });
 
   it("prominently labels the default workspace as demo fixture data that is not live or persisted", () => {
@@ -32,6 +43,14 @@ describe("ProjectWorkspacePage", () => {
     expect(html).toContain("No persisted Evidence or live Project Brief has been loaded");
   });
 
+  it("does not use a large live banner and keeps refresh detail behind a disclosure", () => {
+    const html = render();
+
+    expect(html).toContain("<details");
+    expect(html).toContain("Refresh details");
+    expect(html).toContain("local refresh instructions");
+  });
+
   it("does not show completed refresh, realistic timestamps, or live-looking counts for the default fixture", () => {
     const html = render();
 
@@ -39,10 +58,8 @@ describe("ProjectWorkspacePage", () => {
     expect(smartflowProjectWorkspaceFixture.generatedAt).toBeUndefined();
     expect(html).toContain("Not refreshed in browser");
     expect(html).toContain("Demo only - not refreshed");
-    expect(html).toContain("Sample only");
+    expect(html).toContain("Sample fixture data - not live or persisted");
     expect(html).not.toContain(">Completed</span>");
-    expect(html).not.toContain("Created");
-    expect(html).not.toContain("Unchanged");
     expect(html).not.toContain("Aug 04");
   });
 
@@ -139,7 +156,7 @@ describe("ProjectWorkspacePage", () => {
     expect(html).toMatch(/Failed<\/dt><dd[^>]*>1<\/dd>/);
   });
 
-  it("preserves known, unknown, and conflicted states", () => {
+  it("preserves known, unknown, and conflicted states in the primary situation section", () => {
     const model: ProjectWorkspaceModel = {
       ...smartflowProjectWorkspaceFixture,
       brief: {
@@ -163,10 +180,22 @@ describe("ProjectWorkspacePage", () => {
     expect(html).toContain("Focus B");
   });
 
+  it("keeps conflicts visible: the secondary section auto-opens whenever a conflict exists", () => {
+    const html = render();
+
+    // The default fixture carries one CONFLICTING_CANONICAL_STATEMENT
+    // extraction warning, so the secondary disclosure must start open,
+    // and the conflict must be summarized in its own summary text.
+    expect(html).toContain("aria-expanded=\"true\"");
+    expect(html).toContain("includes 1 conflict");
+  });
+
   it("keeps semantic categories distinct instead of merging them into warnings", () => {
     const html = render();
 
     for (const label of [
+      "Explicit next actions",
+      "Completed milestones",
       "Accepted decisions",
       "Open decisions",
       "Risks",
@@ -199,7 +228,7 @@ describe("ProjectWorkspacePage", () => {
     expect(html).toContain("docs/roadmap/project-workspace-implementation-roadmap-v1.md");
     expect(html).toContain("Deferred");
     expect(html).toContain("ev-roadmap-1");
-    expect(html).not.toContain("Conflicts</h2><span class=\"inline-flex items-center rounded-md border px-2 py-1 text-xs font-medium border-success/30 bg-success/10 text-success\">None</span>");
+    expect(html).not.toContain("Conflicts</h3><span class=\"inline-flex items-center rounded-md border px-2 py-1 text-xs font-medium border-success/30 bg-success/10 text-success\">None</span>");
     expect(html).not.toContain("No conflicting Project Brief statements are present.");
   });
 
@@ -239,6 +268,17 @@ describe("ProjectWorkspacePage", () => {
     expect(html).not.toContain("C:\\Projects");
   });
 
+  it("Reload data is wired to the onReload callback rather than a full page navigation", () => {
+    const html = renderToString(
+      <MemoryRouter>
+        <ProjectWorkspaceView model={{ ...smartflowProjectWorkspaceFixture, integration: "live" }} onReload={() => {}} />
+      </MemoryRouter>,
+    );
+
+    expect(html).toContain("Reload data");
+    expect(html).toContain("aria-label=\"Reload persisted project data\"");
+  });
+
   it("reuses the existing conversation route without claiming live brief-aware AI", () => {
     const html = render();
 
@@ -248,12 +288,12 @@ describe("ProjectWorkspacePage", () => {
     expect(html).toContain("No semantic memory, RAG, or live Project Brief awareness is claimed");
   });
 
-  it("keeps the responsive structure as context first and conversation second", () => {
+  it("keeps the responsive structure as context first and conversation second, with an approximately 65-70/30-35 desktop split", () => {
     const html = render();
 
     expect(html).toContain("data-testid=\"project-workspace-layout\"");
     expect(html.indexOf("Project Workspace")).toBeLessThan(html.indexOf("SmartFlow chat"));
-    expect(html).toContain("xl:grid-cols-[minmax(0,1fr)_360px]");
+    expect(html).toContain("xl:grid-cols-[minmax(0,1fr)_420px]");
   });
 
   it("does not make LLM, memory, RAG, token, or path leakage claims", () => {

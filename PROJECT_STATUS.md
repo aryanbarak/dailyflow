@@ -142,7 +142,8 @@ embeddings/RAG, LLM extraction, general Markdown/document understanding,
 Project Workspace UI, and Smart Automation.
 
 **Sprint 1 Deliverable 3 -- Live Persisted Project Brief Read Path is
-implemented, uncommitted:** `/projects/:projectId` now loads an authenticated,
+implemented and committed to `main` (`8d791c3`, exit-code and honesty fixes
+stabilized in `05d77a1`):** `/projects/:projectId` loads an authenticated,
 owner-scoped active `ProjectRecord`, reads already-persisted
 `ProjectEvidence`/`ProjectEvidenceObservation`, runs the existing Context
 Rebuild/Evidence Snapshot and Project Brief services, and renders the real
@@ -156,6 +157,41 @@ repository/filesystem refresh, Project Brief persistence/cache, semantic
 memory, embeddings/RAG, LLM extraction or recommendations, background
 refresh, avatar/voice/notifications, Project Brief prompt injection, and
 Smart Automation.
+
+**Sprint 1 Deliverable 4 -- Daily Workspace Entry & Usability Pass is
+implemented, uncommitted:** the live Project Workspace is now reachable
+without typing a URL or a ProjectRecord UUID. A discoverable Sidebar
+"Projects" entry (desktop rail and mobile "More" sheet, active on
+`/projects` and any nested workspace route) links to a new authenticated
+`/projects` index page, which lists only the signed-in owner's
+`ProjectRecord`s (active first, then most-recently-created, then id -- a
+deterministic order) through the existing owner-scoped
+`ProjectRecordRepository`/`ProjectRecordService` over one authenticated
+browser Supabase client (no owner id from query/localStorage, no
+hard-coded UUID, no first-project auto-redirect, no create/edit/archive
+action). Each row shows name, active/archived state, optional description,
+and an enabled-evidence-source-kind count, with an "Open workspace" action
+that navigates to `/projects/<project-record-id>`; the index never links to
+the explicit demo route as if it were a real project. `ProjectWorkspacePage`
+itself received a focused usability pass, not a redesign: a compact header
+(project name, live/demo state, last-evidence-snapshot summary, Reload
+data) replaces the former large live banner, with refresh counts and the
+local-refresh CLI instructions moved behind one accessible disclosure; the
+former three-narrow-card Phase/Focus/Next-Action grid is replaced by one
+full-width "Current situation" section so none of the three is squeezed
+into a fraction of the page width; every other semantic category
+(milestones, decisions, risks, debt, limitations, scope, conflicts,
+sources) stays in its own distinct, clearly labeled section behind one
+"More project details" disclosure that opens automatically whenever a real
+conflict exists, so conflicts never need an extra click to see; provenance
+stays reachable through the existing per-fact drill-downs, never displayed
+prominently outside them. Live/demo honesty, RLS/ownership scoping, and the
+no-fabricated-failed-count fix from the prior stabilization slice are
+unchanged by this pass. Not implemented: project creation, editing,
+deletion, or archive actions from the browser; portfolio analytics or
+charts on the Projects index; conversation awareness of the Project Brief;
+semantic memory; RAG; Personal Memory; background refresh; Smart
+Automation.
 
 Unified Execution Intent Lifecycle Foundation Slice 1 is complete, committed,
 and pushed to `main` (`26f342b`): canonical execution-intent contracts,

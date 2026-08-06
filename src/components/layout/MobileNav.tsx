@@ -15,6 +15,7 @@ import {
   Flame,
   BookOpen,
   MessageSquare,
+  FolderKanban,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
@@ -30,6 +31,7 @@ const mainNavItems: { icon: React.ElementType; key: TranslationKey; path: string
 ];
 
 const moreNavItems: { icon: React.ElementType; key: TranslationKey; path: string }[] = [
+  { icon: FolderKanban, key: 'nav_projects', path: "/projects" },
   { icon: Calendar, key: 'nav_calendar', path: "/calendar" },
   { icon: Flame, key: 'nav_habits', path: "/habits" },
   { icon: BookOpen, key: 'nav_journal', path: "/journal" },
@@ -81,7 +83,8 @@ export function MobileNav() {
               </div>
               <div className="grid grid-cols-4 gap-4">
                 {moreNavItems.map((item) => {
-                  const isActive = location.pathname === item.path;
+                  const isActive =
+                    location.pathname === item.path || location.pathname.startsWith(`${item.path}/`);
                   return (
                     <button
                       key={item.path}

@@ -17,6 +17,7 @@ const en = {
   nav_more: 'More',
   nav_tutor_app: 'Smart Academy',
   nav_chat: 'Flow AI',
+  nav_projects: 'Projects',
 
   // Common
   save: 'Save',
@@ -943,6 +944,7 @@ const de: TranslationDict = {
   nav_more: 'Mehr',
   nav_tutor_app: 'Smart Academy',
   nav_chat: 'Flow AI',
+  nav_projects: 'Projekte',
 
   save: 'Speichern',
   cancel: 'Abbrechen',
@@ -1842,6 +1844,7 @@ const fa: TranslationDict = {
   nav_more: 'بیشتر',
   nav_tutor_app: 'Smart Academy',
   nav_chat: 'Flow AI',
+  nav_projects: 'پروژه‌ها',
 
   save: 'ذخیره',
   cancel: 'لغو',
