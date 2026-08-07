@@ -729,6 +729,11 @@ SmartFlow authority — applied here to evidence semantics specifically.
 
 ## 24. Current Implementation Status
 
+**This section is superseded — see [`PROJECT_STATUS.md`](../../PROJECT_STATUS.md)
+for current status.** It is corrected below only where 2026-08-07
+reconciliation evidence (`docs/status/reconciliation-2026-08.md`) proved it
+wrong; it is not being kept up to date going forward.
+
 **Implemented today:**
 
 - `ProjectSourceKind` type (`src/features/projects/projectContextTypes.ts`);
@@ -737,17 +742,26 @@ SmartFlow authority — applied here to evidence semantics specifically.
 - `ProjectContext` types and the deterministic `ProjectContextBuilder`
   (Slice 2A, `src/features/projects/projectContextBuilder.ts`);
 - `ProjectRecord` persistence (Slice 3, committed and pushed to `main` —
-  `cec2be9`).
+  `cec2be9`);
+- `ProjectEvidence` and `ProjectEvidenceObservation` persistence, atomic and
+  immutable (Slice 4B / ADR-0007, committed to `main` — `9b40a4d`, `bc87a60`);
+- the Repository Documents Adapter, a real, credential-free Evidence Source
+  Adapter that performs actual source reading of allowlisted in-repo
+  Markdown documents (committed to `main` — `bc87a60`; not wired into any
+  production entry point — a tested, injectable library invoked only by the
+  local Project Refresh CLI);
+- evidence snapshots, via the deterministic `EvidenceSnapshot` builder
+  (Context Rebuild Foundation, committed to `main` — `ae2a0d5`);
+- Context Rebuild, via `rebuildProjectContext(projectId)` (same commit) —
+  honestly partial: it returns `snapshot_ready_context_not_derivable` for
+  every project today, since no deterministic evidence-to-structured-fact
+  transformation exists yet (see §22 above, unchanged).
 
 **Not implemented:**
 
-- `ProjectEvidence` persistence of any kind;
-- an acquisition service;
-- any Evidence Source Adapter;
-- any actual source reading;
-- evidence snapshots;
-- Context Rebuild;
-- any provider-backed evidence;
+- an acquisition service that orchestrates or selects among multiple
+  Evidence Source Adapters;
+- any provider-backed Evidence Source Adapter (GitHub API, Gmail, Calendar);
 - manual upload;
 - explicit user-statement submission;
 - LLM promotion of any kind;

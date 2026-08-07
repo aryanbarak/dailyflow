@@ -24,6 +24,16 @@ document should be read as either `ProjectRecord` (identity/configuration) or
 sequencing and slice content are not otherwise changed by that document; see its §18 for
 the full reconciliation.
 
+**Status note (2026-08-07, reconciliation):** every implementation-status
+claim in this document — including §2's "Current Implementation State"
+table and every `*Status note*` under §6 — is historical narration, not
+current status. Current status lives only in
+[`PROJECT_STATUS.md`](../../PROJECT_STATUS.md); this document's own
+`*Status note*` blocks under §6 are individually marked superseded below
+rather than rewritten. See
+[`docs/status/reconciliation-2026-08.md`](../status/reconciliation-2026-08.md)
+for the evidence behind this change.
+
 ---
 
 ## 1. Purpose
@@ -200,6 +210,7 @@ or writes to it yet.
 programmatically; no schema or migration design is decided in this roadmap — that is a
 separate, later engineering task.
 
+*Superseded — see PROJECT_STATUS.md.*
 *Status note (Slice 3, 2026-08-01):* the identity/configuration half of S1 —
 create, read, list, update, and archive — is implemented as `ProjectRecord`
 (`src/features/projects/projectRecordService.ts`), backed by the
@@ -211,6 +222,7 @@ section 5 and `PROJECT_STATUS.md`. S1's "objective" field is
 (S2) and a `ProjectContext` rebuild service both remain separate,
 not-yet-scheduled work.
 
+*Superseded — see PROJECT_STATUS.md.*
 *Status note (Slice 4A, 2026-08-02):* the canonical architecture for how
 evidence would eventually back a `ProjectContext` rebuild is now recorded in
 [`docs/architecture/project-evidence-acquisition.md`](../architecture/project-evidence-acquisition.md)
@@ -218,6 +230,7 @@ evidence would eventually back a `ProjectContext` rebuild is now recorded in
 `ProjectContext` rebuild service exists yet; this roadmap's S2 still depends
 on that not-yet-scheduled work.
 
+*Superseded — see PROJECT_STATUS.md.*
 *Status note (Slice 4B, 2026-08-02):* the durable `ProjectEvidence`
 persistence and validation half of that architecture is complete,
 independently reviewed, and committed to `main`
@@ -225,6 +238,7 @@ independently reviewed, and committed to `main`
 Evidence Source Adapter, no acquisition service that reads a real source,
 and no `ProjectContext` rebuild service.
 
+*Superseded — see PROJECT_STATUS.md.*
 *Status note (Repository Documents Adapter, 2026-08-02):* the first real,
 credential-free Evidence Source Adapter is complete, independently
 reviewed, and committed to `main`
@@ -233,6 +247,7 @@ allowlisted, in-repo Markdown document at a time and persists it via the
 existing `ProjectEvidence` service. Not wired into any production entry
 point — a tested, injectable library only.
 
+*Superseded — see PROJECT_STATUS.md.*
 *Status note (ProjectEvidence Observation Foundation, ADR-0007, 2026-08-02):*
 an independent review of the adapter above found `ProjectEvidence` persisted
 no consumable observation payload. Per
@@ -245,6 +260,7 @@ Repository Documents Adapter was updated accordingly. Independently
 reviewed (two confirmed RPC exception-handling blockers found and fixed)
 and committed to `main`.
 
+*Superseded — see PROJECT_STATUS.md.*
 *Status note (Context Rebuild Foundation, 2026-08-03):* deterministic
 evidence-snapshot construction, freshness/snapshot-identity metadata, and a
 trusted read-only `rebuildProjectContext(projectId)` service
@@ -262,6 +278,7 @@ or selects among multiple adapters, no provider-backed adapter, and no
 actual evidence-to-context derivation; this roadmap's S2 remains unaffected
 and still depends on that not-yet-scheduled work.
 
+*Superseded — see PROJECT_STATUS.md.*
 *Status note (Project Brief Foundation, 2026-08-03):* a deterministic,
 evidence-backed `ProjectBrief` (`src/features/projects/projectBriefService.ts`
 and its extractors) is now implemented, pending independent review,

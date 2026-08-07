@@ -14,6 +14,10 @@ This document does not define target architecture, future automation, or product
 roadmap. Anything not implemented is labeled `Not Implemented`, `Partially
 Implemented`, or `Operational Limitation`.
 
+[`PROJECT_STATUS.md`](../../PROJECT_STATUS.md) is the single current-status
+source for SmartFlow; this document should not be read as a second status
+source, only as the maintained architecture-level detail behind it.
+
 ## System Overview
 
 SmartFlow is implemented as a React and TypeScript personal operating workspace
@@ -636,7 +640,6 @@ authenticated users where appropriate.
   runtime.
 - The GitHub file-update boundary is implemented, but it is intentionally narrow
   and high-risk.
-- The architecture currently has no complete target-architecture document.
 
 ## Implemented vs Planned Matrix
 
