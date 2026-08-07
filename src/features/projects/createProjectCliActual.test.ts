@@ -109,6 +109,30 @@ describe("create-project actual CLI JSON contract", () => {
     expect(json.message).not.toContain("bad-url-with-no-scheme");
   });
 
+  it("a non-local Supabase URL without --allow-production fails closed with NOT_LOCAL_TARGET and exit code 3, before any auth attempt (R-1)", () => {
+    // No SMARTFLOW_SUPABASE_ANON_KEY/ACCESS_TOKEN supplied at all -- if the
+    // gate did not short-circuit before those reads, this would instead fail
+    // with AUTH_CONFIGURATION_REQUIRED, which this test also rules out. The
+    // interactive-confirmation branch (--allow-production) is covered by
+    // cliSupabaseEnvironmentGate.test.ts's unit tests with an injected
+    // confirm function, not here -- driving a real stdin prompt through a
+    // spawned child process is unnecessary risk (a hang if EOF timing
+    // differs across platforms) for behavior already covered at the unit
+    // level.
+    const result = runCli(["--name", "SmartFlow"], {
+      SMARTFLOW_SUPABASE_URL: "https://example.supabase.co",
+      SMARTFLOW_SUPABASE_ANON_KEY: "",
+      SMARTFLOW_LOCAL_SUPABASE_ANON_KEY: "",
+      SMARTFLOW_SUPABASE_ACCESS_TOKEN: "",
+    });
+    expect(result.status).toBe(3);
+    const json = parseSingleJson(result.stdout);
+    expect(json).toMatchObject({ ok: false, code: "NOT_LOCAL_TARGET", target: { host: "example.supabase.co" } });
+    expect(json.message).toContain("example.supabase.co");
+    expect(json.message).toContain("--allow-production");
+    expect(result.stderr).not.toMatch(/at .*\.ts|storage\.getItem|Supabase/);
+  });
+
   it("dummy configured invalid token returns sanitized unauthenticated JSON with the target host, exit code 3", () => {
     const result = runCli(["--name", "SmartFlow"], {
       SMARTFLOW_SUPABASE_URL: "http://127.0.0.1:54321",

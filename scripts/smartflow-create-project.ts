@@ -21,6 +21,7 @@ type ParsedArgs = {
   repoOwner?: string;
   repoName?: string;
   json: boolean;
+  allowProduction: boolean;
 };
 
 class CliError extends Error {
@@ -36,6 +37,7 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
   let repoOwner: string | undefined;
   let repoName: string | undefined;
   let json = false;
+  let allowProduction = false;
   // Duplicate flags are intentionally last-value-wins, not rejected --
   // identical to scripts/smartflow-refresh-project.ts's own parseArgs, which
   // this CLI otherwise mirrors exactly. See
@@ -45,6 +47,8 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
     const arg = argv[index];
     if (arg === "--json") {
       json = true;
+    } else if (arg === "--allow-production") {
+      allowProduction = true;
     } else if (arg === "--name") {
       name = argv[++index] ?? "";
     } else if (arg === "--description") {
@@ -61,7 +65,7 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
   if ((repoOwner && !repoName) || (repoName && !repoOwner)) {
     throw new Error("--repo-owner and --repo-name must be supplied together.");
   }
-  return { name, description, repoOwner, repoName, json };
+  return { name, description, repoOwner, repoName, json, allowProduction };
 }
 
 function readRequiredEnv(name: string, fallbackName?: string): string {
@@ -72,24 +76,17 @@ function readRequiredEnv(name: string, fallbackName?: string): string {
   return value.trim();
 }
 
-/**
- * Parses the resolved Supabase URL and returns only its host -- never the
- * full URL, since that could carry embedded credentials or a query string.
- * Throws a typed, sanitized config error for a malformed URL instead of
- * letting a raw URL-parsing exception (which can echo the invalid input)
- * escape uncaught.
- */
-function resolveTargetHost(supabaseUrl: string): string {
-  try {
-    return new URL(supabaseUrl).host;
-  } catch {
-    throw new CliError("INVALID_SUPABASE_URL", "SMARTFLOW_SUPABASE_URL (or SMARTFLOW_LOCAL_SUPABASE_URL) is not a valid URL.");
-  }
-}
-
 function exitCodeFor(code: string): number {
   if (code === "INVALID_ARGUMENTS" || code === "INVALID_INPUT") return 2;
-  if (code === "AUTH_CONFIGURATION_REQUIRED" || code === "INVALID_SUPABASE_URL" || code === "UNAUTHENTICATED") return 3;
+  if (
+    code === "AUTH_CONFIGURATION_REQUIRED" ||
+    code === "INVALID_SUPABASE_URL" ||
+    code === "UNAUTHENTICATED" ||
+    code === "NOT_LOCAL_TARGET" ||
+    code === "PRODUCTION_NOT_CONFIRMED"
+  ) {
+    return 3;
+  }
   if (code === "DUPLICATE_REPOSITORY_BINDING") return 4;
   return 1;
 }
@@ -144,19 +141,32 @@ async function main(): Promise<number> {
 
   try {
     const supabaseUrl = readRequiredEnv("SMARTFLOW_SUPABASE_URL", "SMARTFLOW_LOCAL_SUPABASE_URL");
-    targetHost = resolveTargetHost(supabaseUrl);
-    const anonKey = readRequiredEnv("SMARTFLOW_SUPABASE_ANON_KEY", "SMARTFLOW_LOCAL_SUPABASE_ANON_KEY");
-    const accessToken = readRequiredEnv("SMARTFLOW_SUPABASE_ACCESS_TOKEN");
 
     const [
+      { resolveCliSupabaseTarget, describeCliSupabaseTargetFailure },
       { createSupabaseProjectRecordRepository },
       { createProjectRecordService },
       { REQUIRED_LOCAL_REFRESH_SOURCE_KINDS },
     ] = await Promise.all([
+      import("../src/features/projects/cliSupabaseEnvironmentGate"),
       import("../src/features/projects/projectRecordRepository"),
       import("../src/features/projects/projectRecordService"),
       import("../src/features/projects/localProjectRefreshService"),
     ]);
+
+    // R-1 remediation: gate the resolved target BEFORE reading anon key/access
+    // token or constructing any Supabase client -- a non-local target with no
+    // --allow-production flag must fail closed here, unconditionally. Also
+    // replaces this file's own former resolveTargetHost -- the gate resolves
+    // and reports the same host, so that host-parsing logic is not duplicated.
+    const gateResult = await resolveCliSupabaseTarget(supabaseUrl, { allowProduction: parsed.allowProduction });
+    targetHost = gateResult.host;
+    if (!gateResult.ok) {
+      throw new CliError(gateResult.reason, describeCliSupabaseTargetFailure(gateResult));
+    }
+
+    const anonKey = readRequiredEnv("SMARTFLOW_SUPABASE_ANON_KEY", "SMARTFLOW_LOCAL_SUPABASE_ANON_KEY");
+    const accessToken = readRequiredEnv("SMARTFLOW_SUPABASE_ACCESS_TOKEN");
 
     const client = createClient(supabaseUrl, anonKey, {
       auth: { persistSession: false, autoRefreshToken: false },

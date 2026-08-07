@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createClient } from "@supabase/supabase-js";
 
-type ParsedArgs = { projectId: string; repoRoot: string; json: boolean };
+type ParsedArgs = { projectId: string; repoRoot: string; json: boolean; allowProduction: boolean };
 
 class CliError extends Error {
   constructor(readonly code: string, message: string) {
@@ -16,10 +16,13 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
   let projectId = "";
   let repoRoot = "";
   let json = false;
+  let allowProduction = false;
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--json") {
       json = true;
+    } else if (arg === "--allow-production") {
+      allowProduction = true;
     } else if (arg === "--project-id") {
       projectId = argv[++index] ?? "";
     } else if (arg === "--repo-root") {
@@ -32,7 +35,7 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
   if (!UUID_PATTERN.test(projectId)) throw new Error("--project-id must be a UUID.");
   if (!repoRoot) throw new Error("--repo-root is required.");
   if (repoRoot.includes(String.fromCharCode(0))) throw new Error("--repo-root is invalid.");
-  return { projectId, repoRoot, json };
+  return { projectId, repoRoot, json, allowProduction };
 }
 
 function readRequiredEnv(name: string, fallbackName?: string): string {
@@ -45,7 +48,15 @@ function readRequiredEnv(name: string, fallbackName?: string): string {
 
 function exitCodeFor(code: string): number {
   if (code === "INVALID_ARGUMENTS") return 2;
-  if (code === "AUTH_CONFIGURATION_REQUIRED" || code === "UNAUTHENTICATED") return 3;
+  if (
+    code === "AUTH_CONFIGURATION_REQUIRED" ||
+    code === "UNAUTHENTICATED" ||
+    code === "INVALID_SUPABASE_URL" ||
+    code === "NOT_LOCAL_TARGET" ||
+    code === "PRODUCTION_NOT_CONFIRMED"
+  ) {
+    return 3;
+  }
   if (code === "PROJECT_NOT_FOUND" || code === "PROJECT_ARCHIVED" || code === "EVIDENCE_SOURCE_DISABLED") return 4;
   if (code === "INVALID_REPOSITORY_ROOT" || code === "DOCUMENT_DISCOVERY_FAILURE" || code === "UNSAFE_DOCUMENT_PATH" || code === "DOCUMENT_READ_FAILURE") return 5;
   return 1;
@@ -99,22 +110,33 @@ async function main(): Promise<number> {
 
   try {
     const supabaseUrl = readRequiredEnv("SMARTFLOW_SUPABASE_URL", "SMARTFLOW_LOCAL_SUPABASE_URL");
-    const anonKey = readRequiredEnv("SMARTFLOW_SUPABASE_ANON_KEY", "SMARTFLOW_LOCAL_SUPABASE_ANON_KEY");
-    const accessToken = readRequiredEnv("SMARTFLOW_SUPABASE_ACCESS_TOKEN");
 
     const [
+      { resolveCliSupabaseTarget, describeCliSupabaseTargetFailure },
       { createSupabaseProjectRecordRepository },
       { createSupabaseProjectEvidenceRepository },
       { createProjectEvidenceService },
       { createContextRebuildService },
       { refreshLocalProject },
     ] = await Promise.all([
+      import("../src/features/projects/cliSupabaseEnvironmentGate"),
       import("../src/features/projects/projectRecordRepository"),
       import("../src/features/projects/projectEvidenceRepository"),
       import("../src/features/projects/projectEvidenceService"),
       import("../src/features/projects/contextRebuildService"),
       import("../src/features/projects/localProjectRefreshService"),
     ]);
+
+    // R-1 remediation: gate the resolved target BEFORE reading anon key/access
+    // token or constructing any Supabase client -- a non-local target with no
+    // --allow-production flag must fail closed here, unconditionally.
+    const gateResult = await resolveCliSupabaseTarget(supabaseUrl, { allowProduction: parsed.allowProduction });
+    if (!gateResult.ok) {
+      throw new CliError(gateResult.reason, describeCliSupabaseTargetFailure(gateResult));
+    }
+
+    const anonKey = readRequiredEnv("SMARTFLOW_SUPABASE_ANON_KEY", "SMARTFLOW_LOCAL_SUPABASE_ANON_KEY");
+    const accessToken = readRequiredEnv("SMARTFLOW_SUPABASE_ACCESS_TOKEN");
 
     const client = createClient(supabaseUrl, anonKey, {
       auth: { persistSession: false, autoRefreshToken: false },

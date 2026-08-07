@@ -12,7 +12,8 @@ export interface SupabaseClientConfig {
 
 type SupabaseEnv = Record<string, string | boolean | undefined>;
 
-function isLocalSupabaseUrl(value: string) {
+/** Exported for reuse by scripts/cliSupabaseEnvironmentGate.ts (R-1 remediation, docs/reviews/2026-08-projectbrief-workspace-review.md) -- the project-ingestion CLIs mirror this exact loopback check rather than reimplementing it. */
+export function isLocalSupabaseUrl(value: string) {
   try {
     const url = new URL(value);
     return (

@@ -4,6 +4,10 @@ import { describe, expect, it } from "vitest";
 import { REQUIRED_LOCAL_REFRESH_SOURCE_KINDS } from "./localProjectRefreshService";
 
 const script = readFileSync(path.resolve(process.cwd(), "scripts/smartflow-create-project.ts"), "utf8");
+const gateModuleSource = readFileSync(
+  path.resolve(process.cwd(), "src/features/projects/cliSupabaseEnvironmentGate.ts"),
+  "utf8",
+);
 
 describe("create-project CLI boundaries", () => {
   it("does not accept caller-supplied owner identity", () => {
@@ -67,8 +71,14 @@ describe("create-project CLI boundaries", () => {
     expect(script).not.toContain("service_role");
   });
 
-  it("derives only a host from the resolved Supabase URL, never logging the full URL, query string, or a connection string", () => {
-    expect(script).toContain("new URL(supabaseUrl).host");
+  it("derives the target host through the shared R-1 gate, never logging the full URL, query string, or a connection string", () => {
+    // Host derivation itself now lives in cliSupabaseEnvironmentGate.ts
+    // (shared with scripts/smartflow-refresh-project.ts, R-1 remediation,
+    // docs/reviews/2026-08-projectbrief-workspace-review.md) -- this script
+    // consumes gateResult.host rather than re-parsing the URL itself.
+    expect(script).toContain('import("../src/features/projects/cliSupabaseEnvironmentGate")');
+    expect(script).toContain("gateResult.host");
+    expect(gateModuleSource).toContain("new URL(supabaseUrl).host");
     expect(script).not.toMatch(/console\.(log|error)\([^)]*supabaseUrl[^)]*\)/);
     expect(script).not.toMatch(/console\.(log|error)\([^)]*anonKey[^)]*\)/);
     expect(script).not.toMatch(/console\.(log|error)\([^)]*accessToken[^)]*\)/);
