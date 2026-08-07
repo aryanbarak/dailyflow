@@ -177,12 +177,15 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
 
 ## 5. Next agreed work (Product-Owner-approved sequence)
 
-1. Retroactive independent review of ProjectBrief and Project Workspace
-   (the work identified in this reconciliation as committed without the
-   review the process called for — see [ADR-0008](docs/decisions/adr/ADR-0008-tiered-change-governance.md)
-   for the process fix motivated by this).
-2. LLM-assisted Context Derivation v1 (addresses the ProjectContext
-   derivation gap in §4).
+1. ~~Retroactive independent review of ProjectBrief and Project Workspace~~
+   — **complete**: [`docs/reviews/2026-08-projectbrief-workspace-review.md`](docs/reviews/2026-08-projectbrief-workspace-review.md)
+   (0 blockers, 1 major finding R-1, 3 minor; R-1 fixed in commit `7d63c76`).
+2. **LLM-assisted Context Derivation v1 — in progress.**
+   [ADR-0009](docs/decisions/adr/ADR-0009-inferred-project-context-layer.md)
+   (Accepted) defines the data model and authority semantics; the Tier 1
+   implementation (migration, `SECURITY DEFINER` functions, Worker
+   derivation route, `ProjectContextBuilder` widening) exists uncommitted,
+   pending independent review before merge (ADR-0008 Tier 1).
 3. Personal Memory v1.
 
 Superseded/completed sprint milestones from the prior version of this
