@@ -15,10 +15,12 @@
 import {
   PROJECT_CONTEXT_VERSION,
   type CandidateProjectAction,
+  type InferredElementProvenance,
   type ProjectCapability,
   type ProjectContext,
   type ProjectContextBuildResult,
   type ProjectContextInput,
+  type ProjectContextPrecedenceConflict,
   type ProjectContextValidationErrorCode,
   type ProjectContextValidationIssue,
   type ProjectDecision,
@@ -28,6 +30,20 @@ import {
   type ProjectSource,
   type SoftwareProject,
 } from "./projectContextTypes";
+
+const VALID_INFERRED_STATE_CATEGORIES = new Set(["user_declared", "inferred_unconfirmed"]);
+const VALID_INFERRED_CONFIDENCE_VALUES = new Set(["low", "medium", "high"]);
+
+const VALID_PRECEDENCE_CONFLICT_KINDS = new Set([
+  "objective",
+  "milestone",
+  "decision",
+  "capability",
+  "risk",
+  "candidate_action",
+]);
+const VALID_PRECEDENCE_TIERS = new Set(["evidence_extracted", "user_declared", "inferred_unconfirmed"]);
+const VALID_PRECEDENCE_REASONS = new Set(["higher_tier_precedence", "same_tier_conflict"]);
 
 const VALID_SOURCE_KINDS = new Set([
   "repository_document",
@@ -375,6 +391,96 @@ function checkSourceReferences(
   }
 }
 
+/**
+ * ADR-0009: light shape validation of an entity's optional
+ * `inferredProvenance` marker. By the time this reaches
+ * ProjectContextBuilder, the marker is already-trusted internal data built
+ * by the mapping layer (contextRebuildInferredFieldsInput.ts), not raw
+ * model output -- deterministic per-kind content validation already
+ * happened upstream (inferredProjectContextFieldValidation.ts) before
+ * anything was persisted. This is defense-in-depth only, matching this
+ * module's existing "validate everything at every boundary" convention,
+ * never a second full re-validation of the inferred field itself.
+ */
+function checkInferredProvenance(provenance: unknown, path: string, collector: ValidationCollector) {
+  if (provenance === undefined) return;
+  if (!provenance || typeof provenance !== "object" || Array.isArray(provenance)) {
+    collector.add("INVALID_INFERRED_PROVENANCE", `${path}.inferredProvenance must be a plain object if present.`, path);
+    return;
+  }
+  const record = provenance as Partial<InferredElementProvenance>;
+  if (typeof record.stateCategory !== "string" || !VALID_INFERRED_STATE_CATEGORIES.has(record.stateCategory)) {
+    collector.add("INVALID_INFERRED_PROVENANCE", `${path}.inferredProvenance has an unsupported stateCategory.`, path);
+  }
+  if (!isNonEmptyString(record.inferredFieldId)) {
+    collector.add("INVALID_INFERRED_PROVENANCE", `${path}.inferredProvenance is missing inferredFieldId.`, path);
+  }
+  if (typeof record.confidence !== "string" || !VALID_INFERRED_CONFIDENCE_VALUES.has(record.confidence)) {
+    collector.add("INVALID_INFERRED_PROVENANCE", `${path}.inferredProvenance has an unsupported confidence.`, path);
+  }
+  if (!isNonEmptyString(record.modelIdentity)) {
+    collector.add("INVALID_INFERRED_PROVENANCE", `${path}.inferredProvenance is missing modelIdentity.`, path);
+  }
+}
+
+/**
+ * ADR-0009 Decision section 2 / review finding F1. Light shape validation
+ * only, matching checkInferredProvenance's own defense-in-depth posture:
+ * every ProjectContextPrecedenceConflict reaching this function was already
+ * computed by contextPrecedenceResolver.ts (trusted internal data, never
+ * raw model output) -- this is a second check at the boundary, never a
+ * re-derivation of the precedence decision itself.
+ */
+function checkPrecedenceConflictEntries(
+  entries: unknown,
+  path: string,
+  collector: ValidationCollector,
+): void {
+  if (!Array.isArray(entries)) {
+    collector.add("INVALID_PRECEDENCE_CONFLICT", `${path} must be an array.`, path);
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      collector.add("INVALID_PRECEDENCE_CONFLICT", `${path} contains a non-object entry.`, path);
+      continue;
+    }
+    const record = entry as { id?: unknown; tier?: unknown };
+    if (!isNonEmptyString(record.id)) {
+      collector.add("INVALID_PRECEDENCE_CONFLICT", `${path} entry is missing id.`, path);
+    }
+    if (typeof record.tier !== "string" || !VALID_PRECEDENCE_TIERS.has(record.tier)) {
+      collector.add("INVALID_PRECEDENCE_CONFLICT", `${path} entry has an unsupported tier.`, path);
+    }
+  }
+}
+
+function checkPrecedenceConflicts(conflicts: unknown, collector: ValidationCollector): void {
+  if (!Array.isArray(conflicts)) {
+    collector.add("INVALID_PRECEDENCE_CONFLICT", "precedenceConflicts must be an array.", "precedenceConflicts");
+    return;
+  }
+  for (let index = 0; index < conflicts.length; index += 1) {
+    const conflict = conflicts[index];
+    const path = `precedenceConflicts[${index}]`;
+    if (!conflict || typeof conflict !== "object" || Array.isArray(conflict)) {
+      collector.add("INVALID_PRECEDENCE_CONFLICT", `${path} must be a plain object.`, path);
+      continue;
+    }
+    if (typeof conflict.kind !== "string" || !VALID_PRECEDENCE_CONFLICT_KINDS.has(conflict.kind)) {
+      collector.add("INVALID_PRECEDENCE_CONFLICT", `${path} has an unsupported kind.`, path);
+    }
+    if (!isNonEmptyString(conflict.slotKey)) {
+      collector.add("INVALID_PRECEDENCE_CONFLICT", `${path} is missing slotKey.`, path);
+    }
+    if (typeof conflict.reason !== "string" || !VALID_PRECEDENCE_REASONS.has(conflict.reason)) {
+      collector.add("INVALID_PRECEDENCE_CONFLICT", `${path} has an unsupported reason.`, path);
+    }
+    checkPrecedenceConflictEntries(conflict.winners, `${path}.winners`, collector);
+    checkPrecedenceConflictEntries(conflict.superseded, `${path}.superseded`, collector);
+  }
+}
+
 function validateSources(sources: readonly ProjectSource[], collector: ValidationCollector): readonly ProjectSource[] {
   const sanitized = sanitizeEntities(sources, "sources", collector);
   checkDuplicateIds(sanitized, "DUPLICATE_SOURCE_ID", "source", collector);
@@ -421,6 +527,7 @@ function validateObjectives(
     }
     if (objective.status === "active") activeCount += 1;
     checkSourceReferences(objective.sourceIds, knownSourceIds, `objective:${objective.id}`, collector, true);
+    checkInferredProvenance(objective.inferredProvenance, `objective:${objective.id}`, collector);
   }
   if (activeCount > 1) {
     collector.add("MULTIPLE_ACTIVE_OBJECTIVES", `Expected at most one active objective, found ${activeCount}.`);
@@ -447,6 +554,7 @@ function validateMilestones(
     }
     if (milestone.status === "active") activeCount += 1;
     checkSourceReferences(milestone.sourceIds, knownSourceIds, `milestone:${milestone.id}`, collector, true);
+    checkInferredProvenance(milestone.inferredProvenance, `milestone:${milestone.id}`, collector);
   }
   if (activeCount > 1) {
     collector.add("MULTIPLE_ACTIVE_MILESTONES", `Expected at most one active milestone, found ${activeCount}.`);
@@ -480,6 +588,7 @@ function validateDecisions(
         decision.id,
       );
     }
+    checkInferredProvenance(decision.inferredProvenance, `decision:${decision.id}`, collector);
   }
   return sanitized;
 }
@@ -502,6 +611,7 @@ function validateCapabilities(
     }
     const requiresSource = capability.status === "implemented" || capability.status === "partially_implemented";
     checkSourceReferences(capability.sourceIds, knownSourceIds, `capability:${capability.id}`, collector, requiresSource);
+    checkInferredProvenance(capability.inferredProvenance, `capability:${capability.id}`, collector);
   }
   return sanitized;
 }
@@ -519,6 +629,7 @@ function validateRisks(
       continue;
     }
     checkSourceReferences(risk.sourceIds, knownSourceIds, `risk:${risk.id}`, collector, true);
+    checkInferredProvenance(risk.inferredProvenance, `risk:${risk.id}`, collector);
   }
   return sanitized;
 }
@@ -568,6 +679,7 @@ function validateCandidateActions(
         action.id,
       );
     }
+    checkInferredProvenance(action.inferredProvenance, `candidateAction:${action.id}`, collector);
   }
   return sanitized;
 }
@@ -639,6 +751,9 @@ export function buildProjectContext(input: ProjectContextInput): ProjectContextB
     collector,
   );
 
+  const precedenceConflicts = input.precedenceConflicts ?? [];
+  checkPrecedenceConflicts(precedenceConflicts, collector);
+
   if (collector.hasErrors) {
     return { valid: false, errors: collector.sortedErrors() };
   }
@@ -654,6 +769,7 @@ export function buildProjectContext(input: ProjectContextInput): ProjectContextB
   const clonedRisks = deepCloneAccepted(sanitizedRisks);
   const clonedSources = deepCloneAccepted(sanitizedSources);
   const clonedCandidateActions = deepCloneAccepted(sanitizedCandidateActions);
+  const clonedPrecedenceConflicts = deepCloneAccepted(precedenceConflicts);
 
   const sortedObjectives = sortById(clonedObjectives);
   const sortedMilestones = sortById(clonedMilestones).sort((a, b) => {
@@ -695,6 +811,7 @@ export function buildProjectContext(input: ProjectContextInput): ProjectContextB
     risks: sortedRisks,
     sources: sortedSources,
     candidateActions: sortedCandidateActions,
+    precedenceConflicts: clonedPrecedenceConflicts,
     metadata: {
       builderVersion: PROJECT_CONTEXT_VERSION,
       generatedAt: input.generatedAt,

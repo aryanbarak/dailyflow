@@ -16,10 +16,12 @@
 // never calls an LLM.
 
 import { buildProjectContext } from "./projectContextBuilder";
-import type { ProjectContextBuildResult } from "./projectContextTypes";
+import type { ProjectContextBuildResult, ProjectContextInput } from "./projectContextTypes";
 import { buildEvidenceSnapshot } from "./evidenceSnapshotBuilder";
 import type { EvidenceSnapshot } from "./evidenceSnapshotTypes";
 import { mapEvidenceSnapshotToProjectContextInput, mapProjectToSoftwareProject } from "./contextRebuildProjectContextInput";
+import { mapInferredFieldsToProjectContextInputAdditions } from "./contextRebuildInferredFieldsInput";
+import { resolveAllPrecedence } from "./contextPrecedenceResolver";
 import {
   ContextRebuildError,
   type ContextRebuildErrorCode,
@@ -30,6 +32,8 @@ import {
   ProjectEvidencePersistenceError,
   type ProjectEvidenceRepository,
 } from "./projectEvidenceRepository";
+import type { InferredProjectContextFieldRepository } from "./inferredProjectContextFieldRepository";
+import type { InferredProjectContextField } from "./inferredProjectContextFieldTypes";
 import type { ProjectRecordRepository } from "./projectRecordRepository";
 import type { ProjectRecord } from "./projectRecordTypes";
 
@@ -58,6 +62,14 @@ export type EvidenceToContextCapabilityCheck = (snapshot: EvidenceSnapshot) => b
 export interface ContextRebuildServiceDependencies {
   projectRepository: ProjectRecordRepository;
   evidenceRepository: ProjectEvidenceRepository;
+  /**
+   * ADR-0009. Optional -- when omitted, behavior is byte-for-byte unchanged
+   * from before the Inferred Project Context Layer existed (no inferred
+   * fields are ever read, so `canDeriveProjectContextFromSnapshot` alone
+   * still gates whether a real context is produced). Every existing caller
+   * of this service continues to work unmodified.
+   */
+  inferredContextFieldRepository?: InferredProjectContextFieldRepository;
   resolveOwnerId: OwnerIdResolver;
   /** Injected clock. Defaults to the system clock; tests inject a fixed value. Read exactly once per rebuild call. */
   now?: () => string;
@@ -194,7 +206,31 @@ export function createContextRebuildService(dependencies: ContextRebuildServiceD
       const snapshot = snapshotResult.snapshot;
       const softwareProject = mapProjectToSoftwareProject(project);
 
-      if (!canDeriveProjectContext(snapshot)) {
+      // ADR-0009: reads only already-persisted InferredProjectContextField
+      // rows -- never a live source, never a provider, never an LLM call
+      // from this service -- exactly the boundary
+      // project-evidence-acquisition.md section 22 already states for
+      // Context Rebuild, extended to this one additional read. Omitted
+      // entirely (empty array) when the dependency is not supplied, so
+      // every caller that predates ADR-0009 sees no behavior change.
+      let inferredFields: readonly InferredProjectContextField[] = [];
+      if (dependencies.inferredContextFieldRepository) {
+        try {
+          inferredFields = await dependencies.inferredContextFieldRepository.listByProject(ownerId, projectId);
+        } catch (error) {
+          throw toContextRebuildError(error, "INFERRED_FIELDS_READ_FAILED", "Unable to read inferred context fields.");
+        }
+      }
+      const inferredAdditions = mapInferredFieldsToProjectContextInputAdditions(inferredFields);
+      const hasEligibleInferredContent =
+        inferredAdditions.objectives.length > 0 ||
+        inferredAdditions.milestones.length > 0 ||
+        inferredAdditions.decisions.length > 0 ||
+        inferredAdditions.capabilities.length > 0 ||
+        inferredAdditions.risks.length > 0 ||
+        inferredAdditions.candidateActions.length > 0;
+
+      if (!canDeriveProjectContext(snapshot) && !hasEligibleInferredContent) {
         return {
           status: "snapshot_ready_context_not_derivable",
           project: softwareProject,
@@ -202,18 +238,40 @@ export function createContextRebuildService(dependencies: ContextRebuildServiceD
           rebuildMetadata: toRebuildMetadata(snapshot, "snapshot_ready_context_not_derivable"),
           reasonCode: "EVIDENCE_TO_CONTEXT_TRANSFORMATION_UNSUPPORTED",
           reason:
-            "ProjectContextBuilder requires pre-structured objectives, milestones, decisions, capabilities, risks, and candidate actions. Current evidence carries only raw observed text; no deterministic transformation from raw text into those structured entities exists in this implementation (it would require either LLM extraction or a semantic document parser, neither of which this slice implements).",
+            "ProjectContextBuilder requires pre-structured objectives, milestones, decisions, capabilities, risks, and candidate actions. Current evidence carries only raw observed text; no deterministic transformation from raw text into those structured entities exists in this implementation without either an LLM (see ADR-0009's Inferred Project Context Layer -- no eligible InferredProjectContextField exists for this project yet) or a semantic document parser (not implemented).",
         };
       }
 
-      // Unreachable while canDeriveProjectContextFromSnapshot always
-      // returns false -- kept real (not stubbed out) so a future slice
-      // that flips that gate does not also have to build this call site
-      // from scratch, and so this exact path is exercised directly in
-      // contextRebuildService.test.ts via dependency injection and in
-      // contextRebuildProjectContextInput.test.ts against the real
-      // buildProjectContext function.
-      const contextInput = mapEvidenceSnapshotToProjectContextInput(project, snapshot, snapshotCreatedAt);
+      // The pure evidence-only mapping (contextRebuildProjectContextInput.ts)
+      // still only ever produces `sources` and `project` -- unreachable-
+      // via-evidence-alone comment below is unchanged. ADR-0009's inferred
+      // additions are merged in as a second, independent input source, then
+      // contextPrecedenceResolver.ts (review finding F1) resolves ADR-0009
+      // Decision section 2's precedence rule between them before
+      // ProjectContextBuilder ever sees the result: a higher-tier candidate
+      // displaces a strictly-lower-tier one occupying the same slot, and a
+      // genuine same-tier conflict is kept (never narrowed to one arbitrarily)
+      // and recorded in `precedenceConflicts` -- visible, never silently
+      // resolved (project-domain.md section 15).
+      const baseContextInput = mapEvidenceSnapshotToProjectContextInput(project, snapshot, snapshotCreatedAt);
+      const resolved = resolveAllPrecedence({
+        objectives: [...baseContextInput.objectives, ...inferredAdditions.objectives],
+        milestones: [...baseContextInput.milestones, ...inferredAdditions.milestones],
+        decisions: [...baseContextInput.decisions, ...inferredAdditions.decisions],
+        capabilities: [...baseContextInput.capabilities, ...inferredAdditions.capabilities],
+        risks: [...baseContextInput.risks, ...inferredAdditions.risks],
+        candidateActions: [...baseContextInput.candidateActions, ...inferredAdditions.candidateActions],
+      });
+      const contextInput: ProjectContextInput = {
+        ...baseContextInput,
+        objectives: resolved.objectives,
+        milestones: resolved.milestones,
+        decisions: resolved.decisions,
+        capabilities: resolved.capabilities,
+        risks: resolved.risks,
+        candidateActions: resolved.candidateActions,
+        precedenceConflicts: resolved.conflicts,
+      };
       const buildResult: ProjectContextBuildResult = buildProjectContext(contextInput);
       // See the `snapshotResult.valid === false` comment above -- same
       // narrowing constraint applies here.

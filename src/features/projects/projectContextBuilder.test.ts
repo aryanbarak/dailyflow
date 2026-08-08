@@ -856,3 +856,143 @@ describe("buildProjectContext - accessor property regression", () => {
     expect(result.valid).toBe(true);
   });
 });
+
+describe("buildProjectContext - inferredProvenance (ADR-0009 widening)", () => {
+  it("accepts an entity with a well-formed inferredProvenance marker and carries it through to the built context", () => {
+    const objectives = [
+      {
+        ...baseObjectives()[0],
+        inferredProvenance: {
+          stateCategory: "user_declared" as const,
+          inferredFieldId: "field:1",
+          confidence: "high" as const,
+          modelIdentity: "gemini-test",
+          derivationRunId: "run:1",
+        },
+      },
+    ];
+    const result = buildProjectContext(baseInput({ objectives }));
+    expect(result.valid).toBe(true);
+    if (result.valid !== true) throw new Error("expected valid result");
+    expect(result.context.currentObjective?.inferredProvenance).toMatchObject({
+      stateCategory: "user_declared",
+      inferredFieldId: "field:1",
+    });
+  });
+
+  it("omits inferredProvenance entirely on an entity that never carried one -- absence is preserved, never defaulted", () => {
+    const result = buildProjectContext(baseInput());
+    if (result.valid !== true) throw new Error("expected valid result");
+    expect(result.context.currentObjective?.inferredProvenance).toBeUndefined();
+  });
+
+  it("rejects an unsupported stateCategory rather than silently accepting it", () => {
+    const objectives = [
+      { ...baseObjectives()[0], inferredProvenance: { stateCategory: "authoritative", inferredFieldId: "field:1", confidence: "high", modelIdentity: "m" } },
+    ] as never;
+    const result = buildProjectContext(baseInput({ objectives }));
+    expect(result.valid).toBe(false);
+    if (result.valid !== false) throw new Error("expected invalid result");
+    expect(result.errors.some((error) => error.code === "INVALID_INFERRED_PROVENANCE")).toBe(true);
+  });
+
+  it("rejects a malformed (non-object) inferredProvenance", () => {
+    const risks = [{ ...baseRisks()[0], inferredProvenance: "not-an-object" }];
+    const result = buildProjectContext(baseInput({ risks: risks as never }));
+    expect(result.valid).toBe(false);
+    if (result.valid !== false) throw new Error("expected invalid result");
+    expect(result.errors.some((error) => error.code === "INVALID_INFERRED_PROVENANCE")).toBe(true);
+  });
+
+  it("rejects inferredProvenance missing a required field (inferredFieldId)", () => {
+    const risks = [{ ...baseRisks()[0], inferredProvenance: { stateCategory: "inferred_unconfirmed", confidence: "low", modelIdentity: "m" } }];
+    const result = buildProjectContext(baseInput({ risks: risks as never }));
+    expect(result.valid).toBe(false);
+  });
+
+  it("carries inferredProvenance through on milestones, decisions, capabilities, risks, and candidate actions alike", () => {
+    const provenance = {
+      stateCategory: "inferred_unconfirmed" as const,
+      inferredFieldId: "field:x",
+      confidence: "medium" as const,
+      modelIdentity: "gemini-test",
+    };
+    const result = buildProjectContext(
+      baseInput({
+        milestones: [{ ...baseMilestones()[0], inferredProvenance: provenance }],
+        decisions: [{ ...baseDecisions()[0], inferredProvenance: provenance }],
+        capabilities: [{ ...baseCapabilities()[0], inferredProvenance: provenance }],
+        risks: [{ ...baseRisks()[0], inferredProvenance: provenance }],
+        candidateActions: [{ ...baseCandidateActions()[0], inferredProvenance: provenance }],
+      }),
+    );
+    expect(result.valid).toBe(true);
+    if (result.valid !== true) throw new Error("expected valid result");
+    expect(result.context.completedMilestones[0]?.inferredProvenance?.stateCategory).toBe("inferred_unconfirmed");
+    expect(result.context.acceptedDecisions[0]?.inferredProvenance?.stateCategory).toBe("inferred_unconfirmed");
+    expect(result.context.implementedCapabilities[0]?.inferredProvenance?.stateCategory).toBe("inferred_unconfirmed");
+    expect(result.context.risks[0]?.inferredProvenance?.stateCategory).toBe("inferred_unconfirmed");
+    expect(result.context.candidateActions[0]?.inferredProvenance?.stateCategory).toBe("inferred_unconfirmed");
+  });
+});
+
+describe("buildProjectContext - precedenceConflicts (review finding F1)", () => {
+  it("defaults to an empty array when the input omits precedenceConflicts entirely -- backward compatible with every pre-F1 caller", () => {
+    const result = buildProjectContext(baseInput());
+    if (result.valid !== true) throw new Error("expected valid result");
+    expect(result.context.precedenceConflicts).toEqual([]);
+  });
+
+  it("carries a well-formed precedenceConflicts array through to the built context unchanged", () => {
+    const precedenceConflicts = [
+      {
+        kind: "risk" as const,
+        slotKey: "risk:summary:data loss risk",
+        winners: [{ id: "risk:one", tier: "user_declared" as const }],
+        superseded: [{ id: "risk:two", tier: "inferred_unconfirmed" as const }],
+        reason: "higher_tier_precedence" as const,
+      },
+    ];
+    const result = buildProjectContext(baseInput({ precedenceConflicts }));
+    expect(result.valid).toBe(true);
+    if (result.valid !== true) throw new Error("expected valid result");
+    expect(result.context.precedenceConflicts).toEqual(precedenceConflicts);
+  });
+
+  it("rejects an unsupported kind rather than silently accepting it", () => {
+    const precedenceConflicts = [
+      { kind: "not-a-kind", slotKey: "x", winners: [{ id: "a", tier: "evidence_extracted" }], superseded: [], reason: "higher_tier_precedence" },
+    ];
+    const result = buildProjectContext(baseInput({ precedenceConflicts: precedenceConflicts as never }));
+    expect(result.valid).toBe(false);
+    if (result.valid !== false) throw new Error("expected invalid result");
+    expect(result.errors.some((error) => error.code === "INVALID_PRECEDENCE_CONFLICT")).toBe(true);
+  });
+
+  it("rejects an unsupported reason rather than silently accepting it", () => {
+    const precedenceConflicts = [
+      { kind: "risk", slotKey: "x", winners: [{ id: "a", tier: "evidence_extracted" }], superseded: [], reason: "arbitrary_pick" },
+    ];
+    const result = buildProjectContext(baseInput({ precedenceConflicts: precedenceConflicts as never }));
+    expect(result.valid).toBe(false);
+    if (result.valid !== false) throw new Error("expected invalid result");
+    expect(result.errors.some((error) => error.code === "INVALID_PRECEDENCE_CONFLICT")).toBe(true);
+  });
+
+  it("rejects a winners/superseded entry with an unsupported tier", () => {
+    const precedenceConflicts = [
+      { kind: "risk", slotKey: "x", winners: [{ id: "a", tier: "authoritative" }], superseded: [], reason: "higher_tier_precedence" },
+    ];
+    const result = buildProjectContext(baseInput({ precedenceConflicts: precedenceConflicts as never }));
+    expect(result.valid).toBe(false);
+    if (result.valid !== false) throw new Error("expected invalid result");
+    expect(result.errors.some((error) => error.code === "INVALID_PRECEDENCE_CONFLICT")).toBe(true);
+  });
+
+  it("rejects a malformed (non-array) precedenceConflicts", () => {
+    const result = buildProjectContext(baseInput({ precedenceConflicts: "not-an-array" as never }));
+    expect(result.valid).toBe(false);
+    if (result.valid !== false) throw new Error("expected invalid result");
+    expect(result.errors.some((error) => error.code === "INVALID_PRECEDENCE_CONFLICT")).toBe(true);
+  });
+});

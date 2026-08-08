@@ -31,6 +31,7 @@ export type ContextRebuildErrorCode =
   | "UNSUPPORTED_EVIDENCE_CLASSIFICATION"
   | "SNAPSHOT_VALIDATION_FAILED"
   | "BUILDER_VALIDATION_FAILED"
+  | "INFERRED_FIELDS_READ_FAILED"
   | "REBUILD_FAILED";
 
 export interface ContextRebuildErrorIssue {

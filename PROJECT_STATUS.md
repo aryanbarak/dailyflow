@@ -77,6 +77,30 @@ work.
   `src/pages/ProjectsIndexPage.tsx`, `src/components/layout/Sidebar.tsx`.
   **Committed to `main` in `b16f18f`** (previously narrated elsewhere as
   "uncommitted" — see the reconciliation doc's discrepancy table, row 2).
+- **Inferred Project Context Layer v1 (LLM-assisted Context Derivation)** —
+  [ADR-0009](docs/decisions/adr/ADR-0009-inferred-project-context-layer.md)
+  (Accepted)'s Tier 1 implementation. New `inferred_project_context_fields`/
+  `inferred_context_derivation_runs` tables, owner-scoped RLS, all writes
+  through two `SECURITY DEFINER` functions (`create_inferred_context_field`,
+  `resolve_inferred_context_field`) with race-safe duplicate suppression
+  (`get stacked diagnostics`-based, mirroring ADR-0007's own pattern) —
+  `supabase/migrations/20260807000000_inferred_project_context_fields.sql`.
+  New authenticated Worker route `POST /projects/context-derivation`
+  (`agent/worker/context-derivation-endpoint.ts`) reading only persisted
+  evidence, calling Gemini with structured output, deterministic
+  per-candidate validation (drop-and-log, never coerce). New
+  `src/features/projects/contextPrecedenceResolver.ts` enforces ADR-0009's
+  precedence rule (evidence-extracted > user_confirmed/corrected > proposed)
+  with every collision surfaced via the new `ProjectContext.precedenceConflicts`
+  field, never silently resolved. `ProjectContextBuilder`/
+  `contextRebuildService.ts` widened to consume inferred fields, producing
+  the first-ever real `context_ready` result — see
+  `src/features/projects/contextRebuildService.test.ts`'s "produces a REAL,
+  non-fabricated ProjectContext" test. Independently reviewed under Tier 1
+  (ADR-0008): [`docs/reviews/2026-08-inferred-context-layer-review.md`](docs/reviews/2026-08-inferred-context-layer-review.md)
+  (4 MAJOR / 3 MINOR findings, all closed by remediation, re-reviewed —
+  verdict "RE-REVIEW PASSED — CLEARED FOR MERGE DECISION"). Confirm/correct
+  UI is not part of this slice — see §5.
 
 ### 2.2 Everything else — carried forward, not independently re-verified in this task
 
@@ -120,32 +144,51 @@ doc has full evidence).
 
 Confirmed from code, not assumed (full detail in the reconciliation doc §6):
 
-- Real `ProjectContext` derivation from evidence — `rebuildProjectContext`
-  returns `{ status: "snapshot_ready_context_not_derivable" }` for every
-  project today; no deterministic evidence-to-structured-fact transformation
-  exists without an LLM or a semantic document parser, neither of which is
+- Real `ProjectContext` derivation from evidence — **now partially resolved**
+  by the Inferred Project Context Layer (§2.1): `rebuildProjectContext`
+  returns a real `context_ready` result when at least one eligible
+  `user_confirmed`/`user_corrected`/`proposed` inferred field exists for the
+  project; it still returns `snapshot_ready_context_not_derivable` for a
+  project with raw evidence text only and no inferred fields yet — no
+  deterministic evidence-text-to-structured-fact transformation exists
+  independent of the LLM-assisted path, and no semantic document parser is
   implemented.
 - An orchestrated Evidence Acquisition Service (multi-adapter selection/coordination).
 - Any provider-backed Evidence Source Adapter (GitHub API, Gmail, Calendar).
   Repository Documents Adapter is the only adapter and is document-only.
-- An LLM anywhere in the evidence or Project Brief path.
+- An LLM anywhere in the ProjectEvidence or Project Brief path itself — the
+  LLM-assisted path (§2.1) writes only to the separate, non-canonical
+  `InferredProjectContextField` aggregate, never to `ProjectEvidence`,
+  exactly as ADR-0009/`project-domain.md` §6 require.
 - Browser-initiated repository refresh, or project creation/edit/archive
   from the browser.
+- A confirm/correct UI for inferred context fields — see §5.
 - EPIC-08 Slices 4–5 (read-back verification, pull-request creation) —
   `githubFilesUpdateHandler.ts` checks only that the mutation response
   contains the expected fields; there is no independent re-read/compare.
 - EPIC-09 (autonomous chaining, multi-file changes, automatic retry/merge) —
   no commits exist.
-- Personal Memory, LLM-assisted Context Derivation — forward-looking terms
-  for future work (§5), not existing code.
+- Personal Memory — forward-looking term for future work (§5), not existing
+  code.
 - Conversation memory, semantic/vector memory, RAG.
 
 ## 4. Current blockers / open decisions
 
-- **ProjectContext derivation gap** (open, blocking): building a real
-  `ProjectContext` from evidence needs either an LLM extraction path or a
-  semantic document parser — neither is built, and which to build is a
-  Product Owner decision, not yet made.
+- **ProjectContext derivation gap — resolved for the LLM-extraction path.**
+  The Inferred Project Context Layer v1 (§2.1) closes this for
+  LLM-confirmed/corrected content; a semantic-document-parser path remains
+  unbuilt and is not currently planned.
+- **OPEN CONDITION: live-Supabase execution of
+  `supabase/tests/inferred_project_context_fields.rls.test.ts` pending — run
+  at first opportunity.** This gated test suite (skipped by default,
+  `SMARTFLOW_RUN_LOCAL_SUPABASE=1`) has not yet been executed against a real
+  local Supabase/PostgREST stack — attempted in this task, blocked because a
+  sibling project (`ai-automation-agent`) occupies the default Supabase ports
+  (54321/54322/54323/54324/54327); not stopped, per policy. The underlying
+  `SECURITY DEFINER` function logic this suite exercises has been
+  independently verified live twice via a disposable, non-Supabase Postgres
+  17 container (raw SQL, including a genuine concurrent-race proof) — only
+  the PostgREST/GoTrue integration layer remains unverified live.
 - **Adapter execution-location decision** (open): where a repository-document
   adapter physically executes is unresolved
   (`docs/architecture/project-evidence-acquisition.md` §25) — the browser
@@ -174,19 +217,34 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
     exist in the migration but not yet in the hand-maintained `types.ts`
     snapshot — next schema change should regenerate rather than add a second
     drift.
+  - `agent/worker/context-derivation-endpoint.ts`'s per-kind content
+    validation duplicates `inferredProjectContextFieldValidation.ts` (the
+    Worker cannot import frontend modules) — kept manually in sync, guarded
+    by `contextDerivationValidationEquivalence.test.ts`.
+  - `create_inferred_context_field`'s evidence-linkage check is scoped to
+    project+owner membership, not to the specific derivation run's own
+    evidence snapshot (accepted, documented in the migration — the Worker's
+    own candidate filtering already narrows correctly in the one production
+    caller today).
 
 ## 5. Next agreed work (Product-Owner-approved sequence)
 
 1. ~~Retroactive independent review of ProjectBrief and Project Workspace~~
    — **complete**: [`docs/reviews/2026-08-projectbrief-workspace-review.md`](docs/reviews/2026-08-projectbrief-workspace-review.md)
    (0 blockers, 1 major finding R-1, 3 minor; R-1 fixed in commit `7d63c76`).
-2. **LLM-assisted Context Derivation v1 — in progress.**
+2. ~~LLM-assisted Context Derivation v1~~ — **merged/complete.**
    [ADR-0009](docs/decisions/adr/ADR-0009-inferred-project-context-layer.md)
-   (Accepted) defines the data model and authority semantics; the Tier 1
-   implementation (migration, `SECURITY DEFINER` functions, Worker
-   derivation route, `ProjectContextBuilder` widening) exists uncommitted,
-   pending independent review before merge (ADR-0008 Tier 1).
-3. Personal Memory v1.
+   (Accepted); Tier 1 implementation independently reviewed, remediated, and
+   re-reviewed under ADR-0008 —
+   [`docs/reviews/2026-08-inferred-context-layer-review.md`](docs/reviews/2026-08-inferred-context-layer-review.md)
+   ("RE-REVIEW PASSED — CLEARED FOR MERGE DECISION"). See §2.1.
+3. **Inference confirm/correct UI in Project Workspace (Tier 2).** The
+   backend resolve mechanism (`resolve_inferred_context_field`) is built and
+   tested but has no caller yet — proposed inferred fields are already
+   returned by `rebuildProjectContext` (visibly marked
+   `inferredProvenance.stateCategory`), but nothing in the Workspace UI lets
+   a user confirm, correct, or reject one.
+4. Personal Memory v1.
 
 Superseded/completed sprint milestones from the prior version of this
 document have been removed rather than carried forward as history; git

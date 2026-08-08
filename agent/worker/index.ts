@@ -9,6 +9,7 @@ import {
   type ReasoningResponseLanguage,
 } from './reasoning-endpoint'
 import { handleGitHubIntegrationRequest } from './github-integration'
+import { handleContextDerivationRequest } from './context-derivation-endpoint'
 
 const ENABLE_AUTO_MEMORY_WRITE = true
 
@@ -68,6 +69,10 @@ export default {
 
     if (pathname === '/documents/analyze') {
       return handleDocumentAnalyze(request, env)
+    }
+
+    if (pathname === '/projects/context-derivation') {
+      return handleContextDerivationRequest(request, env, { logger: console })
     }
 
     return json({ error: 'Not found' }, 404, origin)

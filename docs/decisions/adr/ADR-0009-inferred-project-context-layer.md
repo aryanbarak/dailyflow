@@ -312,6 +312,40 @@ a separate future ADR.
   prompt-improvement reuse in v1. Future revisiting allowed via a new
   decision record.
 
+## Implementation Notes
+
+Added post-implementation (task `3c`, review finding F5/MINOR;
+`docs/reviews/2026-08-inferred-context-layer-review.md`, section D). This
+section records how the Tier 1 implementation (task `3b`) resolved
+ambiguity in this ADR's own Decision section 1 text — it clarifies, but
+does not amend, the Accepted decision above.
+
+**Automatic supersession scope is narrower than this ADR's literal text.**
+Decision section 1's state machine says a field is superseded when "a
+newer derivation run produced a fresher candidate for the same project +
+contextFieldKind + logical slot" — general language, not naming which
+kinds have a "logical slot" at all. The implementation
+(`supabase/migrations/20260807000000_inferred_project_context_fields.sql`,
+`create_inferred_context_field`) restricts automatic supersession to
+`kind IN ('objective', 'milestone')` only, and only against other still-
+`proposed` rows from a different run. `decision`, `risk`, `capability`, and
+`candidate_action` have no single-slot exclusivity concept anywhere else in
+this domain (`project-domain.md` never states one for them; multiple
+simultaneous decisions/risks/capabilities/candidate actions are normal) —
+applying automatic supersession to them would wrongly discard a legitimate
+second, unrelated candidate of the same kind. This interpretation is
+**strictly safer** than the ADR's ambiguous text: it never over-supersedes,
+it only ever leaves more candidates coexisting for `ProjectContextBuilder`'s
+own existing fail-closed `MULTIPLE_ACTIVE_OBJECTIVES`/
+`MULTIPLE_ACTIVE_MILESTONES` validation, or (as of task `3c`'s precedence
+resolver, see the design note's "Precedence and conflict surfacing"
+section) `contextPrecedenceResolver.ts`'s own conflict-surfacing, to catch —
+never a silent, wrong merge. No Product Owner decision is required to adopt
+this narrower scope; if a future need arises for `decision`/`risk`/
+`capability`/`candidate_action` to have their own single-slot concept, that
+is new product behavior requiring its own decision record, not a
+reinterpretation of this one.
+
 ## Consequences
 
 - A new Supabase table and migration for `InferredProjectContextField` (and

@@ -13,6 +13,98 @@
 
 export const PROJECT_CONTEXT_VERSION = "project-context-v1" as const;
 
+// ---------------------------------------------------------------------------
+// Inferred-field provenance (ADR-0009: Inferred Project Context Layer)
+// ---------------------------------------------------------------------------
+
+/**
+ * The state category of an entity that originated from an
+ * InferredProjectContextField (docs/decisions/adr/ADR-0009-inferred-project-context-layer.md),
+ * per representative-engine.md section 15's Authoritative / Derived /
+ * Inferred / Cached / User-declared taxonomy. `undefined` on an entity
+ * (no `inferredProvenance` at all) means this entity did not originate from
+ * an inferred field -- absence is itself meaningful, never defaulted to a
+ * value that would imply a category this module cannot actually verify.
+ *
+ * "user_declared": a user_confirmed or user_corrected InferredProjectContextField
+ * -- the highest trust tier available in this layer, per representative-engine.md
+ * section 15 -- but still never execution authority (ADR-0009 Decision
+ * section 2).
+ * "inferred_unconfirmed": a still-proposed InferredProjectContextField,
+ * shown by default per ADR-0009's Product Owner resolution to open
+ * question 2, always visibly marked as such.
+ */
+export type InferredElementStateCategory = "user_declared" | "inferred_unconfirmed";
+
+/**
+ * Carried on any ProjectContext entity that originated from an
+ * InferredProjectContextField, surviving from the inferred field all the way
+ * into the built ProjectContext (representative-engine.md section 16:
+ * provenance and freshness must be preserved, not computed then dropped).
+ * Never present on an entity ProjectContextBuilder itself invented --
+ * every field here is carried forward from the mapping layer
+ * (contextRebuildInferredFieldsInput.ts), not computed by the builder.
+ */
+export interface InferredElementProvenance {
+  readonly stateCategory: InferredElementStateCategory;
+  readonly inferredFieldId: string;
+  readonly confidence: "low" | "medium" | "high";
+  readonly modelIdentity: string;
+  readonly derivationRunId?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Precedence conflicts (ADR-0009 Decision section 2; review finding F1)
+// ---------------------------------------------------------------------------
+
+/**
+ * The three precedence tiers ADR-0009 Decision section 2 names, in
+ * outranking order: an entity with no `inferredProvenance` at all is
+ * "evidence_extracted" (an explicit, deterministic fact -- the highest
+ * tier); `inferredProvenance.stateCategory === "user_declared"` is
+ * "user_declared"; a still-proposed inferred field is
+ * "inferred_unconfirmed" (the lowest tier). Computed by
+ * contextPrecedenceResolver.ts from whatever `inferredProvenance` an
+ * element already carries -- never a second, independent classification.
+ */
+export type ProjectContextPrecedenceTier = "evidence_extracted" | "user_declared" | "inferred_unconfirmed";
+
+export interface ProjectContextPrecedenceConflictEntry {
+  readonly id: string;
+  readonly tier: ProjectContextPrecedenceTier;
+}
+
+export type ProjectContextPrecedenceConflictKind =
+  | "objective"
+  | "milestone"
+  | "decision"
+  | "capability"
+  | "risk"
+  | "candidate_action";
+
+/**
+ * One record per "same slot" collision contextPrecedenceResolver.ts found
+ * between candidate elements of the same kind (see that module's header
+ * comment for the deterministic, per-kind "same slot" definition).
+ * `reason: "higher_tier_precedence"` means a higher tier displaced one or
+ * more strictly-lower-tier entries, which were removed from the built
+ * ProjectContext's own arrays -- this record is the only place their
+ * removal is still visible, never a silent drop. `reason:
+ * "same_tier_conflict"` means two or more entries at the SAME highest-
+ * present tier disagree about the same slot; project-domain.md section 15
+ * forbids resolving that by array order or ranking, so every one of them is
+ * still kept in the built ProjectContext's arrays -- this record exists so
+ * a consumer can see that they are known to be in conflict rather than
+ * inferring it from array contents alone.
+ */
+export interface ProjectContextPrecedenceConflict {
+  readonly kind: ProjectContextPrecedenceConflictKind;
+  readonly slotKey: string;
+  readonly winners: readonly ProjectContextPrecedenceConflictEntry[];
+  readonly superseded: readonly ProjectContextPrecedenceConflictEntry[];
+  readonly reason: "higher_tier_precedence" | "same_tier_conflict";
+}
+
 /**
  * Only Software Project is implemented in this slice. Learning Project and
  * Personal Project are named in docs/product/product-direction-v1.md as
@@ -71,6 +163,8 @@ export interface ProjectObjective {
   status: ProjectObjectiveStatus;
   sourceIds: readonly string[];
   since?: string;
+  /** ADR-0009. Present only when this objective originated from an InferredProjectContextField. */
+  inferredProvenance?: InferredElementProvenance;
 }
 
 export type ProjectObjectiveInput = ProjectObjective;
@@ -89,6 +183,8 @@ export interface ProjectMilestone {
   /** Optional explicit ordering hint used for deterministic display order. */
   order?: number;
   completedAt?: string;
+  /** ADR-0009. Present only when this milestone originated from an InferredProjectContextField. */
+  inferredProvenance?: InferredElementProvenance;
 }
 
 export type ProjectMilestoneInput = ProjectMilestone;
@@ -112,6 +208,8 @@ export interface ProjectDecision {
   decidedAt?: string;
   /** id of another ProjectDecision this one supersedes, if any. */
   supersedesId?: string;
+  /** ADR-0009. Present only when this decision originated from an InferredProjectContextField. */
+  inferredProvenance?: InferredElementProvenance;
 }
 
 export type ProjectDecisionInput = ProjectDecision;
@@ -139,6 +237,8 @@ export interface ProjectCapability {
   status: ProjectCapabilityStatus;
   sourceIds: readonly string[];
   notes?: string;
+  /** ADR-0009. Present only when this capability originated from an InferredProjectContextField. */
+  inferredProvenance?: InferredElementProvenance;
 }
 
 export type ProjectCapabilityInput = ProjectCapability;
@@ -156,6 +256,8 @@ export interface ProjectRisk {
   severity: ProjectRiskSeverity;
   sourceIds: readonly string[];
   notes?: string;
+  /** ADR-0009. Present only when this risk originated from an InferredProjectContextField. */
+  inferredProvenance?: InferredElementProvenance;
 }
 
 export type ProjectRiskInput = ProjectRisk;
@@ -180,6 +282,8 @@ export interface CandidateProjectAction {
   sourceIds: readonly string[];
   relatedCapabilityId?: string;
   relatedRiskId?: string;
+  /** ADR-0009. Present only when this candidate action originated from an InferredProjectContextField. */
+  inferredProvenance?: InferredElementProvenance;
 }
 
 export type CandidateProjectActionInput = CandidateProjectAction;
@@ -250,6 +354,8 @@ export interface ProjectContext {
   risks: readonly ProjectRisk[];
   sources: readonly ProjectSource[];
   candidateActions: readonly CandidateProjectAction[];
+  /** ADR-0009 Decision section 2 / review finding F1. Always present, empty when no precedence collision occurred -- see contextPrecedenceResolver.ts. */
+  precedenceConflicts: readonly ProjectContextPrecedenceConflict[];
   metadata: ProjectContextMetadata;
 }
 
@@ -266,6 +372,8 @@ export interface ProjectContextInput {
   risks: readonly ProjectRiskInput[];
   sources: readonly ProjectSourceInput[];
   candidateActions: readonly CandidateProjectActionInput[];
+  /** ADR-0009 Decision section 2 / review finding F1. Optional -- omitted or empty means the caller performed no precedence resolution (byte-for-byte backward compatible with every pre-F1 caller); defaults to `[]` in the built ProjectContext. Always pre-computed by contextPrecedenceResolver.ts before this input is built -- the builder itself never resolves precedence, only carries the already-decided result through. */
+  precedenceConflicts?: readonly ProjectContextPrecedenceConflict[];
   /** Injected clock value (ISO 8601). The builder never calls Date.now(). */
   generatedAt: string;
 }
@@ -296,7 +404,9 @@ export type ProjectContextValidationErrorCode =
   | "UNKNOWN_RELATED_REFERENCE"
   | "DECISION_SUPERSEDES_UNKNOWN"
   | "MALFORMED_CANDIDATE_ACTION"
-  | "MISSING_GENERATED_AT";
+  | "MISSING_GENERATED_AT"
+  | "INVALID_INFERRED_PROVENANCE"
+  | "INVALID_PRECEDENCE_CONFLICT";
 
 export interface ProjectContextValidationIssue {
   code: ProjectContextValidationErrorCode;
