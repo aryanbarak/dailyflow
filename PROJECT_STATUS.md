@@ -217,6 +217,33 @@ doc has full evidence).
   of "RE-REVIEW PASSED — CLEARED FOR MERGE DECISION" / "MERGE AS-IS".
   Design note:
   [`docs/architecture/notes/personal-memory-v1-design-note.md`](docs/architecture/notes/personal-memory-v1-design-note.md).
+- **Personal memory review UI (confirm/correct/reject/delete) — Tier 2**
+  (task `6`). `src/features/personal-memory/components/PersonalMemorySection.tsx`,
+  composed above the existing `AiMemoryTab` inside `SettingsPage.tsx`'s
+  `'ai-memory'` tab (one-line change there; `AiMemoryTab.tsx` itself not
+  modified — design note explains the placement decision). Lists
+  `PersonalMemoryRecord`s grouped by kind, newest first, with text-based
+  status marking (Proposed/Confirmed/Corrected/Rejected — never colour-
+  only); `proposed` records carry visible copy stating Q5's zero-
+  consumption guarantee ("Not used anywhere until you confirm it");
+  rejected records hidden by default behind a "Show rejected" toggle, with
+  copy naming the Q1/Q5 duplicate-suppression-survives-rejection rule; the
+  pre-correction original is never its own list entry, reachable only via
+  a "View original" history affordance on its correction. Confirm/Correct/
+  Reject call `resolve_personal_memory_record` via the existing service
+  (correction form reuses the canonical `validatePersonalMemoryContent`,
+  never a duplicated rule); Delete is available at every visible status
+  (ADR-0010 Q1) via the repo's standard `AlertDialog` confirmation pattern,
+  with copy stating plainly that deletion is permanent and the same fact
+  may later be re-extracted. A "Check for new personal memory" button
+  calls the extraction endpoint via a new
+  `personalMemoryExtractionTriggerClient.ts` (mirrors
+  `contextDerivationTriggerClient.ts`); a 422 `NO_SOURCE_MATERIAL` response
+  renders as a human sentence, not a raw error. No consumer wired — this UI
+  is the only surface where a `proposed` record is ever rendered anywhere
+  in the product, independently grep-verified after implementation.
+  Design note:
+  [`docs/architecture/notes/personal-memory-review-ui-design-note.md`](docs/architecture/notes/personal-memory-review-ui-design-note.md).
 
 ## 3. Verified NOT implemented
 
@@ -245,13 +272,11 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
   contains the expected fields; there is no independent re-read/compare.
 - EPIC-09 (autonomous chaining, multi-file changes, automatic retry/merge) —
   no commits exist.
-- **Personal memory review UI** (confirm/correct/reject/delete for
-  `PersonalMemoryRecord`) and any consumer of it — the v1 data model,
-  extraction endpoint, and `user_context` freeze exist and are merged
-  (§2.4), but nothing yet reads `user_confirmed`/`user_corrected` records
-  into any output (chat context, briefings, suggestions, tutor); Q5's
-  zero-consumption rule is independently verified to hold today because no
-  consumer exists yet, not merely by policy. `explicit_user_statement`
+- **Any consumer of `PersonalMemoryRecord`.** The review UI now exists
+  (§2.4, task `6`), but nothing yet reads `user_confirmed`/`user_corrected`
+  records into any output (chat context, briefings, suggestions, tutor);
+  Q5's zero-consumption rule is independently grep-verified to hold today
+  because no consumer exists yet, not merely by policy. `explicit_user_statement`
   records (manual entry) also have no capture surface yet.
 - Conversation memory, semantic/vector memory, RAG.
 
@@ -362,12 +387,11 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
    [`docs/reviews/2026-08-personal-memory-layer-review.md`](docs/reviews/2026-08-personal-memory-layer-review.md)
    ("RE-REVIEW PASSED — CLEARED FOR MERGE DECISION"). Also codifies the
    ADR-0008 dissent rule (§2.4). See §2.4 for full detail.
-5. **Personal memory review UI (confirm/correct/reject/delete) — Tier 2.**
-   Not started or scoped by ADR-0010 or this task; reuses the interaction
-   pattern already proven in
-   `src/features/projects/components/InferredContextSection.tsx` (§2.1's
-   Tier 2 confirm/correct UI). Until this exists, `PersonalMemoryRecord`
-   has no reviewer surface and no consumer anywhere (§3).
+5. ~~Personal memory review UI (confirm/correct/reject/delete) — Tier 2~~ —
+   **complete.** See §2.4. Reused the interaction pattern already proven in
+   `src/features/projects/components/InferredContextSection.tsx`. No
+   consumer wired (§3) — that remains a separate, future, Product-Owner-
+   sequenced decision.
 
 Superseded/completed sprint milestones from the prior version of this
 document have been removed rather than carried forward as history; git

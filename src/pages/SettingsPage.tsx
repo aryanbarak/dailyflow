@@ -32,6 +32,9 @@ import {
   type AiResponseLanguage,
 } from '@/features/ai/responseLanguage';
 import { AiMemoryTab } from '@/features/ai-memory/AiMemoryTab';
+import { PersonalMemorySection } from '@/features/personal-memory/components/PersonalMemorySection';
+import { browserPersonalMemoryRecordService } from '@/features/personal-memory/personalMemoryRecordBrowserService';
+import { triggerPersonalMemoryExtraction } from '@/features/personal-memory/personalMemoryExtractionTriggerClient';
 import { GitHubIntegrationCard } from '@/features/integrations/github/GitHubIntegrationCard';
 import { useT, type TranslationKey } from '@/i18n';
 
@@ -944,7 +947,7 @@ export default function SettingsPage() {
     appearance:    <AppearanceTab />,
     notifications: <NotificationsTab />,
     data:          <DataTab />,
-    'ai-memory':   <AiMemoryTab />,
+    'ai-memory':   <div className="space-y-6"><PersonalMemorySection service={browserPersonalMemoryRecordService} triggerExtraction={triggerPersonalMemoryExtraction} /><AiMemoryTab /></div>,
     integrations:  <GitHubIntegrationCard />,
   };
 
