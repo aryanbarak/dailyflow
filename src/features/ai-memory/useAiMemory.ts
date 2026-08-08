@@ -5,7 +5,6 @@ import { aiMemoryService, type MemoryEntry } from './aiMemoryService';
 export function useAiMemory() {
   const [entries, setEntries] = useState<MemoryEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [isAutoDetecting, setIsAutoDetecting] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -19,16 +18,9 @@ export function useAiMemory() {
 
   useEffect(() => { void load(); }, [load]);
 
-  const set = async (key: string, value: string) => {
-    try {
-      await aiMemoryService.set(key, value, 'manual');
-      await load();
-      toast.success('Memory saved');
-    } catch {
-      toast.error('Failed to save');
-    }
-  };
-
+  // No `set`/`autoDetect` here by design -- ADR-0010 Q3 (Product Owner
+  // amendment): user_context's write-freeze is COMPLETE. `remove` (erasure)
+  // is the only mutation this hook still exposes.
   const remove = async (key: string) => {
     try {
       await aiMemoryService.delete(key);
@@ -39,21 +31,8 @@ export function useAiMemory() {
     }
   };
 
-  const autoDetect = async () => {
-    setIsAutoDetecting(true);
-    try {
-      await aiMemoryService.autoDetectAndSave();
-      await load();
-      toast.success('Auto-detected patterns updated');
-    } catch {
-      toast.error('Auto-detection failed');
-    } finally {
-      setIsAutoDetecting(false);
-    }
-  };
-
   const getValue = (key: string) => entries.find(e => e.key === key)?.value ?? '';
   const getSource = (key: string) => entries.find(e => e.key === key)?.source ?? null;
 
-  return { entries, isLoading, isAutoDetecting, set, remove, autoDetect, getValue, getSource };
+  return { entries, isLoading, remove, getValue, getSource };
 }

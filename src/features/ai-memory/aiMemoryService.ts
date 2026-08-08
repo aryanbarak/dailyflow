@@ -1,6 +1,14 @@
 import { supabase } from '@/integrations/supabase/client';
 
-export type MemorySource = 'manual' | 'auto' | 'ai';
+// 'agent' is the source the Worker's legacy extraction wrote before ADR-0010
+// Q4 disabled it (agent/worker/index.ts's ENABLE_AUTO_MEMORY_WRITE); 'ai' is
+// the fourth value the user_context_source_check constraint has allowed
+// since 20260616120000_user_context_allow_agent_source.sql but that no
+// known write path in this codebase ever used. Both remain valid so any
+// pre-existing row of either source still renders correctly (see the
+// AiMemoryTab "AI" badge below) even though ADR-0010 Q3 freezes new writes
+// to this table.
+export type MemorySource = 'manual' | 'auto' | 'ai' | 'agent';
 
 export interface MemoryEntry {
   id: string;
@@ -48,14 +56,11 @@ export const aiMemoryService = {
     return (data ?? []).map(r => mapRow(r as Record<string, unknown>));
   },
 
-  async set(key: string, value: string, source: MemorySource = 'manual'): Promise<void> {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) throw new Error('Not authenticated');
-    const { error } = await supabase
-      .from('user_context')
-      .upsert({ user_id: user.id, key, value, source }, { onConflict: 'user_id,key' });
-    if (error) throw error;
-  },
+  // No `set`/upsert method here by design -- ADR-0010 Q3 (Product Owner
+  // amendment): the write-freeze on user_context is COMPLETE. There is no
+  // remaining write path to this table anywhere in the app; read and
+  // delete are the only supported operations. See AiMemoryTab.tsx for the
+  // disabled-with-reason UI this removal requires there.
 
   async delete(key: string): Promise<void> {
     const { data: { user } } = await supabase.auth.getUser();
@@ -80,59 +85,9 @@ export const aiMemoryService = {
     return `\n\nUSER CONTEXT (personal facts — use these to personalize your response):\n${lines.join('\n')}`;
   },
 
-  async autoDetectAndSave(): Promise<void> {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-
-    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-    const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-
-    // Mood pattern from journal
-    const { data: moodData } = await supabase
-      .from('journal_entries')
-      .select('mood')
-      .eq('user_id', user.id)
-      .gte('date', weekAgo)
-      .not('mood', 'is', null);
-
-    if (moodData && moodData.length >= 3) {
-      const moods = moodData.map(m => m.mood as number);
-      const avg = moods.reduce((a, b) => a + b, 0) / moods.length;
-      const trend = avg >= 4 ? 'positive' : avg >= 3 ? 'neutral' : 'low';
-      await aiMemoryService.set('mood_pattern', `Average mood last 7 days: ${avg.toFixed(1)}/5 (${trend})`, 'auto');
-    }
-
-    // Habit completion pattern
-    const [{ data: habitData }, { data: habits }] = await Promise.all([
-      supabase.from('habit_completions').select('habit_id').eq('user_id', user.id).gte('completed_date', weekAgo),
-      supabase.from('habits').select('id').eq('user_id', user.id).eq('is_active', true),
-    ]);
-
-    if (habits && habits.length > 0 && habitData) {
-      const rate = Math.round((habitData.length / (habits.length * 7)) * 100);
-      await aiMemoryService.set('habit_pattern', `Habit completion last 7 days: ${rate}% (${habitData.length}/${habits.length * 7} sessions)`, 'auto');
-    }
-
-    // Top finance category
-    const { data: financeData } = await supabase
-      .from('finance_transactions')
-      .select('type, amount, category')
-      .eq('user_id', user.id)
-      .gte('date', monthAgo);
-
-    if (financeData && financeData.length > 0) {
-      const topEntry = Object.entries(
-        financeData
-          .filter(t => t.type === 'expense')
-          .reduce<Record<string, number>>((acc, t) => {
-            acc[t.category] = (acc[t.category] ?? 0) + Number(t.amount);
-            return acc;
-          }, {}),
-      ).sort((a, b) => b[1] - a[1])[0];
-
-      if (topEntry) {
-        await aiMemoryService.set('finance_pattern', `Top expense last 30 days: ${topEntry[0]} (€${topEntry[1].toFixed(0)})`, 'auto');
-      }
-    }
-  },
+  // No `autoDetectAndSave` method here by design -- ADR-0010 Q3 (Product
+  // Owner amendment): this table's write-freeze is COMPLETE, and this
+  // function's sole purpose was writing derived mood/habit/finance
+  // patterns into it. Removed rather than left disabled-but-callable, per
+  // the same reasoning as `set` above.
 };

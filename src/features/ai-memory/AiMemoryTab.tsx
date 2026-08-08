@@ -1,12 +1,10 @@
-import { useState } from 'react';
 import {
-  Brain, RefreshCw, Trash2, Save,
+  Brain, RefreshCw, Trash2,
   User, TrendingUp, Heart, DollarSign, BookOpen,
   Loader2, Info, Zap,
 } from 'lucide-react';
 import { useAiMemory } from './useAiMemory';
 import { MEMORY_KEYS } from './aiMemoryService';
-import { cn } from '@/lib/utils';
 
 const KEY_ICONS: Record<string, React.ReactNode> = {
   goal_primary:    <Zap className="w-3.5 h-3.5 text-cyan-400" />,
@@ -26,23 +24,7 @@ const KEY_ICONS: Record<string, React.ReactNode> = {
 const AUTO_KEYS = ['mood_pattern', 'habit_pattern', 'finance_pattern'];
 
 export function AiMemoryTab() {
-  const { entries, isLoading, isAutoDetecting, set, remove, autoDetect, getValue, getSource } = useAiMemory();
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [saving, setSaving] = useState<Record<string, boolean>>({});
-
-  const handleSave = async (key: string) => {
-    const value = key in drafts ? drafts[key] : getValue(key);
-    setSaving(prev => ({ ...prev, [key]: true }));
-    if (value.trim()) {
-      await set(key, value.trim());
-    } else {
-      await remove(key);
-    }
-    setSaving(prev => ({ ...prev, [key]: false }));
-    setDrafts(prev => { const n = { ...prev }; delete n[key]; return n; });
-  };
-
-  const isDirty = (key: string) => key in drafts && drafts[key] !== getValue(key);
+  const { entries, isLoading, remove, getValue, getSource } = useAiMemory();
 
   if (isLoading) {
     return (
@@ -61,7 +43,7 @@ export function AiMemoryTab() {
     {
       title: 'Auto-detected Patterns',
       keys: AUTO_KEYS,
-      badge: <span className="text-xs px-1.5 py-0.5 rounded bg-green-500/20 text-green-400 normal-case font-normal">Updated automatically</span>,
+      badge: null,
     },
     {
       title: 'Personal Notes',
@@ -88,14 +70,11 @@ export function AiMemoryTab() {
           </p>
         </div>
         <button
-          onClick={() => void autoDetect()}
-          disabled={isAutoDetecting}
-          className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-border text-sm text-muted-foreground hover:text-foreground hover:bg-muted transition-all whitespace-nowrap disabled:opacity-50"
+          disabled
+          title="Auto-detection is disabled -- ADR-0010 Q3 froze all new writes to this table."
+          className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-border text-sm text-muted-foreground opacity-50 cursor-not-allowed whitespace-nowrap"
         >
-          {isAutoDetecting
-            ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Detecting…</>
-            : <><RefreshCw className="w-3.5 h-3.5" /> Auto-detect</>
-          }
+          <RefreshCw className="w-3.5 h-3.5" /> Auto-detect
         </button>
       </div>
 
@@ -103,9 +82,12 @@ export function AiMemoryTab() {
         <Info className="w-4 h-4 text-cyan-400 flex-shrink-0 mt-0.5" />
         <p className="text-xs text-cyan-300">
           This memory is injected into every AI conversation.
-          Auto-detected fields update from your data. Manual fields let you tell AI things it can't detect.
         </p>
       </div>
+      <p className="text-xs text-muted-foreground">
+        Adding, editing, and auto-detecting entries here is disabled -- ADR-0010 Q3 froze all new writes to this
+        legacy table. Existing entries remain viewable and removable below.
+      </p>
 
       {groups.map(group => (
         <div key={group.title} className="space-y-2">
@@ -119,13 +101,8 @@ export function AiMemoryTab() {
               label={label}
               placeholder={placeholder}
               icon={KEY_ICONS[key]}
-              value={key in drafts ? drafts[key] : getValue(key)}
+              value={getValue(key)}
               source={getSource(key)}
-              isDirty={isDirty(key)}
-              isSaving={saving[key] ?? false}
-              isAuto={AUTO_KEYS.includes(key)}
-              onChange={v => setDrafts(prev => ({ ...prev, [key]: v }))}
-              onSave={() => void handleSave(key)}
               onRemove={() => void remove(key)}
             />
           ))}
@@ -149,23 +126,14 @@ interface MemoryRowProps {
   icon: React.ReactNode;
   value: string;
   source: string | null;
-  isDirty: boolean;
-  isSaving: boolean;
-  isAuto: boolean;
-  onChange: (v: string) => void;
-  onSave: () => void;
   onRemove: () => void;
 }
 
 function MemoryRow({
-  label, placeholder, icon, value, source,
-  isDirty, isSaving, isAuto, onChange, onSave, onRemove,
+  label, placeholder, icon, value, source, onRemove,
 }: Readonly<MemoryRowProps>) {
   return (
-    <div className={cn(
-      'p-3 rounded-lg border transition-colors',
-      isDirty ? 'border-cyan-500/40 bg-cyan-500/5' : 'border-border bg-card/50',
-    )}>
+    <div className="p-3 rounded-lg border border-border bg-card/50 transition-colors">
       <div className="flex items-center gap-2 mb-2">
         {icon}
         <span className="text-xs font-medium">{label}</span>
@@ -175,26 +143,26 @@ function MemoryRow({
         {source === 'manual' && (
           <span className="text-xs px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 ml-auto">Manual</span>
         )}
+        {/* 'agent'/'ai' rows were written by the LLM extraction path, never
+            reviewed or confirmed by the user -- rendering no badge at all
+            (the gap found and cited in ADR-0010's Problem section) made
+            this text visually indistinguishable from the user's own words.
+            This badge is text-based, not colour-only, per
+            representative-engine.md section 15's marking discipline. */}
+        {(source === 'agent' || source === 'ai') && (
+          <span className="text-xs px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400 ml-auto">AI-written, unreviewed</span>
+        )}
       </div>
       <div className="flex items-center gap-2">
         <input
           value={value}
-          onChange={e => onChange(e.target.value)}
           placeholder={placeholder}
-          onKeyDown={e => { if (e.key === 'Enter' && isDirty) onSave(); }}
-          className={cn(
-            'flex-1 text-xs bg-background border border-border rounded px-2 py-1.5',
-            'focus:outline-none focus:ring-1 focus:ring-primary placeholder:text-muted-foreground/50',
-            isAuto && !isDirty && 'text-muted-foreground italic',
-          )}
+          disabled
+          readOnly
+          title="Editing is disabled -- ADR-0010 Q3 froze all new writes to this table."
+          className="flex-1 text-xs bg-background border border-border rounded px-2 py-1.5 text-muted-foreground placeholder:text-muted-foreground/50 disabled:opacity-70 disabled:cursor-not-allowed"
         />
-        {isDirty && (
-          <button onClick={onSave} disabled={isSaving} title="Save"
-            className="p-1.5 rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50">
-            {isSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
-          </button>
-        )}
-        {value && !isDirty && (
+        {value && (
           <button onClick={onRemove} title="Clear"
             className="p-1.5 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors">
             <Trash2 className="w-3 h-3" />

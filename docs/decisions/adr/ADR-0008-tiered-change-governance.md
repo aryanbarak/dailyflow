@@ -157,6 +157,39 @@ pass (recommended: at each Tier 1 UI milestone, not per Tier 2/3 slice)
 rather than a gate on every individual slice — most Tier 2/3 work is
 internal or read-model work with no new user-facing surface to validate.
 
+## Implementation Notes
+
+Added 2026-08-08 (task `5c`, governance addendum F4), per a direct Product
+Owner instruction issued during that session. Additive only — it codifies a
+rule about how this ADR (and every other Accepted ADR) is to be treated
+going forward; it does not reword, weaken, or reopen anything in the
+Decision or Consequences sections above.
+
+**Dissent rule (Product Owner, 2026-08-08).** Accepted status means a
+decision is current and binding — not beyond criticism. Any agent
+(coordinator, implementer, reviewer) who identifies a problem in an
+Accepted decision — this ADR or any other — must record the concern for
+the Product Owner: state it plainly, with the specific decision text and
+the specific problem, in whatever surface the agent is already reporting
+through (a task's final report, a review document, `PROJECT_STATUS.md`,
+or a new ADR's own Context section proposing reconsideration). Until a new
+decision is recorded resolving that concern, **the current decision
+stands** and continues to govern all work, exactly as ADR-0001 and this
+ADR's own tiering already require.
+
+**The boundary this rule draws, stated explicitly:** dissent is mandatory
+to *record* — silently complying with a decision an agent believes is
+wrong, without ever surfacing that belief, is itself a process failure
+this rule exists to prevent — but recording dissent is never a license to
+*deviate* from the current decision while it stands. An agent may not
+substitute its own judgment for the Product Owner's recorded decision, on
+the theory that its dissent was noted; noting the concern and continuing
+to follow the decision are both required, not alternatives to choose
+between. This mirrors, one layer up, the same discipline ADR-0009/ADR-0010
+already apply to model output: a proposal may be recorded and surfaced,
+but it does not become authoritative, and does not override existing
+authoritative state, merely by having been raised.
+
 ## Consequences
 
 - Project Brief Foundation and Sprint 1 Deliverable 4 (the incident in

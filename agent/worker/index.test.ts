@@ -176,8 +176,12 @@ describe('handleChat mode routing', () => {
     expect(log.chatMessageWrites[1]).toMatchObject({ role: 'assistant', content: 'Hello from Gemini' })
     expect(log.sessionPatches).toBe(1)
 
-    // Background memory extraction is still scheduled for a real chat turn.
-    expect((ctx.waitUntil as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1)
+    // ADR-0010 Product Owner Resolution Q4: always-on background memory
+    // extraction into user_context is disabled (ENABLE_AUTO_MEMORY_WRITE is
+    // now false). Personal Memory extraction happens only via the explicit
+    // POST /personal-memory/extraction trigger -- a real chat turn no
+    // longer schedules any background work here.
+    expect((ctx.waitUntil as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled()
 
     const chatCall = log.geminiCalls.find((call) => !call.generationConfig?.responseSchema)
     expect(chatCall).toBeDefined()

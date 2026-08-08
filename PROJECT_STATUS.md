@@ -160,6 +160,64 @@ top-of-file notice; `docs/architecture/current-architecture.md` was already
 internally consistent and correct on tool count (§4 of the reconciliation
 doc has full evidence).
 
+### 2.4 Personal Memory Domain (this task)
+
+- **Personal Memory Layer v1** —
+  [ADR-0010](docs/decisions/adr/ADR-0010-personal-memory-layer.md)
+  (Accepted)'s Tier 1 implementation. New `personal_memory_records`/
+  `personal_memory_extraction_runs` tables, owner-scoped RLS (no project
+  dimension), all writes through three `SECURITY DEFINER` functions
+  (`create_personal_memory_record`, `resolve_personal_memory_record`,
+  `delete_personal_memory_record` — the last has no ADR-0009 analogue: a
+  day-one, unconditional hard-delete erasure path per Q1) with race-safe
+  duplicate suppression built in from the start —
+  `supabase/migrations/20260808000000_personal_memory_records.sql`. New
+  authenticated Worker route `POST /personal-memory/extraction`
+  (`agent/worker/personal-memory-extraction-endpoint.ts`), explicit-user-
+  trigger only per Q4 — `ENABLE_AUTO_MEMORY_WRITE` in `agent/worker/index.ts`
+  is now `false`, and both legacy always-on extraction call sites
+  (`extractAndSaveMemory`/`extractAndSaveMemoryFromChat`) are confirmed dead.
+  Deterministic per-candidate validation with a curated sensitive-content
+  heuristic (health/relationships/emotional-state excluded per Q2, in both
+  the canonical TS validator and the Worker's kept-in-sync duplicate).
+  `proposed` records have zero consumption anywhere per Q5 — independently
+  grep-verified twice, nothing in this codebase reads
+  `personal_memory_records` outside its own module and tests.
+- **`user_context` write-freeze — COMPLETE** (Q3, amended). Per the
+  Product Owner's amendment recorded in ADR-0010's Implementation Notes,
+  every write path to the legacy `user_context` table is now closed, not
+  only the two Worker extraction functions: `aiMemoryService.set`/
+  `autoDetectAndSave` are removed (not merely unreachable), the automatic
+  `autoDetectAndSave()` call `AppLayout.tsx` fired 5 seconds after every
+  app load is removed, and `AiMemoryTab.tsx`'s per-row edit affordances and
+  its "Auto-detect" button are disabled with visible, text-based
+  explanations (not colour-only). Read and delete remain fully functional.
+  Manual personal facts return later as `explicit_user_statement`
+  `PersonalMemoryRecord`s via the upcoming review UI, not by resuming
+  `user_context` writes.
+- **Agent-authored-content marking fix** — `AiMemoryTab.tsx`'s `MemoryRow`
+  previously rendered a `source='agent'`/`'ai'` row (LLM-extracted, never
+  reviewed) with no badge at all, indistinguishable from the user's own
+  words — the concrete gap ADR-0010's Problem section names. Fixed with a
+  text-based "AI-written, unreviewed" badge; `aiMemoryService.ts`'s
+  `MemorySource` type widened to match the existing DB `CHECK` constraint.
+- **Governance: ADR-0008 dissent rule.** A Product Owner instruction,
+  codified as an additive Implementation Notes section in
+  [ADR-0008](docs/decisions/adr/ADR-0008-tiered-change-governance.md):
+  any agent that identifies a problem in an Accepted decision must record
+  the concern for the Product Owner; the current decision stands until a
+  new one is recorded. Dissent is mandatory to record, never a license to
+  deviate from the current decision while it stands. ADR-0008's own
+  Decision/Consequences text is unchanged.
+- **Independent review trail** —
+  [`docs/reviews/2026-08-personal-memory-layer-review.md`](docs/reviews/2026-08-personal-memory-layer-review.md):
+  initial Tier 1 review (2 MAJOR / 2 MINOR findings), remediation (task
+  `5c`) including the complete `user_context` write-freeze above and an
+  expanded sensitive-content pattern list, then a delta re-review verdict
+  of "RE-REVIEW PASSED — CLEARED FOR MERGE DECISION" / "MERGE AS-IS".
+  Design note:
+  [`docs/architecture/notes/personal-memory-v1-design-note.md`](docs/architecture/notes/personal-memory-v1-design-note.md).
+
 ## 3. Verified NOT implemented
 
 Confirmed from code, not assumed (full detail in the reconciliation doc §6):
@@ -187,8 +245,14 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
   contains the expected fields; there is no independent re-read/compare.
 - EPIC-09 (autonomous chaining, multi-file changes, automatic retry/merge) —
   no commits exist.
-- Personal Memory — forward-looking term for future work (§5), not existing
-  code.
+- **Personal memory review UI** (confirm/correct/reject/delete for
+  `PersonalMemoryRecord`) and any consumer of it — the v1 data model,
+  extraction endpoint, and `user_context` freeze exist and are merged
+  (§2.4), but nothing yet reads `user_confirmed`/`user_corrected` records
+  into any output (chat context, briefings, suggestions, tutor); Q5's
+  zero-consumption rule is independently verified to hold today because no
+  consumer exists yet, not merely by policy. `explicit_user_statement`
+  records (manual entry) also have no capture surface yet.
 - Conversation memory, semantic/vector memory, RAG.
 
 ## 4. Current blockers / open decisions
@@ -197,17 +261,24 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
   The Inferred Project Context Layer v1 (§2.1) closes this for
   LLM-confirmed/corrected content; a semantic-document-parser path remains
   unbuilt and is not currently planned.
-- **OPEN CONDITION: live-Supabase execution of
-  `supabase/tests/inferred_project_context_fields.rls.test.ts` pending — run
-  at first opportunity.** This gated test suite (skipped by default,
-  `SMARTFLOW_RUN_LOCAL_SUPABASE=1`) has not yet been executed against a real
-  local Supabase/PostgREST stack — attempted in this task, blocked because a
-  sibling project (`ai-automation-agent`) occupies the default Supabase ports
-  (54321/54322/54323/54324/54327); not stopped, per policy. The underlying
-  `SECURITY DEFINER` function logic this suite exercises has been
-  independently verified live twice via a disposable, non-Supabase Postgres
-  17 container (raw SQL, including a genuine concurrent-race proof) — only
-  the PostgREST/GoTrue integration layer remains unverified live.
+- **OPEN CONDITION: live-Supabase execution of BOTH gated RLS suites
+  pending — run at first opportunity.**
+  `supabase/tests/inferred_project_context_fields.rls.test.ts` and
+  `supabase/tests/personal_memory_records.rls.test.ts` (both skipped by
+  default, `SMARTFLOW_RUN_LOCAL_SUPABASE=1`) have not yet been executed
+  against a real local Supabase/PostgREST stack — attempted again in task
+  `5d`, blocked for the same reason each time it has been attempted: a
+  sibling project (`ai-automation-agent`) occupies the default Supabase
+  ports (54321/54322/54323/54324/54327); not stopped, per policy;
+  `supabase/config.toml` not edited (verified via `git status` after each
+  attempt). The underlying `SECURITY DEFINER` function logic the
+  project-context suite exercises has been independently verified live
+  twice via a disposable, non-Supabase Postgres 17 container (raw SQL,
+  including a genuine concurrent-race proof); the personal-memory suite's
+  equivalent logic (erasure-clears-suppression, race-safe duplicate
+  handling) has been verified only by careful code reading, not by any
+  live execution, disposable-container or otherwise — only the
+  PostgREST/GoTrue integration layer remains unverified live for both.
 - **Adapter execution-location decision** (open): where a repository-document
   adapter physically executes is unresolved
   (`docs/architecture/project-evidence-acquisition.md` §25) — the browser
@@ -219,6 +290,29 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
   LLM-assisted evidence promotion) — see
   `docs/architecture/project-evidence-acquisition.md` §25 for the full list;
   none are silently decided.
+- **Known limitations carried forward from the Personal Memory Layer v1
+  review trail** (task `5d`, see §2.4):
+  1. The sensitive-content heuristic (`SENSITIVE_CONTENT_PATTERNS` in
+     `personalMemoryRecordValidation.ts` and its Worker duplicate) is a
+     curated keyword filter, not a semantic classifier. Three fresh
+     adversarial misses were found and disclosed during re-review:
+     `stepson` (no word boundary before "son"), `MRI scan`, and `physical
+     exam`. Queued for the next touch of the validator, not a merge
+     blocker — the governing safety layers are Q5 (a `proposed` record has
+     zero consumption until confirmed) and Q1 (unconditional hard delete).
+  2. `agent/worker/index.ts`'s `extractAndSaveMemory`/
+     `extractAndSaveMemoryFromChat` still contain dead `user_context`
+     `on_conflict` POST bodies, confirmed unreachable (`ENABLE_AUTO_MEMORY_
+     WRITE = false`, no other call site exists) — a MINOR dead-code-removal
+     item for a future touch of this file, not a live risk.
+  3. `20260807000000_inferred_project_context_fields.sql`'s
+     `content_fingerprint` column comment overclaims that the hash covers
+     `project_id` (the actual hash is `(kind, content)` only, matching
+     `computeInferredFieldContentFingerprint`'s real signature) — not a
+     security issue (the partial unique index adds `project_id` as a
+     separate index column regardless), and this committed migration was
+     deliberately left untouched per this task's scope; queued for a
+     future docs-only pass.
 - **Technical debt carried forward** (unchanged by this task, condensed from
   the prior version — see git history of this file for the original
   detailed writeups if needed):
@@ -260,24 +354,20 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
 3. ~~Inference confirm/correct UI in Project Workspace (Tier 2)~~ —
    **merged/complete.** See §2.1. Independent review may follow post-merge
    per ADR-0008's Tier 2 path.
-4. **Personal Memory v1 — in progress.**
+4. ~~Personal Memory v1~~ — **merged/complete.**
    [ADR-0010](docs/decisions/adr/ADR-0010-personal-memory-layer.md)
-   (Accepted 2026-08-08) defines `PersonalMemoryRecord` (six kinds:
-   preference/goal/working_pattern/commitment/personal_fact/skill; health/
-   relationships/emotional-state excluded from extraction), mirroring
-   ADR-0009's `SECURITY DEFINER`/RLS/state-machine pattern with two
-   person-layer differences: a day-one hard-delete erasure path (Q1), and a
-   stricter consumption rule (Q5 — `proposed` records have zero
-   consumption; only `user_confirmed`/`user_corrected` may influence any
-   output). Per Q3, `user_context` writes are frozen (not migrated — the
-   existing rows are test data with no value; an "absorb" migration is
-   explicitly not planned). Per Q4, the legacy always-on background
-   extraction (`ENABLE_AUTO_MEMORY_WRITE`) is replaced by an explicit
-   user-trigger-only extraction path. Tier 1 implementation (task `5b`) is
-   built and pending independent review before merge — see
-   `docs/architecture/notes/personal-memory-v1-design-note.md` for the
-   extraction-pipeline sketch and Phase-0 `user_context` inventory this
-   ADR is grounded in.
+   (Accepted); Tier 1 implementation independently reviewed, remediated
+   (complete `user_context` write-freeze per the Q3 amendment; expanded
+   sensitive-content coverage), and delta re-reviewed under ADR-0008 —
+   [`docs/reviews/2026-08-personal-memory-layer-review.md`](docs/reviews/2026-08-personal-memory-layer-review.md)
+   ("RE-REVIEW PASSED — CLEARED FOR MERGE DECISION"). Also codifies the
+   ADR-0008 dissent rule (§2.4). See §2.4 for full detail.
+5. **Personal memory review UI (confirm/correct/reject/delete) — Tier 2.**
+   Not started or scoped by ADR-0010 or this task; reuses the interaction
+   pattern already proven in
+   `src/features/projects/components/InferredContextSection.tsx` (§2.1's
+   Tier 2 confirm/correct UI). Until this exists, `PersonalMemoryRecord`
+   has no reviewer surface and no consumer anywhere (§3).
 
 Superseded/completed sprint milestones from the prior version of this
 document have been removed rather than carried forward as history; git

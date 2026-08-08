@@ -6,7 +6,6 @@ import { OfflineBadge } from "@/components/OfflineBadge";
 import { MiniPlayer } from "@/components/music/MiniPlayer";
 import { GlobalSearch } from "@/features/search/GlobalSearch";
 import { useAlarms } from "@/features/calendar/useAlarms";
-import { aiMemoryService } from "@/features/ai-memory/aiMemoryService";
 import { PageTitleProvider } from "@/contexts/PageTitleContext";
 import { LaunchExperience } from "@/components/LaunchExperience";
 import { LaunchProvider, useLaunch } from "@/contexts/LaunchContext";
@@ -30,13 +29,6 @@ function AppLayoutInner() {
       const timer = setTimeout(() => { void Notification.requestPermission(); }, 3000);
       return () => clearTimeout(timer);
     }
-  }, []);
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      aiMemoryService.autoDetectAndSave().catch(console.error);
-    }, 5000);
-    return () => clearTimeout(timer);
   }, []);
 
   return (

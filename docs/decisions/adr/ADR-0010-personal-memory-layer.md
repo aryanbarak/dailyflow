@@ -248,8 +248,10 @@ the person, never about a project.
   (see §3.b — reference-only recommendation and its chat-retention caveat
   above).
 - **`modelIdentity` + `extractionVersion`** — populated for
-  model-authored rows; both `null` for `source: 'user'` rows (an explicit
-  statement or a correction was not produced by a model run), mirroring
+  model-authored rows; carry a fixed sentinel value for `source: 'user'`
+  rows (an explicit statement or a correction was not produced by a model
+  run, so there is no real model identity/version to record — see
+  Implementation Notes for the exact sentinel values used), mirroring
   ADR-0009's `source='user'` rows never carrying a `runId`.
 - **`confidence`** — the same closed `low | medium | high` scale ADR-0009
   Decision §1 already established, for the same reason (a numeric
@@ -580,6 +582,111 @@ a separate future ADR.
   records have ZERO consumption. Only `user_confirmed` / `user_corrected`
   records may influence any output (chat context, briefings, suggestions,
   tutor). No "marked but consumed" tier for personal memory.
+
+## Implementation Notes
+
+Added during implementation (task `5b`). Records how the Tier 1
+implementation resolved a decision this ADR's own Decision section left
+unaddressed — it clarifies, but does not amend, the Accepted decision
+above, exactly as ADR-0009's own Implementation Notes section does for the
+identical kind of gap one layer down.
+
+**No `kind` receives automatic cross-run supersession in v1.** ADR-0009's
+own automatic supersession is scoped narrowly to `objective`/`milestone`
+specifically *because* `ProjectContextBuilder` independently enforces "at
+most one active objective" / "at most one active milestone"
+(`project-domain.md` §8) — a real, existing downstream validation rule that
+makes "the newer proposal supersedes the older one" the objectively
+correct behavior, not an invented merge. No personal-memory kind has an
+analogous "at most one active X" rule anywhere in this codebase: a person
+can plausibly hold multiple simultaneous preferences, goals, working
+patterns, commitments, personal facts, or skills at once — there is no
+"the current goal" concept established anywhere `PersonalMemoryRecord`'s
+consumers would rely on. Applying automatic supersession to any kind here
+without such a rule would risk exactly what ADR-0009's own Implementation
+Notes warned against for `decision`/`risk`/`capability`/`candidate_action`:
+wrongly discarding a legitimate second, unrelated candidate. `20260808000000_personal_memory_records.sql`'s
+`create_personal_memory_record` therefore performs exact-content-fingerprint
+duplicate-suppression only (identical scope to ADR-0009's own
+Q1/Q5-derived rule) and never sets `status = 'superseded'` for any kind.
+The `superseded` status remains in the column's `CHECK` constraint for
+schema symmetry with ADR-0009 and to leave room for a future, separately-
+decided per-kind slot rule (e.g. if a future need establishes "at most one
+active primary goal" as real product behavior) — that would be new product
+behavior requiring its own decision record, not a reinterpretation of this
+one, exactly as ADR-0009's Implementation Notes states for its own
+narrower-than-literal-text supersession scope.
+
+**Sentinel values, not `null`, for `source: 'user'` rows' `modelIdentity`/
+`derivationVersion`.** Decision §1 above says these fields are "populated
+for model-authored rows" and carry a sentinel for `source: 'user'` rows —
+an earlier draft of that sentence said `null` instead, which did not match
+the actual implementation. `resolve_personal_memory_record`'s `correct`
+path sets `model_identity = 'user'`, `derivation_version =
+'user-correction-v1'` on NOT NULL columns, exactly mirroring
+`resolve_inferred_context_field`'s own already-proven sentinel-value
+pattern (ADR-0009 does the identical thing, for the identical reason: a
+single NOT NULL column family, no nullable-for-one-source special case to
+test around). Recorded here, additively, because Decision §1's prose said
+`null` before this correction; this note reconciles the prose with the
+implementation without changing what a `source: 'user'` row's provenance
+actually means.
+
+**Product Owner amendment, recorded verbatim (2026-08-08), on Q3.**
+Following the independent Tier 1 review
+(`docs/reviews/2026-08-personal-memory-layer-review.md`, MAJOR finding #1),
+the Product Owner clarified Q3's scope:
+
+> Q3 clarified: the write-freeze is COMPLETE — all `user_context` write
+> paths close, including `aiMemoryService.autoDetectAndSave` (and its
+> Auto-detect button) and manual `set()` for new/edited rows. Read and
+> delete remain available in `AiMemoryTab` until consumers migrate. Manual
+> personal facts return later as `explicit_user_statement` records with
+> proper provenance via the upcoming review UI.
+
+This amendment narrows nothing in the original Q3 Product Owner Resolution
+("freeze ALL new writes to `user_context`") — it removes the ambiguity the
+review identified: `aiMemoryService.autoDetectAndSave` and the manual
+`set()` path are both now confirmed in-scope for the freeze, not merely
+`extractAndSaveMemory`/`extractAndSaveMemoryFromChat`. It also names the
+capability's actual successor: manual entry does not simply disappear —
+it returns as a properly-provenanced `explicit_user_statement`
+`PersonalMemoryRecord` once its capture surface (named but out-of-scope in
+§2.b, and the confirm/correct/delete review UI named in Consequences) is
+built, rather than continuing to write into `user_context` in the interim.
+Task `5c` implements the freeze side of this by removing (not merely
+disabling) `aiMemoryService.set` and `aiMemoryService.autoDetectAndSave`,
+removing the Auto-detect button and the automatic `autoDetectAndSave` call
+`AppLayout.tsx` fired on every app load (a third write path the original
+review did not surface), and disabling `AiMemoryTab`'s per-row edit
+affordances with a disabled-with-reason message. `aiMemoryService.getAll`/
+`delete` (read and erasure) are untouched, per this amendment's own text.
+The `explicit_user_statement` capture surface itself remains unbuilt —
+unchanged from ADR-0010's original Consequences, not a new deferral this
+amendment introduces.
+
+**Known limitations of the Q2 sensitive-content heuristic.**
+`SENSITIVE_CONTENT_PATTERNS` (duplicated in
+`personalMemoryRecordValidation.ts` and
+`personal-memory-extraction-endpoint.ts`) is a curated keyword/phrase
+filter, not a semantic classifier, and task `5c` extended it (family nouns
+including `daughter`/`son`/`grandparent`/etc.; keyword-less medical
+phrasing including `checkup`/`appointment`/`dentist`/etc.) only after the
+independent review found two concrete payloads it missed
+(`docs/reviews/2026-08-personal-memory-layer-review.md`, MAJOR finding #2).
+This is disclosed honestly, not claimed as now-complete: a keyword list of
+this kind cannot enumerate every way a person might phrase sensitive
+content, and further gaps should be expected. The heuristic is
+**defense in depth, not the only safety layer** — the two layers that
+actually govern residual risk if a sensitive candidate slips past this
+filter are Q5 (a `proposed` record has zero consumption anywhere until a
+user actively confirms it — a slipped-through candidate cannot silently
+reach a briefing, chat response, or suggestion) and Q1 (any record, at any
+status, is unconditionally hard-deletable — if a user notices a sensitive
+`proposed` record, deleting it is immediate and complete, with duplicate-
+suppression dying with it). No future change should treat the keyword
+list's coverage as a completeness guarantee; it is one imperfect filter
+among several deliberately layered controls.
 
 ## Consequences
 

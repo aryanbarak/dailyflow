@@ -10,8 +10,19 @@ import {
 } from './reasoning-endpoint'
 import { handleGitHubIntegrationRequest } from './github-integration'
 import { handleContextDerivationRequest } from './context-derivation-endpoint'
+import { handlePersonalMemoryExtractionRequest } from './personal-memory-extraction-endpoint'
 
-const ENABLE_AUTO_MEMORY_WRITE = true
+// ADR-0010 Product Owner Resolution Q4: always-on background extraction
+// into user_context is DISABLED by this decision (SUPERSEDE per Q3 --
+// user_context writes are frozen). extractAndSaveMemory/
+// extractAndSaveMemoryFromChat below are kept only as historical reference
+// for the prompt-construction logic they still share with nothing else in
+// this file; neither is called anywhere anymore now that this flag is
+// false. Automatic extraction may return only via a future recorded
+// decision (ADR-0010 section 4) -- Personal Memory extraction now happens
+// only via the explicit-trigger POST /personal-memory/extraction route
+// (personal-memory-extraction-endpoint.ts).
+const ENABLE_AUTO_MEMORY_WRITE = false
 
 export default {
   // =============================================
@@ -73,6 +84,10 @@ export default {
 
     if (pathname === '/projects/context-derivation') {
       return handleContextDerivationRequest(request, env, { logger: console })
+    }
+
+    if (pathname === '/personal-memory/extraction') {
+      return handlePersonalMemoryExtractionRequest(request, env, { logger: console })
     }
 
     return json({ error: 'Not found' }, 404, origin)
