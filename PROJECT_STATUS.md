@@ -260,7 +260,24 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
 3. ~~Inference confirm/correct UI in Project Workspace (Tier 2)~~ —
    **merged/complete.** See §2.1. Independent review may follow post-merge
    per ADR-0008's Tier 2 path.
-4. Personal Memory v1.
+4. **Personal Memory v1 — in progress.**
+   [ADR-0010](docs/decisions/adr/ADR-0010-personal-memory-layer.md)
+   (Accepted 2026-08-08) defines `PersonalMemoryRecord` (six kinds:
+   preference/goal/working_pattern/commitment/personal_fact/skill; health/
+   relationships/emotional-state excluded from extraction), mirroring
+   ADR-0009's `SECURITY DEFINER`/RLS/state-machine pattern with two
+   person-layer differences: a day-one hard-delete erasure path (Q1), and a
+   stricter consumption rule (Q5 — `proposed` records have zero
+   consumption; only `user_confirmed`/`user_corrected` may influence any
+   output). Per Q3, `user_context` writes are frozen (not migrated — the
+   existing rows are test data with no value; an "absorb" migration is
+   explicitly not planned). Per Q4, the legacy always-on background
+   extraction (`ENABLE_AUTO_MEMORY_WRITE`) is replaced by an explicit
+   user-trigger-only extraction path. Tier 1 implementation (task `5b`) is
+   built and pending independent review before merge — see
+   `docs/architecture/notes/personal-memory-v1-design-note.md` for the
+   extraction-pipeline sketch and Phase-0 `user_context` inventory this
+   ADR is grounded in.
 
 Superseded/completed sprint milestones from the prior version of this
 document have been removed rather than carried forward as history; git

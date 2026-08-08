@@ -18,6 +18,7 @@ and must not be reused.
 - [ADR-0007: ProjectEvidence Observation Model](ADR-0007-projectevidence-observation-model.md) - Accepted
 - [ADR-0008: Tiered Change Governance](ADR-0008-tiered-change-governance.md) - Accepted
 - [ADR-0009: Inferred Project Context Layer](ADR-0009-inferred-project-context-layer.md) - Accepted
+- [ADR-0010: Personal Memory Layer v1](ADR-0010-personal-memory-layer.md) - Accepted
 
 ## ADR vs Decision Log
 
