@@ -99,8 +99,28 @@ work.
   non-fabricated ProjectContext" test. Independently reviewed under Tier 1
   (ADR-0008): [`docs/reviews/2026-08-inferred-context-layer-review.md`](docs/reviews/2026-08-inferred-context-layer-review.md)
   (4 MAJOR / 3 MINOR findings, all closed by remediation, re-reviewed —
-  verdict "RE-REVIEW PASSED — CLEARED FOR MERGE DECISION"). Confirm/correct
-  UI is not part of this slice — see §5.
+  verdict "RE-REVIEW PASSED — CLEARED FOR MERGE DECISION").
+- **Inference confirm/correct UI in Project Workspace (Tier 2)** — task 4;
+  design note
+  [`docs/architecture/notes/inference-review-ui-design-note.md`](docs/architecture/notes/inference-review-ui-design-note.md).
+  New "Inferred understanding" section in `ProjectWorkspacePage.tsx`
+  (`src/features/projects/components/InferredContextSection.tsx`), listing a
+  project's `InferredProjectContextField` rows grouped by kind, always
+  showing still-`proposed` candidates marked "Inferred -- unconfirmed"
+  (ADR-0009 Q2), with per-field Confirm/Correct/Reject actions calling
+  `resolve_inferred_context_field` through the existing service/repository
+  (never editing a row in place; a correction inserts a new row, exactly as
+  the backend already enforced). Client-side correction validation reuses
+  the canonical `validateInferredFieldContent` — no duplicated rules. New
+  derivation-trigger client
+  (`src/features/projects/contextDerivationTriggerClient.ts`) calls
+  `POST /projects/context-derivation` with the signed-in user's own session
+  token. Also closes a real, in-scope gap found while wiring this up:
+  `projectWorkspaceBrowserReadService.ts`'s browser factory had never passed
+  the already-optional `inferredContextFieldRepository` dependency into
+  `contextRebuildService.ts` (supported since task 3c) — a confirmed field
+  could not previously have reached `context_ready` for the live page at
+  all. Independent review may follow post-merge per ADR-0008's Tier 2 path.
 
 ### 2.2 Everything else — carried forward, not independently re-verified in this task
 
@@ -162,7 +182,6 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
   exactly as ADR-0009/`project-domain.md` §6 require.
 - Browser-initiated repository refresh, or project creation/edit/archive
   from the browser.
-- A confirm/correct UI for inferred context fields — see §5.
 - EPIC-08 Slices 4–5 (read-back verification, pull-request creation) —
   `githubFilesUpdateHandler.ts` checks only that the mutation response
   contains the expected fields; there is no independent re-read/compare.
@@ -238,12 +257,9 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
    re-reviewed under ADR-0008 —
    [`docs/reviews/2026-08-inferred-context-layer-review.md`](docs/reviews/2026-08-inferred-context-layer-review.md)
    ("RE-REVIEW PASSED — CLEARED FOR MERGE DECISION"). See §2.1.
-3. **Inference confirm/correct UI in Project Workspace (Tier 2).** The
-   backend resolve mechanism (`resolve_inferred_context_field`) is built and
-   tested but has no caller yet — proposed inferred fields are already
-   returned by `rebuildProjectContext` (visibly marked
-   `inferredProvenance.stateCategory`), but nothing in the Workspace UI lets
-   a user confirm, correct, or reject one.
+3. ~~Inference confirm/correct UI in Project Workspace (Tier 2)~~ —
+   **merged/complete.** See §2.1. Independent review may follow post-merge
+   per ADR-0008's Tier 2 path.
 4. Personal Memory v1.
 
 Superseded/completed sprint milestones from the prior version of this

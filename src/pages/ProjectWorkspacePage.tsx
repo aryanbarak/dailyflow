@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   AlertTriangle,
@@ -16,6 +16,9 @@ import { usePageTitle } from "@/contexts/PageTitleContext";
 import type { BriefProvenance, ProjectBrief, ProjectBriefSingleValueField, ProjectBriefTextItem } from "@/features/projects/projectBriefTypes";
 import { smartflowProjectWorkspaceFixture, type ProjectWorkspaceModel, type ProjectWorkspaceRefreshStatus } from "@/features/projects/projectWorkspaceFixture";
 import type { ProjectWorkspaceReadResult } from "@/features/projects/projectWorkspaceReadService";
+import { InferredContextSection } from "@/features/projects/components/InferredContextSection";
+import type { InferredProjectContextFieldService } from "@/features/projects/inferredProjectContextFieldService";
+import type { ContextDerivationTriggerResult } from "@/features/projects/contextDerivationTriggerClient";
 
 type SemanticTone = "neutral" | "success" | "warning" | "danger";
 
@@ -495,7 +498,11 @@ function DemoBanner() {
   );
 }
 
-export function ProjectWorkspaceView({ model = smartflowProjectWorkspaceFixture, onReload }: Readonly<{ model?: ProjectWorkspaceModel; onReload?: () => void }>) {
+export function ProjectWorkspaceView({
+  model = smartflowProjectWorkspaceFixture,
+  onReload,
+  inferredContextSection,
+}: Readonly<{ model?: ProjectWorkspaceModel; onReload?: () => void; inferredContextSection?: ReactNode }>) {
   const { setPageTitle } = usePageTitle();
   const sample = model.integration === "fixture";
   const topAction = model.brief.explicitNextActions[0];
@@ -521,6 +528,7 @@ export function ProjectWorkspaceView({ model = smartflowProjectWorkspaceFixture,
             onToggle={() => setSecondaryOpen((current) => !current)}
             conflictCount={conflictCount}
           />
+          {inferredContextSection}
         </div>
 
         <div className="space-y-5">
@@ -617,10 +625,16 @@ export function DemoProjectWorkspacePage() {
   return <ProjectWorkspaceView />;
 }
 
+interface InferredContextDependencies {
+  readonly service: InferredProjectContextFieldService;
+  readonly triggerDerivation: (projectId: string) => Promise<ContextDerivationTriggerResult>;
+}
+
 export default function ProjectWorkspacePage() {
   const { projectId } = useParams();
   const [result, setResult] = useState<ProjectWorkspaceReadResult | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  const [inferredDeps, setInferredDeps] = useState<InferredContextDependencies | null>(null);
 
   const reload = useCallback(() => setReloadKey((key) => key + 1), []);
 
@@ -637,7 +651,44 @@ export default function ProjectWorkspacePage() {
     };
   }, [projectId, reloadKey]);
 
+  // Dynamically imported for the same reason the read service above is:
+  // both pull in the real Supabase client singleton, which this route
+  // component is the only place in this page that may safely touch.
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([
+      import("@/features/projects/inferredProjectContextFieldBrowserService"),
+      import("@/features/projects/contextDerivationTriggerClient"),
+    ]).then(([{ browserInferredProjectContextFieldService }, { triggerContextDerivation }]) => {
+      if (!cancelled) {
+        setInferredDeps({ service: browserInferredProjectContextFieldService, triggerDerivation: triggerContextDerivation });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   if (!result) return <ProjectWorkspaceLoading />;
   if (result.status !== "ready") return <WorkspaceStatePanel result={result} onReload={reload} />;
-  return <ProjectWorkspaceView model={modelFromReadyResult(result)} onReload={reload} />;
+  return (
+    <ProjectWorkspaceView
+      model={modelFromReadyResult(result)}
+      onReload={reload}
+      inferredContextSection={
+        inferredDeps && (
+          <InferredContextSection
+            projectId={result.project.id}
+            // readProjectWorkspace() already fails closed with PROJECT_ARCHIVED
+            // before status can ever reach "ready" for an archived project --
+            // this branch is only reachable for a non-archived project.
+            archived={false}
+            service={inferredDeps.service}
+            triggerDerivation={inferredDeps.triggerDerivation}
+            onContextChanged={reload}
+          />
+        )
+      }
+    />
+  );
 }
