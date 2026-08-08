@@ -1,5 +1,6 @@
 import type { Env, AgentBriefing, ExtractedFact, MemoryEntry, UserContext, BriefingMode, ChatMessage, ChatOptions } from './types'
-import { buildUserContext, fetchUserMemory, fetchUserLanguage, fetchTaskSnapshot, fetchCalendarSnapshot, fetchHabitSnapshot, fetchFinanceSnapshot, supabaseGet, supabasePost, supabasePatch } from './context-builder'
+import { buildUserContext, fetchConfirmedPersonalMemory, fetchUserLanguage, fetchTaskSnapshot, fetchCalendarSnapshot, fetchHabitSnapshot, fetchFinanceSnapshot, supabaseGet, supabasePost, supabasePatch } from './context-builder'
+import { buildConfirmedMemoryIndicatorLine } from './personal-memory-prompt-serialization'
 import { buildPrompt, buildExtractionPrompt, buildChatExtractionPrompt, EXTRACTABLE_KEYS, buildChatSystemPrompt } from './prompt-builder'
 import {
   handleLocalReasoningRequest,
@@ -140,7 +141,14 @@ async function generateBriefing(
 
   // ۳. Gemini رو صدا بزن — weekly needs more tokens
   const maxOutputTokens = mode === 'weekly' ? 1500 : 1024
-  const content = await callGemini(system, user, env, maxOutputTokens)
+  const rawContent = await callGemini(system, user, env, maxOutputTokens)
+
+  // ADR-0011 Q5: a one-line, user-visible, deterministically-appended
+  // indicator when confirmed memory actually shaped this briefing — never
+  // left to the model to remember to say. /chat gets no such indicator.
+  const content = context.confirmedMemory.length > 0
+    ? `${rawContent}\n\n${buildConfirmedMemoryIndicatorLine()}`
+    : rawContent
 
   // ۴. توی Supabase ذخیره کن
   await saveBriefing(userId, content, context.language, mode, context, triggeredBy, env)
@@ -682,9 +690,9 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
   }
 
   try {
-    const [language, memory] = await Promise.all([
+    const [language, confirmedMemory] = await Promise.all([
       fetchUserLanguage(userId, env),
-      fetchUserMemory(userId, env),
+      fetchConfirmedPersonalMemory(userId, env),
     ])
 
     // Last 20 messages from this session, oldest first
@@ -697,7 +705,7 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
       .map(r => ({ role: r.role as ChatMessage['role'], content: r.content }))
       .reverse()
 
-    const system = buildChatSystemPrompt(language, memory)
+    const system = buildChatSystemPrompt(language, confirmedMemory)
     const fullHistory: ChatMessage[] = [...history, { role: 'user', content: message }]
 
     const reply = await callGeminiChat(system, fullHistory, env)
@@ -715,10 +723,13 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
 
     console.log(`[Chat] userId=${userId} sessionId=${sessionId} language=${language} history=${history.length} turns reply=${reply.length} chars`)
 
-    // Background memory extraction — does not delay the user's reply
+    // Background memory extraction — does not delay the user's reply.
+    // Permanently unreachable (ENABLE_AUTO_MEMORY_WRITE is false, ADR-0010
+    // Q4); `[]` in place of a real user_context fetch since ADR-0011 no
+    // longer reads that table on this path at all.
     if (ENABLE_AUTO_MEMORY_WRITE) {
       ctx.waitUntil(
-        extractAndSaveMemoryFromChat(userId, message, memory, env).catch(err =>
+        extractAndSaveMemoryFromChat(userId, message, [], env).catch(err =>
           console.error('[Memory] Chat extraction error:', err)
         )
       )

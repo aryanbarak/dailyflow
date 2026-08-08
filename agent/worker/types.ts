@@ -1,3 +1,5 @@
+import type { ConfirmedPersonalMemoryRecord } from './personal-memory-prompt-serialization'
+
 export interface Env {
   SMARTFLOW_WORKER_MODE?: string
   SUPABASE_URL: string
@@ -24,6 +26,17 @@ export interface MemoryEntry {
   value: string
   source: 'manual' | 'auto' | 'ai' | 'agent'
 }
+
+/**
+ * ADR-0011 Confirmed Personal Memory Consumption v1. A `personal_memory_records`
+ * row already filtered to `status IN (user_confirmed, user_corrected)` by the
+ * query that produced it (see context-builder.ts's `fetchConfirmedPersonalMemory`)
+ * -- never re-filtered by consumers, per the ADR's enforcement-at-the-query rule.
+ * Defined in personal-memory-prompt-serialization.ts (not here) so that
+ * self-contained module stays free of this file's Cloudflare Workers-specific
+ * `Env`/`Ai` types -- see that file's header for why.
+ */
+export type { ConfirmedPersonalMemoryRecord } from './personal-memory-prompt-serialization'
 
 export interface ExtractedFact {
   key: string
@@ -58,7 +71,10 @@ export interface UserContext {
   userId: string
   language: Language
   mode: BriefingMode
+  /** Legacy `user_context` rows -- always `[]` now (ADR-0011). Kept only so the still-dead, `ENABLE_AUTO_MEMORY_WRITE`-gated extraction functions in index.ts continue to typecheck; not fetched live. */
   memory: MemoryEntry[]
+  /** ADR-0011 Confirmed Personal Memory Consumption v1 -- the live prompt-personalization source, replacing `memory` above for that purpose. */
+  confirmedMemory: ConfirmedPersonalMemoryRecord[]
   journal: JournalContext
   finance: FinanceContext
   calendar: CalendarContext

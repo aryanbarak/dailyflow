@@ -73,17 +73,12 @@ export const aiMemoryService = {
     if (error) throw error;
   },
 
-  async getAsPromptContext(): Promise<string> {
-    const entries = await aiMemoryService.getAll();
-    const lines = entries
-      .filter(e => e.value.trim())
-      .map(e => {
-        const label = MEMORY_KEYS.find(k => k.key === e.key)?.label ?? e.key;
-        return `- ${label}: ${e.value}`;
-      });
-    if (!lines.length) return '';
-    return `\n\nUSER CONTEXT (personal facts — use these to personalize your response):\n${lines.join('\n')}`;
-  },
+  // No `getAsPromptContext` method here by design -- ADR-0011 migrated the
+  // Learn AI tutor's prompt-personalization source off `user_context` to
+  // confirmed `PersonalMemoryRecord`s (see
+  // personalMemoryPromptContext.ts's `getConfirmedMemoryPromptContext`,
+  // called from useLearnAI.ts). Removed rather than left disabled-but-
+  // callable, per the same reasoning as `set`/`autoDetectAndSave` below.
 
   // No `autoDetectAndSave` method here by design -- ADR-0010 Q3 (Product
   // Owner amendment): this table's write-freeze is COMPLETE, and this

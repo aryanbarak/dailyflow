@@ -148,3 +148,39 @@ describe("createSupabasePersonalMemoryRecordRepository -- listByOwner", () => {
     expect(result).toHaveLength(1);
   });
 });
+
+describe("createSupabasePersonalMemoryRecordRepository -- listConfirmedByOwner (ADR-0011)", () => {
+  it("filters status IN (user_confirmed, user_corrected) inside the query, orders newest first, and applies the limit", async () => {
+    const confirmedRow = fakeRow({ id: "confirmed-1", status: "user_confirmed" });
+    const limit = vi.fn(async () => ({ data: [confirmedRow], error: null }));
+    const order = vi.fn(() => ({ limit }));
+    const inFilter = vi.fn(() => ({ order }));
+    const eq = vi.fn(() => ({ in: inFilter }));
+    const select = vi.fn(() => ({ eq }));
+    const from = vi.fn(() => ({ select }));
+    const repository = createSupabasePersonalMemoryRecordRepository(fakeClient({ from }));
+
+    const result = await repository.listConfirmedByOwner(OWNER_ID, 15);
+
+    expect(from).toHaveBeenCalledWith("personal_memory_records");
+    expect(eq).toHaveBeenCalledWith("user_id", OWNER_ID);
+    expect(inFilter).toHaveBeenCalledWith("status", ["user_confirmed", "user_corrected"]);
+    expect(order).toHaveBeenCalledWith("created_at", { ascending: false });
+    expect(limit).toHaveBeenCalledWith(15);
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe("confirmed-1");
+  });
+
+  it("defaults the limit to 30 when not given", async () => {
+    const limit = vi.fn(async () => ({ data: [], error: null }));
+    const order = vi.fn(() => ({ limit }));
+    const inFilter = vi.fn(() => ({ order }));
+    const eq = vi.fn(() => ({ in: inFilter }));
+    const select = vi.fn(() => ({ eq }));
+    const from = vi.fn(() => ({ select }));
+    const repository = createSupabasePersonalMemoryRecordRepository(fakeClient({ from }));
+
+    await repository.listConfirmedByOwner(OWNER_ID);
+    expect(limit).toHaveBeenCalledWith(30);
+  });
+});

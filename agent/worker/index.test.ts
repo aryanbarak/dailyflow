@@ -35,10 +35,13 @@ interface FetchLog {
   geminiCalls: Array<{ system_instruction?: unknown; generationConfig?: any }>
   chatMessageWrites: Array<Record<string, unknown>>
   sessionPatches: number
+  personalMemoryReads: number
 }
 
-function installFetchMock(): FetchLog {
-  const log: FetchLog = { geminiCalls: [], chatMessageWrites: [], sessionPatches: 0 }
+function installFetchMock(
+  confirmedMemoryRows: Array<{ kind: string; content: unknown; created_at: string }> = [],
+): FetchLog {
+  const log: FetchLog = { geminiCalls: [], chatMessageWrites: [], sessionPatches: 0, personalMemoryReads: 0 }
 
   const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
@@ -53,8 +56,9 @@ function installFetchMock(): FetchLog {
     if (url.startsWith(`${SUPABASE_URL}/rest/v1/user_settings`)) {
       return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
-    if (url.startsWith(`${SUPABASE_URL}/rest/v1/user_context`)) {
-      return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_records`)) {
+      log.personalMemoryReads += 1
+      return new Response(JSON.stringify(confirmedMemoryRows), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
     if (url.startsWith(`${SUPABASE_URL}/rest/v1/agent_chat_messages`) && method === 'GET') {
       return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } })
@@ -104,6 +108,11 @@ function installFetchMock(): FetchLog {
 
   vi.stubGlobal('fetch', mock)
   return log
+}
+
+function systemTextOf(call: { system_instruction?: unknown } | undefined): string {
+  const instruction = call?.system_instruction as { parts?: Array<{ text?: string }> } | undefined
+  return instruction?.parts?.[0]?.text ?? ''
 }
 
 function fakeExecutionContext() {
@@ -158,6 +167,10 @@ describe('handleChat mode routing', () => {
     expect(log.chatMessageWrites).toHaveLength(0)
     expect(log.sessionPatches).toBe(0)
     expect((ctx.waitUntil as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled()
+
+    // ADR-0011: reasoning mode remains memory-free -- it must never even
+    // read confirmed personal memory, not merely omit it from the prompt.
+    expect(log.personalMemoryReads).toBe(0)
   })
 
   it('mode absent behaves exactly like plain chat: unchanged persistence and config', async () => {
@@ -186,6 +199,28 @@ describe('handleChat mode routing', () => {
     const chatCall = log.geminiCalls.find((call) => !call.generationConfig?.responseSchema)
     expect(chatCall).toBeDefined()
     expect(chatCall?.generationConfig.temperature).toBe(0.7)
+
+    // ADR-0011: no confirmed personal memory exists for this user in this
+    // test -- the system prompt must omit the memory section entirely
+    // (never render an empty header).
+    expect(systemTextOf(chatCall)).not.toContain('What I know about Aryan')
+  })
+
+  it('injects confirmed personal memory into the chat system prompt when it exists (ADR-0011)', async () => {
+    const log = installFetchMock([
+      { kind: 'preference', content: { summary: 'Prefers async written updates', strength: 'strong' }, created_at: '2026-08-01T00:00:00.000Z' },
+    ])
+    const ctx = fakeExecutionContext()
+    const env = testEnv()
+
+    const response = await worker.fetch(chatRequest({ message: 'Hello there' }), env, ctx)
+    expect(response.status).toBe(200)
+    expect(log.personalMemoryReads).toBe(1)
+
+    const chatCall = log.geminiCalls.find((call) => !call.generationConfig?.responseSchema)
+    const systemText = systemTextOf(chatCall)
+    expect(systemText).toContain('What I know about Aryan')
+    expect(systemText).toContain('Prefers async written updates (Strength: strong)')
   })
 
   it('an unknown mode value is treated as "chat", not an error', async () => {

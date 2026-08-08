@@ -158,6 +158,16 @@ export interface PersonalMemoryRecordRepository {
   remove(recordId: string): Promise<DeletePersonalMemoryRecordResult>;
   findById(ownerId: string, recordId: string): Promise<PersonalMemoryRecord | null>;
   listByOwner(ownerId: string): Promise<readonly PersonalMemoryRecord[]>;
+  /**
+   * ADR-0011's sole consumption enforcement point: `status` is filtered
+   * INSIDE this query (`.in(...)`), never by a consumer filtering
+   * `listByOwner`'s unfiltered result afterward -- so no future consumer can
+   * accidentally widen Q5's "only confirmed/corrected" rule by forgetting a
+   * filter. Most-recently-confirmed-first; `limit` bounds the read itself
+   * (the per-kind cap is a separate, later step -- see
+   * personalMemoryPromptSerialization.ts).
+   */
+  listConfirmedByOwner(ownerId: string, limit?: number): Promise<readonly PersonalMemoryRecord[]>;
   createRun(input: CreatePersonalMemoryExtractionRunInput): Promise<PersonalMemoryExtractionRun>;
   completeRun(input: CompletePersonalMemoryExtractionRunInput): Promise<PersonalMemoryExtractionRun>;
 }
@@ -251,6 +261,19 @@ export function createSupabasePersonalMemoryRecordRepository(
         .order("created_at", { ascending: false });
 
       if (error) throw new PersonalMemoryRecordPersistenceError("Unable to list personal memory records.", error);
+      return ((data ?? []) as PersonalMemoryRecordRow[]).map(mapRowToRecord);
+    },
+
+    async listConfirmedByOwner(ownerId, limit = 30) {
+      const { data, error } = await client
+        .from("personal_memory_records")
+        .select(RECORD_COLUMNS)
+        .eq("user_id", ownerId)
+        .in("status", ["user_confirmed", "user_corrected"])
+        .order("created_at", { ascending: false })
+        .limit(limit);
+
+      if (error) throw new PersonalMemoryRecordPersistenceError("Unable to list confirmed personal memory records.", error);
       return ((data ?? []) as PersonalMemoryRecordRow[]).map(mapRowToRecord);
     },
 

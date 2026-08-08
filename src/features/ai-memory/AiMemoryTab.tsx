@@ -71,7 +71,7 @@ export function AiMemoryTab() {
         </div>
         <button
           disabled
-          title="Auto-detection is disabled -- ADR-0010 Q3 froze all new writes to this table."
+          title="Auto-detection is disabled here. New memories are managed in the Personal memory section above."
           className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-border text-sm text-muted-foreground opacity-50 cursor-not-allowed whitespace-nowrap"
         >
           <RefreshCw className="w-3.5 h-3.5" /> Auto-detect
@@ -81,12 +81,12 @@ export function AiMemoryTab() {
       <div className="flex items-start gap-3 p-3 rounded-lg bg-cyan-500/10 border border-cyan-500/20">
         <Info className="w-4 h-4 text-cyan-400 flex-shrink-0 mt-0.5" />
         <p className="text-xs text-cyan-300">
-          This memory is injected into every AI conversation.
+          These legacy entries may be used to personalize AI responses.
         </p>
       </div>
       <p className="text-xs text-muted-foreground">
-        Adding, editing, and auto-detecting entries here is disabled -- ADR-0010 Q3 froze all new writes to this
-        legacy table. Existing entries remain viewable and removable below.
+        Manual adding and auto-detection are disabled here. New memories are managed in the Personal memory section
+        above. Existing entries remain viewable and removable below.
       </p>
 
       {groups.map(group => (
@@ -159,7 +159,7 @@ function MemoryRow({
           placeholder={placeholder}
           disabled
           readOnly
-          title="Editing is disabled -- ADR-0010 Q3 froze all new writes to this table."
+          title="Editing is disabled here. New memories are managed in the Personal memory section above."
           className="flex-1 text-xs bg-background border border-border rounded px-2 py-1.5 text-muted-foreground placeholder:text-muted-foreground/50 disabled:opacity-70 disabled:cursor-not-allowed"
         />
         {value && (

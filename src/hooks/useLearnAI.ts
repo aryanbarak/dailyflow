@@ -14,7 +14,8 @@ import type {
   LearnAIMessage,
 } from "@/features/learn-ai/types";
 import { insertMessage, listHistory } from "@/features/learn-ai/learnAiService";
-import { aiMemoryService } from "@/features/ai-memory/aiMemoryService";
+import { browserPersonalMemoryRecordService } from "@/features/personal-memory/personalMemoryRecordBrowserService";
+import { getConfirmedMemoryPromptContext } from "@/features/personal-memory/personalMemoryPromptContext";
 import { useAppearance } from "@/features/settings/appearanceStore";
 import {
   getAiResponseLanguageInstruction,
@@ -180,7 +181,7 @@ export function useLearnAI() {
       let answer: string;
       let aiError: AIError | null = null;
       try {
-        const memoryContext = await aiMemoryService.getAsPromptContext();
+        const memoryContext = await getConfirmedMemoryPromptContext(browserPersonalMemoryRecordService);
         const result = await askLearnAI({
           message: messageContent,
           history,

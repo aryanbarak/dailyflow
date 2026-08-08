@@ -1,7 +1,7 @@
 import type {
   Env, UserContext, FinanceContext, CalendarContext, Language,
-  CalendarEvent, MemoryEntry, BriefingMode, JournalContext, JournalEntry,
-  TaskSummary, HabitContext,
+  CalendarEvent, BriefingMode, JournalContext, JournalEntry,
+  TaskSummary, HabitContext, ConfirmedPersonalMemoryRecord,
 } from './types'
 
 // =============================================
@@ -77,24 +77,28 @@ export async function supabasePatch(
 }
 
 // =============================================
-// حافظه کاربر از user_context (read-only)
+// ADR-0011 Confirmed Personal Memory Consumption v1 -- the ONLY read
+// enforcement point on the Worker side: `status` is filtered in the query
+// itself (`status=in.(...)`), never by consumer code afterward, mirroring
+// personalMemoryRecordRepository.ts's listConfirmedByOwner on the browser
+// side exactly. `limit` bounds the read; the per-kind cap is a separate,
+// later step in personal-memory-prompt-serialization.ts.
 // =============================================
-export async function fetchUserMemory(
+export async function fetchConfirmedPersonalMemory(
   userId: string,
-  env: Env
-): Promise<MemoryEntry[]> {
-  const rows = await supabaseGet<Array<{ key: string; value: string; source: string }>>(
+  env: Env,
+  limit = 30
+): Promise<ConfirmedPersonalMemoryRecord[]> {
+  const rows = await supabaseGet<Array<{ kind: string; content: unknown; created_at: string }>>(
     env,
-    `user_context?user_id=eq.${userId}&select=key,value,source`
+    `personal_memory_records?user_id=eq.${userId}&status=in.(user_confirmed,user_corrected)&select=kind,content,created_at&order=created_at.desc&limit=${limit}`
   )
 
-  return rows
-    .filter(r => r.value?.trim())
-    .map(r => ({
-      key: r.key,
-      value: r.value.trim(),
-      source: r.source as MemoryEntry['source'],
-    }))
+  return rows.map(r => ({
+    kind: r.kind as ConfirmedPersonalMemoryRecord['kind'],
+    content: r.content as Record<string, unknown>,
+    createdAt: r.created_at,
+  }))
 }
 
 // =============================================
@@ -529,22 +533,22 @@ export async function buildUserContext(
   console.log(`[Context] userId=${userId} language=${language} mode=${mode}`)
 
   if (mode === 'weekly') {
-    const [finance, calendar, memory, journal, tasks, habits] = await Promise.all([
+    const [finance, calendar, confirmedMemory, journal, tasks, habits] = await Promise.all([
       fetchFinanceContext(userId, env),
       fetchCalendarContext(userId, env),
-      fetchUserMemory(userId, env),
+      fetchConfirmedPersonalMemory(userId, env),
       fetchJournalContext(userId, env),
       fetchTaskContext(userId, env),
       fetchHabitContext(userId, env),
     ])
-    return { userId, language, mode, memory, journal, finance, calendar, tasks, habits }
+    return { userId, language, mode, memory: [], confirmedMemory, journal, finance, calendar, tasks, habits }
   }
 
-  const [finance, calendar, memory, journal] = await Promise.all([
+  const [finance, calendar, confirmedMemory, journal] = await Promise.all([
     fetchFinanceContext(userId, env),
     fetchCalendarContext(userId, env),
-    fetchUserMemory(userId, env),
+    fetchConfirmedPersonalMemory(userId, env),
     fetchJournalContext(userId, env),
   ])
-  return { userId, language, mode, memory, journal, finance, calendar, tasks: [], habits: null }
+  return { userId, language, mode, memory: [], confirmedMemory, journal, finance, calendar, tasks: [], habits: null }
 }

@@ -1,4 +1,5 @@
-import type { UserContext, Language, MemoryEntry, JournalContext, TaskSummary, HabitContext } from './types'
+import type { UserContext, Language, MemoryEntry, ConfirmedPersonalMemoryRecord, JournalContext, TaskSummary, HabitContext } from './types'
+import { buildConfirmedMemorySection } from './personal-memory-prompt-serialization'
 
 // =============================================
 // Daily system prompts (3 languages)
@@ -147,9 +148,9 @@ Du bist ein freundlicher, direkter persönlicher Assistent in SmartFlow — der 
 تو یک دستیار شخصی گرم و مستقیم در SmartFlow هستی — اپ مدیریت زندگی کاربر. در سوالات، وظایف، مشاوره و برنامه‌ریزی کمک کن. مختصر باش مگر اینکه عمق واضحاً لازم باشد. از حافظه کاربر زیر برای شخصی‌سازی هر پاسخ استفاده کن.`,
 }
 
-export function buildChatSystemPrompt(language: Language, memory: MemoryEntry[]): string {
+export function buildChatSystemPrompt(language: Language, confirmedMemory: ConfirmedPersonalMemoryRecord[]): string {
   const persona = CHAT_PERSONA[language]
-  const memorySection = buildMemorySection(memory)
+  const memorySection = buildConfirmedMemorySection(confirmedMemory)
   return memorySection ? `${persona}\n\n${memorySection}` : persona
 }
 
@@ -157,58 +158,6 @@ const LANG_NAMES: Record<Language, string> = {
   fa: 'Persian (Farsi)',
   de: 'German',
   en: 'English',
-}
-
-// =============================================
-// Human-readable labels for user_context keys
-// =============================================
-const KEY_LABELS: Record<string, string> = {
-  preferred_name:  'Preferred name',
-  goal_primary:    'Primary goal',
-  goal_secondary:  'Secondary goal',
-  work_status:     'Work / career status',
-  mood_pattern:    'Recent mood',
-  habit_pattern:   'Habit completion',
-  finance_pattern: 'Finance pattern',
-  family_note:     'Family context',
-  health_note:     'Health notes',
-  learning_note:   'Learning focus',
-  custom_1:        'Personal note',
-  custom_2:        'Personal note',
-  custom_3:        'Personal note',
-}
-
-function buildMemorySection(memory: MemoryEntry[]): string {
-  if (memory.length === 0) return ''
-
-  const manual = memory.filter(e => e.source === 'manual')
-  const auto   = memory.filter(e => e.source === 'auto')
-  const agent  = memory.filter(e => e.source === 'agent' || e.source === 'ai')
-
-  const lines: string[] = ['What I know about Aryan (use this to personalize the briefing):']
-
-  if (manual.length > 0) {
-    lines.push('  [User-confirmed facts — highest priority]')
-    for (const e of manual) {
-      lines.push(`  - ${KEY_LABELS[e.key] ?? e.key}: ${e.value}`)
-    }
-  }
-
-  if (auto.length > 0) {
-    lines.push('  [Auto-detected patterns]')
-    for (const e of auto) {
-      lines.push(`  - ${KEY_LABELS[e.key] ?? e.key}: ${e.value}`)
-    }
-  }
-
-  if (agent.length > 0) {
-    lines.push('  [AI-observed notes]')
-    for (const e of agent) {
-      lines.push(`  - ${KEY_LABELS[e.key] ?? e.key}: ${e.value}`)
-    }
-  }
-
-  return lines.join('\n')
 }
 
 function buildJournalSection(journal: JournalContext): string {
@@ -414,12 +363,12 @@ export function buildChatExtractionPrompt(
 // User prompt — داده‌ها رو به Gemini میده
 // =============================================
 export function buildPrompt(ctx: UserContext): { system: string; user: string } {
-  const { language, mode, memory, journal, finance, calendar, tasks, habits } = ctx
+  const { language, mode, confirmedMemory, journal, finance, calendar, tasks, habits } = ctx
   const today = new Date().toLocaleDateString('en-GB', {
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
   })
 
-  const memorySection = buildMemorySection(memory)
+  const memorySection = buildConfirmedMemorySection(confirmedMemory)
   const journalSection = buildJournalSection(journal)
 
   // Finance summary

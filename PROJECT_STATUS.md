@@ -244,6 +244,53 @@ doc has full evidence).
   in the product, independently grep-verified after implementation.
   Design note:
   [`docs/architecture/notes/personal-memory-review-ui-design-note.md`](docs/architecture/notes/personal-memory-review-ui-design-note.md).
+- **Production schema alignment — COMPLETE (task `8c`, 2026-08-09).** Both
+  Tier-1-reviewed migrations
+  (`20260807000000_inferred_project_context_fields.sql`,
+  `20260808000000_personal_memory_records.sql`) are now applied to
+  production (`taqxwnlwllbywaklwyno`). Tasks `8` (403/wrong-org link) and
+  `8b` (identity-gate false negative from unauthenticated RLS-blocked
+  probes) both correctly stopped short of writing anything; task `8c`
+  resolved the identity question via Product Owner evidence the CLI
+  cannot see (browser Network tab, dashboard), then baselined the 47
+  pre-existing migrations via `supabase migration repair` (history
+  bookkeeping only, no SQL executed) before pushing the two new ones. Full
+  evidence in §4.
+- **UI copy fixes — complete (task `8`, Tier 3).** `AiMemoryTab.tsx`'s
+  ADR-jargon strings replaced with user-facing effect language: the freeze
+  notice no longer cites "ADR-0010 Q3" (now: "Auto-detection is disabled
+  here. New memories are managed in the Personal memory section above.",
+  and equivalent wording on the disabled input's title and the explanatory
+  paragraph); "This memory is injected into every AI conversation." softened
+  to "These legacy entries may be used to personalize AI responses." No
+  behavior change; no test assertions referenced the old strings, so none
+  needed updating.
+- **Confirmed personal memory consumption v1 — complete (task `7b`, Tier 2).**
+  [ADR-0011](docs/decisions/adr/ADR-0011-confirmed-personal-memory-consumption.md)
+  (Accepted) implemented per its Product Owner Resolutions (Q1–Q5). New
+  status-filtered read enforcement point:
+  `personalMemoryRecordRepository.ts`'s `listConfirmedByOwner` (browser) and
+  `context-builder.ts`'s `fetchConfirmedPersonalMemory` (Worker) — both
+  filter `status IN (user_confirmed, user_corrected)` in the query itself,
+  never in consumer code. Shared cap/formatting logic
+  (10 records total, 3 per kind, most-recently-confirmed-first) exists as
+  two intentionally-duplicated, equivalence-tested copies
+  (`src/features/personal-memory/personalMemoryPromptSerialization.ts` and
+  `agent/worker/personal-memory-prompt-serialization.ts`) — the Worker
+  cannot import frontend modules, the same constraint already documented for
+  the extraction endpoint's duplicated validator. All three legacy
+  `user_context` readers migrated: `/chat` (system prompt), briefing
+  (`/generate` + cron, user prompt, plus a deterministic Q5 indicator line
+  appended only when ≥1 record was injected), and the Learn tutor
+  (`useLearnAI.ts`, RLS-scoped browser read). Reasoning-mode `/chat` turns
+  remain memory-free, unchanged (`reasoningPrompt.ts` already excluded
+  memory; verified still true). `fetchUserMemory`/`buildMemorySection`
+  (the old `user_context`-shaped formatters) deleted as genuinely dead code
+  once both live call sites migrated; `user_context`'s only remaining reader
+  is `AiMemoryTab` (Q3 disposition — kept read-only, no removal task
+  scheduled yet). `aiMemoryService.getAsPromptContext` deleted (zero
+  remaining callers after the tutor migration). Design note:
+  [`docs/architecture/notes/memory-consumption-v1-design-note.md`](docs/architecture/notes/memory-consumption-v1-design-note.md).
 
 ## 3. Verified NOT implemented
 
@@ -272,16 +319,75 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
   contains the expected fields; there is no independent re-read/compare.
 - EPIC-09 (autonomous chaining, multi-file changes, automatic retry/merge) —
   no commits exist.
-- **Any consumer of `PersonalMemoryRecord`.** The review UI now exists
-  (§2.4, task `6`), but nothing yet reads `user_confirmed`/`user_corrected`
-  records into any output (chat context, briefings, suggestions, tutor);
-  Q5's zero-consumption rule is independently grep-verified to hold today
-  because no consumer exists yet, not merely by policy. `explicit_user_statement`
-  records (manual entry) also have no capture surface yet.
+- **`explicit_user_statement` capture surface.** Manual personal-fact entry
+  (as a properly-provenanced `PersonalMemoryRecord`, replacing the old
+  `user_context` manual-entry UI per ADR-0010 Q3) still has no capture
+  surface — unaffected by task `7b`'s consumption work, which only wired
+  existing confirmed/corrected records into prompts, not a new write path.
+- Memory-derived proactive suggestions, semantic/vector retrieval over
+  personal memory, per-kind consumption toggles — all named as deferred in
+  [ADR-0011](docs/decisions/adr/ADR-0011-confirmed-personal-memory-consumption.md)
+  §5, not designed.
 - Conversation memory, semantic/vector memory, RAG.
 
 ## 4. Current blockers / open decisions
 
+- **RESOLVED: production schema now aligned through `20260808000000` on
+  `taqxwnlwllbywaklwyno` (task `8c`, 2026-08-09).** Full story, in order:
+  - Task `8b`'s identity-gate "zero rows in every table" finding was a
+    **false negative**, not evidence of an empty/wrong database: those
+    probes used the anon key with no user JWT, and every one of those
+    tables has an owner-scoped RLS policy — an unauthenticated request
+    correctly returns `Content-Range: */0` regardless of how much real
+    data exists, because RLS hides all of it from a caller with no
+    `auth.uid()`. The Product Owner separately confirmed identity via the
+    browser's own Network tab (`barakzai.cloud` calling
+    `taqxwnlwllbywaklwyno.supabase.co`, HTTP 200 auth) and the dashboard
+    (31 MB, 3 MAU) — evidence a probe cannot fake. **Lesson recorded:**
+    production identity/data checks against RLS-protected tables must be
+    structure-based (schema introspection) or auth-bypassing
+    (service-role), never row-count probes with an unauthenticated key —
+    a zero count there proves RLS works, not that the database is empty.
+  - Structural spot-check (read-only, this time via the PostgREST OpenAPI
+    schema document — table/column/RPC existence, not row data): all
+    ADR-0004/0005/0007-era objects confirmed present
+    (`agent_write_log`, `agent_code_proposal_approvals`, `project_records`,
+    `project_evidence`, `project_evidence_observations`,
+    `github_connections`, and ADR-0007's `create_project_evidence_with_
+    observation` SECURITY DEFINER function) — 45 tables total before this
+    task's push. `inferred_project_context_fields` and
+    `personal_memory_records` correctly absent. One unrelated, non-blocking
+    anomaly noted: `ai_news_items` (a table `20260619140000_drop_ai_news_
+    items.sql` should have removed) is still present — production's schema
+    history isn't a perfectly clean replay of every migration in order, but
+    this doesn't affect either target migration and wasn't investigated
+    further.
+  - Both target migrations re-confirmed purely additive (own new tables'
+    `ALTER ... ENABLE ROW LEVEL SECURITY` and idempotent `DROP POLICY IF
+    EXISTS` only — no existing object touched) before proceeding.
+  - Baselined via `supabase migration repair --status applied` for exactly
+    the 47 pre-existing migration versions (executes no SQL against the
+    user schema — history bookkeeping only). Verified via
+    `supabase migration list`: 47 remote-matched, 2 pending
+    (`20260807000000`, `20260808000000`) — exactly as expected, nothing
+    more.
+  - `supabase db push` applied both. Post-push structural verification
+    (OpenAPI schema + RLS-enforcement probes): table count 45 → 49 (both
+    record tables + both run tables); columns match the migration files
+    exactly; all 5 new `SECURITY DEFINER` functions present
+    (`create_inferred_context_field`, `resolve_inferred_context_field`,
+    `create_personal_memory_record`, `resolve_personal_memory_record`,
+    `delete_personal_memory_record` — no `delete_inferred_context_field`,
+    correctly, since ADR-0009 has no delete-RPC analogue to ADR-0010 Q1);
+    an anon-key, no-JWT read against all four new tables returns HTTP 200
+    with an empty array (RLS active and correctly owner-scoping, not
+    erroring and not open). `supabase migration list` post-push: all 49
+    local versions now remote-matched, zero drift.
+  - The stale `dailyflow` link (ref `ljthmdhvjlsnizpjqxic`, org
+    `nrihbopynxqupitjkkka`, HTTP 403) remains unexplained historical
+    context — plausibly an old/abandoned project from before this account's
+    current organization, never actually production. Not investigated
+    further; no action needed since the identity question is now closed.
 - **ProjectContext derivation gap — resolved for the LLM-extraction path.**
   The Inferred Project Context Layer v1 (§2.1) closes this for
   LLM-confirmed/corrected content; a semantic-document-parser path remains
@@ -291,9 +397,9 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
   `supabase/tests/inferred_project_context_fields.rls.test.ts` and
   `supabase/tests/personal_memory_records.rls.test.ts` (both skipped by
   default, `SMARTFLOW_RUN_LOCAL_SUPABASE=1`) have not yet been executed
-  against a real local Supabase/PostgREST stack — attempted again in task
-  `5d`, blocked for the same reason each time it has been attempted: a
-  sibling project (`ai-automation-agent`) occupies the default Supabase
+  against a real local Supabase/PostgREST stack — attempted again in tasks
+  `5d` and `8`, blocked for the same reason each time it has been attempted:
+  a sibling project (`ai-automation-agent`) occupies the default Supabase
   ports (54321/54322/54323/54324/54327); not stopped, per policy;
   `supabase/config.toml` not edited (verified via `git status` after each
   attempt). The underlying `SECURITY DEFINER` function logic the
@@ -338,6 +444,18 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
      separate index column regardless), and this committed migration was
      deliberately left untouched per this task's scope; queued for a
      future docs-only pass.
+- **Stale-doc correction (task `7b`, ADR-0008 dissent rule).** This section
+  previously claimed "`/chat` persists the internal reasoning prompt into
+  `agent_chat_messages` instead of the user's actual message when used as a
+  reasoning transport." Reading the live code
+  (`agent/worker/index.ts`'s `mode === 'reasoning'` early return, added by
+  commit `fa843a1` on 2026-07-24 — before this claim's own last edit date of
+  2026-08-07) shows this is no longer true: that branch persists nothing to
+  `agent_chat_messages` at all, and its own code comment says so explicitly.
+  Removed rather than left inaccurate, per ADR-0008's dissent rule
+  ("stale docs get fixed, not preserved" once a concrete contradiction is
+  found and evidenced) — first flagged as a contradiction in ADR-0011's own
+  Context section (task `7a`), corrected here.
 - **Technical debt carried forward** (unchanged by this task, condensed from
   the prior version — see git history of this file for the original
   detailed writeups if needed):
@@ -346,8 +464,6 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
     safety review exist.
   - `/chat` has no `responseSchema`; deterministic rescues in
     `validateAgentIntentProposal` are load-bearing, not defensive slack.
-  - `/chat` persists the internal reasoning prompt into `agent_chat_messages`
-    instead of the user's actual message when used as a reasoning transport.
   - GitHub OAuth callback returns raw JSON instead of redirecting into the app.
   - No `tsc --noEmit` gate exists in either `package.json`; running it
     directly surfaces pre-existing type errors unrelated to recent work.
@@ -364,6 +480,25 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
     evidence snapshot (accepted, documented in the migration — the Worker's
     own candidate filtering already narrows correctly in the one production
     caller today).
+
+### Design debt register (Product Owner's video review, task `8`)
+
+1. Flat 13-item sidebar navigation does not reflect the Personal Digital
+   Representative identity ([ADR-0006](docs/decisions/adr/ADR-0006-canonical-product-identity.md))
+   — a future two-level information architecture is the likely direction,
+   not designed here.
+2. Internal-jargon leakage into user-facing copy (ADR numbers/section
+   references surfacing in UI strings) — partially fixed this task
+   (`AiMemoryTab.tsx`, §2.4); a periodic sweep for the same pattern
+   elsewhere in the app is still needed.
+3. Zero-heavy empty states and a repeated stats-card formula across pages —
+   cosmetic, revisit at the next dedicated polish pass, not currently
+   blocking anything.
+4. PWA service-worker update strategy (task `8c`): a stale cached
+   service worker caused Chrome/Edge to diverge on which build a user saw
+   after a deploy; the SW should self-refresh (e.g. `skipWaiting` +
+   `clients.claim()`, or a user-visible "update available" prompt) rather
+   than silently persisting an old cache — not designed here.
 
 ## 5. Next agreed work (Product-Owner-approved sequence)
 
@@ -392,6 +527,11 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
    `src/features/projects/components/InferredContextSection.tsx`. No
    consumer wired (§3) — that remains a separate, future, Product-Owner-
    sequenced decision.
+6. ~~Confirmed personal memory consumption v1 — Tier 2~~ — **complete.**
+   [ADR-0011](docs/decisions/adr/ADR-0011-confirmed-personal-memory-consumption.md)
+   (Accepted); all three legacy `user_context` consumers (`/chat`, briefing,
+   Learn tutor) migrated to a status-filtered confirmed-memory read. See
+   §2.4.
 
 Superseded/completed sprint milestones from the prior version of this
 document have been removed rather than carried forward as history; git

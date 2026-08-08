@@ -77,6 +77,8 @@ export interface PersonalMemoryRecordService {
   resolve(input: ResolvePersonalMemoryRecordInput): Promise<ResolvePersonalMemoryRecordResult>;
   remove(recordId: string): Promise<DeletePersonalMemoryRecordResult>;
   listByOwner(): Promise<readonly PersonalMemoryRecord[]>;
+  /** ADR-0011: only `user_confirmed`/`user_corrected` records, status-filtered at the repository query. */
+  listConfirmed(): Promise<readonly PersonalMemoryRecord[]>;
   createRun(input: CreatePersonalMemoryExtractionRunInput): Promise<PersonalMemoryExtractionRun>;
   completeRun(input: CompletePersonalMemoryExtractionRunInput): Promise<PersonalMemoryExtractionRun>;
 }
@@ -188,6 +190,15 @@ export function createPersonalMemoryRecordService(
         return await repository.listByOwner(ownerId);
       } catch (error) {
         throw toServiceError(error, "Unable to list personal memory records.");
+      }
+    },
+
+    async listConfirmed() {
+      const ownerId = await requireOwnerId();
+      try {
+        return await repository.listConfirmedByOwner(ownerId);
+      } catch (error) {
+        throw toServiceError(error, "Unable to list confirmed personal memory records.");
       }
     },
 
