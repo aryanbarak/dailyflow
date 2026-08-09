@@ -56,6 +56,16 @@ const EXTRACTION_ERROR_MESSAGES: Record<string, string> = {
   NO_SOURCE_MATERIAL: "Not enough recent activity to extract from yet -- chat with SmartFlow or generate a briefing first.",
   CONFIGURATION_MISSING: "Personal memory extraction is not configured in this environment.",
   UNAUTHENTICATED: "Sign in again to check for new personal memory.",
+  // Task 14 fix: distinct, honest messages for the worker's three-way
+  // model-call taxonomy -- these previously all collapsed into the single
+  // "The model did not return a usable extraction." even when the model
+  // was never successfully asked (a rejected request, or the provider
+  // being down). Explicit here rather than relying on the worker's own
+  // message text falling through unmodified, so this UI's wording doesn't
+  // silently drift if the worker's message ever changes.
+  PROVIDER_REQUEST_REJECTED: "The request to the AI model was rejected. This is a configuration issue on our side, not a problem with your data.",
+  PROVIDER_UNAVAILABLE: "The AI model is temporarily unavailable. Please try again in a moment.",
+  MODEL_OUTPUT_UNUSABLE: "The model did not return a usable extraction. Please try again.",
 };
 
 function extractionErrorMessage(result: PersonalMemoryExtractionTriggerResult & { ok: false }): string {

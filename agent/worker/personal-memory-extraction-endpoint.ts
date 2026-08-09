@@ -65,8 +65,50 @@ function jsonResponse(body: unknown, status: number, origin: string): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...corsHeaders(origin) } })
 }
 
-function errorResponse(code: string, message: string, status: number, origin: string): Response {
-  return jsonResponse({ error: { code, message } }, status, origin)
+// Task 14 fix: optional extra fields (providerStatus/providerDetail) on the
+// error body. Safe to expose here specifically because this whole route
+// requires a valid Supabase bearer token (authenticateUser below) --
+// nobody but the authenticated owner's own browser ever sees this response.
+function errorResponse(code: string, message: string, status: number, origin: string, extra?: Record<string, unknown>): Response {
+  return jsonResponse({ error: { code, message, ...extra } }, status, origin)
+}
+
+// Task 14 fix: the four-way taxonomy distinguishing WHERE a model-call
+// failure actually happened, replacing the single generic MODEL_CALL_FAILED
+// this route used to report for every case indiscriminately -- including
+// cases where the model was never successfully asked at all (a rejected
+// request, or the provider being down), which is not an "unusable
+// extraction" in any honest sense. NO_SOURCE_MATERIAL already has its own
+// code/calm message (unchanged by this task); the three below cover what
+// MODEL_CALL_FAILED used to conflate.
+type ProviderFailureTaxonomy = 'PROVIDER_REQUEST_REJECTED' | 'PROVIDER_UNAVAILABLE' | 'MODEL_OUTPUT_UNUSABLE'
+
+// Carries enough structure for the route handler to build BOTH a complete
+// server-side log line and a bounded, non-sensitive response body, from a
+// single thrown error -- see callGeminiForExtraction's own header comment
+// for the redaction rules governing what may end up in providerDetail.
+class ProviderCallError extends Error {
+  constructor(
+    message: string,
+    readonly taxonomy: ProviderFailureTaxonomy,
+    readonly providerStatus?: number,
+    readonly providerDetail?: string,
+  ) {
+    super(message)
+    this.name = 'ProviderCallError'
+  }
+}
+
+// Task 14 fix: one honest, distinct user-facing message per taxonomy bucket
+// -- replacing "The model did not return a usable extraction." having been
+// shown for a rejected request or a down provider, neither of which is
+// true. Kept short and non-alarming; providerDetail (server-validated, see
+// errorResponse's own comment) carries the specific diagnostic for anyone
+// who needs it.
+const EXTRACTION_TAXONOMY_MESSAGES: Record<ProviderFailureTaxonomy, string> = {
+  PROVIDER_REQUEST_REJECTED: 'The request to the AI model was rejected. This is a configuration issue on our side, not a problem with your data.',
+  PROVIDER_UNAVAILABLE: 'The AI model is temporarily unavailable. Please try again in a moment.',
+  MODEL_OUTPUT_UNUSABLE: 'The model did not return a usable extraction. Please try again.',
 }
 
 /** Mirrors context-derivation-endpoint.ts's own authenticateUser exactly -- each Worker module in this codebase defines its own small copy rather than importing across modules. */
@@ -256,9 +298,23 @@ export function buildExtractionResponseSchema() {
     type: 'OBJECT',
     required: ['candidates'],
     properties: {
+      // Task 14 fix: NO maxItems here -- reproduced against the real
+      // provider (see task 14 report) and confirmed this exact bound
+      // (MAX_CANDIDATES_PER_RUN=12 on this OUTER array, with an already-
+      // bounded ARRAY nested inside each item via provenanceSourceRefIds)
+      // is what the provider rejects with "constraint that has too many
+      // states for serving" -- its own error names "long array length
+      // limits (especially when nested)" as a typical cause, and bisecting
+      // confirmed it precisely: the inner array's own bounds
+      // (provenanceSourceRefIds, unchanged below) are fine on their own;
+      // bounding this outer array on top of that is what breaks. The
+      // MAX_CANDIDATES_PER_RUN invariant is NOT relaxed -- it now applies
+      // in code (see the .slice call after parsing the model's response),
+      // which is more robust anyway: it no longer depends on the
+      // provider's internal decoding-complexity budget, which could shift
+      // with a future model update.
       candidates: {
         type: 'ARRAY',
-        maxItems: MAX_CANDIDATES_PER_RUN,
         items: {
           type: 'OBJECT',
           required: ['kind', 'content', 'confidence', 'provenanceSourceKind', 'provenanceSourceRefIds'],
@@ -321,66 +377,121 @@ function stripJsonFence(text: string): string {
   return match ? match[1].trim() : text
 }
 
+// Task 14 fix (provider error transparency): REDACTION GUARD -- this
+// function must NEVER log modelUrl.toString() or response.url (both carry
+// GEMINI_API_KEY as a query param), never log an Authorization header
+// (this call doesn't send one -- the key is a query param only, but the
+// rule is stated here for the next person who might add one), and never
+// log the key itself under any name. Every log line below uses only
+// modelUrl.pathname (no query string) to identify which endpoint was
+// called. The provider's own diagnostic (status, error.status,
+// error.message, error.details) is otherwise logged IN FULL server-side --
+// it describes OUR request shape, not the user, and is essential for
+// diagnosing exactly this class of bug (see task 14 report for how this
+// was actually used to find the real root cause).
 async function callGeminiForExtraction(
   prompt: string,
   env: PersonalMemoryExtractionEnv,
   fetcher: typeof fetch,
+  logger: Pick<Console, 'info' | 'error'>,
 ): Promise<{ raw: unknown; promptTokenCount?: number; responseTokenCount?: number }> {
   const modelUrl = new URL(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(env.GEMINI_MODEL ?? '')}:generateContent`)
   modelUrl.searchParams.set('key', env.GEMINI_API_KEY ?? '')
 
-  const response = await fetcher(modelUrl.toString(), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      system_instruction: { parts: [{ text: buildExtractionSystemInstruction() }] },
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: {
-        maxOutputTokens: 1024,
-        temperature: 0,
-        responseMimeType: 'application/json',
-        // Task 12 fix: gemini-2.5-flash spends output tokens on internal
-        // "thinking" by default unless this is explicitly zeroed. Without
-        // it, thinking tokens can consume the entire maxOutputTokens budget
-        // before the model emits any of the actual JSON -- especially with
-        // real, mixed-language (Persian/English) source material, which is
-        // more reasoning-heavy than the short fixture strings the fake-model
-        // tests used until now. The result is exactly this bug's signature:
-        // an empty or truncated `text`, reported generically as "the model
-        // did not return a usable extraction." Mirrors reasoning-endpoint.ts's
-        // proven-working callGeminiOnce, which already sets this.
-        thinkingConfig: { thinkingBudget: 0 },
-        responseSchema: buildExtractionResponseSchema(),
-      },
-    }),
-  })
-  if (!response.ok) throw new Error(`Model request failed with status ${response.status}.`)
+  let response: Response
+  try {
+    response = await fetcher(modelUrl.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        system_instruction: { parts: [{ text: buildExtractionSystemInstruction() }] },
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: {
+          maxOutputTokens: 1024,
+          temperature: 0,
+          responseMimeType: 'application/json',
+          // Task 12 fix: gemini-2.5-flash spends output tokens on internal
+          // "thinking" by default unless this is explicitly zeroed. Without
+          // it, thinking tokens can consume the entire maxOutputTokens budget
+          // before the model emits any of the actual JSON -- especially with
+          // real, mixed-language (Persian/English) source material, which is
+          // more reasoning-heavy than the short fixture strings the fake-model
+          // tests used until now. The result is exactly this bug's signature:
+          // an empty or truncated `text`, reported generically as "the model
+          // did not return a usable extraction." Mirrors reasoning-endpoint.ts's
+          // proven-working callGeminiOnce, which already sets this.
+          thinkingConfig: { thinkingBudget: 0 },
+          responseSchema: buildExtractionResponseSchema(),
+        },
+      }),
+    })
+  } catch (networkError) {
+    logger.error?.(`[PersonalMemory] provider call failed before any response (network): path=${modelUrl.pathname} error=${(networkError as Error).message}`)
+    throw new ProviderCallError('The AI model provider could not be reached.', 'PROVIDER_UNAVAILABLE')
+  }
+
+  if (!response.ok) {
+    const bodyText = await response.text()
+    let providerError: { status?: unknown; message?: unknown; details?: unknown } | undefined
+    try {
+      providerError = (JSON.parse(bodyText) as { error?: typeof providerError }).error
+    } catch {
+      // Not JSON -- providerError stays undefined, bodyText itself is still logged/used below.
+    }
+    const providerMessage = typeof providerError?.message === 'string' ? providerError.message : bodyText
+    // Full, unredacted (of everything except the key/URL) diagnostic, exactly
+    // as the provider sent it -- this is the line a human reads in
+    // `wrangler tail` to actually diagnose a real production failure.
+    logger.error?.(
+      `[PersonalMemory] provider rejected request: path=${modelUrl.pathname} httpStatus=${response.status} ` +
+        `providerStatus=${String(providerError?.status ?? 'unknown')} message=${providerMessage} ` +
+        `details=${providerError?.details !== undefined ? JSON.stringify(providerError.details) : 'none'}`,
+    )
+    const taxonomy: ProviderFailureTaxonomy = response.status >= 500 ? 'PROVIDER_UNAVAILABLE' : 'PROVIDER_REQUEST_REJECTED'
+    throw new ProviderCallError(
+      `Model request failed with status ${response.status}.`,
+      taxonomy,
+      response.status,
+      truncateForLog(providerMessage, 300),
+    )
+  }
+
   const data = (await response.json()) as {
     candidates?: Array<{ finishReason?: unknown; content?: { parts?: Array<{ text?: unknown }> } }>
     usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number }
   }
   const candidate = data.candidates?.[0]
-  if (!candidate) throw new Error('Model returned no candidate.')
+  if (!candidate) throw new ProviderCallError('Model returned no candidate.', 'MODEL_OUTPUT_UNUSABLE')
   // Task 12 fix: mirrors reasoning-endpoint.ts's own finishReason check,
   // which this endpoint never had. A truncated response (finishReason
   // 'MAX_TOKENS') previously fell through to the generic "not valid JSON"
   // error below with no indication of WHY -- this makes that cause explicit
   // and immediately diagnosable from the run record / wrangler tail.
   if (candidate.finishReason !== undefined && candidate.finishReason !== 'STOP') {
-    throw new Error(`Model response did not finish safely (finishReason=${String(candidate.finishReason)}).`)
+    throw new ProviderCallError(
+      `Model response did not finish safely (finishReason=${String(candidate.finishReason)}).`,
+      'MODEL_OUTPUT_UNUSABLE',
+      undefined,
+      String(candidate.finishReason),
+    )
   }
   const text = candidate.content?.parts?.[0]?.text
-  if (typeof text !== 'string' || !text.trim()) throw new Error('Model returned no extraction content.')
+  if (typeof text !== 'string' || !text.trim()) throw new ProviderCallError('Model returned no extraction content.', 'MODEL_OUTPUT_UNUSABLE')
   const trimmed = stripJsonFence(text.trim())
   if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
-    throw new Error(`Model response must be exactly one JSON object. Raw output snippet: "${truncateForLog(trimmed, 300)}"`)
+    const snippet = truncateForLog(trimmed, 300)
+    throw new ProviderCallError(`Model response must be exactly one JSON object. Raw output snippet: "${snippet}"`, 'MODEL_OUTPUT_UNUSABLE', undefined, snippet)
   }
   let raw: unknown
   try {
     raw = JSON.parse(trimmed)
   } catch (parseError) {
-    throw new Error(
-      `Model response was not valid JSON (${(parseError as Error).message}). Raw output snippet: "${truncateForLog(trimmed, 300)}"`,
+    const snippet = truncateForLog(trimmed, 300)
+    throw new ProviderCallError(
+      `Model response was not valid JSON (${(parseError as Error).message}). Raw output snippet: "${snippet}"`,
+      'MODEL_OUTPUT_UNUSABLE',
+      undefined,
+      snippet,
     )
   }
   return {
@@ -603,30 +714,40 @@ export async function handlePersonalMemoryExtractionRequest(
   const prompt = buildExtractionPrompt(source)
   let modelOutput: { raw: unknown; promptTokenCount?: number; responseTokenCount?: number }
   try {
-    modelOutput = await callGeminiForExtraction(prompt, env, fetcher)
+    modelOutput = await callGeminiForExtraction(prompt, env, fetcher, logger)
   } catch (error) {
-    // Task 12 fix (observability gap): callGeminiForExtraction's own error
-    // messages now already carry a bounded, sanitized diagnostic (finish
-    // reason, or a truncated raw-output snippet) -- persist that into
-    // failure_reason (not the old static 'MODEL_CALL_FAILED' string) so the
-    // NEXT failure is diagnosable straight from the run record, without
-    // needing a live `wrangler tail` session running at the moment it
-    // happens. truncateForLog is a second, defensive bound: the column's own
-    // CHECK constraint is <= 500 chars, and this must never violate it
-    // regardless of how the error message was constructed upstream.
+    // Task 14 fix: callGeminiForExtraction now throws a typed
+    // ProviderCallError carrying which of the three taxonomy buckets this
+    // failure belongs to, plus a pre-truncated providerDetail -- replacing
+    // the single generic MODEL_CALL_FAILED this route used to report for
+    // every case (including a rejected request that never reached a real
+    // model call at all). The full diagnostic (provider status/message/
+    // details) was already logged in full inside callGeminiForExtraction
+    // itself; this catch only needs the bounded summary for the run record
+    // and the response body.
+    const providerError = error instanceof ProviderCallError ? error : null
+    const taxonomy: ProviderFailureTaxonomy = providerError?.taxonomy ?? 'MODEL_OUTPUT_UNUSABLE'
     const failureReason = truncateForLog((error as Error).message, 500)
     await restPatchAsUser(env, jwt, `personal_memory_extraction_runs?id=eq.${run.id}`, {
       completed_at: now(),
       outcome: 'failed',
       failure_reason: failureReason,
     }, fetcher).catch(() => undefined)
-    logger.error?.(`[PersonalMemory] model call failed: ${(error as Error).message}`)
-    return errorResponse('MODEL_CALL_FAILED', 'The model did not return a usable extraction.', 502, origin)
+    logger.error?.(`[PersonalMemory] model call failed: taxonomy=${taxonomy} ${(error as Error).message}`)
+    return errorResponse(taxonomy, EXTRACTION_TAXONOMY_MESSAGES[taxonomy], 502, origin, {
+      providerStatus: providerError?.providerStatus,
+      providerDetail: providerError?.providerDetail,
+    })
   }
 
-  const rawCandidates = Array.isArray((modelOutput.raw as { candidates?: unknown })?.candidates)
+  // Task 14 fix: MAX_CANDIDATES_PER_RUN is now enforced HERE, in code, not
+  // via the response schema's own maxItems (see buildExtractionResponseSchema's
+  // own comment for why -- the provider rejects the schema-level bound as
+  // too complex to serve). Same invariant, more robust enforcement point.
+  const rawCandidates = (Array.isArray((modelOutput.raw as { candidates?: unknown })?.candidates)
     ? ((modelOutput.raw as { candidates: unknown[] }).candidates)
     : []
+  ).slice(0, MAX_CANDIDATES_PER_RUN)
   const normalized = rawCandidates.map((candidate) => normalizeCandidate(candidate, refIdKinds))
   const validCandidates = normalized.filter((candidate): candidate is ValidCandidate => candidate !== null)
   const droppedCount = normalized.length - validCandidates.length

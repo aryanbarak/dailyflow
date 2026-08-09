@@ -324,6 +324,54 @@ describe("PersonalMemorySection -- extraction trigger", () => {
     expect(await screen.findByText(/not enough recent activity to extract from yet/i)).toBeInTheDocument();
   });
 
+  it("task 14: renders PROVIDER_REQUEST_REJECTED with its own distinct message, not the generic 'model did not return a usable extraction'", async () => {
+    const user = userEvent.setup();
+    const service = makeService([]);
+    const triggerExtraction = vi.fn().mockResolvedValue({
+      ok: false,
+      code: "PROVIDER_REQUEST_REJECTED",
+      message: "The request to the AI model was rejected. This is a configuration issue on our side, not a problem with your data.",
+    } satisfies PersonalMemoryExtractionTriggerResult);
+
+    render(<PersonalMemorySection service={service} triggerExtraction={triggerExtraction} />);
+    await waitFor(() => expect(service.listByOwner).toHaveBeenCalled());
+    await user.click(screen.getByRole("button", { name: /check for new personal memory/i }));
+
+    expect(await screen.findByText(/the request to the ai model was rejected/i)).toBeInTheDocument();
+  });
+
+  it("task 14: renders PROVIDER_UNAVAILABLE with its own distinct message", async () => {
+    const user = userEvent.setup();
+    const service = makeService([]);
+    const triggerExtraction = vi.fn().mockResolvedValue({
+      ok: false,
+      code: "PROVIDER_UNAVAILABLE",
+      message: "The AI model is temporarily unavailable. Please try again in a moment.",
+    } satisfies PersonalMemoryExtractionTriggerResult);
+
+    render(<PersonalMemorySection service={service} triggerExtraction={triggerExtraction} />);
+    await waitFor(() => expect(service.listByOwner).toHaveBeenCalled());
+    await user.click(screen.getByRole("button", { name: /check for new personal memory/i }));
+
+    expect(await screen.findByText(/temporarily unavailable/i)).toBeInTheDocument();
+  });
+
+  it("task 14: renders MODEL_OUTPUT_UNUSABLE with its own distinct message (this is the ONLY taxonomy code that keeps the old wording, since it's the only case that genuinely matches it -- a real model output that failed validation)", async () => {
+    const user = userEvent.setup();
+    const service = makeService([]);
+    const triggerExtraction = vi.fn().mockResolvedValue({
+      ok: false,
+      code: "MODEL_OUTPUT_UNUSABLE",
+      message: "The model did not return a usable extraction. Please try again.",
+    } satisfies PersonalMemoryExtractionTriggerResult);
+
+    render(<PersonalMemorySection service={service} triggerExtraction={triggerExtraction} />);
+    await waitFor(() => expect(service.listByOwner).toHaveBeenCalled());
+    await user.click(screen.getByRole("button", { name: /check for new personal memory/i }));
+
+    expect(await screen.findByText(/did not return a usable extraction/i)).toBeInTheDocument();
+  });
+
   it("reloads the list and notifies the caller after a successful extraction, showing an accepted/dropped summary", async () => {
     const user = userEvent.setup();
     const service = makeService([]);

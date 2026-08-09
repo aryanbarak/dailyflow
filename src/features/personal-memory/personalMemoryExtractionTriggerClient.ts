@@ -15,6 +15,13 @@ export type PersonalMemoryExtractionTriggerErrorCode =
   | "CONFIGURATION_MISSING"
   | "NO_SOURCE_MATERIAL"
   | "NETWORK_UNREACHABLE"
+  // Task 14 fix: the worker's three-way model-call taxonomy (replacing the
+  // old generic MODEL_CALL_FAILED, which used to collapse into REQUEST_FAILED
+  // here) -- see personal-memory-extraction-endpoint.ts's own
+  // ProviderFailureTaxonomy for the full rationale.
+  | "PROVIDER_REQUEST_REJECTED"
+  | "PROVIDER_UNAVAILABLE"
+  | "MODEL_OUTPUT_UNUSABLE"
   | "REQUEST_FAILED";
 
 export interface PersonalMemoryExtractionTriggerSuccess {
@@ -38,6 +45,13 @@ const WORKER_ERROR_CODE_MAP: Record<string, PersonalMemoryExtractionTriggerError
   UNAUTHORIZED: "UNAUTHENTICATED",
   CONFIGURATION_MISSING: "CONFIGURATION_MISSING",
   NO_SOURCE_MATERIAL: "NO_SOURCE_MATERIAL",
+  // Task 14 fix: pass these three through as their OWN distinct codes
+  // rather than falling into the generic REQUEST_FAILED bucket (the
+  // `?? "REQUEST_FAILED"` fallback below), so the UI can show a distinct,
+  // honest message for each.
+  PROVIDER_REQUEST_REJECTED: "PROVIDER_REQUEST_REJECTED",
+  PROVIDER_UNAVAILABLE: "PROVIDER_UNAVAILABLE",
+  MODEL_OUTPUT_UNUSABLE: "MODEL_OUTPUT_UNUSABLE",
 };
 
 export interface PersonalMemoryExtractionTriggerDependencies {

@@ -286,4 +286,82 @@ describe('POST /projects/context-derivation', () => {
     const schema = buildDerivationResponseSchema()
     expect(JSON.stringify(schema)).not.toMatch(/key|token|secret/i)
   });
+
+  it('task 14 fix: buildDerivationResponseSchema never sets maxItems on the outer candidates array -- regression lock for the same production-400 root cause diagnosed in personal-memory-extraction-endpoint.ts (identical schema shape, identical provider rejection)', () => {
+    const schema = buildDerivationResponseSchema() as { properties: { candidates: { maxItems?: number; items: { properties: { sourceEvidenceIds: { minItems?: number; maxItems?: number } } } } } }
+    expect(schema.properties.candidates.maxItems).toBeUndefined()
+    expect(schema.properties.candidates.items.properties.sourceEvidenceIds.minItems).toBe(1)
+    expect(schema.properties.candidates.items.properties.sourceEvidenceIds.maxItems).toBe(20)
+  });
+
+  it('task 14 fix: MAX_CANDIDATES_PER_RUN is still enforced in code even though the schema no longer bounds it', async () => {
+    const manyCandidates = Array.from({ length: 15 }, (_, i) => ({
+      kind: 'risk',
+      content: { summary: `Risk number ${i}`, severity: 'high' },
+      confidence: 'medium',
+      sourceEvidenceIds: [EVIDENCE_ID],
+    }))
+    const fetcher = baseFetcher({ geminiCandidates: manyCandidates })
+    const response = await handleContextDerivationRequest(request(), validEnv, { fetcher })
+    expect(response.status).toBe(200)
+    const json = await response.json()
+    expect(json.candidateCount).toBe(12)
+    expect(json.acceptedCount).toBe(12)
+  });
+
+  it('task 14 fix: a provider 4xx response is reported as PROVIDER_REQUEST_REJECTED with the provider\'s own (truncated) detail in the response body -- this route is owner-only (authenticateUser requires a valid bearer token)', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === `${SUPABASE_URL}/auth/v1/user`) return jsonResponse({ id: 'user-1' })
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/project_records?`)) return jsonResponse([{ id: PROJECT_ID, name: 'SmartFlow', status: 'active' }])
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/project_evidence?`)) {
+        return jsonResponse([{ id: EVIDENCE_ID, source_kind: 'architecture_document', classification: 'canonical_document_observation', title: 'Architecture', reference: 'docs/architecture/project-domain.md', collected_at: '2026-08-01T00:00:00.000Z', supersedes_id: null }])
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/project_evidence_observations?`)) return jsonResponse([{ evidence_id: EVIDENCE_ID, text_content: 'text' }])
+      if (url === `${SUPABASE_URL}/rest/v1/inferred_context_derivation_runs` && init?.method === 'POST') return jsonResponse([{ id: RUN_ID }])
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/inferred_context_derivation_runs?`) && init?.method === 'PATCH') return new Response(null, { status: 204 })
+      if (url.startsWith('https://generativelanguage.googleapis.com/')) {
+        return jsonResponse(
+          { error: { code: 400, message: 'The specified schema produces a constraint that has too many states for serving.', status: 'INVALID_ARGUMENT' } },
+          400,
+        )
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+    const response = await handleContextDerivationRequest(request(), validEnv, { fetcher })
+    expect(response.status).toBe(502)
+    const body = (await response.json()) as { error: { code: string; providerStatus?: number; providerDetail?: string } }
+    expect(body.error.code).toBe('PROVIDER_REQUEST_REJECTED')
+    expect(body.error.providerStatus).toBe(400)
+    expect(body.error.providerDetail).toMatch(/too many states for serving/i)
+  });
+
+  it('task 14 fix: REDACTION GUARD -- the provider API key and the full request URL/query-string never appear in any logged output', async () => {
+    const logged: string[] = []
+    const fakeLogger = { info: (..._args: unknown[]) => {}, error: (...args: unknown[]) => { logged.push(args.map(String).join(' ')) } }
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === `${SUPABASE_URL}/auth/v1/user`) return jsonResponse({ id: 'user-1' })
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/project_records?`)) return jsonResponse([{ id: PROJECT_ID, name: 'SmartFlow', status: 'active' }])
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/project_evidence?`)) {
+        return jsonResponse([{ id: EVIDENCE_ID, source_kind: 'architecture_document', classification: 'canonical_document_observation', title: 'Architecture', reference: 'docs/architecture/project-domain.md', collected_at: '2026-08-01T00:00:00.000Z', supersedes_id: null }])
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/project_evidence_observations?`)) return jsonResponse([{ evidence_id: EVIDENCE_ID, text_content: 'text' }])
+      if (url === `${SUPABASE_URL}/rest/v1/inferred_context_derivation_runs` && init?.method === 'POST') return jsonResponse([{ id: RUN_ID }])
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/inferred_context_derivation_runs?`) && init?.method === 'PATCH') return new Response(null, { status: 204 })
+      if (url.startsWith('https://generativelanguage.googleapis.com/')) {
+        expect(url).toContain('key=gemini-key')
+        return jsonResponse({ error: { code: 400, message: 'The specified schema produces a constraint that has too many states for serving.', status: 'INVALID_ARGUMENT' } }, 400)
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+    const response = await handleContextDerivationRequest(request(), validEnv, { fetcher, logger: fakeLogger })
+    expect(response.status).toBe(502)
+    expect(logged.length).toBeGreaterThan(0)
+    const fullLog = logged.join('\n')
+    expect(fullLog).not.toContain('gemini-key')
+    expect(fullLog).not.toContain('key=')
+    expect(fullLog).not.toContain('generateContent?')
+    expect(fullLog).toContain('generateContent')
+  });
 })

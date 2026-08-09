@@ -82,8 +82,45 @@ function jsonResponse(body: unknown, status: number, origin: string): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...corsHeaders(origin) } })
 }
 
-function errorResponse(code: string, message: string, status: number, origin: string): Response {
-  return jsonResponse({ error: { code, message } }, status, origin)
+// Task 14 fix: optional extra fields (providerStatus/providerDetail) on the
+// error body -- mirrors personal-memory-extraction-endpoint.ts's identical
+// fix. Safe to expose here specifically because this whole route requires a
+// valid Supabase bearer token (authenticateUser below) -- nobody but the
+// authenticated owner's own browser ever sees this response.
+function errorResponse(code: string, message: string, status: number, origin: string, extra?: Record<string, unknown>): Response {
+  return jsonResponse({ error: { code, message, ...extra } }, status, origin)
+}
+
+// Task 14 fix: same taxonomy and same ProviderCallError shape as
+// personal-memory-extraction-endpoint.ts's identical fix (see that file's
+// own comments for the full rationale) -- this module cannot import that
+// one (agent/worker's own zero-cross-import convention, see file header),
+// so it is duplicated here rather than shared.
+type ProviderFailureTaxonomy = 'PROVIDER_REQUEST_REJECTED' | 'PROVIDER_UNAVAILABLE' | 'MODEL_OUTPUT_UNUSABLE'
+
+class ProviderCallError extends Error {
+  constructor(
+    message: string,
+    readonly taxonomy: ProviderFailureTaxonomy,
+    readonly providerStatus?: number,
+    readonly providerDetail?: string,
+  ) {
+    super(message)
+    this.name = 'ProviderCallError'
+  }
+}
+
+const DERIVATION_TAXONOMY_MESSAGES: Record<ProviderFailureTaxonomy, string> = {
+  PROVIDER_REQUEST_REJECTED: 'The request to the AI model was rejected. This is a configuration issue on our side, not a problem with your data.',
+  PROVIDER_UNAVAILABLE: 'The AI model is temporarily unavailable. Please try again in a moment.',
+  MODEL_OUTPUT_UNUSABLE: 'The model did not return a usable derivation. Please try again.',
+}
+
+// Task 14 fix: bounded, single-line truncation -- mirrors
+// personal-memory-extraction-endpoint.ts's identical helper.
+function truncateForLog(text: string, maxLength: number): string {
+  const collapsed = text.replace(/\s+/g, ' ').trim()
+  return collapsed.length > maxLength ? `${collapsed.slice(0, maxLength)}...` : collapsed
 }
 
 /** Mirrors index.ts's own requireAuth exactly (Bearer token -> /auth/v1/user) -- each Worker module in this codebase defines its own small copy rather than importing across modules (github-integration.ts and reasoning-endpoint.ts already follow this same convention). */
@@ -287,9 +324,17 @@ export function buildDerivationResponseSchema() {
     type: 'OBJECT',
     required: ['candidates'],
     properties: {
+      // Task 14 fix: NO maxItems here -- the identical bug diagnosed and
+      // fixed in personal-memory-extraction-endpoint.ts's own
+      // buildExtractionResponseSchema (see that file's comment for the
+      // full reproduction/bisection against the real provider). This
+      // route's schema has the exact same shape (an outer array bounded by
+      // MAX_CANDIDATES_PER_RUN, nested with an already-bounded inner array,
+      // sourceEvidenceIds) that the provider rejects as "too many states
+      // for serving". The invariant now lives in code (see the .slice call
+      // after parsing the model's response), not in the schema.
       candidates: {
         type: 'ARRAY',
-        maxItems: MAX_CANDIDATES_PER_RUN,
         items: {
           type: 'OBJECT',
           required: ['kind', 'content', 'confidence', 'sourceEvidenceIds'],
@@ -319,39 +364,90 @@ export function buildDerivationResponseSchema() {
   }
 }
 
+// Task 14 fix (provider error transparency): REDACTION GUARD -- mirrors
+// personal-memory-extraction-endpoint.ts's own callGeminiForExtraction
+// exactly. Never logs modelUrl.toString() or response.url (both carry
+// GEMINI_API_KEY as a query param); every log line uses only
+// modelUrl.pathname. The provider's own diagnostic is otherwise logged in
+// full server-side.
 async function callGeminiForDerivation(
   prompt: string,
   env: ContextDerivationEnv,
   fetcher: typeof fetch,
+  logger: Pick<Console, 'info' | 'error'>,
 ): Promise<{ raw: unknown; promptTokenCount?: number; responseTokenCount?: number }> {
   const modelUrl = new URL(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(env.GEMINI_MODEL ?? '')}:generateContent`)
   modelUrl.searchParams.set('key', env.GEMINI_API_KEY ?? '')
 
-  const response = await fetcher(modelUrl.toString(), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      system_instruction: { parts: [{ text: buildDerivationSystemInstruction() }] },
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: {
-        maxOutputTokens: 2048,
-        temperature: 0,
-        responseMimeType: 'application/json',
-        responseSchema: buildDerivationResponseSchema(),
-      },
-    }),
-  })
-  if (!response.ok) throw new Error(`Model request failed with status ${response.status}.`)
+  let response: Response
+  try {
+    response = await fetcher(modelUrl.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        system_instruction: { parts: [{ text: buildDerivationSystemInstruction() }] },
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: {
+          maxOutputTokens: 2048,
+          temperature: 0,
+          responseMimeType: 'application/json',
+          responseSchema: buildDerivationResponseSchema(),
+        },
+      }),
+    })
+  } catch (networkError) {
+    logger.error?.(`[ContextDerivation] provider call failed before any response (network): path=${modelUrl.pathname} error=${(networkError as Error).message}`)
+    throw new ProviderCallError('The AI model provider could not be reached.', 'PROVIDER_UNAVAILABLE')
+  }
+
+  if (!response.ok) {
+    const bodyText = await response.text()
+    let providerError: { status?: unknown; message?: unknown; details?: unknown } | undefined
+    try {
+      providerError = (JSON.parse(bodyText) as { error?: typeof providerError }).error
+    } catch {
+      // Not JSON -- providerError stays undefined, bodyText itself is still used below.
+    }
+    const providerMessage = typeof providerError?.message === 'string' ? providerError.message : bodyText
+    logger.error?.(
+      `[ContextDerivation] provider rejected request: path=${modelUrl.pathname} httpStatus=${response.status} ` +
+        `providerStatus=${String(providerError?.status ?? 'unknown')} message=${providerMessage} ` +
+        `details=${providerError?.details !== undefined ? JSON.stringify(providerError.details) : 'none'}`,
+    )
+    const taxonomy: ProviderFailureTaxonomy = response.status >= 500 ? 'PROVIDER_UNAVAILABLE' : 'PROVIDER_REQUEST_REJECTED'
+    throw new ProviderCallError(
+      `Model request failed with status ${response.status}.`,
+      taxonomy,
+      response.status,
+      truncateForLog(providerMessage, 300),
+    )
+  }
+
   const data = (await response.json()) as {
     candidates?: Array<{ content?: { parts?: Array<{ text?: unknown }> } }>
     usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number }
   }
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text
-  if (typeof text !== 'string' || !text.trim()) throw new Error('Model returned no derivation content.')
+  if (typeof text !== 'string' || !text.trim()) throw new ProviderCallError('Model returned no derivation content.', 'MODEL_OUTPUT_UNUSABLE')
   const trimmed = text.trim()
-  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) throw new Error('Model response must be exactly one JSON object.')
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
+    const snippet = truncateForLog(trimmed, 300)
+    throw new ProviderCallError(`Model response must be exactly one JSON object. Raw output snippet: "${snippet}"`, 'MODEL_OUTPUT_UNUSABLE', undefined, snippet)
+  }
+  let raw: unknown
+  try {
+    raw = JSON.parse(trimmed)
+  } catch (parseError) {
+    const snippet = truncateForLog(trimmed, 300)
+    throw new ProviderCallError(
+      `Model response was not valid JSON (${(parseError as Error).message}). Raw output snippet: "${snippet}"`,
+      'MODEL_OUTPUT_UNUSABLE',
+      undefined,
+      snippet,
+    )
+  }
   return {
-    raw: JSON.parse(trimmed),
+    raw,
     promptTokenCount: data.usageMetadata?.promptTokenCount,
     responseTokenCount: data.usageMetadata?.candidatesTokenCount,
   }
@@ -583,20 +679,33 @@ export async function handleContextDerivationRequest(
   const prompt = buildDerivationPrompt(project.name, evidence)
   let modelOutput: { raw: unknown; promptTokenCount?: number; responseTokenCount?: number }
   try {
-    modelOutput = await callGeminiForDerivation(prompt, env, fetcher)
+    modelOutput = await callGeminiForDerivation(prompt, env, fetcher, logger)
   } catch (error) {
+    // Task 14 fix: mirrors personal-memory-extraction-endpoint.ts's
+    // identical fix -- taxonomy-tagged failure instead of the old generic
+    // MODEL_CALL_FAILED for every case indiscriminately.
+    const providerError = error instanceof ProviderCallError ? error : null
+    const taxonomy: ProviderFailureTaxonomy = providerError?.taxonomy ?? 'MODEL_OUTPUT_UNUSABLE'
+    const failureReason = truncateForLog((error as Error).message, 500)
     await restPatchAsUser(env, jwt, `inferred_context_derivation_runs?id=eq.${run.id}`, {
       completed_at: now(),
       outcome: 'failed',
-      failure_reason: 'MODEL_CALL_FAILED',
+      failure_reason: failureReason,
     }, fetcher).catch(() => undefined)
-    logger.error?.(`[ContextDerivation] model call failed: ${(error as Error).message}`)
-    return errorResponse('MODEL_CALL_FAILED', 'The model did not return a usable derivation.', 502, origin)
+    logger.error?.(`[ContextDerivation] model call failed: taxonomy=${taxonomy} ${(error as Error).message}`)
+    return errorResponse(taxonomy, DERIVATION_TAXONOMY_MESSAGES[taxonomy], 502, origin, {
+      providerStatus: providerError?.providerStatus,
+      providerDetail: providerError?.providerDetail,
+    })
   }
 
-  const rawCandidates = Array.isArray((modelOutput.raw as { candidates?: unknown })?.candidates)
+  // Task 14 fix: MAX_CANDIDATES_PER_RUN is now enforced here, in code, not
+  // via the response schema's own maxItems (see buildDerivationResponseSchema's
+  // own comment).
+  const rawCandidates = (Array.isArray((modelOutput.raw as { candidates?: unknown })?.candidates)
     ? ((modelOutput.raw as { candidates: unknown[] }).candidates)
     : []
+  ).slice(0, MAX_CANDIDATES_PER_RUN)
   const normalized = rawCandidates.map((candidate) => normalizeCandidate(candidate, validEvidenceIds))
   const validCandidates = normalized.filter((candidate): candidate is ValidCandidate => candidate !== null)
   const droppedCount = normalized.length - validCandidates.length

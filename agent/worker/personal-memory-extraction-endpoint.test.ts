@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { handlePersonalMemoryExtractionRequest, normalizeCandidate, type PersonalMemoryExtractionEnv } from './personal-memory-extraction-endpoint'
+import { buildExtractionResponseSchema, handlePersonalMemoryExtractionRequest, normalizeCandidate, type PersonalMemoryExtractionEnv } from './personal-memory-extraction-endpoint'
 
 const ORIGIN = 'https://smartflow.example'
 const SUPABASE_URL = 'https://supabase.example.co'
@@ -273,7 +273,10 @@ describe('POST /personal-memory/extraction', () => {
     const response = await handlePersonalMemoryExtractionRequest(request(), validEnv, { fetcher })
     expect(response.status).toBe(502)
     const body = (await response.json()) as { error: { code: string } }
-    expect(body.error.code).toBe('MODEL_CALL_FAILED')
+    // Task 14: a 2xx response whose output fails validation is
+    // MODEL_OUTPUT_UNUSABLE, not the old generic MODEL_CALL_FAILED --
+    // the model WAS successfully asked here, its output just wasn't usable.
+    expect(body.error.code).toBe('MODEL_OUTPUT_UNUSABLE')
     expect(patchCalls).toHaveLength(1)
     const patch = patchCalls[0] as { failure_reason: string }
     expect(patch.failure_reason).toMatch(/exactly one JSON object/i)
@@ -305,6 +308,122 @@ describe('POST /personal-memory/extraction', () => {
     const patch = patchCalls[0] as { failure_reason: string }
     expect(patch.failure_reason).toMatch(/did not finish safely/i)
     expect(patch.failure_reason).toMatch(/MAX_TOKENS/)
+  })
+
+  it('task 14 fix: buildExtractionResponseSchema never sets maxItems on the outer candidates array -- regression lock for the actual production 400 root cause (reproduced against the real provider outside this test suite, see task 14 report: this exact bound, nested with an already-bounded inner array, is what the provider rejects as "too many states for serving")', () => {
+    const schema = buildExtractionResponseSchema() as { properties: { candidates: { maxItems?: number; items: { properties: { provenanceSourceRefIds: { minItems?: number; maxItems?: number } } } } } }
+    expect(schema.properties.candidates.maxItems).toBeUndefined()
+    // The inner array's own bounds are unaffected -- bisection confirmed
+    // ONLY the outer bound is the problem, not this one.
+    expect(schema.properties.candidates.items.properties.provenanceSourceRefIds.minItems).toBe(1)
+    expect(schema.properties.candidates.items.properties.provenanceSourceRefIds.maxItems).toBe(20)
+  })
+
+  it('task 14 fix: MAX_CANDIDATES_PER_RUN is still enforced in code even though the schema no longer bounds it -- more than 12 raw candidates are capped, not passed through', async () => {
+    const manyCandidates = Array.from({ length: 15 }, (_, i) => ({
+      kind: 'preference',
+      content: { summary: `Preference number ${i}` },
+      confidence: 'medium',
+      provenanceSourceKind: 'chat_turn',
+      provenanceSourceRefIds: [CHAT_ID],
+    }))
+    const fetcher = baseFetcher({ geminiCandidates: manyCandidates })
+    const response = await handlePersonalMemoryExtractionRequest(request(), validEnv, { fetcher })
+    expect(response.status).toBe(200)
+    const body = (await response.json()) as { candidateCount: number; acceptedCount: number }
+    expect(body.candidateCount).toBe(12)
+    expect(body.acceptedCount).toBe(12)
+  })
+
+  it('task 14 fix: a provider 4xx response is reported as PROVIDER_REQUEST_REJECTED with the provider\'s own (truncated) detail in the response body -- this endpoint is owner-only (authenticateUser requires a valid bearer token), so exposing it here is safe', async () => {
+    const patchCalls: unknown[] = []
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === `${SUPABASE_URL}/auth/v1/user`) return jsonResponse({ id: 'user-1' })
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/agent_chat_messages?`)) return jsonResponse([{ id: CHAT_ID, content: 'hello' }])
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/agent_briefings?`)) return jsonResponse([])
+      if (url === `${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs` && init?.method === 'POST') {
+        assertRunInsertBodyIsComplete(init.body ? JSON.parse(init.body as string) : null)
+        return jsonResponse([{ id: RUN_ID }])
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs?`) && init?.method === 'PATCH') {
+        patchCalls.push(init.body ? JSON.parse(init.body as string) : null)
+        return new Response(null, { status: 204 })
+      }
+      if (url.startsWith('https://generativelanguage.googleapis.com/')) {
+        return jsonResponse(
+          { error: { code: 400, message: 'The specified schema produces a constraint that has too many states for serving.', status: 'INVALID_ARGUMENT' } },
+          400,
+        )
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+    const response = await handlePersonalMemoryExtractionRequest(request(), validEnv, { fetcher })
+    expect(response.status).toBe(502)
+    const body = (await response.json()) as { error: { code: string; providerStatus?: number; providerDetail?: string } }
+    expect(body.error.code).toBe('PROVIDER_REQUEST_REJECTED')
+    expect(body.error.providerStatus).toBe(400)
+    expect(body.error.providerDetail).toMatch(/too many states for serving/i)
+    const patch = patchCalls[0] as { failure_reason: string }
+    expect(patch.failure_reason).toMatch(/Model request failed with status 400/)
+  })
+
+  it('task 14 fix: a provider 5xx response is reported as PROVIDER_UNAVAILABLE, distinct from a 4xx rejection', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === `${SUPABASE_URL}/auth/v1/user`) return jsonResponse({ id: 'user-1' })
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/agent_chat_messages?`)) return jsonResponse([{ id: CHAT_ID, content: 'hello' }])
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/agent_briefings?`)) return jsonResponse([])
+      if (url === `${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs` && init?.method === 'POST') {
+        assertRunInsertBodyIsComplete(init.body ? JSON.parse(init.body as string) : null)
+        return jsonResponse([{ id: RUN_ID }])
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs?`) && init?.method === 'PATCH') return new Response(null, { status: 204 })
+      if (url.startsWith('https://generativelanguage.googleapis.com/')) {
+        return jsonResponse({ error: { code: 503, message: 'The model is overloaded. Please try again later.', status: 'UNAVAILABLE' } }, 503)
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+    const response = await handlePersonalMemoryExtractionRequest(request(), validEnv, { fetcher })
+    expect(response.status).toBe(502)
+    const body = (await response.json()) as { error: { code: string; providerStatus?: number } }
+    expect(body.error.code).toBe('PROVIDER_UNAVAILABLE')
+    expect(body.error.providerStatus).toBe(503)
+  })
+
+  it('task 14 fix: REDACTION GUARD -- the provider API key and the full request URL/query-string never appear in any logged output, on a provider-rejected request', async () => {
+    const logged: string[] = []
+    const fakeLogger = { info: (..._args: unknown[]) => {}, error: (...args: unknown[]) => { logged.push(args.map(String).join(' ')) } }
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === `${SUPABASE_URL}/auth/v1/user`) return jsonResponse({ id: 'user-1' })
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/agent_chat_messages?`)) return jsonResponse([{ id: CHAT_ID, content: 'hello' }])
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/agent_briefings?`)) return jsonResponse([])
+      if (url === `${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs` && init?.method === 'POST') {
+        assertRunInsertBodyIsComplete(init.body ? JSON.parse(init.body as string) : null)
+        return jsonResponse([{ id: RUN_ID }])
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs?`) && init?.method === 'PATCH') return new Response(null, { status: 204 })
+      if (url.startsWith('https://generativelanguage.googleapis.com/')) {
+        // Sanity check on the fixture itself: the key IS present in the
+        // request URL the endpoint actually calls (validEnv.GEMINI_API_KEY
+        // below) -- proving the redaction guard is about LOGGING, not about
+        // the key being absent from the real request.
+        expect(url).toContain('key=gemini-key')
+        return jsonResponse({ error: { code: 400, message: 'The specified schema produces a constraint that has too many states for serving.', status: 'INVALID_ARGUMENT' } }, 400)
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+    const response = await handlePersonalMemoryExtractionRequest(request(), validEnv, { fetcher, logger: fakeLogger })
+    expect(response.status).toBe(502)
+    expect(logged.length).toBeGreaterThan(0)
+    const fullLog = logged.join('\n')
+    expect(fullLog).not.toContain('gemini-key')
+    expect(fullLog).not.toContain('key=')
+    expect(fullLog).not.toContain('generateContent?')
+    // The path itself (no query string) IS expected to be logged -- that's
+    // the whole point of "log the path only".
+    expect(fullLog).toContain('generateContent')
   })
 
   it('persists a valid candidate and reports acceptedCount=1', async () => {
