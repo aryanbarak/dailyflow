@@ -487,7 +487,7 @@ export async function handlePersonalMemoryExtractionRequest(
 
   const authResult = await authenticateUser(request, env, fetcher).catch(() => null)
   if (!authResult) return errorResponse('UNAUTHORIZED', 'A valid Supabase bearer token is required.', 401, origin)
-  const { jwt } = authResult
+  const { userId, jwt } = authResult
 
   const declaredLength = Number(request.headers.get('Content-Length') ?? '0')
   if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) {
@@ -523,7 +523,7 @@ export async function handlePersonalMemoryExtractionRequest(
       env,
       jwt,
       'personal_memory_extraction_runs',
-      { model_identity: env.GEMINI_MODEL, derivation_version: DERIVATION_VERSION, started_at: startedAt },
+      { user_id: userId, model_identity: env.GEMINI_MODEL, derivation_version: DERIVATION_VERSION, started_at: startedAt },
       fetcher,
     )
   } catch (error) {

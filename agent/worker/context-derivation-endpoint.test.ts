@@ -6,6 +6,32 @@ const SUPABASE_URL = 'https://supabase.example.co'
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111'
 const EVIDENCE_ID = '22222222-2222-4222-8222-222222222222'
 const RUN_ID = '33333333-3333-4333-8333-333333333333'
+const AUTHENTICATED_USER_ID = 'user-1'
+
+// Task 10-fix regression guard: every column below is NOT NULL with no
+// default/trigger on public.inferred_context_derivation_runs (see
+// supabase/migrations/20260807000000_inferred_project_context_fields.sql,
+// table definition -- id has default gen_random_uuid() and is excluded;
+// candidate_count/accepted_count/dropped_count default to 0 and are also
+// excluded). Task 10-diag found the identical insert-omission bug here as in
+// personal-memory-extraction-endpoint.ts's own runs table: user_id was
+// destructured out of authResult but never sent. This list is checked
+// against the ACTUAL body the endpoint sends on every baseFetcher-mediated
+// runs-table insert below, so dropping any of these fields again fails the
+// moment any existing test exercises that insert -- not just a single
+// dedicated test.
+const REQUIRED_RUN_INSERT_FIELDS = ['user_id', 'project_id', 'model_identity', 'derivation_version', 'started_at'] as const
+
+function assertRunInsertBodyIsComplete(body: unknown): void {
+  const record = body as Record<string, unknown> | null
+  const missing = REQUIRED_RUN_INSERT_FIELDS.filter((field) => record?.[field] === undefined || record?.[field] === null)
+  if (missing.length > 0) {
+    throw new Error(
+      `inferred_context_derivation_runs insert is missing required NOT NULL field(s): ${missing.join(', ')}. ` +
+        'See supabase/migrations/20260807000000_inferred_project_context_fields.sql for the table definition.',
+    )
+  }
+}
 
 const validEnv: ContextDerivationEnv = {
   SUPABASE_URL,
@@ -63,6 +89,7 @@ function baseFetcher(overrides: {
       return jsonResponse(observations)
     }
     if (url === `${SUPABASE_URL}/rest/v1/inferred_context_derivation_runs` && init?.method === 'POST') {
+      assertRunInsertBodyIsComplete(init.body ? JSON.parse(init.body as string) : null)
       return jsonResponse([{ id: RUN_ID }])
     }
     if (url.startsWith(`${SUPABASE_URL}/rest/v1/inferred_context_derivation_runs?`) && init?.method === 'PATCH') {
@@ -180,7 +207,10 @@ describe('POST /projects/context-derivation', () => {
         ])
       }
       if (url.startsWith(`${SUPABASE_URL}/rest/v1/project_evidence_observations?`)) return jsonResponse([{ evidence_id: EVIDENCE_ID, text_content: 'Current text.' }])
-      if (url === `${SUPABASE_URL}/rest/v1/inferred_context_derivation_runs` && init?.method === 'POST') return jsonResponse([{ id: RUN_ID }])
+      if (url === `${SUPABASE_URL}/rest/v1/inferred_context_derivation_runs` && init?.method === 'POST') {
+        assertRunInsertBodyIsComplete(init.body ? JSON.parse(init.body as string) : null)
+        return jsonResponse([{ id: RUN_ID }])
+      }
       if (url.startsWith(`${SUPABASE_URL}/rest/v1/inferred_context_derivation_runs?`)) return new Response(null, { status: 204 })
       if (url.startsWith('https://generativelanguage.googleapis.com/')) return geminiModelResponse([])
       throw new Error(`Unexpected fetch: ${url}`)
@@ -203,6 +233,25 @@ describe('POST /projects/context-derivation', () => {
     expect(rpcCalls).toHaveLength(1);
     expect(rpcCalls[0]).toMatchObject({ p_project_id: PROJECT_ID, p_run_id: RUN_ID, p_kind: 'risk', p_confidence: 'medium' })
   });
+
+  it('REGRESSION GUARD (task 10-fix): the runs-table insert includes user_id equal to the authenticated user, plus every other NOT NULL column -- catches the task 10-diag bug (userId destructured but discarded, user_id never sent) if it is ever reintroduced', async () => {
+    let insertBody: Record<string, unknown> | null = null
+    const inner = baseFetcher()
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === `${SUPABASE_URL}/rest/v1/inferred_context_derivation_runs` && init?.method === 'POST') {
+        insertBody = init.body ? JSON.parse(init.body as string) : null
+      }
+      return inner(input, init)
+    })
+    const response = await handleContextDerivationRequest(request(), validEnv, { fetcher })
+    expect(response.status).toBe(200)
+    expect(insertBody).not.toBeNull()
+    for (const field of REQUIRED_RUN_INSERT_FIELDS) {
+      expect(insertBody).toHaveProperty(field)
+    }
+    expect(insertBody?.user_id).toBe(AUTHENTICATED_USER_ID)
+  })
 
   it('drops a candidate that cites an evidence id outside this run\'s evidence set, never persisting it', async () => {
     const rpcCalls: unknown[] = []

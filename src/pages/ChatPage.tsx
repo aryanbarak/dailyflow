@@ -307,6 +307,63 @@ function isNarrativeStatusInquiry(text: string): boolean {
   )
 }
 
+// Conversation Quality v1 (task 10-fix): a declarative first-person
+// self-statement -- introducing who you are, what you know, or what you're
+// looking for -- is ordinary conversation, not a request for SmartFlow to do
+// anything. This is the Product Owner's IHK/React/TELC/junior-Java
+// introduction case: it names "درس" (study), which is literally one of
+// getStrongReadDomainEvidence's own `learning` evidence words, so gating
+// this carve-out on "no domain evidence" (the way isNarrativeStatusInquiry
+// is gated) would wrongly block it -- talking about what you're studying
+// inherently mentions learning-shaped words. Gating on the ABSENCE of an
+// imperative/tool-shaped clause instead (see hasImperativeClause below)
+// correctly distinguishes "I'm studying for the IHK exam" (no command verb
+// anywhere) from a mixed message like "...and show my tasks" (a real
+// command verb is present), which must stay explicit no matter what
+// self-statement shape precedes it.
+// "i have" is excluded when preceded by "do" ((?<!\bdo\s)) -- "do I have" is
+// the inverted-auxiliary question form ("What tasks do I have today?",
+// already an existing explicit test case, task 9), never a declarative
+// self-statement the way non-inverted "I have three years of experience" is.
+const SELF_STATEMENT_PATTERN_EN =
+  /\bi\s*(?:'m|am)\s+(?:a|an|looking for)\b|\bi\s+know\b|(?<!\bdo\s)\bi\s+have\b/i
+const SELF_STATEMENT_PATTERN_DE =
+  /\bich\s+(?:bin|kann|habe|suche)\b/i
+const SELF_STATEMENT_PATTERN_FA =
+  /من[\s\S]{0,60}(هستم|بلدم|دارم)|دنبال[\s\S]{0,60}می[‌\s]*گردم/i
+
+function isSelfStatement(text: string): boolean {
+  return (
+    SELF_STATEMENT_PATTERN_EN.test(text) ||
+    SELF_STATEMENT_PATTERN_DE.test(text) ||
+    SELF_STATEMENT_PATTERN_FA.test(text)
+  )
+}
+
+// A small, explicit table of command verbs for the tool-shaped actions this
+// app actually supports (show/check/list/complete/mark/create/add/update) --
+// deliberately not a general imperative-mood detector, the same "narrow,
+// explicit, tool-relevant" posture AMBIGUOUS_OFFER_TEXT and
+// GERMAN_OFFEN_WITH_TASK_CONTEXT already take elsewhere in this codebase.
+// This is what "an imperative/tool-shaped clause anywhere in the message"
+// (task 10-fix's own phrase) is checked against -- a self-statement
+// combined with one of these anywhere in the message keeps EXPLICIT
+// priority, matching "...and show my tasks" staying explicit.
+const IMPERATIVE_CLAUSE_PATTERN_EN =
+  /\b(show|check|list|complete|mark|create|add|update|give me|tell me)\b/i
+const IMPERATIVE_CLAUSE_PATTERN_DE =
+  /\b(zeig|zeige|pr(?:ü|ue)fe|liste|erstelle|markiere|aktualisiere|gib mir)\b/i
+const IMPERATIVE_CLAUSE_PATTERN_FA =
+  /(نشان\s*بده|نشونم\s*بده|چک\s*کن|لیست\s*کن|کامل\s*کن|ایجاد\s*کن)/i
+
+function hasImperativeClause(text: string): boolean {
+  return (
+    IMPERATIVE_CLAUSE_PATTERN_EN.test(text) ||
+    IMPERATIVE_CLAUSE_PATTERN_DE.test(text) ||
+    IMPERATIVE_CLAUSE_PATTERN_FA.test(text)
+  )
+}
+
 export type MessageIntentSignal = 'explicit' | 'ambiguous' | 'conversational'
 
 // Conversation Quality v1 (task 9): three-way classification replacing the
@@ -316,8 +373,9 @@ export type MessageIntentSignal = 'explicit' | 'ambiguous' | 'conversational'
 // getStrongReadDomainEvidence to reach reasoning mode" -- that would break
 // ordinary explicit requests like "Show me my repositories" that don't
 // happen to contain the qualifier words that function's rescue-purpose
-// patterns require. Instead, two narrow, additive carve-outs sit on top of
-// the existing, unchanged binary gate.
+// patterns require. Instead, narrow, additive carve-outs sit on top of the
+// existing, unchanged binary gate (task 9 added two -- study-help and
+// narrative-status; task 10-fix added a third -- self-statement).
 export function classifyMessageIntentSignal(message: string): MessageIntentSignal {
   const text = message.trim().toLowerCase()
   if (!text) return 'conversational'
@@ -349,7 +407,8 @@ export function classifyMessageIntentSignal(message: string): MessageIntentSigna
     (/چیست/i.test(text) && !hasPersianPossessiveMarker(text)) ||
     STUDY_HELP_PATTERN.test(text) ||
     STUDY_HELP_PATTERN_DE.test(text) ||
-    STUDY_HELP_PATTERN_FA.test(text)
+    STUDY_HELP_PATTERN_FA.test(text) ||
+    (isSelfStatement(text) && !hasImperativeClause(text))
 
   if (ordinaryConversation) return 'conversational'
   if (realPersianReasoningIntent) return 'explicit'

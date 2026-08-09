@@ -6,6 +6,31 @@ const SUPABASE_URL = 'https://supabase.example.co'
 const CHAT_ID = '22222222-2222-4222-8222-222222222222'
 const BRIEFING_ID = '33333333-3333-4333-8333-333333333333'
 const RUN_ID = '44444444-4444-4444-8444-444444444444'
+const AUTHENTICATED_USER_ID = 'user-1'
+
+// Task 10-fix regression guard: every column below is NOT NULL with no
+// default/trigger on public.personal_memory_extraction_runs (see
+// supabase/migrations/20260808000000_personal_memory_records.sql, table
+// definition -- id has default gen_random_uuid() and is excluded;
+// candidate_count/accepted_count/dropped_count default to 0 and are also
+// excluded). Task 10-diag found the insert silently omitted user_id, which
+// guarantees a Postgres not-null violation on every call in production. This
+// list is checked against the ACTUAL body the endpoint sends on every
+// baseFetcher-mediated runs-table insert below, so dropping any of these
+// fields again fails the moment any existing test exercises that insert --
+// not just a single dedicated test.
+const REQUIRED_RUN_INSERT_FIELDS = ['user_id', 'model_identity', 'derivation_version', 'started_at'] as const
+
+function assertRunInsertBodyIsComplete(body: unknown): void {
+  const record = body as Record<string, unknown> | null
+  const missing = REQUIRED_RUN_INSERT_FIELDS.filter((field) => record?.[field] === undefined || record?.[field] === null)
+  if (missing.length > 0) {
+    throw new Error(
+      `personal_memory_extraction_runs insert is missing required NOT NULL field(s): ${missing.join(', ')}. ` +
+        'See supabase/migrations/20260808000000_personal_memory_records.sql for the table definition.',
+    )
+  }
+}
 
 const validEnv: PersonalMemoryExtractionEnv = {
   SUPABASE_URL,
@@ -57,7 +82,10 @@ function baseFetcher(overrides: {
     if (url === `${SUPABASE_URL}/auth/v1/user`) return jsonResponse({ id: 'user-1' })
     if (url.startsWith(`${SUPABASE_URL}/rest/v1/agent_chat_messages?`)) return jsonResponse(chatMessages)
     if (url.startsWith(`${SUPABASE_URL}/rest/v1/agent_briefings?`)) return jsonResponse(briefings)
-    if (url === `${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs` && init?.method === 'POST') return jsonResponse([{ id: RUN_ID }])
+    if (url === `${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs` && init?.method === 'POST') {
+      assertRunInsertBodyIsComplete(init.body ? JSON.parse(init.body as string) : null)
+      return jsonResponse([{ id: RUN_ID }])
+    }
     if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs?`) && init?.method === 'PATCH') return new Response(null, { status: 204 })
     if (url.startsWith('https://generativelanguage.googleapis.com/')) return geminiModelResponse(geminiCandidates)
     if (url === `${SUPABASE_URL}/rest/v1/rpc/create_personal_memory_record`) {
@@ -126,7 +154,10 @@ describe('POST /personal-memory/extraction', () => {
       if (url === `${SUPABASE_URL}/auth/v1/user`) return jsonResponse({ id: 'user-1' })
       if (url.startsWith(`${SUPABASE_URL}/rest/v1/agent_chat_messages?`)) return jsonResponse([{ id: CHAT_ID, content: 'hello' }])
       if (url.startsWith(`${SUPABASE_URL}/rest/v1/agent_briefings?`)) return jsonResponse([])
-      if (url === `${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs` && init?.method === 'POST') return jsonResponse([{ id: RUN_ID }])
+      if (url === `${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs` && init?.method === 'POST') {
+        assertRunInsertBodyIsComplete(init.body ? JSON.parse(init.body as string) : null)
+        return jsonResponse([{ id: RUN_ID }])
+      }
       if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs?`) && init?.method === 'PATCH') {
         patchCalls.push(init.body ? JSON.parse(init.body as string) : null)
         return new Response(null, { status: 204 })
@@ -197,6 +228,25 @@ describe('POST /personal-memory/extraction', () => {
     const body = (await response.json()) as { acceptedCount: number; droppedCount: number }
     expect(body.acceptedCount).toBe(0)
     expect(body.droppedCount).toBe(5)
+  })
+
+  it('REGRESSION GUARD (task 10-fix): the runs-table insert includes user_id equal to the authenticated user, plus every other NOT NULL column -- catches the task 10-diag bug (userId destructured but discarded, user_id never sent) if it is ever reintroduced', async () => {
+    let insertBody: Record<string, unknown> | null = null
+    const inner = baseFetcher()
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === `${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs` && init?.method === 'POST') {
+        insertBody = init.body ? JSON.parse(init.body as string) : null
+      }
+      return inner(input, init)
+    })
+    const response = await handlePersonalMemoryExtractionRequest(request(), validEnv, { fetcher })
+    expect(response.status).toBe(200)
+    expect(insertBody).not.toBeNull()
+    for (const field of REQUIRED_RUN_INSERT_FIELDS) {
+      expect(insertBody).toHaveProperty(field)
+    }
+    expect(insertBody?.user_id).toBe(AUTHENTICATED_USER_ID)
   })
 
   it('accepts a legitimate personal_fact candidate that does not match the sensitive heuristic', async () => {

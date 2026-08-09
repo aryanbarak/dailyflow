@@ -325,6 +325,57 @@ describe("ChatPage LLM reasoning UX boundary", () => {
     expect(getStrongReadDomainEvidence("Wie viele Aufgaben sind noch offen?")).toBe("tasks");
   });
 
+  it("classifyMessageIntentSignal CONVERSATIONAL: named case -- the Product Owner's IHK/React/TELC/junior-Java self-introduction (task 10-fix; reconstructed from the screenshot's own described elements, since the literal message text was not available in this session)", () => {
+    expect(
+      classifyMessageIntentSignal(
+        "من الان دارم برای امتحان IHK درس می‌خونم، React و TELC رو بلدم و دنبال یک کار جونیور جاوا می‌گردم.",
+      ),
+    ).toBe("conversational");
+  });
+
+  it("classifyMessageIntentSignal CONVERSATIONAL: self-statement identity/skill/goal declarations, English", () => {
+    expect(classifyMessageIntentSignal("I'm a junior Java developer.")).toBe("conversational");
+    expect(classifyMessageIntentSignal("I know React and TypeScript.")).toBe("conversational");
+    expect(classifyMessageIntentSignal("I have three years of experience with Java.")).toBe("conversational");
+    expect(classifyMessageIntentSignal("I'm looking for a junior developer role.")).toBe("conversational");
+  });
+
+  it("classifyMessageIntentSignal CONVERSATIONAL: self-statement identity/skill/goal declarations, German", () => {
+    expect(classifyMessageIntentSignal("Ich bin Softwareentwickler.")).toBe("conversational");
+    expect(classifyMessageIntentSignal("Ich kann Java und React.")).toBe("conversational");
+    expect(classifyMessageIntentSignal("Ich habe Erfahrung mit TELC-Vorbereitung.")).toBe("conversational");
+    expect(classifyMessageIntentSignal("Ich suche eine Stelle als Junior-Entwickler.")).toBe("conversational");
+  });
+
+  it("classifyMessageIntentSignal CONVERSATIONAL: self-statement identity/skill/goal declarations, Persian", () => {
+    expect(classifyMessageIntentSignal("من برنامه‌نویس جاوا هستم.")).toBe("conversational");
+    expect(classifyMessageIntentSignal("من ری‌اکت بلدم.")).toBe("conversational");
+    expect(classifyMessageIntentSignal("من دنبال یک کار جونیور می‌گردم.")).toBe("conversational");
+  });
+
+  it("classifyMessageIntentSignal: a self-statement mixed with an imperative/tool-shaped clause keeps EXPLICIT priority, English", () => {
+    // The task's own named example: a declarative self-introduction must not
+    // swallow a real command elsewhere in the same message.
+    expect(classifyMessageIntentSignal("I'm a Java developer, and show my tasks.")).toBe("explicit");
+    expect(classifyMessageIntentSignal("I know React, check my calendar please.")).toBe("explicit");
+  });
+
+  it("classifyMessageIntentSignal: a self-statement mixed with an imperative/tool-shaped clause keeps EXPLICIT priority, German", () => {
+    expect(classifyMessageIntentSignal("Ich bin Entwickler, zeig mir meine Aufgaben.")).toBe("explicit");
+  });
+
+  it("classifyMessageIntentSignal: a self-statement mixed with an imperative/tool-shaped clause keeps EXPLICIT priority, Persian", () => {
+    expect(classifyMessageIntentSignal("من برنامه‌نویسم، وظیفه‌هایم را نشان بده.")).toBe("explicit");
+  });
+
+  it("classifyMessageIntentSignal: self-statement carve-out does not affect existing explicit Persian task-inspection phrasing ('دارم' with no preceding 'من')", () => {
+    // Regression guard for the exact existing test case below (line ~209):
+    // "دارم" alone (verb-conjugation only, no standalone "من") must not be
+    // mistaken for the new self-statement pattern, which requires "من" to
+    // precede هستم/بلدم/دارم.
+    expect(classifyMessageIntentSignal("امروز چه کارهایی دارم؟")).toBe("explicit");
+  });
+
   it("resolves inspect_github_issues via expectedToolId pass-through, even though it has no domain+actionType mapping", () => {
     // github.issues.list deliberately has no explicitReadOnlyMappings entry
     // (see toolResolver.ts) — this only resolves because proposalToState
