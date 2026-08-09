@@ -14,6 +14,9 @@ vi.mock("@/integrations/supabase/client", () => ({
 
 import {
   ChatBubble,
+  classifyMessageIntentSignal,
+  getAmbiguousOfferHint,
+  getAmbiguousOfferText,
   liveTaskReasoningContext,
   proposalMessage,
   proposalsToStates,
@@ -23,7 +26,7 @@ import {
   runtimeSummaryMessage,
   shouldUseReasoningForMessage,
 } from "./ChatPage";
-import { getToolById } from "@/features/agent";
+import { getStrongReadDomainEvidence, getToolById } from "@/features/agent";
 import type {
   AgentReasoningResult,
   ToolResolutionResult,
@@ -247,6 +250,79 @@ describe("ChatPage LLM reasoning UX boundary", () => {
     expect(shouldUseReasoningForMessage("وضعیت issue‌هایم چیست؟")).toBe(true);
     // No possessive marker in any form: stays ordinary.
     expect(shouldUseReasoningForMessage("الگوریتم مرتب‌سازی چیست؟")).toBe(false);
+  });
+
+  it("recognizes خودم/خودت/... as standalone Persian possessive-emphasis words, not just من", () => {
+    expect(shouldUseReasoningForMessage("وضعیت issue‌های خودم چیست؟")).toBe(true);
+    expect(shouldUseReasoningForMessage("برنامه خودم چیست؟")).toBe(true);
+  });
+
+  it("classifyMessageIntentSignal EXPLICIT: named case -- 'Show my learning progress' stays explicit, unchanged", () => {
+    expect(classifyMessageIntentSignal("Show my learning progress")).toBe("explicit");
+  });
+
+  it("classifyMessageIntentSignal EXPLICIT: imperative status-check requests are unaffected by the new ambiguous carve-out", () => {
+    // Same messages as the existing "arbitrary tool phrasing" test above --
+    // these have an imperative verb ("check", "look into", "pruefen",
+    // "بررسی کنی"), not a narrative "how is X doing" shape, so they are not
+    // touched by the new narrative-status-inquiry carve-out.
+    expect(classifyMessageIntentSignal("Check the status of my project rollout")).toBe("explicit");
+    expect(classifyMessageIntentSignal("Kannst du den Status meines Projekts pruefen?")).toBe("explicit");
+    expect(classifyMessageIntentSignal("می‌تونی وضعیت پروژه من رو بررسی کنی؟")).toBe("explicit");
+  });
+
+  it("classifyMessageIntentSignal CONVERSATIONAL: named case -- the Product Owner's FIAE-exam study-help screenshot", () => {
+    expect(classifyMessageIntentSignal("Help me study and review a concept for my FIAE exam.")).toBe("conversational");
+  });
+
+  it("classifyMessageIntentSignal CONVERSATIONAL: study-help phrasing in German and Persian", () => {
+    expect(classifyMessageIntentSignal("Hilf mir beim Lernen für meine Prüfung.")).toBe("conversational");
+    expect(classifyMessageIntentSignal("کمک کن برای امتحانم مطالعه کنم.")).toBe("conversational");
+  });
+
+  it("classifyMessageIntentSignal AMBIGUOUS: named canonical case -- 'How is my project doing?'", () => {
+    expect(classifyMessageIntentSignal("How is my project doing?")).toBe("ambiguous");
+  });
+
+  it("classifyMessageIntentSignal AMBIGUOUS: German and Persian equivalents of the canonical project-status case", () => {
+    expect(classifyMessageIntentSignal("Wie läuft mein Projekt?")).toBe("ambiguous");
+    expect(classifyMessageIntentSignal("پروژه‌ام چطور پیش می‌رود؟")).toBe("ambiguous");
+  });
+
+  it("classifyMessageIntentSignal: a narrative status-inquiry naming a concrete domain is NOT demoted -- stays explicit", () => {
+    // "tasks" is concrete domain evidence -- the narrative shape alone never
+    // demotes a message that also names a real tool.
+    expect(classifyMessageIntentSignal("How are my tasks doing?")).toBe("explicit");
+  });
+
+  it("classifyMessageIntentSignal agrees with the boolean shouldUseReasoningForMessage wrapper", () => {
+    expect(classifyMessageIntentSignal("Show me my repositories")).toBe("explicit");
+    expect(classifyMessageIntentSignal("Hello, how are you today?")).toBe("conversational");
+    expect(classifyMessageIntentSignal("Why is task management important?")).toBe("conversational");
+  });
+
+  it("getAmbiguousOfferHint/getAmbiguousOfferText: offers GitHub for a project-status narrative, in the reply's own language", () => {
+    expect(getAmbiguousOfferHint("How is my project doing?")).toBe("github");
+    expect(getAmbiguousOfferText("github", "en")).toMatch(/github/i);
+    expect(getAmbiguousOfferText("github", "de")).toMatch(/github/i);
+    expect(getAmbiguousOfferText("github", "fa")).toMatch(/گیت.?هاب/i);
+  });
+
+  it("getAmbiguousOfferHint: offers nothing when the ambiguous message names no mapped hint -- a valid, offer-less outcome", () => {
+    expect(getAmbiguousOfferHint("How is my day going?")).toBeNull();
+  });
+
+  it("German 'offen' fix: no longer false-positives on an unrelated 'offen' with no task/issue/PR noun nearby", () => {
+    // Previously: bare "offen"/"offene"/"offenen" alone evidenced the tasks
+    // domain regardless of context. "Ist die Bibliothek offen?" ("Is the
+    // library open?") has nothing to do with tasks.
+    expect(getStrongReadDomainEvidence("Ist die Bibliothek heute offen?")).toBeNull();
+    expect(getStrongReadDomainEvidence("Der Laden ist noch offen.")).toBeNull();
+  });
+
+  it("German 'offen' fix: still evidences the tasks domain when 'offen' co-occurs with a task/issue/PR noun", () => {
+    expect(getStrongReadDomainEvidence("Zeige meine offenen Aufgaben.")).toBe("tasks");
+    expect(getStrongReadDomainEvidence("Wie viele Aufgaben sind noch offen?")).toBe("tasks");
   });
 
   it("resolves inspect_github_issues via expectedToolId pass-through, even though it has no domain+actionType mapping", () => {

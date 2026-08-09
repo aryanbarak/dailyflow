@@ -292,6 +292,48 @@ doc has full evidence).
   remaining callers after the tutor migration). Design note:
   [`docs/architecture/notes/memory-consumption-v1-design-note.md`](docs/architecture/notes/memory-consumption-v1-design-note.md).
 
+### 2.5 Conversation Quality v1 (task `9`, Tier 2)
+
+- **Conversation-first intent boundary — Slice 1.** Product Owner decision:
+  an intent/tool card is shown ONLY on an explicit action signal; ambiguous
+  signals get a conversational answer plus an optional deterministic
+  trailing offer, never a card, never auto-run.
+  `src/pages/ChatPage.tsx`'s binary `shouldUseReasoningForMessage` becomes a
+  thin wrapper over a new `classifyMessageIntentSignal` three-way gate
+  (`explicit`/`ambiguous`/`conversational`), built as two narrow, additive
+  carve-outs on top of the existing, unchanged binary logic — not a
+  from-scratch rewrite and not a domain-evidence-gated narrowing (which
+  would have broken ordinary explicit requests like "Show me my
+  repositories"; see the design note for why that approach was rejected).
+  All 30 pre-existing `shouldUseReasoningForMessage` test expectations pass
+  unchanged; 13 new tests added. Two recorded language-heuristic bugs fixed
+  properly: German bare "offen"/"offene"/"offenen" no longer false-positives
+  the `tasks` domain without an accompanying task/issue/PR noun nearby
+  (`intentValidator.ts`'s `getStrongReadDomainEvidence`, now exported); the
+  Persian possessive detector gains the standalone words
+  خودم/خودت/خودش/... alongside `من` (safe, whole-word addition — the
+  deeper bare-suffix gap the existing code comment already disclosed as
+  unsafe to close via regex is left open, on purpose, not silently
+  "fixed"). The trailing offer (`getAmbiguousOfferHint`/
+  `getAmbiguousOfferText`) is a fixed, per-response-language string
+  appended client-side after the plain-chat reply returns — never model-
+  generated, never sent to the model as an instruction.
+- **Tutor topic liberation — Slice 2.** `LearnAIMode` widened from a closed
+  4-value union to a free-form string (`src/features/learn-ai/types.ts`);
+  no schema change (`learn_ai_messages.mode` was already a plain
+  `text not null` column). The four legacy values remain as
+  `LEARN_AI_SUGGESTED_TOPICS` suggestion chips; `LearnAIPage.tsx` and
+  `SettingsPage.tsx`'s "Default topic (optional)" both gained a free-text
+  input alongside the chips, calling the same `setMode`/state update the
+  chips already call. Confirmed-memory context in the tutor prompt
+  (`getConfirmedMemoryPromptContext`, wired in task `7b`) verified still
+  reaches `askLearnAI`'s request body as its own field — **the receiving
+  server (`https://api.barakzai.cloud/analyze`) has no source in this
+  repository**, so how that field is used server-side could not be
+  verified or "strengthened" from here; disclosed rather than glossed over.
+  Design note:
+  [`docs/architecture/notes/conversation-quality-v1-design-note.md`](docs/architecture/notes/conversation-quality-v1-design-note.md).
+
 ## 3. Verified NOT implemented
 
 Confirmed from code, not assumed (full detail in the reconciliation doc §6):
@@ -532,6 +574,10 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
    (Accepted); all three legacy `user_context` consumers (`/chat`, briefing,
    Learn tutor) migrated to a status-filtered confirmed-memory read. See
    §2.4.
+7. ~~Conversation Quality v1: conversation-first intent boundary + tutor
+   topic liberation — Tier 2~~ — **complete.** See §2.5. Design note:
+   [`docs/architecture/notes/conversation-quality-v1-design-note.md`](docs/architecture/notes/conversation-quality-v1-design-note.md).
+   Independent review may follow post-merge per ADR-0008's Tier 2 path.
 
 Superseded/completed sprint milestones from the prior version of this
 document have been removed rather than carried forward as history; git

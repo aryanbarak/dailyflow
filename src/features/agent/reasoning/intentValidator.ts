@@ -403,12 +403,22 @@ function getToolEvidenceForDomain(
   return matched.length === 1 ? matched[0] : null;
 }
 
-function getStrongReadDomainEvidence(message: string): AgentIntentDomain | "conflicting" | null {
+// German bare "offen"/"offene"/"offenen" ("open") is not task-specific on
+// its own -- "Ist die Bibliothek offen?" ("Is the library open?") has
+// nothing to do with tasks. It only counts as task evidence when it
+// co-occurs with an explicit task/issue/PR noun nearby (either order,
+// ~30 chars), e.g. "offene Aufgaben" / "Aufgaben ... offen". Conversation
+// Quality v1 (task 9) fix -- previously a standalone word in the list
+// below, which false-positived on every unrelated "offen".
+const GERMAN_OFFEN_WITH_TASK_CONTEXT =
+  /\boffene?n?\b.{0,30}\b(aufgabe|aufgaben|issue|issues|pr|pull request)\b|\b(aufgabe|aufgaben|issue|issues|pr|pull request)\b.{0,30}\boffene?n?\b/i;
+
+export function getStrongReadDomainEvidence(message: string): AgentIntentDomain | "conflicting" | null {
   const taskEvidence = messageHasAny(message, [
     /\b(task|tasks|open tasks|unfinished|to-?do|todos|focus on)\b/i,
-    /\b(aufgabe|aufgaben|offen|offene|offenen|unerledigt|nicht erledigt|fokus|konzentrieren)\b/i,
+    /\b(aufgabe|aufgaben|unerledigt|nicht erledigt|fokus|konzentrieren)\b/i,
     /(\u0648\u0638\u06cc\u0641\u0647|\u0648\u0638\u0627\u06cc\u0641|\u06a9\u0627\u0631\u0647\u0627|\u06a9\u0627\u0631\u0647\u0627\u06cc|\u062a\u0645\u0631\u06a9\u0632|\u062a\u0645\u0627\u0645 \u0646\u0634\u062f\u0647|\u0627\u0646\u062c\u0627\u0645 \u0646\u0634\u062f\u0647)/i,
-  ]);
+  ]) || GERMAN_OFFEN_WITH_TASK_CONTEXT.test(message);
   const calendarEvidence = messageHasAny(message, [
     /\b(calendar|appointment|appointments|event|events|meeting|meetings|schedule)\b/i,
     /\b(kalender|termin|termine|besprechung|besprechungen|meeting|meetings)\b/i,

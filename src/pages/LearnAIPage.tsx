@@ -3,6 +3,7 @@ import { motion } from "framer-motion";
 import { Brain, Sparkles, Send, Paperclip, X, FileText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { StatePanel } from "@/components/common/StatePanel";
 import { ErrorBoundary } from "@/components/common/ErrorBoundary";
@@ -10,6 +11,9 @@ import { cn } from "@/lib/utils";
 import { useLearnAI } from "@/hooks/useLearnAI";
 import type { LearnAIResponseLanguage, LearnAIMode } from "@/features/learn-ai/types";
 
+// Conversation Quality v1 (task 9): these four are suggestions, not the
+// only legal topics -- LearnAIMode is a free-form string. Typing any other
+// topic into the input below works identically; see the design note.
 const MODE_OPTIONS: { value: LearnAIMode; label: string }[] = [
   { value: "fiae_algorithms", label: "Algorithms" },
   { value: "general_it", label: "General IT" },
@@ -46,6 +50,18 @@ export default function LearnAIPage() {
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const highlightTimerRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Conversation Quality v1 (task 9): a free-typed topic that isn't one of
+  // the four suggestions. Seeded from `mode` on first render so the input
+  // reflects a custom topic already in effect (e.g. restored from a prior
+  // session), rather than always starting blank.
+  const isSuggestedTopic = MODE_OPTIONS.some((option) => option.value === mode);
+  const [customTopicDraft, setCustomTopicDraft] = useState(isSuggestedTopic ? "" : mode);
+
+  const applyCustomTopic = () => {
+    const topic = customTopicDraft.trim();
+    if (topic) setMode(topic);
+  };
 
   const historyItems = useMemo(
     () => messages.filter((item) => item.role === "user").slice(-20).reverse(),
@@ -302,6 +318,27 @@ export default function LearnAIPage() {
                     </Button>
                   ))}
                 </div>
+                <div className="flex gap-2">
+                  <Input
+                    value={customTopicDraft}
+                    onChange={(e) => setCustomTopicDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        applyCustomTopic();
+                      }
+                    }}
+                    placeholder="Or type any topic to study"
+                    className="h-8 text-xs"
+                    aria-label="Custom study topic"
+                  />
+                  <Button size="sm" variant="outline" onClick={applyCustomTopic}>
+                    Use topic
+                  </Button>
+                </div>
+                {!isSuggestedTopic && (
+                  <p className="text-xs text-muted-foreground">Current topic: {mode}</p>
+                )}
                 <div className="flex flex-wrap gap-2">
                   {LANGUAGE_OPTIONS.map((option) => (
                     <Button

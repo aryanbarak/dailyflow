@@ -17,6 +17,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import { useTheme } from 'next-themes';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Input } from '@/components/ui/input';
 import { useAuth } from '@/hooks/useAuth';
 import { useProfile } from '@/features/profile/useProfile';
 import { usePreferences } from '@/hooks/usePreferences';
@@ -25,7 +26,7 @@ import { useNotificationPrefs } from '@/features/settings/notificationSettings';
 import { dataExportService } from '@/features/settings/dataExportService';
 import { supabase } from '@/integrations/supabase/client';
 import { safeGet, safeSet, storageKey } from '@/lib/storage';
-import type { LearnAIMode } from '@/features/learn-ai/types';
+import { LEARN_AI_SUGGESTED_TOPICS, type LearnAIMode } from '@/features/learn-ai/types';
 import {
   getStoredAiResponseLanguage,
   normalizeAiResponseLanguage,
@@ -53,6 +54,15 @@ const TABS: { id: Tab; labelKey: TranslationKey; icon: React.ComponentType<{ siz
 ];
 
 type AiDefaults = { mode: LearnAIMode; aiResponseLanguage: AiResponseLanguage; language?: AiResponseLanguage };
+
+// Conversation Quality v1 (task 9): same four suggestions LearnAIPage.tsx
+// offers, same labels users already saw on the old closed dropdown.
+const SUGGESTED_TOPIC_LABELS: { value: LearnAIMode; label: string }[] = [
+  { value: 'fiae_algorithms', label: 'FIAE Algorithms' },
+  { value: 'wiso', label: 'WiSo' },
+  { value: 'general_it', label: 'General IT' },
+  { value: 'planner', label: 'Planner' },
+];
 
 const AVATAR_COLORS = [
   '#0EA5E9', '#8B5CF6', '#EC4899', '#F59E0B',
@@ -383,6 +393,12 @@ function AppearanceTab() {
   const { preferences, setTheme: setPrefTheme, setCurrency } = usePreferences();
 
   const [aiDefaults, setAiDefaults] = useState<AiDefaults>(() => readAiDefaults());
+  // Conversation Quality v1 (task 9): "Default mode" -> "Default topic
+  // (optional)" -- the four suggestions plus a free-text topic, mirroring
+  // LearnAIPage.tsx's own chip + input pattern for the same underlying
+  // (now free-form) LearnAIMode field.
+  const isSuggestedDefaultTopic = (LEARN_AI_SUGGESTED_TOPICS as readonly string[]).includes(aiDefaults.mode);
+  const [customDefaultTopicDraft, setCustomDefaultTopicDraft] = useState(isSuggestedDefaultTopic ? '' : aiDefaults.mode);
 
   const themes = [
     { id: 'dark',   label: 'Dark',   icon: Moon    },
@@ -515,22 +531,54 @@ function AppearanceTab() {
       </SectionCard>
 
       <SectionCard title="Learn with AI defaults">
-        <SettingRow label="Default mode">
-          <Select
-            value={aiDefaults.mode}
-            onValueChange={v => setAiDefaults(p => ({ ...p, mode: v as LearnAIMode }))}
-          >
-            <SelectTrigger className="w-40 h-8 text-xs" aria-label="Select AI mode">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="fiae_algorithms">FIAE Algorithms</SelectItem>
-              <SelectItem value="wiso">WiSo</SelectItem>
-              <SelectItem value="general_it">General IT</SelectItem>
-              <SelectItem value="planner">Planner</SelectItem>
-            </SelectContent>
-          </Select>
-        </SettingRow>
+        <div className="py-3.5 border-b border-border space-y-2">
+          <p className="text-sm font-medium">Default topic (optional)</p>
+          <div className="flex flex-wrap gap-2">
+            {SUGGESTED_TOPIC_LABELS.map(({ value, label }) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setAiDefaults(p => ({ ...p, mode: value }))}
+                className="px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors"
+                style={{
+                  borderColor: aiDefaults.mode === value ? 'hsl(var(--primary))' : 'hsl(var(--border))',
+                  background: aiDefaults.mode === value ? 'hsl(var(--primary) / 0.08)' : 'transparent',
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            <Input
+              value={customDefaultTopicDraft}
+              onChange={e => setCustomDefaultTopicDraft(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  const topic = customDefaultTopicDraft.trim();
+                  if (topic) setAiDefaults(p => ({ ...p, mode: topic as LearnAIMode }));
+                }
+              }}
+              placeholder="Or type any topic"
+              className="w-40 h-8 text-xs"
+              aria-label="Custom default topic"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                const topic = customDefaultTopicDraft.trim();
+                if (topic) setAiDefaults(p => ({ ...p, mode: topic as LearnAIMode }));
+              }}
+              className="px-3 py-1.5 rounded-lg border border-border text-xs font-medium"
+            >
+              Use topic
+            </button>
+          </div>
+          {!isSuggestedDefaultTopic && (
+            <p className="text-xs text-muted-foreground">Current default topic: {aiDefaults.mode}</p>
+          )}
+        </div>
         <SettingRow label="Response language">
           <Select
             value={aiDefaults.aiResponseLanguage}

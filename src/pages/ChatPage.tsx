@@ -36,6 +36,7 @@ import {
   canComposeAssistantResponse,
   composeAssistantResponse,
   formatAssistantResponse,
+  getStrongReadDomainEvidence,
   synthesizeContext,
   getToolById,
   reasonAboutUserMessage,
@@ -250,23 +251,85 @@ function isEntirelyConversationalFiller(text: string): boolean {
 const PERSIAN_POSSESSIVE_SUFFIX_PATTERN =
   /(های(م|ت|ش|مان|تان|شان)|‌(ام|ات|اش|امان|اتان|اشان|م|ت|ش|مان|تان|شان))(?![\p{L}\p{N}_])/u
 
+// Conversation Quality v1 (task 9): "خودم/خودت/خودش/..." ("my own"/"your
+// own"/...) are added as standalone possessive-emphasis words, alongside
+// the existing bare "من" check -- whole words, not suffixes, so they carry
+// none of the attachment ambiguity the comment on
+// PERSIAN_POSSESSIVE_SUFFIX_PATTERN documents for bare word-final letters.
+// That deeper gap (کارم, دستم) is intentionally NOT addressed here; the
+// existing reasoning below for why a longer suffix list is unsafe still
+// holds and is not revisited.
+const PERSIAN_POSSESSIVE_STANDALONE_PATTERN =
+  /(?<![\p{L}\p{N}_])(من|خودم|خودت|خودش|خودمان|خودتان|خودشان)(?![\p{L}\p{N}_])/u
+
 function hasPersianPossessiveMarker(text: string): boolean {
   return (
-    /(?<![\p{L}\p{N}_])من(?![\p{L}\p{N}_])/u.test(text) ||
+    PERSIAN_POSSESSIVE_STANDALONE_PATTERN.test(text) ||
     PERSIAN_POSSESSIVE_SUFFIX_PATTERN.test(text)
   )
 }
 
-export function shouldUseReasoningForMessage(message: string) {
+// Conversation Quality v1 (task 9): a request to study/review/prepare FOR
+// something (an exam, a concept) is asking for tutoring content, not asking
+// SmartFlow to inspect the user's own learning-progress data -- even though
+// it contains "study", the same word getStrongReadDomainEvidence's
+// `learning` evidence uses. Unconditional, like the existing why-is/explain
+// bucket it lives alongside: this is the Product Owner's FIAE-exam
+// screenshot case (see the design note).
+const STUDY_HELP_PATTERN =
+  /\bhelp me (study|review|prepare|practice)\b/i
+const STUDY_HELP_PATTERN_DE =
+  /\bhilf mir (beim|zu) (lernen|wiederholen|vorbereiten|üben|ueben)\b/i
+const STUDY_HELP_PATTERN_FA =
+  /کمک\s*کن.{0,30}(مطالعه|مرور|امتحان|درس)/i
+
+// Conversation Quality v1 (task 9): a narrative status-inquiry ("how is X
+// doing", "how's X going") differs from an imperative request ("check the
+// status of X") by having no command verb -- only a WH-question about how
+// something is going. On its own this is not enough to demote a message
+// (see shouldUseReasoningForMessage's use of it below, combined with
+// getStrongReadDomainEvidence); it exists to isolate exactly the shape of
+// the Product Owner's canonical ambiguous example, "How is my project
+// doing?", from imperative-shaped requests like "Check the status of my
+// project rollout", which stay explicit unchanged.
+const NARRATIVE_STATUS_INQUIRY_PATTERN =
+  /\bhow\s+(is|are|'s)\b.{0,40}\b(doing|going)\b/i
+const NARRATIVE_STATUS_INQUIRY_PATTERN_DE =
+  /\bwie\s+(läuft|laeuft|geht(’s|'s)?|steht\s+es\s+um)\b/i
+const NARRATIVE_STATUS_INQUIRY_PATTERN_FA =
+  /(چطور(ه)?|چگونه|وضعیت)[\s\S]{0,20}(پیش[‌\s]*(می[‌\s]*رود|میره)|در\s*حال\s*پیشرفت)/i
+
+function isNarrativeStatusInquiry(text: string): boolean {
+  return (
+    NARRATIVE_STATUS_INQUIRY_PATTERN.test(text) ||
+    NARRATIVE_STATUS_INQUIRY_PATTERN_DE.test(text) ||
+    NARRATIVE_STATUS_INQUIRY_PATTERN_FA.test(text)
+  )
+}
+
+export type MessageIntentSignal = 'explicit' | 'ambiguous' | 'conversational'
+
+// Conversation Quality v1 (task 9): three-way classification replacing the
+// old two-way (reasoning vs. plain chat) routing. See the design note
+// (docs/architecture/notes/conversation-quality-v1-design-note.md) for the
+// full rationale, including why this is NOT simply "require
+// getStrongReadDomainEvidence to reach reasoning mode" -- that would break
+// ordinary explicit requests like "Show me my repositories" that don't
+// happen to contain the qualifier words that function's rescue-purpose
+// patterns require. Instead, two narrow, additive carve-outs sit on top of
+// the existing, unchanged binary gate.
+export function classifyMessageIntentSignal(message: string): MessageIntentSignal {
   const text = message.trim().toLowerCase()
-  if (!text) return false
+  if (!text) return 'conversational'
   const realPersianReasoningIntent =
     /(یادگیری|درس|تقویم|قرار|جلسه|وظیفه|وظیفه[‌\s-]?ها|کارها|کار|تمرکز|برنامه\s+فعلی|کامل\s+کن|انجام[‌\s-]?شده|تمام\s+نشده)/i.test(text)
 
   // "why is / explain / tell me about" (and the German/Persian equivalents)
   // are unconditional generic-topic markers: asking to explain a concept is
   // ordinary conversation no matter which domain words happen to appear in
-  // it, so these need no per-tool list and none is applied to them.
+  // it, so these need no per-tool list and none is applied to them. The
+  // study-help patterns are the same shape of unconditional marker, added
+  // for task 9 (see comment above their definitions).
   //
   // "what is X" / "X چیست" is genuinely ambiguous the
   // other clauses aren't -- "what is spaced repetition" is ordinary, "what
@@ -283,10 +346,13 @@ export function shouldUseReasoningForMessage(message: string) {
     /\b(why is|explain|tell me about|warum ist|erkläre|erklaere|erzähl|erzaehl)\b/i.test(text) ||
     (/\bwhat is\b/i.test(text) && !/\bmy\b/i.test(text)) ||
     /(چرا|توضیح\s+بده|درباره)/i.test(text) ||
-    (/چیست/i.test(text) && !hasPersianPossessiveMarker(text))
+    (/چیست/i.test(text) && !hasPersianPossessiveMarker(text)) ||
+    STUDY_HELP_PATTERN.test(text) ||
+    STUDY_HELP_PATTERN_DE.test(text) ||
+    STUDY_HELP_PATTERN_FA.test(text)
 
-  if (ordinaryConversation) return false
-  if (realPersianReasoningIntent) return true
+  if (ordinaryConversation) return 'conversational'
+  if (realPersianReasoningIntent) return 'explicit'
 
   // Small denylist of clearly conversational messages (greetings, thanks,
   // acknowledgements) — everything else attempts reasoning. This replaces
@@ -302,9 +368,54 @@ export function shouldUseReasoningForMessage(message: string) {
   // Unicode-aware boundaries (not \b, which is ASCII-only) so a bare
   // connector like Persian "و" only strips when it stands alone as a word,
   // never as a substring inside an unrelated word.
-  if (isEntirelyConversationalFiller(text)) return false
+  if (isEntirelyConversationalFiller(text)) return 'conversational'
 
-  return true
+  // A narrative status-inquiry ("how is X doing") with no nameable tool
+  // behind it (getStrongReadDomainEvidence returns null) is neither a real
+  // action request nor ordinary chat -- it demotes from the old default
+  // "explicit" to "ambiguous". A message that also names a concrete domain
+  // ("how are my tasks doing") keeps its domain evidence and is not
+  // affected by this branch at all, since isNarrativeStatusInquiry alone
+  // never demotes anything -- see the design note.
+  if (isNarrativeStatusInquiry(text) && getStrongReadDomainEvidence(text) === null) {
+    return 'ambiguous'
+  }
+
+  return 'explicit'
+}
+
+export function shouldUseReasoningForMessage(message: string) {
+  return classifyMessageIntentSignal(message) === 'explicit'
+}
+
+// Conversation Quality v1 (task 9): the one currently-supported trailing
+// offer. Deliberately a tiny, explicit table, not a general classifier --
+// bare "project" in a narrative status-inquiry maps to GitHub because a
+// connected repository's live issue/PR/workflow state is the most concrete,
+// verifiable "real status" this app can pull for a project today. An
+// ambiguous message matching nothing here gets a plain conversational
+// reply with no offer at all -- that is an intended, valid outcome, not a
+// gap (see the design note).
+export type AmbiguousOfferHint = 'github'
+
+export function getAmbiguousOfferHint(message: string): AmbiguousOfferHint | null {
+  const text = message.trim().toLowerCase()
+  if (/\bproject\b/i.test(text) || /\bprojekt\b/i.test(text) || /پروژه/i.test(text)) {
+    return 'github'
+  }
+  return null
+}
+
+const AMBIGUOUS_OFFER_TEXT: Record<AmbiguousOfferHint, Record<SupportedAiResponseLanguage, string>> = {
+  github: {
+    en: 'Want me to pull the real status from GitHub?',
+    de: 'Soll ich den tatsächlichen Status von GitHub abrufen?',
+    fa: 'می‌خوای وضعیت واقعی رو از گیت‌هاب برات بیارم؟',
+  },
+}
+
+export function getAmbiguousOfferText(hint: AmbiguousOfferHint, language: SupportedAiResponseLanguage): string {
+  return AMBIGUOUS_OFFER_TEXT[hint][language]
 }
 
 function intentTitleKey(type: AgentReasoningResult['proposal']['type']): TranslationKey {
@@ -966,7 +1077,9 @@ export default function ChatPage() {
       const { data: { session } } = await supabase.auth.getSession()
       if (session === null) throw new Error('No session')
 
-      if (shouldUseReasoningForMessage(text)) {
+      const intentSignal = classifyMessageIntentSignal(text)
+
+      if (intentSignal === 'explicit') {
         // TEMP diagnostic, remove once the stale-closure fix (adding
         // githubRepositoryInventory to handleSend's useCallback deps) is
         // confirmed live: proves what this specific reasoning call actually
@@ -1030,10 +1143,19 @@ export default function ChatPage() {
 
       const { reply } = await res.json() as { reply: string }
 
+      // Conversation Quality v1 (task 9): the trailing offer is appended
+      // here, deterministically, by SmartFlow code -- never generated by
+      // the model, never sent to it as something to say. Only on the
+      // ambiguous path, and only when a concrete offerable tool exists.
+      const offerHint = intentSignal === 'ambiguous' ? getAmbiguousOfferHint(text) : null
+      const replyWithOffer = offerHint
+        ? `${reply}\n\n${getAmbiguousOfferText(offerHint, responseLanguage)}`
+        : reply
+
       setMessages(prev => [
         ...prev,
         { id: `u-${Date.now()}`, role: 'user', content: text },
-        { id: `a-${Date.now() + 1}`, role: 'assistant', content: reply, language: responseLanguage },
+        { id: `a-${Date.now() + 1}`, role: 'assistant', content: replyWithOffer, language: responseLanguage },
       ])
 
       void refreshSessions()
