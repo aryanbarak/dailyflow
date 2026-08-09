@@ -964,10 +964,17 @@ export default function SettingsPage() {
   const [latestBriefing, setLatestBriefing] = useState<string | null>(null);
   useEffect(() => {
     if (!user) return;
-    supabase.from('agent_briefings').select('updated_at').eq('user_id', user.id)
-      .order('updated_at', { ascending: false }).limit(1)
+    // Task 13 fix: agent_briefings has never had an updated_at column (see
+    // supabase/migrations/20260613000000_agent_briefings.sql -- insert-only,
+    // no update path anywhere in this codebase) -- created_at is both the
+    // real column and the semantically correct "when was this briefing
+    // generated" marker, already the convention
+    // agent/worker/personal-memory-extraction-endpoint.ts's own "latest
+    // briefing" read uses (order=created_at.desc).
+    supabase.from('agent_briefings').select('created_at').eq('user_id', user.id)
+      .order('created_at', { ascending: false }).limit(1)
       .then(({ data }) => {
-        if (data?.[0]) setLatestBriefing(data[0].updated_at as string);
+        if (data?.[0]) setLatestBriefing(data[0].created_at);
       });
   }, [user]);
 

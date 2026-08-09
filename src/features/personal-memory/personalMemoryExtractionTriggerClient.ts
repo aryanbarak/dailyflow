@@ -14,6 +14,7 @@ export type PersonalMemoryExtractionTriggerErrorCode =
   | "UNAUTHENTICATED"
   | "CONFIGURATION_MISSING"
   | "NO_SOURCE_MATERIAL"
+  | "NETWORK_UNREACHABLE"
   | "REQUEST_FAILED";
 
 export interface PersonalMemoryExtractionTriggerSuccess {
@@ -64,6 +65,17 @@ export async function triggerPersonalMemoryExtraction(
     return { ok: false, code: "UNAUTHENTICATED", message: "Sign in to check for new personal memory." };
   }
 
+  // Task 13 fix (honest error mapping): this try block wraps ONLY the fetch
+  // call to the worker -- nothing else -- so any throw caught here really is
+  // a true network/unreachable failure (DNS, CORS, offline, connection
+  // refused), never a database or other unrelated error. Given its own,
+  // more specific code (NETWORK_UNREACHABLE) rather than the generic
+  // REQUEST_FAILED bucket used for post-response failures below (unreadable
+  // JSON, missing runId, unmapped worker error codes) -- so a future
+  // regression that widens this try block (e.g. adding a pre-check inside
+  // it) cannot silently start mislabeling a non-network failure as
+  // "could not reach the service" without this code's own meaning drifting
+  // in an obviously wrong way.
   let response: Response;
   try {
     response = await fetcher(`${WORKER_URL}/personal-memory/extraction`, {
@@ -72,7 +84,7 @@ export async function triggerPersonalMemoryExtraction(
       body: JSON.stringify({}),
     });
   } catch {
-    return { ok: false, code: "REQUEST_FAILED", message: "Could not reach the personal memory extraction service." };
+    return { ok: false, code: "NETWORK_UNREACHABLE", message: "Could not reach the personal memory extraction service." };
   }
 
   let body: unknown;

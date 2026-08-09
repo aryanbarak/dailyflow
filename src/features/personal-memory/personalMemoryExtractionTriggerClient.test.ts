@@ -77,12 +77,31 @@ describe("triggerPersonalMemoryExtraction", () => {
     expect(result).toEqual({ ok: false, code: "REQUEST_FAILED", message: "The model did not return a usable extraction." });
   });
 
-  it("returns REQUEST_FAILED when the network call itself throws", async () => {
-    const fetcher = vi.fn().mockRejectedValue(new Error("network down"));
+  it("task 13: returns NETWORK_UNREACHABLE (not the generic REQUEST_FAILED) when the fetch call itself throws -- a true network/unreachable failure, distinct from a worker HTTP error or an unreadable response", async () => {
+    const fetcher = vi.fn().mockRejectedValue(new TypeError("Failed to fetch"));
 
     const result = await triggerPersonalMemoryExtraction({ fetcher, getSessionToken: async () => "token-abc" });
 
-    expect(result).toEqual({ ok: false, code: "REQUEST_FAILED", message: "Could not reach the personal memory extraction service." });
+    expect(result).toEqual({ ok: false, code: "NETWORK_UNREACHABLE", message: "Could not reach the personal memory extraction service." });
+  });
+
+  it("task 13: an unreadable (non-JSON) but otherwise-reachable response is mapped separately from a network failure -- REQUEST_FAILED with its own message, never 'could not reach the service'", async () => {
+    const unreadable = {
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new SyntaxError("Unexpected end of JSON input");
+      },
+    } as unknown as Response;
+    const fetcher = vi.fn().mockResolvedValue(unreadable);
+
+    const result = await triggerPersonalMemoryExtraction({ fetcher, getSessionToken: async () => "token-abc" });
+
+    expect(result).toEqual({
+      ok: false,
+      code: "REQUEST_FAILED",
+      message: "The personal memory extraction service returned an unreadable response.",
+    });
   });
 
   it("returns REQUEST_FAILED for a 200 response missing a runId, rather than reporting false success", async () => {
