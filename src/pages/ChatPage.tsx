@@ -477,6 +477,31 @@ export function getAmbiguousOfferText(hint: AmbiguousOfferHint, language: Suppor
   return AMBIGUOUS_OFFER_TEXT[hint][language]
 }
 
+// Task 11 (conversation-first inversion): the reasoning overlay's own
+// "unrecognized output" fallback (fallbackRawProposal in
+// reasoningOrchestrator.ts) tags its single reason with this exact string
+// when the LLM's raw output could not be parsed as JSON at all -- that is
+// a REASONING FAILURE (the FAILURE RULE's "unrecognized output" case), not
+// a genuine ask_clarification the user should see as a proposal. Matched
+// literally rather than re-implemented, so the two stay in sync by
+// construction.
+const OVERLAY_PARSE_FAILURE_REASON = 'LLM output could not be parsed safely.'
+
+// Task 11: deterministic, SmartFlow-authored trailing note for the
+// "explicit, but unsupported action" overlay outcome -- mirrors
+// AMBIGUOUS_OFFER_TEXT's own posture exactly (never model-generated, never
+// sent to the model as an instruction, appended client-side after the
+// conversation lane's own reply already exists). Replaces the OLD
+// behaviour of showing intentValidator.ts's bare "فعلاً نمی‌توانم..." /
+// "I can't safely do that yet." as the ENTIRE chat bubble in place of any
+// conversational engagement -- see the task 11 report's root-cause trace
+// for why that bare replacement was the actual production bug.
+const UNSUPPORTED_ACTION_NOTE: Record<SupportedAiResponseLanguage, string> = {
+  en: "I can't do that directly yet, but I'm happy to keep talking it through.",
+  de: 'Das kann ich noch nicht direkt für dich erledigen, aber ich rede gern weiter mit dir darüber.',
+  fa: 'هنوز نمی‌توانم این کار را مستقیماً برایت انجام بدهم، ولی خوشحال می‌شوم درباره‌اش با تو صحبت کنم.',
+}
+
 function intentTitleKey(type: AgentReasoningResult['proposal']['type']): TranslationKey {
   switch (type) {
     case 'inspect_tasks':
@@ -732,6 +757,72 @@ export function proposalsToStates(result: AgentReasoningResult, t: Translate): R
     return candidates.map(candidate => proposalToState(candidate, t))
   }
   return [proposalToState(result, t)]
+}
+
+export interface ChatTurnOverlayInput {
+  readonly intentSignal: MessageIntentSignal
+  readonly message: string
+  readonly responseLanguage: SupportedAiResponseLanguage
+  readonly reply: string
+  // Already resolved (never a pending/rejecting Promise) -- the caller is
+  // responsible for the FAILURE RULE at the promise level (catching a
+  // throw/timeout from reasonAboutUserMessage and passing null here). This
+  // function's own job is purely the DECISION of what to show, given an
+  // outcome that already exists.
+  readonly overlayResult: AgentReasoningResult | null
+}
+
+export interface ChatTurnOutcome {
+  readonly content: string
+  readonly reasoningStates: ReasoningProposalState[] | null
+}
+
+// Task 11 (conversation-first inversion): the ONE place that decides how a
+// resolved conversational reply and a resolved (possibly null, possibly
+// failed) overlay result combine into what the user actually sees. Extracted
+// as a pure function -- independent of fetch/Supabase/React state -- so the
+// inversion's actual decision logic (never let the overlay replace or block
+// the reply) is directly testable without rendering the full ChatPage
+// component, mirroring how classifyMessageIntentSignal/getAmbiguousOfferHint
+// are already tested as pure functions in this same file.
+export function resolveChatTurnOutcome(input: ChatTurnOverlayInput, t: Translate): ChatTurnOutcome {
+  // "Unrecognized output" (reasoningOrchestrator.ts's own fallbackRawProposal,
+  // fired when the reasoning LLM's raw output could not be parsed as JSON at
+  // all) is a REASONING FAILURE per the FAILURE RULE, not a genuine
+  // ask_clarification the user should see as a proposal -- treated
+  // identically to a null overlayResult (a thrown/timed-out reasoning call).
+  const overlayResult = input.overlayResult?.proposal.reasons.includes(OVERLAY_PARSE_FAILURE_REASON)
+    ? null
+    : input.overlayResult
+
+  // Outcome 2: explicit, but UNSUPPORTED -- never the bare dead-end (the
+  // OLD bug: intentValidator.ts's canned "فعلاً نمی‌توانم..."/"I can't
+  // safely do that yet." replacing the ENTIRE reply). No intent panel; a
+  // short, deterministic, honest note is appended to the SAME conversational
+  // reply the default lane already produced.
+  const isUnsupportedOverlay = overlayResult?.proposal.type === 'unsupported'
+
+  // Outcome 1: explicit, SUPPORTED action -- including a genuine
+  // ask_clarification/disambiguation, which is part of resolving a real
+  // action, not a failure. Attach the existing proposal/approval UI,
+  // additively, alongside the reply (current behaviour, now additive rather
+  // than a replacement for the reply).
+  const hasGenuineOverlay = overlayResult !== null && !isUnsupportedOverlay
+
+  // Outcome 3 (ambiguous): unchanged from Conversation Quality v1 (task 9).
+  // Outcome 4 (conversational): no overlay at all -- both offerHint and
+  // trailingNote are null, content is the reply verbatim.
+  const offerHint = input.intentSignal === 'ambiguous' ? getAmbiguousOfferHint(input.message) : null
+  const trailingNote = isUnsupportedOverlay
+    ? UNSUPPORTED_ACTION_NOTE[input.responseLanguage]
+    : offerHint
+      ? getAmbiguousOfferText(offerHint, input.responseLanguage)
+      : null
+
+  return {
+    content: trailingNote ? `${input.reply}\n\n${trailingNote}` : input.reply,
+    reasoningStates: hasGenuineOverlay ? proposalsToStates(overlayResult, t) : null,
+  }
 }
 
 interface ContextTaskSnapshot {
@@ -1138,13 +1229,49 @@ export default function ChatPage() {
 
       const intentSignal = classifyMessageIntentSignal(text)
 
+      // Task 11 fix (conversation-first inversion): the DEFAULT LANE.
+      // Every inbound message calls the plain /chat conversational
+      // endpoint, unconditionally -- this call is no longer inside the
+      // 'explicit' branch, and nothing below can prevent it from running.
+      // See the task 11 report's pipeline map/root-cause trace for why the
+      // OLD code (this call gated behind `intentSignal !== 'explicit'`,
+      // with an early `return` in the explicit branch) was the actual
+      // production bug: a message misclassified 'explicit' by a keyword
+      // collision never reached this call at all.
+      const chatCallPromise = (async (): Promise<{ reply: string }> => {
+        const res = await fetch(`${workerUrl}/chat`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({
+            message: text,
+            session_id: sessionId,
+            responseLanguage,
+            responseLanguageInstruction,
+          }),
+        })
+        if (!res.ok) throw new Error(`Worker responded ${res.status}`)
+        return (await res.json()) as { reply: string }
+      })()
+
+      // Task 11 fix: the OVERLAY LANE. Action interpretation runs
+      // CONCURRENTLY with the conversation lane above (Promise.all below),
+      // never serialized in front of it -- and this promise itself never
+      // rejects (the .catch below always resolves to null), so it can
+      // never be the reason handleSend's own try/catch fires. This is the
+      // FAILURE RULE: any classifier/intent/toolResolver error or timeout
+      // degrades to the conversation lane silently (logged here, not
+      // surfaced to the user).
+      let overlayPromise: Promise<AgentReasoningResult | null> = Promise.resolve(null)
       if (intentSignal === 'explicit') {
         // TEMP diagnostic, remove once the stale-closure fix (adding
         // githubRepositoryInventory to handleSend's useCallback deps) is
         // confirmed live: proves what this specific reasoning call actually
         // sent, independent of what the DB cache holds.
         console.log('[GitHubInventory] safeContext value at send time:', githubRepositoryInventory)
-        const result = await reasonAboutUserMessage({
+        overlayPromise = reasonAboutUserMessage({
           userMessage: text,
           configuredResponseLanguage: getStoredAiResponseLanguage(),
           interfaceLanguage,
@@ -1170,51 +1297,25 @@ export default function ChatPage() {
             accessToken: session.access_token,
             transport: reasoningTransport.transport,
           }),
+        }).catch((error) => {
+          console.error('[ChatPage] overlay reasoning failed -- degrading to conversation-only (task 11 failure rule):', error)
+          return null
         })
-        setReasoningProposal(proposalsToStates(result, t))
-        const assistantContent = proposalMessage(result)
-
-        setMessages(prev => [
-          ...prev,
-          { id: `u-${Date.now()}`, role: 'user', content: text },
-          { id: `a-${Date.now() + 1}`, role: 'assistant', content: assistantContent, language: result.responseLanguage },
-        ])
-
-        void refreshSessions()
-        return
       }
 
-      const res = await fetch(`${workerUrl}/chat`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({
-          message: text,
-          session_id: sessionId,
-          responseLanguage,
-          responseLanguageInstruction,
-        }),
-      })
+      const [{ reply }, overlayResult] = await Promise.all([chatCallPromise, overlayPromise])
 
-      if (!res.ok) throw new Error(`Worker responded ${res.status}`)
-
-      const { reply } = await res.json() as { reply: string }
-
-      // Conversation Quality v1 (task 9): the trailing offer is appended
-      // here, deterministically, by SmartFlow code -- never generated by
-      // the model, never sent to it as something to say. Only on the
-      // ambiguous path, and only when a concrete offerable tool exists.
-      const offerHint = intentSignal === 'ambiguous' ? getAmbiguousOfferHint(text) : null
-      const replyWithOffer = offerHint
-        ? `${reply}\n\n${getAmbiguousOfferText(offerHint, responseLanguage)}`
-        : reply
+      // Task 11: the actual combining decision lives in resolveChatTurnOutcome
+      // (a pure, independently-tested function) -- see its own comment for
+      // the four-outcome rationale. handleSend's job is only to gather the
+      // two resolved inputs and apply the decision.
+      const outcome = resolveChatTurnOutcome({ intentSignal, message: text, responseLanguage, reply, overlayResult }, t)
+      setReasoningProposal(outcome.reasoningStates)
 
       setMessages(prev => [
         ...prev,
         { id: `u-${Date.now()}`, role: 'user', content: text },
-        { id: `a-${Date.now() + 1}`, role: 'assistant', content: replyWithOffer, language: responseLanguage },
+        { id: `a-${Date.now() + 1}`, role: 'assistant', content: outcome.content, language: responseLanguage },
       ])
 
       void refreshSessions()

@@ -223,6 +223,31 @@ describe('handleChat mode routing', () => {
     expect(systemText).toContain('Prefers async written updates (Strength: strong)')
   })
 
+  it('task 11 (g): the conversation lane\'s personal_memory_records read is scoped to status=in.(user_confirmed,user_corrected) only -- proposed/rejected candidates can never leak into the /chat prompt', async () => {
+    let personalMemoryUrl: string | null = null
+    const log = installFetchMock([
+      { kind: 'preference', content: { summary: 'Prefers async written updates', strength: 'strong' }, created_at: '2026-08-01T00:00:00.000Z' },
+    ])
+    const originalFetch = globalThis.fetch
+    const capturingFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_records`)) personalMemoryUrl = url
+      return originalFetch(input, init)
+    })
+    vi.stubGlobal('fetch', capturingFetch)
+
+    const ctx = fakeExecutionContext()
+    const env = testEnv()
+    const response = await worker.fetch(chatRequest({ message: 'Hello there' }), env, ctx)
+
+    expect(response.status).toBe(200)
+    expect(log.personalMemoryReads).toBe(1)
+    expect(personalMemoryUrl).not.toBeNull()
+    expect(personalMemoryUrl).toContain('status=in.(user_confirmed,user_corrected)')
+    expect(personalMemoryUrl).not.toContain('proposed')
+    expect(personalMemoryUrl).not.toContain('user_rejected')
+  })
+
   it('an unknown mode value is treated as "chat", not an error', async () => {
     const log = installFetchMock()
     const ctx = fakeExecutionContext()

@@ -22,6 +22,7 @@ import {
   proposalsToStates,
   proposalToState,
   ReasoningProposalCard,
+  resolveChatTurnOutcome,
   resultMessage,
   runtimeSummaryMessage,
   shouldUseReasoningForMessage,
@@ -806,5 +807,159 @@ describe("ChatPage LLM reasoning UX boundary", () => {
     expect(proposalBubble).toContain('dir="auto"');
     expect(controls).toContain("Run tasks.list");
     expect(controls).not.toContain('dir="rtl"');
+  });
+
+  // ---------------------------------------------------------------------
+  // Task 11: conversation-first inversion. resolveChatTurnOutcome is the
+  // one place that decides how a resolved /chat reply and a resolved
+  // (possibly null, possibly failed) reasoning overlay combine into what
+  // the user actually sees -- see its own comment in ChatPage.tsx for the
+  // four-outcome rationale. Root-cause trace for the production bug this
+  // fixes: classifyMessageIntentSignal("تصمیم دارم که در هامبورگ برایم کار
+  // پیدا کنم") returns 'explicit' because (1) SELF_STATEMENT_PATTERN_FA
+  // requires a standalone "من" before هستم/بلدم/دارم, which Persian's
+  // pro-drop grammar omits here (verb conjugation alone carries "I"), so
+  // isSelfStatement never fires; (2) with no other ordinaryConversation
+  // clause matching either, the function reaches
+  // `if (realPersianReasoningIntent) return 'explicit'`, and that regex's
+  // bare "کار" (job/work/task) alternative matches -- the exact same word
+  // SmartFlow's own tasks domain uses, colliding with ordinary vocabulary
+  // for "job" in a purely conversational statement of personal intent. The
+  // OLD handleSend then routed 'explicit' into reasonAboutUserMessage ONLY,
+  // with an early `return` that skipped the plain /chat call entirely, so
+  // whatever intentValidator.ts resolved this non-actionable message to
+  // (an 'unsupported' proposal, whose clarificationQuestion IS the bare
+  // "فعلاً نمی‌توانم..." string) became the ENTIRE chat bubble.
+  // ---------------------------------------------------------------------
+
+  const UNSUPPORTED_FA_DEAD_END = "فعلاً نمی‌توانم این کار را به‌صورت امن انجام بدهم.";
+
+  function unsupportedResult(): AgentReasoningResult {
+    const base = reasoningResult("unsupported", undefined);
+    return {
+      ...base,
+      proposal: {
+        ...base.proposal,
+        requiresTool: false,
+        toolId: undefined,
+        clarificationQuestion: UNSUPPORTED_FA_DEAD_END,
+        reasons: ["Unsupported request."],
+      },
+      toolId: undefined,
+    };
+  }
+
+  function parseFailureClarificationResult(): AgentReasoningResult {
+    const base = reasoningResult("ask_clarification", undefined);
+    return {
+      ...base,
+      proposal: {
+        ...base.proposal,
+        requiresTool: false,
+        toolId: undefined,
+        clarificationQuestion: "Can you clarify what you want me to do?",
+        reasons: ["LLM output could not be parsed safely."],
+      },
+      toolId: undefined,
+    };
+  }
+
+  it("root-cause trace: the exact production evidence message classifies 'explicit', via the bare Persian 'کار' keyword, not the self-statement carve-out (which never fires -- no standalone 'من')", () => {
+    expect(classifyMessageIntentSignal("تصمیم دارم که در هامبورگ برایم کار پیدا کنم")).toBe("explicit");
+  });
+
+  it("(a) regression: the exact evidence message produces a conversational reply plus an honest note -- never the bare dead-end string alone, and no intent panel", () => {
+    const t = (key: string) => key;
+    const reply = "به نظر می‌رسه دنبال فرصت شغلی در هامبورگ هستی -- عالیه!";
+    const outcome = resolveChatTurnOutcome(
+      { intentSignal: "explicit", message: "تصمیم دارم که در هامبورگ برایم کار پیدا کنم", responseLanguage: "fa", reply, overlayResult: unsupportedResult() },
+      t,
+    );
+    expect(outcome.content).toContain(reply);
+    expect(outcome.content).not.toBe(UNSUPPORTED_FA_DEAD_END);
+    expect(outcome.reasoningStates).toBeNull();
+  });
+
+  it("(b) equivalent English first-person intent statement: self-statement's 'i have' pattern doesn't cover the 'i've' contraction, so this ALSO falls through to the default 'explicit' -- a second, independent gap the inversion protects against regardless", () => {
+    expect(classifyMessageIntentSignal("I've decided to find myself a job in Hamburg.")).toBe("explicit");
+    const t = (key: string) => key;
+    const reply = "That sounds like an exciting move -- looking for work in Hamburg specifically?";
+    const outcome = resolveChatTurnOutcome(
+      { intentSignal: "explicit", message: "I've decided to find myself a job in Hamburg.", responseLanguage: "en", reply, overlayResult: unsupportedResult() },
+      t,
+    );
+    expect(outcome.content).toContain(reply);
+    expect(outcome.reasoningStates).toBeNull();
+  });
+
+  it("(b) equivalent German first-person intent statement: SELF_STATEMENT_PATTERN_DE's 'ich habe' already catches this correctly (German always states its subject pronoun) -- classifies 'conversational', never reaching the overlay at all", () => {
+    expect(classifyMessageIntentSignal("Ich habe beschlossen, in Hamburg einen Job für mich zu finden.")).toBe("conversational");
+    const t = (key: string) => key;
+    const reply = "Das klingt nach einem spannenden Schritt -- suchst du etwas Bestimmtes?";
+    const outcome = resolveChatTurnOutcome(
+      { intentSignal: "conversational", message: "Ich habe beschlossen, in Hamburg einen Job für mich zu finden.", responseLanguage: "de", reply, overlayResult: null },
+      t,
+    );
+    expect(outcome.content).toBe(reply);
+    expect(outcome.reasoningStates).toBeNull();
+  });
+
+  it("(c) explicit, SUPPORTED action still attaches the proposal UI alongside the reply -- unchanged behaviour, now additive rather than replacing the reply", () => {
+    const t = (key: string) => key;
+    const reply = "Here's a quick look at what's on your plate.";
+    const supported = reasoningResult("inspect_tasks");
+    const outcome = resolveChatTurnOutcome(
+      { intentSignal: "explicit", message: "Show my tasks", responseLanguage: "en", reply, overlayResult: supported },
+      t,
+    );
+    expect(outcome.content).toBe(reply);
+    expect(outcome.reasoningStates).toEqual(proposalsToStates(supported, t));
+  });
+
+  it("(d) ambiguous message still gets a reply plus the existing trailing offer (task 9's pattern, unchanged) -- overlay is never attempted for 'ambiguous' at all", () => {
+    const t = (key: string) => key;
+    const reply = "Things seem to be moving along.";
+    const outcome = resolveChatTurnOutcome(
+      { intentSignal: "ambiguous", message: "How is my project doing?", responseLanguage: "en", reply, overlayResult: null },
+      t,
+    );
+    expect(outcome.content).toBe(`${reply}\n\n${getAmbiguousOfferText("github", "en")}`);
+    expect(outcome.reasoningStates).toBeNull();
+  });
+
+  it("(e) FAILURE RULE: a thrown/timed-out overlay call -- represented here as the null handleSend's own .catch(() => null) produces -- still yields a normal conversational reply, identical to a purely conversational turn", () => {
+    const t = (key: string) => key;
+    const reply = "Sure, happy to help with that.";
+    const outcome = resolveChatTurnOutcome(
+      { intentSignal: "explicit", message: "some message that classified explicit", responseLanguage: "en", reply, overlayResult: null },
+      t,
+    );
+    expect(outcome.content).toBe(reply);
+    expect(outcome.reasoningStates).toBeNull();
+  });
+
+  it("(e) FAILURE RULE: 'unrecognized output' (the reasoning LLM's raw output failed to parse -- reasoningOrchestrator.ts's fallbackRawProposal) is treated as a failure, not a genuine ask_clarification -- no intent panel, plain reply", () => {
+    const t = (key: string) => key;
+    const reply = "Let's talk through it.";
+    const outcome = resolveChatTurnOutcome(
+      { intentSignal: "explicit", message: "some garbled message", responseLanguage: "en", reply, overlayResult: parseFailureClarificationResult() },
+      t,
+    );
+    expect(outcome.content).toBe(reply);
+    expect(outcome.reasoningStates).toBeNull();
+  });
+
+  it("(f) unsupported-action message gets a conversational acknowledgement appended, in the reply's own language -- never the bare canned refusal, for EN/DE too", () => {
+    const t = (key: string) => key;
+    for (const [responseLanguage, reply] of [["en", "Tell me more about the role."], ["de", "Erzähl mir mehr über die Stelle."]] as const) {
+      const outcome = resolveChatTurnOutcome(
+        { intentSignal: "explicit", message: "please apply for this job for me", responseLanguage, reply, overlayResult: unsupportedResult() },
+        t,
+      );
+      expect(outcome.content).toContain(reply);
+      expect(outcome.content).not.toBe(UNSUPPORTED_FA_DEAD_END);
+      expect(outcome.content.length).toBeGreaterThan(reply.length);
+      expect(outcome.reasoningStates).toBeNull();
+    }
   });
 });
