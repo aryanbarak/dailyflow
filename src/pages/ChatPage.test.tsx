@@ -810,26 +810,38 @@ describe("ChatPage LLM reasoning UX boundary", () => {
   });
 
   // ---------------------------------------------------------------------
-  // Task 11: conversation-first inversion. resolveChatTurnOutcome is the
-  // one place that decides how a resolved /chat reply and a resolved
-  // (possibly null, possibly failed) reasoning overlay combine into what
-  // the user actually sees -- see its own comment in ChatPage.tsx for the
-  // four-outcome rationale. Root-cause trace for the production bug this
-  // fixes: classifyMessageIntentSignal("تصمیم دارم که در هامبورگ برایم کار
-  // پیدا کنم") returns 'explicit' because (1) SELF_STATEMENT_PATTERN_FA
-  // requires a standalone "من" before هستم/بلدم/دارم, which Persian's
-  // pro-drop grammar omits here (verb conjugation alone carries "I"), so
-  // isSelfStatement never fires; (2) with no other ordinaryConversation
-  // clause matching either, the function reaches
-  // `if (realPersianReasoningIntent) return 'explicit'`, and that regex's
-  // bare "کار" (job/work/task) alternative matches -- the exact same word
-  // SmartFlow's own tasks domain uses, colliding with ordinary vocabulary
-  // for "job" in a purely conversational statement of personal intent. The
-  // OLD handleSend then routed 'explicit' into reasonAboutUserMessage ONLY,
-  // with an early `return` that skipped the plain /chat call entirely, so
-  // whatever intentValidator.ts resolved this non-actionable message to
-  // (an 'unsupported' proposal, whose clarificationQuestion IS the bare
-  // "فعلاً نمی‌توانم..." string) became the ENTIRE chat bubble.
+  // Task 11 (conversation-first inversion) + task 11b (silence the
+  // overlay). resolveChatTurnOutcome is the one place that decides how a
+  // resolved /chat reply and a resolved (possibly null, possibly failed)
+  // reasoning overlay combine into what the user actually sees -- see its
+  // own comment in ChatPage.tsx. As of task 11b, exactly two outcomes may
+  // add anything to the reply: (a) a supported, actionable proposal (one
+  // of the 12 concrete AgentIntentType values) shows the intent panel; (b)
+  // an 'ambiguous' intentSignal shows the task-9 trailing offer. Every
+  // other overlay result -- unsupported, a genuine ask_clarification, low
+  // confidence, conflicting domain evidence, a mixed request, or an
+  // unparseable LLM response -- is now fully silent: no panel, no trailing
+  // note. Task 11's own UNSUPPORTED_ACTION_NOTE was removed because
+  // production evidence (task 11b) showed the note itself becoming a nag
+  // on ordinary conversational turns that had merely been misclassified
+  // 'explicit'.
+  //
+  // Root-cause trace for the original production bug: classifyMessageIntentSignal(
+  // "تصمیم دارم که در هامبورگ برایم کار پیدا کنم") returns 'explicit' because
+  // (1) SELF_STATEMENT_PATTERN_FA requires a standalone "من" before
+  // هستم/بلدم/دارم, which Persian's pro-drop grammar omits here (verb
+  // conjugation alone carries "I"), so isSelfStatement never fires; (2) with
+  // no other ordinaryConversation clause matching either, the function
+  // reaches `if (realPersianReasoningIntent) return 'explicit'`, and that
+  // regex's bare "کار" (job/work/task) alternative matches -- the exact same
+  // word SmartFlow's own tasks domain uses, colliding with ordinary
+  // vocabulary for "job" in a purely conversational statement of personal
+  // intent. The OLD handleSend then routed 'explicit' into
+  // reasonAboutUserMessage ONLY, with an early `return` that skipped the
+  // plain /chat call entirely, so whatever intentValidator.ts resolved this
+  // non-actionable message to (an 'unsupported' proposal, whose
+  // clarificationQuestion IS the bare "فعلاً نمی‌توانم..." string) became the
+  // ENTIRE chat bubble.
   // ---------------------------------------------------------------------
 
   const UNSUPPORTED_FA_DEAD_END = "فعلاً نمی‌توانم این کار را به‌صورت امن انجام بدهم.";
@@ -868,14 +880,14 @@ describe("ChatPage LLM reasoning UX boundary", () => {
     expect(classifyMessageIntentSignal("تصمیم دارم که در هامبورگ برایم کار پیدا کنم")).toBe("explicit");
   });
 
-  it("(a) regression: the exact evidence message produces a conversational reply plus an honest note -- never the bare dead-end string alone, and no intent panel", () => {
+  it("(a) regression: the exact evidence message produces the conversational reply VERBATIM -- no note, no bare dead-end string, and no intent panel (task 11b: 'unsupported' is now fully silent)", () => {
     const t = (key: string) => key;
     const reply = "به نظر می‌رسه دنبال فرصت شغلی در هامبورگ هستی -- عالیه!";
     const outcome = resolveChatTurnOutcome(
       { intentSignal: "explicit", message: "تصمیم دارم که در هامبورگ برایم کار پیدا کنم", responseLanguage: "fa", reply, overlayResult: unsupportedResult() },
       t,
     );
-    expect(outcome.content).toContain(reply);
+    expect(outcome.content).toBe(reply);
     expect(outcome.content).not.toBe(UNSUPPORTED_FA_DEAD_END);
     expect(outcome.reasoningStates).toBeNull();
   });
@@ -888,8 +900,99 @@ describe("ChatPage LLM reasoning UX boundary", () => {
       { intentSignal: "explicit", message: "I've decided to find myself a job in Hamburg.", responseLanguage: "en", reply, overlayResult: unsupportedResult() },
       t,
     );
-    expect(outcome.content).toContain(reply);
+    expect(outcome.content).toBe(reply);
     expect(outcome.reasoningStates).toBeNull();
+  });
+
+  it("task 11b evidence #1: a purely conversational question that still classifies 'explicit' and resolves to a genuine (non-parse-failure) ask_clarification produces the reply VERBATIM -- no intent panel", () => {
+    const t = (key: string) => key;
+    const reply = "می‌توانم در جست‌وجوی شغل، تهیه رزومه یا آماده‌سازی برای مصاحبه کمکت کنم.";
+    const genuineClarification: AgentReasoningResult = {
+      ...reasoningResult("ask_clarification", undefined),
+      proposal: {
+        ...reasoningResult("ask_clarification", undefined).proposal,
+        requiresTool: false,
+        toolId: undefined,
+        clarificationQuestion: "دقیقاً کدام مورد را باید استفاده کنم؟",
+        reasons: ["Conflicting strong domain evidence requires clarification."],
+      },
+      toolId: undefined,
+    };
+    const outcome = resolveChatTurnOutcome(
+      { intentSignal: "explicit", message: "در این زمینه چی کمک های به من می توانی بکنی", responseLanguage: "fa", reply, overlayResult: genuineClarification },
+      t,
+    );
+    expect(outcome.content).toBe(reply);
+    expect(outcome.reasoningStates).toBeNull();
+  });
+
+  it("task 11b evidence #2: an unsupported meta-request ('can we speak fully in Persian?') gets the reply VERBATIM -- no naggy trailing note", () => {
+    const t = (key: string) => key;
+    const reply = "بله، از این به بعد کاملاً فارسی صحبت می‌کنم.";
+    const outcome = resolveChatTurnOutcome(
+      { intentSignal: "explicit", message: "میشه که کاملن فارسی صحبت کنیم؟", responseLanguage: "fa", reply, overlayResult: unsupportedResult() },
+      t,
+    );
+    expect(outcome.content).toBe(reply);
+    expect(outcome.reasoningStates).toBeNull();
+  });
+
+  it("task 11b: exhaustive over every AgentIntentType the reasoning path can validate to -- only the 12 concrete, resolvable types surface a panel; ask_clarification and unsupported never do", () => {
+    const t = (key: string) => key;
+    const reply = "reply text";
+    const visibleTypes: Array<[AgentReasoningResult["proposal"]["type"], AgentReasoningResult["toolId"]]> = [
+      ["inspect_tasks", "tasks.list"],
+      ["inspect_calendar", "calendar.list_today"],
+      ["inspect_learning", "learning.get_progress"],
+      ["inspect_workspace", "workspace.get_context"],
+      ["inspect_github_repositories", "github.repositories.list"],
+      ["inspect_github_issues", "github.issues.list"],
+      ["inspect_github_epics", "github.epics.list"],
+      ["inspect_github_pull_requests", "github.pulls.list"],
+      ["inspect_github_workflow_runs", "github.workflow_runs.list"],
+      ["complete_task", "tasks.complete"],
+      ["write_github_issue_comment", "github.issues.comment"],
+      ["write_github_issue_update", "github.issues.update"],
+    ];
+    for (const [type, toolId] of visibleTypes) {
+      const outcome = resolveChatTurnOutcome(
+        { intentSignal: "explicit", message: "some message", responseLanguage: "en", reply, overlayResult: reasoningResult(type, toolId) },
+        t,
+      );
+      expect(outcome.reasoningStates, `expected a panel for proposal.type ${type}`).not.toBeNull();
+      expect(outcome.content).toBe(reply);
+    }
+
+    const silentTypes: Array<AgentReasoningResult["proposal"]["type"]> = ["ask_clarification", "unsupported"];
+    for (const type of silentTypes) {
+      const outcome = resolveChatTurnOutcome(
+        { intentSignal: "explicit", message: "some message", responseLanguage: "en", reply, overlayResult: reasoningResult(type, undefined) },
+        t,
+      );
+      expect(outcome.reasoningStates, `expected silence for proposal.type ${type}`).toBeNull();
+      expect(outcome.content).toBe(reply);
+    }
+  });
+
+  it("task 11b: a multi-candidate disambiguation result (top-level type 'ask_clarification', but each candidate is itself a concrete, resolvable proposal) still counts as case (a) and shows a panel", () => {
+    const t = (key: string) => key;
+    const reply = "Here are a couple of things that could match.";
+    const candidateA = reasoningResult("inspect_github_issues", "github.issues.list");
+    const candidateB = reasoningResult("inspect_github_pull_requests", "github.pulls.list");
+    const disambiguation: AgentReasoningResult = {
+      ...reasoningResult("ask_clarification", undefined),
+      disambiguationCandidates: [candidateA, candidateB],
+    };
+    const outcome = resolveChatTurnOutcome(
+      { intentSignal: "explicit", message: "check my github", responseLanguage: "en", reply, overlayResult: disambiguation },
+      t,
+    );
+    expect(outcome.content).toBe(reply);
+    expect(outcome.reasoningStates).toHaveLength(2);
+    expect(outcome.reasoningStates?.map((state) => state.result.proposal.type)).toEqual([
+      "inspect_github_issues",
+      "inspect_github_pull_requests",
+    ]);
   });
 
   it("(b) equivalent German first-person intent statement: SELF_STATEMENT_PATTERN_DE's 'ich habe' already catches this correctly (German always states its subject pronoun) -- classifies 'conversational', never reaching the overlay at all", () => {
@@ -949,16 +1052,15 @@ describe("ChatPage LLM reasoning UX boundary", () => {
     expect(outcome.reasoningStates).toBeNull();
   });
 
-  it("(f) unsupported-action message gets a conversational acknowledgement appended, in the reply's own language -- never the bare canned refusal, for EN/DE too", () => {
+  it("(f) unsupported-action message gets the conversational reply VERBATIM -- never the bare canned refusal, and never a trailing note either (task 11b), for EN/DE too", () => {
     const t = (key: string) => key;
     for (const [responseLanguage, reply] of [["en", "Tell me more about the role."], ["de", "Erzähl mir mehr über die Stelle."]] as const) {
       const outcome = resolveChatTurnOutcome(
         { intentSignal: "explicit", message: "please apply for this job for me", responseLanguage, reply, overlayResult: unsupportedResult() },
         t,
       );
-      expect(outcome.content).toContain(reply);
+      expect(outcome.content).toBe(reply);
       expect(outcome.content).not.toBe(UNSUPPORTED_FA_DEAD_END);
-      expect(outcome.content.length).toBeGreaterThan(reply.length);
       expect(outcome.reasoningStates).toBeNull();
     }
   });

@@ -477,29 +477,56 @@ export function getAmbiguousOfferText(hint: AmbiguousOfferHint, language: Suppor
   return AMBIGUOUS_OFFER_TEXT[hint][language]
 }
 
-// Task 11 (conversation-first inversion): the reasoning overlay's own
-// "unrecognized output" fallback (fallbackRawProposal in
-// reasoningOrchestrator.ts) tags its single reason with this exact string
-// when the LLM's raw output could not be parsed as JSON at all -- that is
-// a REASONING FAILURE (the FAILURE RULE's "unrecognized output" case), not
-// a genuine ask_clarification the user should see as a proposal. Matched
-// literally rather than re-implemented, so the two stay in sync by
-// construction.
-const OVERLAY_PARSE_FAILURE_REASON = 'LLM output could not be parsed safely.'
+// Task 11b (silence the overlay): exhaustive over every AgentIntentType the
+// reasoning path can validate to (intentValidator.ts's supportedIntentTypes).
+// A `never` check on the default branch makes adding a new intent type
+// without updating this function a COMPILE ERROR rather than a silent
+// fallthrough to "visible" -- the scope guard task 11b was written against
+// (no default-to-visible fallthrough).
+//
+// Only these 12 concrete, resolvable types count as a real, actionable
+// proposal. "ask_clarification" and "unsupported" are deliberately excluded
+// here no matter what triggered them (low confidence, mixed request,
+// conflicting domain evidence, an unparseable LLM response, a rejected
+// write verb, ...) -- none of those name a concrete tool the UI could ever
+// run, so there is nothing for a panel to attach to. See the task 11b
+// report for why this replaces the OLD, narrower "only 'unsupported' is
+// silent" rule that let genuine ask_clarification proposals still render a
+// panel for purely conversational messages.
+function isSupportedActionableProposalType(type: AgentReasoningResult['proposal']['type']): boolean {
+  switch (type) {
+    case 'inspect_tasks':
+    case 'inspect_calendar':
+    case 'inspect_learning':
+    case 'inspect_workspace':
+    case 'inspect_github_repositories':
+    case 'inspect_github_issues':
+    case 'inspect_github_epics':
+    case 'inspect_github_pull_requests':
+    case 'inspect_github_workflow_runs':
+    case 'complete_task':
+    case 'write_github_issue_comment':
+    case 'write_github_issue_update':
+      return true
+    case 'ask_clarification':
+    case 'unsupported':
+      return false
+    default: {
+      const exhaustiveCheck: never = type
+      return exhaustiveCheck
+    }
+  }
+}
 
-// Task 11: deterministic, SmartFlow-authored trailing note for the
-// "explicit, but unsupported action" overlay outcome -- mirrors
-// AMBIGUOUS_OFFER_TEXT's own posture exactly (never model-generated, never
-// sent to the model as an instruction, appended client-side after the
-// conversation lane's own reply already exists). Replaces the OLD
-// behaviour of showing intentValidator.ts's bare "فعلاً نمی‌توانم..." /
-// "I can't safely do that yet." as the ENTIRE chat bubble in place of any
-// conversational engagement -- see the task 11 report's root-cause trace
-// for why that bare replacement was the actual production bug.
-const UNSUPPORTED_ACTION_NOTE: Record<SupportedAiResponseLanguage, string> = {
-  en: "I can't do that directly yet, but I'm happy to keep talking it through.",
-  de: 'Das kann ich noch nicht direkt für dich erledigen, aber ich rede gern weiter mit dir darüber.',
-  fa: 'هنوز نمی‌توانم این کار را مستقیماً برایت انجام بدهم، ولی خوشحال می‌شوم درباره‌اش با تو صحبت کنم.',
+// A multi-candidate disambiguation result carries a top-level
+// "ask_clarification" type (see reasoningOrchestrator.ts's
+// disambiguationCandidates branch) but each candidate inside it is itself a
+// validated, concrete-type, non-approval-required proposal
+// (resolveDisambiguationCandidates already filters to exactly that) -- so
+// it counts as case (a), same as a single confident proposal.
+function hasSupportedActionableOverlay(result: AgentReasoningResult): boolean {
+  if (result.disambiguationCandidates && result.disambiguationCandidates.length >= 2) return true
+  return isSupportedActionableProposalType(result.proposal.type)
 }
 
 function intentTitleKey(type: AgentReasoningResult['proposal']['type']): TranslationKey {
@@ -777,47 +804,37 @@ export interface ChatTurnOutcome {
   readonly reasoningStates: ReasoningProposalState[] | null
 }
 
-// Task 11 (conversation-first inversion): the ONE place that decides how a
-// resolved conversational reply and a resolved (possibly null, possibly
-// failed) overlay result combine into what the user actually sees. Extracted
-// as a pure function -- independent of fetch/Supabase/React state -- so the
-// inversion's actual decision logic (never let the overlay replace or block
-// the reply) is directly testable without rendering the full ChatPage
+// Task 11b (silence the overlay): the ONE place that decides how a resolved
+// conversational reply and a resolved (possibly null, possibly failed)
+// overlay result combine into what the user actually sees. Extracted as a
+// pure function -- independent of fetch/Supabase/React state -- so the
+// decision logic is directly testable without rendering the full ChatPage
 // component, mirroring how classifyMessageIntentSignal/getAmbiguousOfferHint
 // are already tested as pure functions in this same file.
+//
+// Exactly two outcomes can add anything to what the user sees:
+//   (a) a supported, actionable proposal -> the intent panel (unchanged UI)
+//   (b) the task-9 ambiguous trailing offer -> one extra sentence
+// Everything else -- unsupported, a genuine ask_clarification, low
+// confidence, conflicting domain evidence, a mixed request, an unparseable
+// LLM response, or the overlay promise having failed/thrown/timed out --
+// surfaces NOTHING: no panel, no trailing note, no clarificationQuestion
+// text. The conversational reply the default lane already produced is the
+// whole story for all of those; see hasSupportedActionableOverlay above for
+// the exhaustive type-level definition of "actionable."
 export function resolveChatTurnOutcome(input: ChatTurnOverlayInput, t: Translate): ChatTurnOutcome {
-  // "Unrecognized output" (reasoningOrchestrator.ts's own fallbackRawProposal,
-  // fired when the reasoning LLM's raw output could not be parsed as JSON at
-  // all) is a REASONING FAILURE per the FAILURE RULE, not a genuine
-  // ask_clarification the user should see as a proposal -- treated
-  // identically to a null overlayResult (a thrown/timed-out reasoning call).
-  const overlayResult = input.overlayResult?.proposal.reasons.includes(OVERLAY_PARSE_FAILURE_REASON)
-    ? null
-    : input.overlayResult
+  const overlayResult = input.overlayResult
+  const hasGenuineOverlay = overlayResult !== null && hasSupportedActionableOverlay(overlayResult)
 
-  // Outcome 2: explicit, but UNSUPPORTED -- never the bare dead-end (the
-  // OLD bug: intentValidator.ts's canned "فعلاً نمی‌توانم..."/"I can't
-  // safely do that yet." replacing the ENTIRE reply). No intent panel; a
-  // short, deterministic, honest note is appended to the SAME conversational
-  // reply the default lane already produced.
-  const isUnsupportedOverlay = overlayResult?.proposal.type === 'unsupported'
+  if (!hasGenuineOverlay && overlayResult !== null) {
+    console.debug('[ChatPage] overlay suppressed (task 11b): not a supported, actionable proposal', {
+      type: overlayResult.proposal.type,
+      reasons: overlayResult.proposal.reasons,
+    })
+  }
 
-  // Outcome 1: explicit, SUPPORTED action -- including a genuine
-  // ask_clarification/disambiguation, which is part of resolving a real
-  // action, not a failure. Attach the existing proposal/approval UI,
-  // additively, alongside the reply (current behaviour, now additive rather
-  // than a replacement for the reply).
-  const hasGenuineOverlay = overlayResult !== null && !isUnsupportedOverlay
-
-  // Outcome 3 (ambiguous): unchanged from Conversation Quality v1 (task 9).
-  // Outcome 4 (conversational): no overlay at all -- both offerHint and
-  // trailingNote are null, content is the reply verbatim.
   const offerHint = input.intentSignal === 'ambiguous' ? getAmbiguousOfferHint(input.message) : null
-  const trailingNote = isUnsupportedOverlay
-    ? UNSUPPORTED_ACTION_NOTE[input.responseLanguage]
-    : offerHint
-      ? getAmbiguousOfferText(offerHint, input.responseLanguage)
-      : null
+  const trailingNote = offerHint ? getAmbiguousOfferText(offerHint, input.responseLanguage) : null
 
   return {
     content: trailingNote ? `${input.reply}\n\n${trailingNote}` : input.reply,
