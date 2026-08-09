@@ -86,7 +86,6 @@
     "TS2322": 1
   },
   "src/pages/SettingsPage.tsx": {
-    "TS2322": 7,
-    "TS2339": 1
+    "TS2322": 7
   }
 }
