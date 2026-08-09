@@ -7,8 +7,8 @@ import { supabase } from '@/integrations/supabase/client'
 import { useAuth } from '@/hooks/useAuth'
 import briefingBg from '@/assets/briefing-bg.jpg'
 import { useAppearance } from '@/features/settings/appearanceStore'
+import { createDirectionalMarkdownComponents } from '@/lib/bidiText'
 import {
-  getAiResponseDirection,
   getAiResponseLanguageInstruction,
   getStoredAiResponseLanguage,
   resolveAiResponseLanguage,
@@ -22,16 +22,17 @@ interface Briefing {
   created_at: string
 }
 
-function MdP({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <p className="mb-2 last:mb-0 text-sm leading-relaxed text-foreground/85">{children}</p>
-}
-function MdUl({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <ul className="list-disc pl-5 mt-2 space-y-1">{children}</ul>
-}
-function MdLi({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <li className="text-sm leading-relaxed text-foreground/85">{children}</li>
-}
-const MD_COMPONENTS = { p: MdP, ul: MdUl, li: MdLi } as const
+// Task 11e (bidi rendering): direction-handling lives in the shared
+// createDirectionalMarkdownComponents utility (src/lib/bidiText.tsx), used
+// identically by ChatPage, AgentBriefingCard, and TasksPage. Only the
+// visual class names below are specific to this page. `ps-5` (logical
+// padding-start) replaces the previous physical `pl-5`, so bullet
+// indentation mirrors correctly for RTL content.
+const MD_COMPONENTS = createDirectionalMarkdownComponents({
+  p: 'mb-2 last:mb-0 text-sm leading-relaxed text-foreground/85',
+  ul: 'list-disc ps-5 mt-2 space-y-1',
+  li: 'text-sm leading-relaxed text-foreground/85',
+})
 
 function formatTimeAgo(date: Date): string {
   const diffMs = Date.now() - date.getTime()
@@ -155,7 +156,7 @@ export default function WeeklyBriefingPage() {
           ) : error ? (
             <p className="text-sm text-destructive">{error}</p>
           ) : briefing ? (
-            <div dir={briefingLanguage ? getAiResponseDirection(briefingLanguage) : 'auto'} lang={briefingLanguage}>
+            <div dir="auto" lang={briefingLanguage}>
               <ReactMarkdown components={MD_COMPONENTS}>{md}</ReactMarkdown>
               <p className="text-[11px] text-muted-foreground mt-4">
                 Generated {formatTimeAgo(new Date(briefing.created_at))}

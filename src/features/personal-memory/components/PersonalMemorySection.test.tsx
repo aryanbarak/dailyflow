@@ -89,6 +89,18 @@ describe("PersonalMemorySection -- rendering states", () => {
 
     expect(await screen.findByText("No personal memory recorded yet.")).toBeInTheDocument();
   });
+
+  it("task 11e: a memory card with a mixed Persian/Latin title gets dir=\"auto\" and isolates the embedded Latin token, instead of rendering it as one undifferentiated text node", async () => {
+    const service = makeService([
+      record({ status: "proposed", content: { summary: "می‌خواهد با SmartFlow کار کند", timeframe: "long_term" } }),
+    ]);
+    const { container } = render(<PersonalMemorySection service={service} triggerExtraction={vi.fn()} />);
+
+    await waitFor(() => expect(container.querySelector('p[dir="auto"]')).not.toBeNull());
+    const titleParagraph = container.querySelector('p[dir="auto"]');
+    expect(titleParagraph?.innerHTML).toContain("<bdi>SmartFlow</bdi>");
+    expect(titleParagraph?.textContent).toBe("می‌خواهد با SmartFlow کار کند");
+  });
 });
 
 describe("PersonalMemorySection -- rejected visibility", () => {

@@ -9,6 +9,7 @@ import {
   ExecutionIntentError,
 } from "./executionIntent";
 import { getToolById } from "./toolRegistry";
+import { EXECUTABLE_READ_ONLY_TOOL_IDS } from "./toolResolver";
 import { presentReadOnlyResult } from "./readOnlyResultPresenter";
 import { processReadOnlyReflection } from "./reflectionIntegration";
 import type {
@@ -95,6 +96,21 @@ function duration(startedAt: string, completedAt: string) {
 
 function isSupportedReadOnlyToolId(toolId: string | undefined): toolId is SupportedReadOnlyToolId {
   return SUPPORTED_READ_ONLY_TOOL_IDS.includes(toolId as SupportedReadOnlyToolId);
+}
+
+// Task 11d (auto-execute read-only tools): the actual gate a caller (e.g.
+// ChatPage's conversation-first inversion) must use before running a read
+// tool WITHOUT a user approval click. Computed as the real intersection of
+// BOTH independent, server-side allowlists -- this runtime's own
+// SUPPORTED_READ_ONLY_TOOL_IDS and the tool resolver's
+// EXECUTABLE_READ_ONLY_TOOL_IDS -- rather than trusting either list alone,
+// so the auto-run path stays fail-closed if the two are ever edited out of
+// sync. No write tool id (tasks.complete, github.issues.comment,
+// github.issues.update) appears in either source list, so this predicate
+// can never return true for a write tool by construction -- there is no
+// separate write-exclusion check to maintain or forget.
+export function isAutoExecutableReadOnlyToolId(toolId: string | undefined): toolId is SupportedReadOnlyToolId {
+  return isSupportedReadOnlyToolId(toolId) && EXECUTABLE_READ_ONLY_TOOL_IDS.has(toolId);
 }
 
 export function canStartReadOnlyRun(status: ReadOnlyRunState) {

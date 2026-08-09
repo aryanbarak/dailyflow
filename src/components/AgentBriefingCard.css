@@ -132,7 +132,9 @@
 
 .agent-briefing-card__list {
   margin: 6px 0 0;
-  padding-left: 1.1em;
+  /* Task 11e: logical property (direction-aware) instead of the physical
+     padding-left, so bullet indentation mirrors correctly for RTL content. */
+  padding-inline-start: 1.1em;
   list-style: disc;
 }
 

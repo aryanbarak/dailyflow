@@ -17,6 +17,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { AlertTriangle, CheckCircle2, ChevronDown, ChevronUp, Loader2, RefreshCw, Trash2, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { isolateEmbeddedBidiRuns } from "@/lib/bidiText";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -188,9 +189,19 @@ function RecordCard({
     <li className="rounded-md border border-border bg-card p-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-sm font-medium text-foreground">{personalMemoryRecordPrimaryText(record.content)}</p>
+          {/* Task 11e: mixed-direction hygiene -- these titles/summaries are
+              derived from user content (chat, briefings) and can freely mix
+              Persian and Latin tokens (a product name, a URL). dir="auto"
+              picks the block's own base direction; isolateEmbeddedBidiRuns
+              isolates any bare embedded Latin run so it can't visually
+              reorder relative to its own surrounding punctuation. */}
+          <p dir="auto" className="text-sm font-medium text-foreground">
+            {isolateEmbeddedBidiRuns(personalMemoryRecordPrimaryText(record.content))}
+          </p>
           {personalMemoryRecordSecondaryText(record.kind, record.content) && (
-            <p className="mt-0.5 text-xs text-muted-foreground">{personalMemoryRecordSecondaryText(record.kind, record.content)}</p>
+            <p dir="auto" className="mt-0.5 text-xs text-muted-foreground">
+              {isolateEmbeddedBidiRuns(personalMemoryRecordSecondaryText(record.kind, record.content))}
+            </p>
           )}
         </div>
         <div className="shrink-0 text-right">

@@ -22,6 +22,16 @@ const executableReadOnlyToolIds = new Set([
   "github.workflow_runs.list",
 ]);
 
+// Task 11d (auto-execute read-only tools): a read-only view of the same set
+// used internally above, exported so a second, independent allowlist
+// (readOnlyRuntime.ts's SUPPORTED_READ_ONLY_TOOL_IDS) can be intersected
+// with THIS one at the call site that decides whether to auto-run a read --
+// deliberately not merged into a single shared list, since the two files
+// enforce two different boundaries (resolvability vs. runtime eligibility)
+// and a real intersection check is what stays fail-closed if they ever
+// drift apart.
+export const EXECUTABLE_READ_ONLY_TOOL_IDS: ReadonlySet<string> = executableReadOnlyToolIds;
+
 const unsupportedMutationActions = new Set<WorkspacePlanActionType>([
   "create",
   "update",

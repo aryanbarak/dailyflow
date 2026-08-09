@@ -4,8 +4,8 @@ import ReactMarkdown from 'react-markdown'
 import { supabase } from '@/integrations/supabase/client'
 import { useAuth } from '@/hooks/useAuth'
 import { useAppearance } from '@/features/settings/appearanceStore'
+import { createDirectionalMarkdownComponents } from '@/lib/bidiText'
 import {
-  getAiResponseDirection,
   getAiResponseLanguageInstruction,
   getStoredAiResponseLanguage,
   resolveAiResponseLanguage,
@@ -28,17 +28,16 @@ interface Briefing {
 
 // =============================================
 // Markdown renderer — converts • bullets to list items
+// Task 11e (bidi rendering): direction-handling lives in the shared
+// createDirectionalMarkdownComponents utility (src/lib/bidiText.tsx), used
+// identically by ChatPage, WeeklyBriefingPage, and TasksPage. Only the
+// visual class names below are specific to this card.
 // =============================================
-function MdP({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <p className="agent-briefing-card__text">{children}</p>
-}
-function MdUl({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <ul className="agent-briefing-card__list">{children}</ul>
-}
-function MdLi({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <li className="agent-briefing-card__list-item">{children}</li>
-}
-const MD_COMPONENTS = { p: MdP, ul: MdUl, li: MdLi } as const
+const MD_COMPONENTS = createDirectionalMarkdownComponents({
+  p: 'agent-briefing-card__text',
+  ul: 'agent-briefing-card__list',
+  li: 'agent-briefing-card__list-item',
+})
 
 function BriefingContent({ content, language }: Readonly<{ content: string; language?: string | null }>) {
   const md = content.replace(/^•\s*/gm, '- ')
@@ -46,7 +45,10 @@ function BriefingContent({ content, language }: Readonly<{ content: string; lang
     ? language as SupportedAiResponseLanguage
     : undefined
   return (
-    <div dir={responseLanguage ? getAiResponseDirection(responseLanguage) : 'auto'} lang={responseLanguage}>
+    // Task 11e: dir="auto" unconditionally -- base direction is decided per
+    // block inside the markdown renderer (first-strong heuristic), not once
+    // for the whole briefing from the resolved language.
+    <div dir="auto" lang={responseLanguage}>
       <ReactMarkdown components={MD_COMPONENTS}>{md}</ReactMarkdown>
     </div>
   )

@@ -17,6 +17,7 @@ import {
   Wallet,
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
+import { createDirectionalMarkdownComponents, isolateEmbeddedBidiRuns } from '@/lib/bidiText'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -39,6 +40,7 @@ import {
   getStrongReadDomainEvidence,
   synthesizeContext,
   getToolById,
+  isAutoExecutableReadOnlyToolId,
   reasonAboutUserMessage,
   resolveAgentReasoningTransport,
   resolveToolForStep,
@@ -72,7 +74,6 @@ import type {
 } from '@/features/workspace'
 import type { ToolResolutionResult } from '@/features/agent'
 import {
-  getAiResponseDirection,
   getAiResponseLanguageInstruction,
   getStoredAiResponseLanguage,
   resolveAiResponseLanguage,
@@ -146,16 +147,15 @@ const QUICK_ACTIONS: QuickAction[] = [
   },
 ]
 
-function MsgP({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <p dir="auto" className="mb-1 last:mb-0">{children}</p>
-}
-function MsgUl({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <ul className="mt-1 list-disc space-y-0.5 ps-4">{children}</ul>
-}
-function MsgLi({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <li dir="auto">{children}</li>
-}
-const MSG_MD_COMPONENTS = { p: MsgP, ul: MsgUl, li: MsgLi } as const
+// Task 11e (bidi rendering): direction-handling now lives in the shared
+// createDirectionalMarkdownComponents utility (src/lib/bidiText.tsx), used
+// identically by ChatPage, AgentBriefingCard, WeeklyBriefingPage, and
+// TasksPage -- one solution, not a per-page patch. Only the visual class
+// names are specific to this page, passed straight through unchanged.
+const MSG_MD_COMPONENTS = createDirectionalMarkdownComponents({
+  p: 'mb-1 last:mb-0',
+  ul: 'mt-1 list-disc space-y-0.5 ps-4',
+})
 
 type ReasoningRunStatus = 'idle' | 'running' | 'success' | 'failed' | 'approval_required' | 'approved' | 'rejected'
 type Translate = (key: TranslationKey, vars?: Record<string, string | number>) => string
@@ -842,6 +842,80 @@ export function resolveChatTurnOutcome(input: ChatTurnOverlayInput, t: Translate
   }
 }
 
+// Task 11d (auto-execute read-only tools): a supported, actionable overlay
+// proposal (see isSupportedActionableProposalType above) is eligible to run
+// automatically in the same turn -- no panel, no "Run" click -- as long as
+// it is (a) not a write type (WRITE_PROPOSAL_TYPES; unchanged: panel +
+// explicit approval, per ADR-0004) and (b) not part of a genuine
+// disambiguation (2-3 candidates means the user still has to pick which one
+// -- auto-running an arbitrary candidate would defeat the point of asking).
+// The actual per-tool eligibility (is THIS toolId allowed to auto-run) is a
+// separate, later check against isAutoExecutableReadOnlyToolId's real
+// allowlist intersection -- this function only narrows by proposal SHAPE.
+export function isAutoExecutableReadOnlyProposal(result: AgentReasoningResult): boolean {
+  if (result.disambiguationCandidates && result.disambiguationCandidates.length >= 2) return false
+  return isSupportedActionableProposalType(result.proposal.type) && !WRITE_PROPOSAL_TYPES.has(result.proposal.type)
+}
+
+// Task 11d: a small, deterministic, SmartFlow-authored provenance marker --
+// same posture as AMBIGUOUS_OFFER_TEXT/UNSUPPORTED_ACTION_NOTE elsewhere in
+// this file (never model-generated) -- so an auto-executed read's real data
+// is legible as "where did this come from" without the intent panel that
+// used to carry that information. Keyed by the plan step's domain, which
+// stepForReasoning only ever sets to one of these five values for a
+// read-only proposal (see stepForReasoning's own domain derivation above).
+type AutoReadDomain = 'tasks' | 'calendar' | 'learning' | 'workspace' | 'github'
+
+const READ_PROVENANCE_TEXT: Record<AutoReadDomain, Record<SupportedAiResponseLanguage, string>> = {
+  tasks: { en: '— from your tasks', de: '— aus deinen Aufgaben', fa: '— از تسک‌های شما' },
+  calendar: { en: '— from your calendar', de: '— aus deinem Kalender', fa: '— از تقویم شما' },
+  learning: { en: '— from your learning progress', de: '— aus deinem Lernfortschritt', fa: '— از پیشرفت یادگیری شما' },
+  workspace: { en: '— from your workspace', de: '— aus deinem Arbeitsbereich', fa: '— از فضای کاری شما' },
+  github: { en: '— from GitHub', de: '— von GitHub', fa: '— از گیت‌هاب' },
+}
+
+function isAutoReadDomain(domain: string): domain is AutoReadDomain {
+  return domain === 'tasks' || domain === 'calendar' || domain === 'learning' || domain === 'workspace' || domain === 'github'
+}
+
+// Task 11d, FAILURE RULE: if the read tool itself fails (auth, network,
+// RLS, provider outage -- anything runReadOnlyTool.success=false covers),
+// the conversational reply the default lane already produced is still
+// delivered; this is appended as a brief, honest note instead of the real
+// data -- never a dead end, never a panel, mirroring task 11b's "silence
+// over failure" posture but with one short acknowledgement rather than
+// nothing, since the user asked a question that genuinely needed live data.
+const READ_FETCH_FAILURE_NOTE: Record<SupportedAiResponseLanguage, string> = {
+  en: "I couldn't pull the live data just now, so this is just from what I already know.",
+  de: 'Ich konnte gerade keine aktuellen Daten abrufen, das hier basiert also nur auf dem, was ich schon weiß.',
+  fa: 'الان نتوانستم داده‌های به‌روز را بگیرم، پس این فقط بر اساس چیزی است که از قبل می‌دانم.',
+}
+
+export interface AutoReadTurnInput {
+  readonly reply: string
+  readonly responseLanguage: SupportedAiResponseLanguage
+  readonly domain: string
+  readonly readResult: ReadOnlyRuntimeResult
+  readonly decisionProfile?: WorkspaceDecisionProfile
+  readonly synthesizedContext?: SynthesizedContext
+}
+
+// Task 11d: the ONE place that turns a completed (successful OR failed)
+// auto-read execution into the single reply the user sees. GitHub-sourced
+// (or any tool-sourced) text only ever reaches this through readResult,
+// which is runReadOnlyTool's own output -- already passed through
+// presentReadOnlyResult's bounded, sanitizing presenter and (for the tools
+// composeAssistantResponse supports) resultMessage's existing composition.
+// Nothing here reads raw provider payloads or bypasses that bounding.
+export function resolveAutoReadTurnContent(input: AutoReadTurnInput): string {
+  if (!input.readResult.success) {
+    return `${input.reply}\n\n${READ_FETCH_FAILURE_NOTE[input.responseLanguage]}`
+  }
+  const dataText = resultMessage(input.readResult, input.responseLanguage, input.decisionProfile, input.synthesizedContext)
+  const provenance = isAutoReadDomain(input.domain) ? READ_PROVENANCE_TEXT[input.domain][input.responseLanguage] : null
+  return provenance ? `${input.reply}\n\n${dataText}\n\n${provenance}` : `${input.reply}\n\n${dataText}`
+}
+
 interface ContextTaskSnapshot {
   id?: string
   title?: string
@@ -1079,7 +1153,6 @@ export function ChatBubble({ role, content, language }: Readonly<{
   content: string
   language?: SupportedAiResponseLanguage
 }>) {
-  const direction = role === 'assistant' && language ? getAiResponseDirection(language) : 'auto'
   return (
     <div className={cn('flex gap-2.5', role === 'user' ? 'justify-end' : 'justify-start')}>
       {role === 'assistant' && (
@@ -1094,12 +1167,21 @@ export function ChatBubble({ role, content, language }: Readonly<{
             ? 'bg-primary text-primary-foreground rounded-br-sm'
             : 'glass-card rounded-bl-sm'
         )}
-        dir={direction}
+        // Task 11e: base direction is decided per content block (first-strong
+        // heuristic, dir="auto"), not once for the whole bubble from the
+        // resolved response language -- that per-bubble language-based
+        // direction was the root cause of the production bug (it doesn't
+        // isolate embedded opposite-direction runs, and it stopped mattering
+        // anyway once AssistantContent's own per-block dir="auto" overrode
+        // it for every markdown paragraph/list). Plain user-bubble text gets
+        // the exact same per-block treatment now, including Latin-run
+        // isolation, instead of only a bare dir="auto" with no isolation.
+        dir="auto"
         lang={language}
       >
         {role === 'assistant'
           ? <AssistantContent content={content} />
-          : <span className="whitespace-pre-wrap">{content}</span>}
+          : <span className="whitespace-pre-wrap">{isolateEmbeddedBidiRuns(content)}</span>}
       </div>
     </div>
   )
@@ -1322,11 +1404,88 @@ export default function ChatPage() {
 
       const [{ reply }, overlayResult] = await Promise.all([chatCallPromise, overlayPromise])
 
-      // Task 11: the actual combining decision lives in resolveChatTurnOutcome
-      // (a pure, independently-tested function) -- see its own comment for
-      // the four-outcome rationale. handleSend's job is only to gather the
-      // two resolved inputs and apply the decision.
-      const outcome = resolveChatTurnOutcome({ intentSignal, message: text, responseLanguage, reply, overlayResult }, t)
+      // Task 11d (auto-execute read-only tools): a supported, actionable,
+      // non-write, non-disambiguated read proposal whose resolved tool is
+      // in BOTH server-side allowlists' actual intersection runs
+      // immediately, in this same turn -- no panel, no "Run" click, per
+      // the PO decision that reads are not consequential (ADR-0004).
+      // WRITE proposals never reach this branch at all
+      // (isAutoExecutableReadOnlyProposal excludes WRITE_PROPOSAL_TYPES),
+      // so they always fall through to the unchanged panel + approval flow
+      // below. A read whose tool didn't resolve, or a genuine
+      // disambiguation, also falls through unchanged (fail-closed).
+      let autoReadContent: string | null = null
+      if (overlayResult && isAutoExecutableReadOnlyProposal(overlayResult)) {
+        const overlayState = proposalToState(overlayResult, t)
+        if (
+          overlayState.step &&
+          overlayState.resolution?.resolved &&
+          isAutoExecutableReadOnlyToolId(overlayState.resolution.toolId)
+        ) {
+          const currentTime = new Date()
+          const readResult = await runReadOnlyTool({
+            requestId: `auto-read:${overlayState.resolution.toolId}:${overlayState.step.id}:${currentTime.getTime()}`,
+            step: overlayState.step,
+            toolResolution: overlayState.resolution,
+            approval: null,
+            executionInput: {},
+            executionContext: {
+              ...workspace.agentContext,
+              workspace,
+              currentTime: currentTime.toISOString(),
+              githubRepositoriesClient: createGitHubRepositoriesClient({
+                workerBaseUrl: workerUrl,
+                getAccessToken: async () => session.access_token,
+              }),
+              githubIssuesClient: createGitHubIssuesClient({
+                workerBaseUrl: workerUrl,
+                getAccessToken: async () => session.access_token,
+              }),
+              githubEpicsClient: createGitHubEpicsClient({
+                workerBaseUrl: workerUrl,
+                getAccessToken: async () => session.access_token,
+              }),
+              githubPullRequestsClient: createGitHubPullRequestsClient({
+                workerBaseUrl: workerUrl,
+                getAccessToken: async () => session.access_token,
+              }),
+              githubWorkflowRunsClient: createGitHubWorkflowRunsClient({
+                workerBaseUrl: workerUrl,
+                getAccessToken: async () => session.access_token,
+              }),
+            },
+            currentTime,
+          })
+          const synthesizedContext = synthesizeContext({
+            toolId: readResult.toolId,
+            executionStatus: readResult.status,
+            safeRuntimeSummary: readResult.safeSummary,
+            safePreviewItems: readResult.safePreviewItems,
+            reflection: readResult.reflection,
+            workspaceContext: buildContextSynthesisWorkspaceContext(workspace, tasks, currentTime),
+            decisionProfile: workspace.decisionProfile,
+            responseLanguage,
+            generatedAt: currentTime.toISOString(),
+          })
+          autoReadContent = resolveAutoReadTurnContent({
+            reply,
+            responseLanguage,
+            domain: overlayState.step.domain,
+            readResult,
+            decisionProfile: workspace.decisionProfile,
+            synthesizedContext,
+          })
+        }
+      }
+
+      // Task 11: the actual combining decision (for everything that isn't
+      // an auto-executed read) lives in resolveChatTurnOutcome (a pure,
+      // independently-tested function) -- see its own comment for the
+      // outcome rationale. handleSend's job is only to gather the resolved
+      // inputs and apply the decision.
+      const outcome = autoReadContent !== null
+        ? { content: autoReadContent, reasoningStates: null }
+        : resolveChatTurnOutcome({ intentSignal, message: text, responseLanguage, reply, overlayResult }, t)
       setReasoningProposal(outcome.reasoningStates)
 
       setMessages(prev => [

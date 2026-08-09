@@ -5,7 +5,13 @@ import {
 } from "./executionAudit";
 import { approveWorkspaceStep } from "./approvalInteraction";
 import { getToolById } from "./toolRegistry";
-import { canStartReadOnlyRun, runReadOnlyTool } from "./readOnlyRuntime";
+import {
+  canStartReadOnlyRun,
+  isAutoExecutableReadOnlyToolId,
+  runReadOnlyTool,
+  SUPPORTED_READ_ONLY_TOOL_IDS,
+} from "./readOnlyRuntime";
+import { EXECUTABLE_READ_ONLY_TOOL_IDS } from "./toolResolver";
 import type { AgentToolHandler } from "./executionTypes";
 import type { ToolResolutionResult } from "./toolResolverTypes";
 import type {
@@ -412,5 +418,39 @@ describe("readOnlyRuntime", () => {
     await runReadOnlyTool(sourceRequest, { now: () => now });
 
     expect(JSON.stringify(sourceRequest)).toBe(before);
+  });
+
+  it("task 11d: isAutoExecutableReadOnlyToolId is exactly the intersection of SUPPORTED_READ_ONLY_TOOL_IDS and EXECUTABLE_READ_ONLY_TOOL_IDS -- checked against the real allowlists, not a hardcoded expected-value table", () => {
+    for (const toolId of SUPPORTED_READ_ONLY_TOOL_IDS) {
+      expect(isAutoExecutableReadOnlyToolId(toolId)).toBe(EXECUTABLE_READ_ONLY_TOOL_IDS.has(toolId));
+    }
+  });
+
+  it("task 11d: no write tool id can ever qualify as auto-executable -- write tools keep the full proposal + approval flow (ADR-0004), unchanged", () => {
+    for (const writeToolId of ["tasks.complete", "github.issues.comment", "github.issues.update", "unknown.tool"]) {
+      expect(isAutoExecutableReadOnlyToolId(writeToolId)).toBe(false);
+    }
+    expect(isAutoExecutableReadOnlyToolId(undefined)).toBe(false);
+  });
+
+  it("task 11d: an auto-executed read (requestId prefixed 'auto-read:', approval: null, same as ChatPage's auto-run call) produces the identical started/success audit trail a manually-approved read produces -- no silent unlogged execution", async () => {
+    clearExecutionAuditRecords();
+    const sourceStep = step("tasks.list");
+    const result = await runReadOnlyTool({
+      requestId: "auto-read:tasks.list:step:tasks.list:123",
+      step: sourceStep,
+      toolResolution: resolution("tasks.list", sourceStep),
+      approval: null,
+      executionContext: {
+        tasks: [{ id: "task-1", title: "Review invoices", completed: false }],
+      },
+      currentTime: now,
+    }, { now: () => now });
+
+    expect(result.status).toBe("success");
+    expect(getExecutionAuditRecordsByRequestId("auto-read:tasks.list:step:tasks.list:123").map((record) => record.status)).toEqual([
+      "started",
+      "success",
+    ]);
   });
 });

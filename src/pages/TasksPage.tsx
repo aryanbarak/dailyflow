@@ -38,8 +38,8 @@ import ReactMarkdown from "react-markdown";
 import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
 import { useAppearance } from "@/features/settings/appearanceStore";
+import { createDirectionalMarkdownComponents } from "@/lib/bidiText";
 import {
-  getAiResponseDirection,
   getAiResponseLanguageInstruction,
   getStoredAiResponseLanguage,
   resolveAiResponseLanguage,
@@ -53,16 +53,15 @@ function parseDateOnly(value: string) {
   return new Date(`${value}T00:00:00`);
 }
 
-function MdP({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <p className="mb-1 last:mb-0">{children}</p>;
-}
-function MdUl({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <ul className="list-disc pl-4 mt-1 space-y-0.5">{children}</ul>;
-}
-function MdLi({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <li>{children}</li>;
-}
-const TASK_MD_COMPONENTS = { p: MdP, ul: MdUl, li: MdLi } as const;
+// Task 11e (bidi rendering): direction-handling lives in the shared
+// createDirectionalMarkdownComponents utility (src/lib/bidiText.tsx), used
+// identically by ChatPage, AgentBriefingCard, and WeeklyBriefingPage. Only
+// the visual class names below are specific to this page. `ps-4` (logical
+// padding-start) replaces the previous physical `pl-4`.
+const TASK_MD_COMPONENTS = createDirectionalMarkdownComponents({
+  p: "mb-1 last:mb-0",
+  ul: "list-disc ps-4 mt-1 space-y-0.5",
+});
 
 export function buildTaskAssistantRequestBody(input: {
   context: string;
@@ -717,7 +716,7 @@ export default function TasksPage() {
                 <span className="text-sm font-semibold">Ask about your tasks</span>
               </div>
               {taskAnswer && (
-                <div className="rounded-lg bg-secondary/20 px-3 py-2.5 text-xs leading-relaxed" dir={taskAnswerLanguage ? getAiResponseDirection(taskAnswerLanguage) : "auto"} lang={taskAnswerLanguage ?? undefined}>
+                <div className="rounded-lg bg-secondary/20 px-3 py-2.5 text-xs leading-relaxed" dir="auto" lang={taskAnswerLanguage ?? undefined}>
                   <ReactMarkdown components={TASK_MD_COMPONENTS}>
                     {taskAnswer.replace(/^•\s*/gm, '- ')}
                   </ReactMarkdown>
