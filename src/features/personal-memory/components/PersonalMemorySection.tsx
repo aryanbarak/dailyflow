@@ -326,7 +326,16 @@ export function PersonalMemorySection({ service, triggerExtraction, onRecordsCha
       setExtractionMessage(extractionErrorMessage(result));
       return;
     }
-    setExtractionMessage(`Extraction complete: ${result.acceptedCount} accepted, ${result.droppedCount} dropped.`);
+    // Task 12: zero NEW facts (nothing accepted -- whether because the model
+    // proposed none, or everything proposed was a duplicate/invalid and
+    // dropped) is a calm, ordinary outcome, not a failure -- rendered
+    // distinctly from the accepted/dropped breakdown so it doesn't read like
+    // an error state.
+    setExtractionMessage(
+      result.acceptedCount === 0
+        ? "No new personal memory found."
+        : `Extraction complete: ${result.acceptedCount} accepted, ${result.droppedCount} dropped.`,
+    );
     await load();
     onRecordsChanged?.();
   }, [load, onRecordsChanged, triggerExtraction]);

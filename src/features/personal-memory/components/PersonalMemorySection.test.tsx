@@ -339,4 +339,22 @@ describe("PersonalMemorySection -- extraction trigger", () => {
     expect(onRecordsChanged).toHaveBeenCalled();
     expect(await screen.findByText(/Extraction complete: 2 accepted, 1 dropped\./)).toBeInTheDocument();
   });
+
+  it("task 12: a successful extraction with zero accepted candidates renders a calm 'no new facts' message, not the accepted/dropped breakdown and never an error style", async () => {
+    const user = userEvent.setup();
+    const service = makeService([]);
+    const triggerExtraction = vi.fn().mockResolvedValue(successResult({ candidateCount: 0, acceptedCount: 0, droppedCount: 0 }));
+
+    render(<PersonalMemorySection service={service} triggerExtraction={triggerExtraction} />);
+    await waitFor(() => expect(service.listByOwner).toHaveBeenCalledTimes(1));
+
+    await user.click(screen.getByRole("button", { name: /check for new personal memory/i }));
+
+    expect(await screen.findByText("No new personal memory found.")).toBeInTheDocument();
+    expect(screen.queryByText(/accepted,/)).not.toBeInTheDocument();
+    // Rendered via the same role="status" element the accepted/dropped
+    // summary uses -- calm, not role="alert" the way loadError/recordErrors
+    // render.
+    expect(screen.getByRole("status")).toHaveTextContent("No new personal memory found.");
+  });
 });

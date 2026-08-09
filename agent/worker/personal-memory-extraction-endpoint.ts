@@ -232,7 +232,10 @@ async function readEligibleSourceMaterial(
 export function buildExtractionSystemInstruction(): string {
   return [
     'You extract durable, long-term personal facts about a user from their own chat messages and their latest generated briefing.',
-    'Return exactly one JSON object and no prose.',
+    'Return exactly one JSON object and no prose -- no markdown code fences, no explanation before or after the object.',
+    'The source material may be written in Persian, German, English, or a mix of these in the same message.',
+    'The free-text "summary" field should reflect the user\'s own words and language -- do not translate it.',
+    'Every OTHER field -- kind, confidence, provenanceSourceKind, and every structured content field (strength, timeframe, frequency, status, category, level) -- MUST use exactly one of the literal English enum values given in the schema, verbatim, regardless of what language the source material is in. Never translate, localize, or paraphrase these values (for example: "medium", never "متوسط"; "active", never "فعال").',
     'Every candidate MUST cite at least one provenanceSourceRefIds value from the source material provided -- never invent an id.',
     'Only propose a candidate when the source material actually supports it -- never guess or extrapolate.',
     'You MUST NOT extract health information, relationship/family information, or emotional-state information, even if the user discusses it -- these categories are permanently excluded, no matter how clearly stated.',
@@ -268,12 +271,22 @@ export function buildExtractionResponseSchema() {
               type: 'OBJECT',
               properties: {
                 summary: { type: 'STRING' },
-                strength: { type: 'STRING' },
-                timeframe: { type: 'STRING' },
-                frequency: { type: 'STRING' },
-                status: { type: 'STRING' },
-                category: { type: 'STRING' },
-                level: { type: 'STRING' },
+                // Task 12 fix: constrain every secondary field with the SAME
+                // enum values normalizeCandidate ultimately requires
+                // (SECONDARY_FIELD_OPTIONS below), instead of leaving them as
+                // free STRINGs. Gemini's structured-output mode enforces an
+                // `enum` constraint at generation time (constrained
+                // decoding), which is a much stronger guarantee against
+                // localized/translated values (e.g. "متوسط" instead of
+                // "medium") than a prompt instruction alone -- especially
+                // with mixed-language source material, where the model is
+                // already reasoning across languages.
+                strength: { type: 'STRING', enum: [...SECONDARY_FIELD_OPTIONS.strength] },
+                timeframe: { type: 'STRING', enum: [...SECONDARY_FIELD_OPTIONS.timeframe] },
+                frequency: { type: 'STRING', enum: [...SECONDARY_FIELD_OPTIONS.frequency] },
+                status: { type: 'STRING', enum: [...SECONDARY_FIELD_OPTIONS.status] },
+                category: { type: 'STRING', enum: [...SECONDARY_FIELD_OPTIONS.category] },
+                level: { type: 'STRING', enum: [...SECONDARY_FIELD_OPTIONS.level] },
               },
             },
           },
@@ -281,6 +294,31 @@ export function buildExtractionResponseSchema() {
       },
     },
   }
+}
+
+// Task 12 fix: bounded, single-line truncation for any diagnostic text that
+// might end up in a thrown Error's message -- which the caller both logs to
+// console (visible via `wrangler tail`) and, since this fix, persists into
+// personal_memory_extraction_runs.failure_reason (column CHECK: <= 500
+// chars). Content here is the user's OWN source material reflected back by
+// the model (already stored in this user's own tables) or the model's own
+// raw output text -- never a secret. GEMINI_API_KEY lives only in the
+// request URL, which is never logged by this function.
+function truncateForLog(text: string, maxLength: number): string {
+  const collapsed = text.replace(/\s+/g, ' ').trim()
+  return collapsed.length > maxLength ? `${collapsed.slice(0, maxLength)}...` : collapsed
+}
+
+// Task 12 fix (defensive hardening, not an observed divergence -- see the
+// design/diagnosis notes: reasoning-endpoint.ts's own "proven working"
+// extractJsonObject does NOT strip fences either, and responseMimeType:
+// 'application/json' should structurally prevent Gemini from wrapping
+// output in markdown in the first place). Kept cheap and narrow: only
+// strips a single ```json ... ``` or ``` ... ``` fence wrapping the ENTIRE
+// response, never touches content in the middle of an otherwise-bare object.
+function stripJsonFence(text: string): string {
+  const match = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)
+  return match ? match[1].trim() : text
 }
 
 async function callGeminiForExtraction(
@@ -301,21 +339,52 @@ async function callGeminiForExtraction(
         maxOutputTokens: 1024,
         temperature: 0,
         responseMimeType: 'application/json',
+        // Task 12 fix: gemini-2.5-flash spends output tokens on internal
+        // "thinking" by default unless this is explicitly zeroed. Without
+        // it, thinking tokens can consume the entire maxOutputTokens budget
+        // before the model emits any of the actual JSON -- especially with
+        // real, mixed-language (Persian/English) source material, which is
+        // more reasoning-heavy than the short fixture strings the fake-model
+        // tests used until now. The result is exactly this bug's signature:
+        // an empty or truncated `text`, reported generically as "the model
+        // did not return a usable extraction." Mirrors reasoning-endpoint.ts's
+        // proven-working callGeminiOnce, which already sets this.
+        thinkingConfig: { thinkingBudget: 0 },
         responseSchema: buildExtractionResponseSchema(),
       },
     }),
   })
   if (!response.ok) throw new Error(`Model request failed with status ${response.status}.`)
   const data = (await response.json()) as {
-    candidates?: Array<{ content?: { parts?: Array<{ text?: unknown }> } }>
+    candidates?: Array<{ finishReason?: unknown; content?: { parts?: Array<{ text?: unknown }> } }>
     usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number }
   }
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text
+  const candidate = data.candidates?.[0]
+  if (!candidate) throw new Error('Model returned no candidate.')
+  // Task 12 fix: mirrors reasoning-endpoint.ts's own finishReason check,
+  // which this endpoint never had. A truncated response (finishReason
+  // 'MAX_TOKENS') previously fell through to the generic "not valid JSON"
+  // error below with no indication of WHY -- this makes that cause explicit
+  // and immediately diagnosable from the run record / wrangler tail.
+  if (candidate.finishReason !== undefined && candidate.finishReason !== 'STOP') {
+    throw new Error(`Model response did not finish safely (finishReason=${String(candidate.finishReason)}).`)
+  }
+  const text = candidate.content?.parts?.[0]?.text
   if (typeof text !== 'string' || !text.trim()) throw new Error('Model returned no extraction content.')
-  const trimmed = text.trim()
-  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) throw new Error('Model response must be exactly one JSON object.')
+  const trimmed = stripJsonFence(text.trim())
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
+    throw new Error(`Model response must be exactly one JSON object. Raw output snippet: "${truncateForLog(trimmed, 300)}"`)
+  }
+  let raw: unknown
+  try {
+    raw = JSON.parse(trimmed)
+  } catch (parseError) {
+    throw new Error(
+      `Model response was not valid JSON (${(parseError as Error).message}). Raw output snippet: "${truncateForLog(trimmed, 300)}"`,
+    )
+  }
   return {
-    raw: JSON.parse(trimmed),
+    raw,
     promptTokenCount: data.usageMetadata?.promptTokenCount,
     responseTokenCount: data.usageMetadata?.candidatesTokenCount,
   }
@@ -536,10 +605,20 @@ export async function handlePersonalMemoryExtractionRequest(
   try {
     modelOutput = await callGeminiForExtraction(prompt, env, fetcher)
   } catch (error) {
+    // Task 12 fix (observability gap): callGeminiForExtraction's own error
+    // messages now already carry a bounded, sanitized diagnostic (finish
+    // reason, or a truncated raw-output snippet) -- persist that into
+    // failure_reason (not the old static 'MODEL_CALL_FAILED' string) so the
+    // NEXT failure is diagnosable straight from the run record, without
+    // needing a live `wrangler tail` session running at the moment it
+    // happens. truncateForLog is a second, defensive bound: the column's own
+    // CHECK constraint is <= 500 chars, and this must never violate it
+    // regardless of how the error message was constructed upstream.
+    const failureReason = truncateForLog((error as Error).message, 500)
     await restPatchAsUser(env, jwt, `personal_memory_extraction_runs?id=eq.${run.id}`, {
       completed_at: now(),
       outcome: 'failed',
-      failure_reason: 'MODEL_CALL_FAILED',
+      failure_reason: failureReason,
     }, fetcher).catch(() => undefined)
     logger.error?.(`[PersonalMemory] model call failed: ${(error as Error).message}`)
     return errorResponse('MODEL_CALL_FAILED', 'The model did not return a usable extraction.', 502, origin)

@@ -147,7 +147,7 @@ describe('POST /personal-memory/extraction', () => {
     expect(body.error.code).toBe('NO_SOURCE_MATERIAL')
   })
 
-  it('returns 502 when the model call fails, and marks the run failed', async () => {
+  it('returns 502 when the model call fails, and marks the run failed with a bounded diagnostic reason (task 12: was the static string "MODEL_CALL_FAILED"; now the actual, bounded error detail, so the run record itself is diagnosable without a live wrangler tail session)', async () => {
     const patchCalls: unknown[] = []
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
@@ -167,7 +167,144 @@ describe('POST /personal-memory/extraction', () => {
     })
     const response = await handlePersonalMemoryExtractionRequest(request(), validEnv, { fetcher })
     expect(response.status).toBe(502)
-    expect(patchCalls).toEqual([{ completed_at: expect.any(String), outcome: 'failed', failure_reason: 'MODEL_CALL_FAILED' }])
+    expect(patchCalls).toEqual([{ completed_at: expect.any(String), outcome: 'failed', failure_reason: 'Model request failed with status 500.' }])
+  })
+
+  it('task 12 fix: sends thinkingConfig: { thinkingBudget: 0 } on every Gemini call -- locks in the actual production fix (gemini-2.5-flash spends output tokens on internal thinking by default, which can exhaust maxOutputTokens before any JSON is emitted) at the wire level, not just via behavior', async () => {
+    let sentBody: { generationConfig?: { thinkingConfig?: unknown } } | null = null
+    const inner = baseFetcher()
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.startsWith('https://generativelanguage.googleapis.com/')) {
+        sentBody = init?.body ? JSON.parse(init.body as string) : null
+      }
+      return inner(input, init)
+    })
+    await handlePersonalMemoryExtractionRequest(request(), validEnv, { fetcher })
+    expect(sentBody?.generationConfig?.thinkingConfig).toEqual({ thinkingBudget: 0 })
+  })
+
+  it('task 12 fixture: a realistic Gemini response with Persian-language free-text content is accepted -- language of the summary is not itself a rejection reason', async () => {
+    const fetcher = baseFetcher({
+      geminiCandidates: [
+        {
+          kind: 'goal',
+          content: {
+            summary: 'می‌خواهد برای آزمون IHK آماده شود و به عنوان توسعه‌دهنده جونیور جاوا استخدام شود',
+            timeframe: 'short_term',
+          },
+          confidence: 'medium',
+          provenanceSourceKind: 'chat_turn',
+          provenanceSourceRefIds: [CHAT_ID],
+        },
+      ],
+    })
+    const response = await handlePersonalMemoryExtractionRequest(request(), validEnv, { fetcher })
+    expect(response.status).toBe(200)
+    const body = (await response.json()) as { acceptedCount: number; droppedCount: number }
+    expect(body.acceptedCount).toBe(1)
+    expect(body.droppedCount).toBe(0)
+  })
+
+  it('task 12 fixture: a Gemini response wrapped in a markdown ```json fence is still parsed (defensive hardening -- responseMimeType should prevent this, but is not solely relied upon)', async () => {
+    const extractionPayload = JSON.stringify({
+      candidates: [
+        {
+          kind: 'preference',
+          content: { summary: 'Prefers async written updates over calls' },
+          confidence: 'medium',
+          provenanceSourceKind: 'chat_turn',
+          provenanceSourceRefIds: [CHAT_ID],
+        },
+      ],
+    })
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === `${SUPABASE_URL}/auth/v1/user`) return jsonResponse({ id: 'user-1' })
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/agent_chat_messages?`)) return jsonResponse([{ id: CHAT_ID, content: 'I prefer async updates.' }])
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/agent_briefings?`)) return jsonResponse([])
+      if (url === `${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs` && init?.method === 'POST') {
+        assertRunInsertBodyIsComplete(init.body ? JSON.parse(init.body as string) : null)
+        return jsonResponse([{ id: RUN_ID }])
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs?`) && init?.method === 'PATCH') return new Response(null, { status: 204 })
+      if (url.startsWith('https://generativelanguage.googleapis.com/')) {
+        return jsonResponse({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: '```json\n' + extractionPayload + '\n```' }] } }] })
+      }
+      if (url === `${SUPABASE_URL}/rest/v1/rpc/create_personal_memory_record`) return jsonResponse({ outcome: 'created', field: { id: 'record-1', status: 'proposed' } })
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+    const response = await handlePersonalMemoryExtractionRequest(request(), validEnv, { fetcher })
+    expect(response.status).toBe(200)
+    const body = (await response.json()) as { acceptedCount: number }
+    expect(body.acceptedCount).toBe(1)
+  })
+
+  it('task 12: a well-formed Gemini response with zero candidates is a calm success, never the MODEL_CALL_FAILED error -- this was already correct before this task, verified here explicitly', async () => {
+    const fetcher = baseFetcher({ geminiCandidates: [] })
+    const response = await handlePersonalMemoryExtractionRequest(request(), validEnv, { fetcher })
+    expect(response.status).toBe(200)
+    const body = (await response.json()) as { candidateCount: number; acceptedCount: number; droppedCount: number }
+    expect(body.candidateCount).toBe(0)
+    expect(body.acceptedCount).toBe(0)
+    expect(body.droppedCount).toBe(0)
+  })
+
+  it('task 12 fixture: garbage (non-JSON prose) model output produces a typed 502 failure whose persisted failure_reason includes the actual raw-output snippet, not a generic label', async () => {
+    const patchCalls: unknown[] = []
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === `${SUPABASE_URL}/auth/v1/user`) return jsonResponse({ id: 'user-1' })
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/agent_chat_messages?`)) return jsonResponse([{ id: CHAT_ID, content: 'hello' }])
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/agent_briefings?`)) return jsonResponse([])
+      if (url === `${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs` && init?.method === 'POST') {
+        assertRunInsertBodyIsComplete(init.body ? JSON.parse(init.body as string) : null)
+        return jsonResponse([{ id: RUN_ID }])
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs?`) && init?.method === 'PATCH') {
+        patchCalls.push(init.body ? JSON.parse(init.body as string) : null)
+        return new Response(null, { status: 204 })
+      }
+      if (url.startsWith('https://generativelanguage.googleapis.com/')) {
+        return jsonResponse({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: 'Sorry, I cannot help with that request.' }] } }] })
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+    const response = await handlePersonalMemoryExtractionRequest(request(), validEnv, { fetcher })
+    expect(response.status).toBe(502)
+    const body = (await response.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('MODEL_CALL_FAILED')
+    expect(patchCalls).toHaveLength(1)
+    const patch = patchCalls[0] as { failure_reason: string }
+    expect(patch.failure_reason).toMatch(/exactly one JSON object/i)
+    expect(patch.failure_reason).toMatch(/Sorry, I cannot help/i)
+  })
+
+  it('task 12 fixture: a MAX_TOKENS-truncated response is reported with that specific finishReason -- this is the diagnosed production bug\'s exact signature (thinking tokens exhausting the budget before any JSON is emitted)', async () => {
+    const patchCalls: unknown[] = []
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === `${SUPABASE_URL}/auth/v1/user`) return jsonResponse({ id: 'user-1' })
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/agent_chat_messages?`)) return jsonResponse([{ id: CHAT_ID, content: 'hello' }])
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/agent_briefings?`)) return jsonResponse([])
+      if (url === `${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs` && init?.method === 'POST') {
+        assertRunInsertBodyIsComplete(init.body ? JSON.parse(init.body as string) : null)
+        return jsonResponse([{ id: RUN_ID }])
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs?`) && init?.method === 'PATCH') {
+        patchCalls.push(init.body ? JSON.parse(init.body as string) : null)
+        return new Response(null, { status: 204 })
+      }
+      if (url.startsWith('https://generativelanguage.googleapis.com/')) {
+        return jsonResponse({ candidates: [{ finishReason: 'MAX_TOKENS', content: { parts: [{ text: '{"candidates":[{"kind":"pref' }] } }] })
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+    const response = await handlePersonalMemoryExtractionRequest(request(), validEnv, { fetcher })
+    expect(response.status).toBe(502)
+    const patch = patchCalls[0] as { failure_reason: string }
+    expect(patch.failure_reason).toMatch(/did not finish safely/i)
+    expect(patch.failure_reason).toMatch(/MAX_TOKENS/)
   })
 
   it('persists a valid candidate and reports acceptedCount=1', async () => {
