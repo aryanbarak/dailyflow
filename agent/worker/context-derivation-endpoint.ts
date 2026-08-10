@@ -391,6 +391,14 @@ async function callGeminiForDerivation(
           maxOutputTokens: 2048,
           temperature: 0,
           responseMimeType: 'application/json',
+          // Task R-3 fix (parity with personal-memory-extraction-endpoint.ts's
+          // identical task 12 fix): gemini-2.5-flash spends output tokens on
+          // internal "thinking" by default unless this is explicitly zeroed.
+          // Without it, thinking tokens can consume the entire
+          // maxOutputTokens budget before the model emits any of the actual
+          // JSON. Mirrors reasoning-endpoint.ts's proven-working
+          // callGeminiOnce, which already sets this.
+          thinkingConfig: { thinkingBudget: 0 },
           responseSchema: buildDerivationResponseSchema(),
         },
       }),
@@ -424,10 +432,28 @@ async function callGeminiForDerivation(
   }
 
   const data = (await response.json()) as {
-    candidates?: Array<{ content?: { parts?: Array<{ text?: unknown }> } }>
+    candidates?: Array<{ finishReason?: unknown; content?: { parts?: Array<{ text?: unknown }> } }>
     usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number }
   }
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text
+  const candidate = data.candidates?.[0]
+  if (!candidate) throw new ProviderCallError('Model returned no candidate.', 'MODEL_OUTPUT_UNUSABLE')
+  // Task R-3 fix (parity with personal-memory-extraction-endpoint.ts's
+  // identical task 12 fix, itself mirroring reasoning-endpoint.ts's own
+  // finishReason check): a truncated response (finishReason 'MAX_TOKENS')
+  // or one blocked for safety previously fell through to the generic "not
+  // valid JSON" error below with no indication of WHY -- this makes that
+  // cause explicit and immediately diagnosable from the run record /
+  // wrangler tail, and maps it to MODEL_OUTPUT_UNUSABLE (2xx-but-unusable),
+  // never a provider error -- the request itself succeeded.
+  if (candidate.finishReason !== undefined && candidate.finishReason !== 'STOP') {
+    throw new ProviderCallError(
+      `Model response did not finish safely (finishReason=${String(candidate.finishReason)}).`,
+      'MODEL_OUTPUT_UNUSABLE',
+      undefined,
+      String(candidate.finishReason),
+    )
+  }
+  const text = candidate.content?.parts?.[0]?.text
   if (typeof text !== 'string' || !text.trim()) throw new ProviderCallError('Model returned no derivation content.', 'MODEL_OUTPUT_UNUSABLE')
   const trimmed = text.trim()
   if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {

@@ -16,6 +16,15 @@ export type ContextDerivationTriggerErrorCode =
   | "PROJECT_NOT_FOUND"
   | "PROJECT_ARCHIVED"
   | "NO_ELIGIBLE_EVIDENCE"
+  | "NETWORK_UNREACHABLE"
+  // Task R-3 fix (parity with personalMemoryExtractionTriggerClient.ts's
+  // identical task 14 fix): the worker's three-way model-call taxonomy
+  // (see context-derivation-endpoint.ts's own ProviderFailureTaxonomy),
+  // passed through as its own distinct code rather than collapsing into
+  // the generic REQUEST_FAILED bucket.
+  | "PROVIDER_REQUEST_REJECTED"
+  | "PROVIDER_UNAVAILABLE"
+  | "MODEL_OUTPUT_UNUSABLE"
   | "REQUEST_FAILED";
 
 export interface ContextDerivationTriggerSuccess {
@@ -41,6 +50,14 @@ const WORKER_ERROR_CODE_MAP: Record<string, ContextDerivationTriggerErrorCode | 
   PROJECT_NOT_FOUND: "PROJECT_NOT_FOUND",
   PROJECT_ARCHIVED: "PROJECT_ARCHIVED",
   NO_ELIGIBLE_EVIDENCE: "NO_ELIGIBLE_EVIDENCE",
+  // Task R-3 fix: pass these three through as their OWN distinct codes
+  // rather than falling into the generic REQUEST_FAILED bucket (the
+  // `?? "REQUEST_FAILED"` fallback below), so the UI can show a distinct,
+  // honest message for each -- mirrors personalMemoryExtractionTriggerClient.ts's
+  // identical task 14 fix.
+  PROVIDER_REQUEST_REJECTED: "PROVIDER_REQUEST_REJECTED",
+  PROVIDER_UNAVAILABLE: "PROVIDER_UNAVAILABLE",
+  MODEL_OUTPUT_UNUSABLE: "MODEL_OUTPUT_UNUSABLE",
 };
 
 export interface ContextDerivationTriggerDependencies {
@@ -69,6 +86,14 @@ export async function triggerContextDerivation(
     return { ok: false, code: "UNAUTHENTICATED", message: "Sign in to derive context from evidence." };
   }
 
+  // Task R-3 fix (parity with personalMemoryExtractionTriggerClient.ts's
+  // identical task 13 fix): this try block wraps ONLY the fetch call to
+  // the worker -- nothing else -- so any throw caught here really is a
+  // true network/unreachable failure (DNS, CORS, offline, connection
+  // refused), never a database or other unrelated error. Given its own,
+  // more specific code (NETWORK_UNREACHABLE) rather than the generic
+  // REQUEST_FAILED bucket used for post-response failures below (unreadable
+  // JSON, missing runId, unmapped worker error codes).
   let response: Response;
   try {
     response = await fetcher(`${WORKER_URL}/projects/context-derivation`, {
@@ -77,7 +102,7 @@ export async function triggerContextDerivation(
       body: JSON.stringify({ projectId }),
     });
   } catch {
-    return { ok: false, code: "REQUEST_FAILED", message: "Could not reach the context derivation service." };
+    return { ok: false, code: "NETWORK_UNREACHABLE", message: "Could not reach the context derivation service." };
   }
 
   let body: unknown;

@@ -364,4 +364,82 @@ describe('POST /projects/context-derivation', () => {
     expect(fullLog).not.toContain('generateContent?')
     expect(fullLog).toContain('generateContent')
   });
+
+  it('task R-3 fix: sends thinkingConfig: { thinkingBudget: 0 } on every Gemini call -- parity with personal-memory-extraction-endpoint.ts\'s identical task 12 fix (gemini-2.5-flash spends output tokens on internal thinking by default, which can exhaust maxOutputTokens before any JSON is emitted) at the wire level, not just via behavior', async () => {
+    let sentBody: { generationConfig?: { thinkingConfig?: unknown } } | null = null
+    const inner = baseFetcher()
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.startsWith('https://generativelanguage.googleapis.com/')) {
+        sentBody = init?.body ? JSON.parse(init.body as string) : null
+      }
+      return inner(input, init)
+    })
+    await handleContextDerivationRequest(request(), validEnv, { fetcher })
+    expect(sentBody?.generationConfig?.thinkingConfig).toEqual({ thinkingBudget: 0 })
+  });
+
+  it('task R-3 fixture: a MAX_TOKENS-truncated response is reported with that specific finishReason, mapped to MODEL_OUTPUT_UNUSABLE (2xx-but-unusable) rather than a provider error -- parity with personal-memory-extraction-endpoint.ts\'s identical task 12 fix', async () => {
+    const patchCalls: unknown[] = []
+    const logged: string[] = []
+    const fakeLogger = { info: (..._args: unknown[]) => {}, error: (...args: unknown[]) => { logged.push(args.map(String).join(' ')) } }
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === `${SUPABASE_URL}/auth/v1/user`) return jsonResponse({ id: 'user-1' })
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/project_records?`)) return jsonResponse([{ id: PROJECT_ID, name: 'SmartFlow', status: 'active' }])
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/project_evidence?`)) {
+        return jsonResponse([{ id: EVIDENCE_ID, source_kind: 'architecture_document', classification: 'canonical_document_observation', title: 'Architecture', reference: 'docs/architecture/project-domain.md', collected_at: '2026-08-01T00:00:00.000Z', supersedes_id: null }])
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/project_evidence_observations?`)) return jsonResponse([{ evidence_id: EVIDENCE_ID, text_content: 'text' }])
+      if (url === `${SUPABASE_URL}/rest/v1/inferred_context_derivation_runs` && init?.method === 'POST') {
+        assertRunInsertBodyIsComplete(init.body ? JSON.parse(init.body as string) : null)
+        return jsonResponse([{ id: RUN_ID }])
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/inferred_context_derivation_runs?`) && init?.method === 'PATCH') {
+        patchCalls.push(init.body ? JSON.parse(init.body as string) : null)
+        return new Response(null, { status: 204 })
+      }
+      if (url.startsWith('https://generativelanguage.googleapis.com/')) {
+        expect(url).toContain('key=gemini-key')
+        return jsonResponse({ candidates: [{ finishReason: 'MAX_TOKENS', content: { parts: [{ text: '{"candidates":[{"kind":"ri' }] } }] })
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+    const response = await handleContextDerivationRequest(request(), validEnv, { fetcher, logger: fakeLogger })
+    expect(response.status).toBe(502)
+    const body = (await response.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('MODEL_OUTPUT_UNUSABLE')
+    const patch = patchCalls[0] as { failure_reason: string }
+    expect(patch.failure_reason).toMatch(/did not finish safely/i)
+    expect(patch.failure_reason).toMatch(/MAX_TOKENS/)
+    // Redaction guard: this new finishReason log line must never leak the
+    // provider API key, mirroring the existing REDACTION GUARD test below.
+    expect(logged.length).toBeGreaterThan(0)
+    const fullLog = logged.join('\n')
+    expect(fullLog).not.toContain('gemini-key')
+    expect(fullLog).not.toContain('key=')
+    expect(fullLog).toMatch(/did not finish safely/i)
+  });
+
+  it('task R-3 fixture: a response blocked for safety (finishReason SAFETY) is reported as MODEL_OUTPUT_UNUSABLE, never a provider error -- the request itself succeeded', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === `${SUPABASE_URL}/auth/v1/user`) return jsonResponse({ id: 'user-1' })
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/project_records?`)) return jsonResponse([{ id: PROJECT_ID, name: 'SmartFlow', status: 'active' }])
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/project_evidence?`)) {
+        return jsonResponse([{ id: EVIDENCE_ID, source_kind: 'architecture_document', classification: 'canonical_document_observation', title: 'Architecture', reference: 'docs/architecture/project-domain.md', collected_at: '2026-08-01T00:00:00.000Z', supersedes_id: null }])
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/project_evidence_observations?`)) return jsonResponse([{ evidence_id: EVIDENCE_ID, text_content: 'text' }])
+      if (url === `${SUPABASE_URL}/rest/v1/inferred_context_derivation_runs` && init?.method === 'POST') return jsonResponse([{ id: RUN_ID }])
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/inferred_context_derivation_runs?`) && init?.method === 'PATCH') return new Response(null, { status: 204 })
+      if (url.startsWith('https://generativelanguage.googleapis.com/')) {
+        return jsonResponse({ candidates: [{ finishReason: 'SAFETY', content: {} }] })
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+    const response = await handleContextDerivationRequest(request(), validEnv, { fetcher })
+    expect(response.status).toBe(502)
+    const body = (await response.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('MODEL_OUTPUT_UNUSABLE')
+  });
 })

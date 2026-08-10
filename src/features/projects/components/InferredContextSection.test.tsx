@@ -3,7 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { InferredContextSection } from "./InferredContextSection";
+import { InferredContextSection, derivationErrorMessage } from "./InferredContextSection";
+import { translations } from "@/i18n";
 import type { InferredProjectContextField } from "../inferredProjectContextFieldTypes";
 import type { ContextDerivationTriggerResult } from "../contextDerivationTriggerClient";
 
@@ -206,6 +207,122 @@ describe("InferredContextSection -- derivation trigger", () => {
     await user.click(screen.getByRole("button", { name: /derive from evidence/i }));
 
     expect(await screen.findByText("This project has no evidence yet. Add evidence before deriving context.")).toBeInTheDocument();
+  });
+
+  it("task R-3: shows a distinct message for PROVIDER_REQUEST_REJECTED, not a generic failure", async () => {
+    const user = userEvent.setup();
+    const service = makeService([]);
+    const triggerDerivation = vi.fn().mockResolvedValue({
+      ok: false,
+      code: "PROVIDER_REQUEST_REJECTED",
+      message: "The request to the AI model was rejected. This is a configuration issue on our side, not a problem with your data.",
+    } satisfies ContextDerivationTriggerResult);
+
+    render(<InferredContextSection projectId="project-1" archived={false} service={service} triggerDerivation={triggerDerivation} />);
+    await waitFor(() => expect(service.listByProject).toHaveBeenCalled());
+
+    await user.click(screen.getByRole("button", { name: /derive from evidence/i }));
+
+    expect(
+      await screen.findByText("The request to the AI model was rejected. This is a configuration issue on our side, not a problem with your data."),
+    ).toBeInTheDocument();
+  });
+
+  it("task R-3: shows a distinct message for PROVIDER_UNAVAILABLE", async () => {
+    const user = userEvent.setup();
+    const service = makeService([]);
+    const triggerDerivation = vi.fn().mockResolvedValue({
+      ok: false,
+      code: "PROVIDER_UNAVAILABLE",
+      message: "The AI model is temporarily unavailable. Please try again in a moment.",
+    } satisfies ContextDerivationTriggerResult);
+
+    render(<InferredContextSection projectId="project-1" archived={false} service={service} triggerDerivation={triggerDerivation} />);
+    await waitFor(() => expect(service.listByProject).toHaveBeenCalled());
+
+    await user.click(screen.getByRole("button", { name: /derive from evidence/i }));
+
+    expect(await screen.findByText("The AI model is temporarily unavailable. Please try again in a moment.")).toBeInTheDocument();
+  });
+
+  it("task R-3: shows a distinct message for MODEL_OUTPUT_UNUSABLE", async () => {
+    const user = userEvent.setup();
+    const service = makeService([]);
+    const triggerDerivation = vi.fn().mockResolvedValue({
+      ok: false,
+      code: "MODEL_OUTPUT_UNUSABLE",
+      message: "The model did not return a usable derivation. Please try again.",
+    } satisfies ContextDerivationTriggerResult);
+
+    render(<InferredContextSection projectId="project-1" archived={false} service={service} triggerDerivation={triggerDerivation} />);
+    await waitFor(() => expect(service.listByProject).toHaveBeenCalled());
+
+    await user.click(screen.getByRole("button", { name: /derive from evidence/i }));
+
+    expect(await screen.findByText("The model did not return a usable derivation. Please try again.")).toBeInTheDocument();
+  });
+
+  it("task R-3: NETWORK_UNREACHABLE falls through to the client's own message (no explicit map entry), rendered calmly in the same status paragraph as success -- not as a destructive alert", async () => {
+    const user = userEvent.setup();
+    const service = makeService([]);
+    const triggerDerivation = vi.fn().mockResolvedValue({
+      ok: false,
+      code: "NETWORK_UNREACHABLE",
+      message: "Could not reach the context derivation service.",
+    } satisfies ContextDerivationTriggerResult);
+
+    render(<InferredContextSection projectId="project-1" archived={false} service={service} triggerDerivation={triggerDerivation} />);
+    await waitFor(() => expect(service.listByProject).toHaveBeenCalled());
+
+    await user.click(screen.getByRole("button", { name: /derive from evidence/i }));
+
+    const message = await screen.findByText("Could not reach the context derivation service.");
+    expect(message).toBeInTheDocument();
+    expect(message.getAttribute("role")).toBe("status");
+  });
+
+  // Task R-3: the two tests below unit-test derivationErrorMessage directly
+  // (exported for this purpose) with an injected `t` reading from a fixed
+  // language's dictionary, rather than driving the real appearance store
+  // through a full render -- useAppearance.setState() is unusable in this
+  // file's jsdom environment (a pre-existing, unrelated tooling quirk: its
+  // zustand persist middleware's localStorage-backed storage.setItem is not
+  // a function here, confirmed independent of this component -- see
+  // ReflectionSummary.test.tsx, the only other test in this repo calling
+  // useAppearance.setState, which sidesteps the same issue by rendering via
+  // renderToString in the plain Node environment instead of jsdom). Testing
+  // the pure mapping function directly proves the same code -> localized-
+  // message wiring deterministically, without depending on that store at
+  // all -- arguably a tighter test than a full DOM render would have been.
+  it("task R-3: derivationErrorMessage resolves the German translation for MODEL_OUTPUT_UNUSABLE", () => {
+    const result = {
+      ok: false as const,
+      code: "MODEL_OUTPUT_UNUSABLE" as const,
+      message: "The model did not return a usable derivation. Please try again.",
+    };
+    const de = (key: keyof typeof translations.de) => translations.de[key];
+
+    expect(derivationErrorMessage(result, de)).toBe(translations.de.context_derivation_error_model_output_unusable);
+    expect(derivationErrorMessage(result, de)).not.toBe(result.message);
+  });
+
+  it("task R-3: derivationErrorMessage resolves the Farsi translation for PROVIDER_UNAVAILABLE", () => {
+    const result = {
+      ok: false as const,
+      code: "PROVIDER_UNAVAILABLE" as const,
+      message: "The AI model is temporarily unavailable. Please try again in a moment.",
+    };
+    const fa = (key: keyof typeof translations.fa) => translations.fa[key];
+
+    expect(derivationErrorMessage(result, fa)).toBe(translations.fa.context_derivation_error_provider_unavailable);
+    expect(derivationErrorMessage(result, fa)).not.toBe(result.message);
+  });
+
+  it("task R-3: derivationErrorMessage falls through to the server's own message for a code with no explicit entry (e.g. NETWORK_UNREACHABLE, PROJECT_NOT_FOUND)", () => {
+    const en = (key: keyof typeof translations.en) => translations.en[key];
+    const result = { ok: false as const, code: "NETWORK_UNREACHABLE" as const, message: "Could not reach the context derivation service." };
+
+    expect(derivationErrorMessage(result, en)).toBe(result.message);
   });
 
   it("reloads the field list and notifies the caller after a successful derivation", async () => {

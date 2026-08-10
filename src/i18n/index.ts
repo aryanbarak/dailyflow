@@ -924,6 +924,19 @@ const en = {
   finance_delete_desc: 'This will permanently remove the selected transaction.',
   finance_cancel: 'Cancel',
   finance_delete: 'Delete',
+  // Task 11c PART 2: legacy user_context entries are no longer read into
+  // any AI prompt (ADR-0011) -- this copy must not claim otherwise.
+  ai_memory_legacy_notice: 'These legacy entries are no longer used by AI responses — they remain here only for you to view or remove.',
+
+  // Task R-3: context-derivation trigger per-code messages (parity with
+  // PersonalMemorySection's error taxonomy handling, task 14).
+  context_derivation_error_unauthenticated: 'Sign in again to derive context from evidence.',
+  context_derivation_error_configuration_missing: 'Context derivation is not configured in this environment.',
+  context_derivation_error_project_archived: 'This project is archived. Reactivate it before deriving context.',
+  context_derivation_error_no_eligible_evidence: 'This project has no evidence yet. Add evidence before deriving context.',
+  context_derivation_error_provider_request_rejected: 'The request to the AI model was rejected. This is a configuration issue on our side, not a problem with your data.',
+  context_derivation_error_provider_unavailable: 'The AI model is temporarily unavailable. Please try again in a moment.',
+  context_derivation_error_model_output_unusable: 'The model did not return a usable derivation. Please try again.',
 };
 
 type TranslationDict = typeof en;
@@ -1826,6 +1839,15 @@ const de: TranslationDict = {
   reflection_follow_up_label: 'Vorgeschlagener naechster Schritt',
   reflection_follow_up_default: 'Pruefe das Ergebnis und waehle den naechsten Schritt selbst.',
   reflection_memory_notice: 'Das hilft, deinen naechsten Workspace vorzubereiten.',
+  ai_memory_legacy_notice: 'Diese alten Einträge werden nicht mehr für KI-Antworten verwendet — sie sind hier nur zum Ansehen oder Entfernen.',
+
+  context_derivation_error_unauthenticated: 'Bitte erneut anmelden, um Kontext aus den Belegen abzuleiten.',
+  context_derivation_error_configuration_missing: 'Die Kontextableitung ist in dieser Umgebung nicht konfiguriert.',
+  context_derivation_error_project_archived: 'Dieses Projekt ist archiviert. Reaktivieren Sie es, bevor Sie den Kontext ableiten.',
+  context_derivation_error_no_eligible_evidence: 'Dieses Projekt hat noch keine Belege. Fügen Sie Belege hinzu, bevor Sie den Kontext ableiten.',
+  context_derivation_error_provider_request_rejected: 'Die Anfrage an das KI-Modell wurde abgelehnt. Das ist ein Konfigurationsproblem auf unserer Seite, kein Problem mit Ihren Daten.',
+  context_derivation_error_provider_unavailable: 'Das KI-Modell ist vorübergehend nicht verfügbar. Bitte versuchen Sie es gleich noch einmal.',
+  context_derivation_error_model_output_unusable: 'Das Modell hat keine verwertbare Ableitung zurückgegeben. Bitte versuchen Sie es erneut.',
 };
 
 const fa: TranslationDict = {
@@ -2726,6 +2748,15 @@ const fa: TranslationDict = {
   reflection_follow_up_label: 'گام بعدی پیشنهادی',
   reflection_follow_up_default: 'نتیجه را بررسی کنید و خودتان گام بعدی را انتخاب کنید.',
   reflection_memory_notice: 'این به آماده‌سازی Workspace بعدی شما کمک می‌کند.',
+  ai_memory_legacy_notice: 'این ورودی‌های قدیمی دیگر در پاسخ‌های هوش مصنوعی استفاده نمی‌شوند — فقط برای مشاهده یا حذف اینجا باقی مانده‌اند.',
+
+  context_derivation_error_unauthenticated: 'برای استخراج زمینه از شواهد، دوباره وارد شوید.',
+  context_derivation_error_configuration_missing: 'استخراج زمینه در این محیط پیکربندی نشده است.',
+  context_derivation_error_project_archived: 'این پروژه بایگانی شده است. پیش از استخراج زمینه، آن را دوباره فعال کنید.',
+  context_derivation_error_no_eligible_evidence: 'این پروژه هنوز شواهدی ندارد. پیش از استخراج زمینه، شواهد اضافه کنید.',
+  context_derivation_error_provider_request_rejected: 'درخواست به مدل هوش مصنوعی رد شد. این یک مشکل پیکربندی از سمت ماست، نه مشکلی در داده‌های شما.',
+  context_derivation_error_provider_unavailable: 'مدل هوش مصنوعی موقتاً در دسترس نیست. لطفاً لحظاتی دیگر دوباره تلاش کنید.',
+  context_derivation_error_model_output_unusable: 'مدل خروجی قابل استفاده‌ای برنگرداند. لطفاً دوباره تلاش کنید.',
 };
 
 export type TranslationKey = keyof TranslationDict;

@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { AlertTriangle, CheckCircle2, RefreshCw, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useT, type TranslationKey } from "@/i18n";
 import {
   buildInferredFieldContentFromForm,
   groupVisibleInferredFields,
@@ -26,7 +27,7 @@ import {
 import { validateInferredFieldContent } from "../inferredProjectContextFieldValidation";
 import type { InferredProjectContextFieldService } from "../inferredProjectContextFieldService";
 import type { InferredContextFieldKind, InferredFieldContent, InferredProjectContextField } from "../inferredProjectContextFieldTypes";
-import type { ContextDerivationTriggerResult } from "../contextDerivationTriggerClient";
+import type { ContextDerivationTriggerErrorCode, ContextDerivationTriggerResult } from "../contextDerivationTriggerClient";
 
 export interface InferredContextSectionProps {
   readonly projectId: string;
@@ -37,15 +38,30 @@ export interface InferredContextSectionProps {
   readonly onContextChanged?: () => void;
 }
 
-const DERIVATION_ERROR_MESSAGES: Record<string, string> = {
-  NO_ELIGIBLE_EVIDENCE: "This project has no evidence yet. Add evidence before deriving context.",
-  PROJECT_ARCHIVED: "This project is archived. Reactivate it before deriving context.",
-  CONFIGURATION_MISSING: "Context derivation is not configured in this environment.",
-  UNAUTHENTICATED: "Sign in again to derive context from evidence.",
+// Task R-3 fix: per-code messages, now localized (EN/DE/FA via useT/@/i18n)
+// -- mirrors PersonalMemorySection.tsx's identical task 14 fix (that
+// component's own messages are English-only; this one adds the three new
+// taxonomy codes plus proper localization for the whole map in the same
+// pass). NETWORK_UNREACHABLE deliberately has no entry here, exactly like
+// PersonalMemorySection's own map -- it falls through to the client's own
+// message below, same as PROJECT_NOT_FOUND and REQUEST_FAILED.
+const DERIVATION_ERROR_MESSAGE_KEYS: Partial<Record<ContextDerivationTriggerErrorCode, TranslationKey>> = {
+  NO_ELIGIBLE_EVIDENCE: "context_derivation_error_no_eligible_evidence",
+  PROJECT_ARCHIVED: "context_derivation_error_project_archived",
+  CONFIGURATION_MISSING: "context_derivation_error_configuration_missing",
+  UNAUTHENTICATED: "context_derivation_error_unauthenticated",
+  // Task R-3 fix: the worker's three-way model-call taxonomy (task 14) --
+  // distinct, honest messages instead of these three previously collapsing
+  // into the generic REQUEST_FAILED bucket with no distinguishing message.
+  PROVIDER_REQUEST_REJECTED: "context_derivation_error_provider_request_rejected",
+  PROVIDER_UNAVAILABLE: "context_derivation_error_provider_unavailable",
+  MODEL_OUTPUT_UNUSABLE: "context_derivation_error_model_output_unusable",
 };
 
-function derivationErrorMessage(result: ContextDerivationTriggerResult & { ok: false }): string {
-  return DERIVATION_ERROR_MESSAGES[result.code] ?? result.message;
+/** Exported for direct unit testing of the code -> localized-message mapping without needing to render the component or touch the appearance store (see InferredContextSection.test.tsx). */
+export function derivationErrorMessage(result: ContextDerivationTriggerResult & { ok: false }, t: (key: TranslationKey) => string): string {
+  const key = DERIVATION_ERROR_MESSAGE_KEYS[result.code];
+  return key ? t(key) : result.message;
 }
 
 function CorrectionForm({
@@ -203,6 +219,7 @@ function FieldCard({
 }
 
 export function InferredContextSection({ projectId, archived, service, triggerDerivation, onContextChanged }: Readonly<InferredContextSectionProps>) {
+  const { t } = useT();
   const [fields, setFields] = useState<readonly InferredProjectContextField[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busyFieldId, setBusyFieldId] = useState<string | null>(null);
@@ -261,13 +278,13 @@ export function InferredContextSection({ projectId, archived, service, triggerDe
     // boolean-discriminated union to its `ok: false` member (documented
     // precedent in contextRebuildService.ts).
     if (result.ok === false) {
-      setDerivationMessage(derivationErrorMessage(result));
+      setDerivationMessage(derivationErrorMessage(result, t));
       return;
     }
     setDerivationMessage(`Derivation complete: ${result.acceptedCount} accepted, ${result.droppedCount} dropped.`);
     await load();
     onContextChanged?.();
-  }, [load, onContextChanged, projectId, triggerDerivation]);
+  }, [load, onContextChanged, projectId, t, triggerDerivation]);
 
   const grouped = fields ? groupVisibleInferredFields(fields) : [];
 
