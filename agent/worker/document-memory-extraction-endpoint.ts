@@ -29,8 +29,9 @@
 const MAX_PDF_BYTES = 20 * 1024 * 1024 // matches docs_file_size_error's existing 20MB upload cap (src/i18n/index.ts)
 const MAX_EXTRACTED_TEXT_CHARS = 20000 // resumes are short documents; generous headroom for a multi-page CV, still bounded
 const MAX_CHUNK_CHARS = 3000
-const EMBEDDING_MODEL = 'text-embedding-004' // 768-dim, matches document_chunks.embedding's declared vector(768)
-const EMBEDDING_DIMENSIONS = 768
+const EMBEDDING_MODEL = 'gemini-embedding-001' // text-embedding-004 was retired Jan 2026 (task 16-fix); successor model
+const EMBEDDING_DIMENSIONS = 768 // requested via outputDimensionality -- gemini-embedding-001's native output is 3072-dim
+const EMBEDDING_NORM_EPSILON = 1e-3 // sanity-check tolerance for the post-normalization unit norm
 const EXTRACTION_METHOD = 'model_transcription' as const // M2: the only value this slice ever writes -- see document_chunks.extraction_method's own comment
 
 export interface DocumentMemoryExtractionEnv {
@@ -395,7 +396,7 @@ async function embedChunk(
     response = await fetcher(modelUrl.toString(), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: { parts: [{ text }] } }),
+      body: JSON.stringify({ content: { parts: [{ text }] }, outputDimensionality: EMBEDDING_DIMENSIONS }),
     })
   } catch (networkError) {
     logger.error?.(`[DocumentMemory] embedding call failed before any response (network): path=${modelUrl.pathname} error=${(networkError as Error).message}`)
@@ -421,7 +422,27 @@ async function embedChunk(
   if (!Array.isArray(values) || values.length !== EMBEDDING_DIMENSIONS || !values.every((v) => typeof v === 'number')) {
     throw new ProviderCallError(`Embedding response had an unexpected shape (expected ${EMBEDDING_DIMENSIONS} numeric values).`, 'MODEL_OUTPUT_UNUSABLE')
   }
-  return values as number[]
+
+  const normalized = l2Normalize(values as number[])
+  const norm = vectorNorm(normalized)
+  if (Math.abs(norm - 1) > EMBEDDING_NORM_EPSILON) {
+    throw new ProviderCallError(`Embedding failed to normalize to unit length (norm=${norm}).`, 'MODEL_OUTPUT_UNUSABLE')
+  }
+  return normalized
+}
+
+// gemini-embedding-001 at a non-default outputDimensionality is NOT
+// unit-normalized by the provider (unlike its native 3072-dim output) --
+// per Gemini docs, callers requesting a truncated dimensionality must
+// normalize client-side. Deterministic, no provider dependence.
+export function l2Normalize(values: readonly number[]): number[] {
+  const norm = vectorNorm(values)
+  if (norm === 0) return values.slice() as number[]
+  return values.map((v) => v / norm)
+}
+
+function vectorNorm(values: readonly number[]): number {
+  return Math.sqrt(values.reduce((sum, v) => sum + v * v, 0))
 }
 
 function embeddingToPgvectorLiteral(values: number[]): string {
