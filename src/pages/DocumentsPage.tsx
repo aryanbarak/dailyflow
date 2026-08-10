@@ -63,8 +63,11 @@ import {
 } from "@/components/ui/dialog";
 import { useDocuments } from "@/features/documents/useDocuments";
 import type { Document } from "@/features/documents/documentsService";
-import { updateAiSummary, updateExtractedTasksCount, updateTags, downloadDocument } from "@/features/documents/documentsService";
+import { updateAiSummary, updateExtractedTasksCount, updateTags, updateDocumentType, downloadDocument } from "@/features/documents/documentsService";
 import { documentAiService, type SummaryResult } from "@/features/documents/documentAiService";
+import { triggerDocumentMemoryChunking } from "@/features/documents/documentMemoryExtractionTriggerClient";
+import { triggerPersonalMemoryExtraction } from "@/features/personal-memory/personalMemoryExtractionTriggerClient";
+import { documentMemoryExtractionErrorMessage } from "@/features/documents/documentMemoryExtractionPresentation";
 import { getDocumentSignedUrl } from "@/features/documents/getDocumentUrl";
 import { useTasks } from "@/hooks/useTasks";
 import { PdfMerge } from "@/features/documents/components/PdfMerge";
@@ -208,6 +211,7 @@ export default function DocumentsPage() {
     updateMeta,
     remove,
     download,
+    refresh,
   } = useDocuments();
 
   // Library tab state
@@ -499,6 +503,49 @@ export default function DocumentsPage() {
       }
     } catch (err) { console.error('[AI action]', err); toast.error(err instanceof Error ? err.message : t('docs_ai_error')); }
     finally { setAiLoading(null); }
+  };
+
+  // Task 16 (Document-Sourced Memory slice 1): toggles documents.type
+  // between 'resume' and null -- the only recognized type in this slice,
+  // gating the "Extract to personal memory" action below.
+  const handleToggleResumeType = async () => {
+    if (!aiSelectedDoc) return;
+    try {
+      await updateDocumentType(aiSelectedDoc.id, aiSelectedDoc.type === 'resume' ? null : 'resume');
+      await refresh();
+    } catch (err) {
+      console.error('[Document type]', err);
+      toast.error(err instanceof Error ? err.message : t('docs_ai_error'));
+    }
+  };
+
+  // Task 16: one user-facing action sequencing two Worker calls -- chunk +
+  // embed the resume (document-memory-extraction-endpoint.ts), then run
+  // fact extraction over those chunks through the EXISTING personal-memory
+  // pipeline (personal-memory-extraction-endpoint.ts, parameterized by
+  // documentId -- see that file's own B1 comment). Whichever step fails,
+  // its own taxonomy code is surfaced -- never a generic label.
+  const handleExtractToPersonalMemory = async () => {
+    if (!aiSelectedDoc) return;
+    setAiLoading('memory-extract');
+    try {
+      const chunkResult = await triggerDocumentMemoryChunking(aiSelectedDoc.id);
+      if (chunkResult.ok === false) {
+        toast.error(documentMemoryExtractionErrorMessage(chunkResult.code, chunkResult.message, t));
+        return;
+      }
+      const extractionResult = await triggerPersonalMemoryExtraction({}, aiSelectedDoc.id);
+      if (extractionResult.ok === false) {
+        toast.error(documentMemoryExtractionErrorMessage(extractionResult.code, extractionResult.message, t));
+        return;
+      }
+      toast.success(t('doc_memory_success', { accepted: String(extractionResult.acceptedCount), dropped: String(extractionResult.droppedCount) }));
+    } catch (err) {
+      console.error('[Document memory extraction]', err);
+      toast.error(err instanceof Error ? err.message : t('docs_ai_error'));
+    } finally {
+      setAiLoading(null);
+    }
   };
 
   const handleDocClick = async (doc: Document) => {
@@ -1382,6 +1429,30 @@ export default function DocumentsPage() {
                           {aiLoading === 'tag' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Tag className="w-3.5 h-3.5 text-amber-400" />}
                           {t('docs_ai_auto_tag')}
                         </Button>
+
+                        {/* Task 16: Document-Sourced Memory slice 1 -- resume marking + extraction */}
+                        {isDocPdf(aiSelectedDoc) && (
+                          <div className="border-t border-border/40 pt-2 space-y-2">
+                            <Button
+                              size="sm" variant="outline" className="w-full justify-start gap-2 text-xs"
+                              disabled={aiLoading !== null}
+                              onClick={() => void handleToggleResumeType()}
+                            >
+                              <FileText className="w-3.5 h-3.5 text-sky-400" />
+                              {aiSelectedDoc.type === 'resume' ? t('doc_memory_unmark_resume') : t('doc_memory_mark_resume')}
+                            </Button>
+                            {aiSelectedDoc.type === 'resume' && (
+                              <Button
+                                size="sm" variant="outline" className="w-full justify-start gap-2 text-xs"
+                                disabled={aiLoading !== null}
+                                onClick={() => void handleExtractToPersonalMemory()}
+                              >
+                                {aiLoading === 'memory-extract' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Bot className="w-3.5 h-3.5 text-violet-400" />}
+                                {aiLoading === 'memory-extract' ? t('doc_memory_extracting') : t('doc_memory_extract_action')}
+                              </Button>
+                            )}
+                          </div>
+                        )}
 
                         {/* Ask AI */}
                         <div className="border-t border-border/40 pt-3 space-y-2">

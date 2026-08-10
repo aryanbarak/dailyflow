@@ -103,6 +103,90 @@ describe("PersonalMemorySection -- rendering states", () => {
   });
 });
 
+// Task 16 (Document-Sourced Memory slice 1): the source line for a
+// document-sourced record -- live-resolved chunk info first, falling back
+// to the record's own provenanceSnapshot when the live resolver doesn't
+// have it (chunk deleted by re-extraction or a document hard-delete).
+//
+// The source line's text is split across multiple <bdi> elements by the
+// 11e bidi utility (isolateEmbeddedBidiRuns), so a plain string passed to
+// getByText/findByText cannot match it -- DOM Testing Library's own
+// documented limitation ("text is broken up by multiple elements"). These
+// tests instead locate the source-line <p> directly and assert its full
+// textContent, which is exactly what a real user visually reads.
+describe("PersonalMemorySection -- document provenance source line (task 16)", () => {
+  const CHUNK_ID = "77777777-7777-4777-8777-777777777777";
+  const SOURCE_LINE_SELECTOR = 'p[dir="auto"].italic';
+
+  function documentSourcedRecord(overrides: Partial<PersonalMemoryRecord> = {}): PersonalMemoryRecord {
+    return record({
+      kind: "skill",
+      content: { summary: "Senior software engineering experience", level: "advanced" },
+      provenance: { sourceKind: "document", sourceReferenceIds: [CHUNK_ID] },
+      ...overrides,
+    });
+  }
+
+  it("renders the live-resolved file name and section label with the AI-transcription qualifier", async () => {
+    const service = makeService([documentSourcedRecord()]);
+    const resolveDocumentSources = vi.fn().mockResolvedValue({ [CHUNK_ID]: { fileName: "resume.pdf", sectionLabel: "Experience" } });
+
+    const { container } = render(<PersonalMemorySection service={service} triggerExtraction={vi.fn()} resolveDocumentSources={resolveDocumentSources} />);
+
+    await waitFor(() => expect(container.querySelector(SOURCE_LINE_SELECTOR)).not.toBeNull());
+    expect(container.querySelector(SOURCE_LINE_SELECTOR)?.textContent).toBe("resume.pdf — Experience (via AI transcription)");
+    expect(resolveDocumentSources).toHaveBeenCalledWith([CHUNK_ID]);
+  });
+
+  it("falls back to the record's own provenanceSnapshot when the live resolver does not have the chunk (deleted)", async () => {
+    const service = makeService([
+      documentSourcedRecord({
+        provenanceSnapshot: [{ chunkId: CHUNK_ID, fileName: "old-resume.pdf", sectionLabel: "Skills", contentExcerpt: "TypeScript, Postgres." }],
+      }),
+    ]);
+    const resolveDocumentSources = vi.fn().mockResolvedValue({}); // live join misses -- chunk was deleted
+
+    const { container } = render(<PersonalMemorySection service={service} triggerExtraction={vi.fn()} resolveDocumentSources={resolveDocumentSources} />);
+
+    await waitFor(() => expect(container.querySelector(SOURCE_LINE_SELECTOR)).not.toBeNull());
+    expect(container.querySelector(SOURCE_LINE_SELECTOR)?.textContent).toBe("old-resume.pdf — Skills (via AI transcription)");
+  });
+
+  it("renders no source line at all for a chat-sourced record (unchanged behavior)", async () => {
+    const service = makeService([record({ provenance: { sourceKind: "chat_turn", sourceReferenceIds: ["22222222-2222-4222-8222-222222222222"] } })]);
+    const resolveDocumentSources = vi.fn().mockResolvedValue({});
+
+    const { container } = render(<PersonalMemorySection service={service} triggerExtraction={vi.fn()} resolveDocumentSources={resolveDocumentSources} />);
+
+    await screen.findByText("Learn React Native");
+    expect(resolveDocumentSources).not.toHaveBeenCalled();
+    expect(container.querySelector(SOURCE_LINE_SELECTOR)).toBeNull();
+  });
+
+  it("mixed-direction file name: isolates an embedded Latin run inside the source line via the 11e bidi utility", async () => {
+    const service = makeService([documentSourcedRecord()]);
+    const resolveDocumentSources = vi.fn().mockResolvedValue({ [CHUNK_ID]: { fileName: "رزومه SmartFlow.pdf", sectionLabel: "Experience" } });
+
+    const { container } = render(
+      <PersonalMemorySection service={service} triggerExtraction={vi.fn()} resolveDocumentSources={resolveDocumentSources} />,
+    );
+
+    await waitFor(() => expect(container.querySelector(SOURCE_LINE_SELECTOR)).not.toBeNull());
+    const sourceParagraph = container.querySelector(SOURCE_LINE_SELECTOR);
+    expect(sourceParagraph?.innerHTML).toContain("<bdi>SmartFlow.pdf</bdi>");
+    expect(sourceParagraph?.textContent).toBe("رزومه SmartFlow.pdf — Experience (via AI transcription)");
+  });
+
+  it("gracefully renders no source line (never an error) when resolveDocumentSources is omitted entirely", async () => {
+    const service = makeService([documentSourcedRecord()]);
+
+    const { container } = render(<PersonalMemorySection service={service} triggerExtraction={vi.fn()} />);
+
+    await screen.findByText("Senior software engineering experience");
+    expect(container.querySelector(SOURCE_LINE_SELECTOR)).toBeNull();
+  });
+});
+
 describe("PersonalMemorySection -- rejected visibility", () => {
   it("hides a rejected record by default, and shows it (with its help text, and only Delete) behind the toggle", async () => {
     const user = userEvent.setup();

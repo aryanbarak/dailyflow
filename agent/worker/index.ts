@@ -12,6 +12,7 @@ import {
 import { handleGitHubIntegrationRequest } from './github-integration'
 import { handleContextDerivationRequest } from './context-derivation-endpoint'
 import { handlePersonalMemoryExtractionRequest } from './personal-memory-extraction-endpoint'
+import { handleDocumentMemoryExtractionRequest } from './document-memory-extraction-endpoint'
 
 // ADR-0010 Product Owner Resolution Q4: always-on background extraction
 // into user_context is DISABLED by this decision (SUPERSEDE per Q3 --
@@ -89,6 +90,10 @@ export default {
 
     if (pathname === '/personal-memory/extraction') {
       return handlePersonalMemoryExtractionRequest(request, env, { logger: console })
+    }
+
+    if (pathname === '/documents/extract-memory') {
+      return handleDocumentMemoryExtractionRequest(request, env, { logger: console })
     }
 
     return json({ error: 'Not found' }, 404, origin)

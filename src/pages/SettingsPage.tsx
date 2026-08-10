@@ -36,6 +36,7 @@ import { AiMemoryTab } from '@/features/ai-memory/AiMemoryTab';
 import { PersonalMemorySection } from '@/features/personal-memory/components/PersonalMemorySection';
 import { browserPersonalMemoryRecordService } from '@/features/personal-memory/personalMemoryRecordBrowserService';
 import { triggerPersonalMemoryExtraction } from '@/features/personal-memory/personalMemoryExtractionTriggerClient';
+import { resolveDocumentChunkSources } from '@/features/documents/documentChunkSourceResolver';
 import { GitHubIntegrationCard } from '@/features/integrations/github/GitHubIntegrationCard';
 import { useT, type TranslationKey } from '@/i18n';
 
@@ -1002,7 +1003,7 @@ export default function SettingsPage() {
     appearance:    <AppearanceTab />,
     notifications: <NotificationsTab />,
     data:          <DataTab />,
-    'ai-memory':   <div className="space-y-6"><PersonalMemorySection service={browserPersonalMemoryRecordService} triggerExtraction={triggerPersonalMemoryExtraction} /><AiMemoryTab /></div>,
+    'ai-memory':   <div className="space-y-6"><PersonalMemorySection service={browserPersonalMemoryRecordService} triggerExtraction={triggerPersonalMemoryExtraction} resolveDocumentSources={resolveDocumentChunkSources} /><AiMemoryTab /></div>,
     integrations:  <GitHubIntegrationCard />,
   };
 

@@ -937,6 +937,27 @@ const en = {
   context_derivation_error_provider_request_rejected: 'The request to the AI model was rejected. This is a configuration issue on our side, not a problem with your data.',
   context_derivation_error_provider_unavailable: 'The AI model is temporarily unavailable. Please try again in a moment.',
   context_derivation_error_model_output_unusable: 'The model did not return a usable derivation. Please try again.',
+
+  // Task 16: Document-Sourced Memory slice 1 -- "Extract to personal memory" action + per-code messages.
+  doc_memory_extract_action: 'Extract to personal memory',
+  doc_memory_extracting: 'Extracting…',
+  doc_memory_mark_resume: 'Mark as resume',
+  doc_memory_unmark_resume: 'Unmark as resume',
+  doc_memory_success: 'Extraction complete: {{accepted}} accepted, {{dropped}} dropped.',
+  doc_memory_error_unauthenticated: 'Sign in again to extract this document to personal memory.',
+  doc_memory_error_configuration_missing: 'Document memory extraction is not configured in this environment.',
+  doc_memory_error_network_unreachable: 'Could not reach the document extraction service.',
+  doc_memory_error_no_source_material: 'No readable text was found in this document.',
+  doc_memory_error_document_not_found: 'This document could not be found.',
+  doc_memory_error_document_too_large: 'This document is too large to extract.',
+  doc_memory_error_unsupported_document_type: 'Only PDF documents can be extracted to personal memory.',
+  doc_memory_error_provider_request_rejected: 'The request to the AI model was rejected. This is a configuration issue on our side, not a problem with your data.',
+  doc_memory_error_provider_unavailable: 'The AI model is temporarily unavailable. Please try again in a moment.',
+  doc_memory_error_model_output_unusable: 'The model did not return a usable result. Please try again.',
+  // M2 (PO amendment to task 16): the qualifier makes clear the source text
+  // passed through a model transcription, not a native text-layer read --
+  // provenance honesty for the user confirming a document-sourced fact.
+  personal_memory_document_source_line: '{{fileName}} — {{section}} (via AI transcription)',
 };
 
 type TranslationDict = typeof en;
@@ -1848,6 +1869,23 @@ const de: TranslationDict = {
   context_derivation_error_provider_request_rejected: 'Die Anfrage an das KI-Modell wurde abgelehnt. Das ist ein Konfigurationsproblem auf unserer Seite, kein Problem mit Ihren Daten.',
   context_derivation_error_provider_unavailable: 'Das KI-Modell ist vorübergehend nicht verfügbar. Bitte versuchen Sie es gleich noch einmal.',
   context_derivation_error_model_output_unusable: 'Das Modell hat keine verwertbare Ableitung zurückgegeben. Bitte versuchen Sie es erneut.',
+
+  doc_memory_extract_action: 'In persönliche Erinnerungen extrahieren',
+  doc_memory_extracting: 'Wird extrahiert…',
+  doc_memory_mark_resume: 'Als Lebenslauf markieren',
+  doc_memory_unmark_resume: 'Markierung als Lebenslauf entfernen',
+  doc_memory_success: 'Extraktion abgeschlossen: {{accepted}} übernommen, {{dropped}} verworfen.',
+  doc_memory_error_unauthenticated: 'Bitte erneut anmelden, um dieses Dokument in persönliche Erinnerungen zu extrahieren.',
+  doc_memory_error_configuration_missing: 'Die Dokumentenextraktion ist in dieser Umgebung nicht konfiguriert.',
+  doc_memory_error_network_unreachable: 'Der Dokumentenextraktionsdienst konnte nicht erreicht werden.',
+  doc_memory_error_no_source_material: 'In diesem Dokument wurde kein lesbarer Text gefunden.',
+  doc_memory_error_document_not_found: 'Dieses Dokument konnte nicht gefunden werden.',
+  doc_memory_error_document_too_large: 'Dieses Dokument ist zu groß zum Extrahieren.',
+  doc_memory_error_unsupported_document_type: 'Nur PDF-Dokumente können in persönliche Erinnerungen extrahiert werden.',
+  doc_memory_error_provider_request_rejected: 'Die Anfrage an das KI-Modell wurde abgelehnt. Das ist ein Konfigurationsproblem auf unserer Seite, kein Problem mit Ihren Daten.',
+  doc_memory_error_provider_unavailable: 'Das KI-Modell ist vorübergehend nicht verfügbar. Bitte versuchen Sie es gleich noch einmal.',
+  doc_memory_error_model_output_unusable: 'Das Modell hat kein verwertbares Ergebnis zurückgegeben. Bitte versuchen Sie es erneut.',
+  personal_memory_document_source_line: '{{fileName}} — {{section}} (per KI-Transkription)',
 };
 
 const fa: TranslationDict = {
@@ -2757,6 +2795,23 @@ const fa: TranslationDict = {
   context_derivation_error_provider_request_rejected: 'درخواست به مدل هوش مصنوعی رد شد. این یک مشکل پیکربندی از سمت ماست، نه مشکلی در داده‌های شما.',
   context_derivation_error_provider_unavailable: 'مدل هوش مصنوعی موقتاً در دسترس نیست. لطفاً لحظاتی دیگر دوباره تلاش کنید.',
   context_derivation_error_model_output_unusable: 'مدل خروجی قابل استفاده‌ای برنگرداند. لطفاً دوباره تلاش کنید.',
+
+  doc_memory_extract_action: 'استخراج به حافظه شخصی',
+  doc_memory_extracting: 'در حال استخراج…',
+  doc_memory_mark_resume: 'علامت‌گذاری به‌عنوان رزومه',
+  doc_memory_unmark_resume: 'حذف علامت رزومه',
+  doc_memory_success: 'استخراج کامل شد: {{accepted}} پذیرفته شد، {{dropped}} رد شد.',
+  doc_memory_error_unauthenticated: 'برای استخراج این سند به حافظه شخصی، دوباره وارد شوید.',
+  doc_memory_error_configuration_missing: 'استخراج حافظه سند در این محیط پیکربندی نشده است.',
+  doc_memory_error_network_unreachable: 'سرویس استخراج سند در دسترس نبود.',
+  doc_memory_error_no_source_material: 'هیچ متن قابل خواندنی در این سند یافت نشد.',
+  doc_memory_error_document_not_found: 'این سند یافت نشد.',
+  doc_memory_error_document_too_large: 'این سند برای استخراج بسیار بزرگ است.',
+  doc_memory_error_unsupported_document_type: 'فقط اسناد PDF قابل استخراج به حافظه شخصی هستند.',
+  doc_memory_error_provider_request_rejected: 'درخواست به مدل هوش مصنوعی رد شد. این یک مشکل پیکربندی از سمت ماست، نه مشکلی در داده‌های شما.',
+  doc_memory_error_provider_unavailable: 'مدل هوش مصنوعی موقتاً در دسترس نیست. لطفاً لحظاتی دیگر دوباره تلاش کنید.',
+  doc_memory_error_model_output_unusable: 'مدل نتیجه قابل استفاده‌ای برنگرداند. لطفاً دوباره تلاش کنید.',
+  personal_memory_document_source_line: '{{fileName}} — {{section}} (با رونویسی هوش مصنوعی)',
 };
 
 export type TranslationKey = keyof TranslationDict;

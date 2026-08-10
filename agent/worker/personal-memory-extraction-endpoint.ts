@@ -29,11 +29,17 @@ const PERSONAL_MEMORY_RECORD_KINDS = ['preference', 'goal', 'working_pattern', '
 type PersonalMemoryRecordKind = typeof PERSONAL_MEMORY_RECORD_KINDS[number]
 const CONFIDENCE_VALUES = ['low', 'medium', 'high'] as const
 type Confidence = typeof CONFIDENCE_VALUES[number]
-const PROVENANCE_SOURCE_KINDS = ['chat_turn', 'briefing'] as const
+// Task 16 (Document-Sourced Memory, slice 1) added 'document' -- a run's
+// source material is either chat+briefing (the original, default path) OR
+// a single document's chunks (when the request body names a documentId),
+// never both in the same run. See readEligibleSourceMaterialFromDocument
+// below and this file's own route handler for the branch.
+const PROVENANCE_SOURCE_KINDS = ['chat_turn', 'briefing', 'document'] as const
 type ProvenanceSourceKind = typeof PROVENANCE_SOURCE_KINDS[number]
 
 const MAX_CHAT_MESSAGES_PER_RUN = 20
 const MAX_MESSAGE_TEXT_CHARS = 2000
+const MAX_DOCUMENT_CHUNKS_PER_RUN = 20 // mirrors document_chunks' own MAX_CANDIDATES-adjacent bound in document-memory-extraction-endpoint.ts; a resume rarely produces more sections than this
 const MAX_CANDIDATES_PER_RUN = 12
 const DERIVATION_VERSION = 'personal-memory-extraction-v1'
 const MAX_BODY_BYTES = 1024
@@ -265,6 +271,41 @@ async function readEligibleSourceMaterial(
     items.push({ id: briefingRows[0].id, provenanceSourceKind: 'briefing', text: briefingRows[0].content.slice(0, MAX_MESSAGE_TEXT_CHARS) })
   }
   return items
+}
+
+interface DocumentChunkRow {
+  id: string
+  content: string
+}
+
+// Task 16 (Document-Sourced Memory, slice 1): the document-sourced
+// alternative to readEligibleSourceMaterial above -- same return shape
+// (SourceItemForPrompt[]), so every downstream step (buildExtractionPrompt,
+// callGeminiForExtraction, normalizeCandidate, the create_personal_memory_record
+// persistence loop) needs NO changes at all to also work for this source;
+// this is "extend the existing pipeline, do not fork a second one" in its
+// most literal form. Forwards the user's own JWT (RLS-scoped to their own
+// chunks), consistent with this route's existing posture -- unlike
+// document-memory-extraction-endpoint.ts, which uses service role for a
+// different, already-documented reason (its writes are service-role-only
+// by RLS; this route's reads are not).
+async function readEligibleSourceMaterialFromDocument(
+  documentId: string,
+  env: PersonalMemoryExtractionEnv,
+  jwt: string,
+  fetcher: typeof fetch,
+): Promise<SourceItemForPrompt[]> {
+  const chunkRows = await restGetAsUser<DocumentChunkRow[]>(
+    env,
+    jwt,
+    `document_chunks?document_id=eq.${encodeURIComponent(documentId)}&select=id,content&order=chunk_index.asc&limit=${MAX_DOCUMENT_CHUNKS_PER_RUN}`,
+    fetcher,
+  )
+  return chunkRows.map((row) => ({
+    id: row.id,
+    provenanceSourceKind: 'document' as const,
+    text: row.content,
+  }))
 }
 
 // ---------------------------------------------------------------------------
@@ -673,26 +714,45 @@ export async function handlePersonalMemoryExtractionRequest(
   if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) {
     return errorResponse('REQUEST_TOO_LARGE', 'Request body is too large.', 413, origin)
   }
-  // No required body fields -- ADR-0010 Q4: explicit user trigger only,
-  // with no target to name (unlike context-derivation's projectId). An
-  // empty JSON object is the expected body; still parsed for forward
-  // compatibility and to reject a malformed request explicitly.
+  // ADR-0010 Q4: explicit user trigger only, with no target to name in the
+  // original design -- task 16 adds ONE optional field, documentId, so a
+  // run's source material can be a single document's chunks instead of
+  // chat+briefing (never both in the same run). An empty JSON object (or
+  // no documentId field) is still the expected body for the original path.
+  let documentId: string | undefined
   try {
     const text = await request.text()
-    if (text.trim()) JSON.parse(text)
+    if (text.trim()) {
+      const parsed = JSON.parse(text) as { documentId?: unknown }
+      if (parsed.documentId !== undefined) {
+        if (typeof parsed.documentId !== 'string' || !parsed.documentId) {
+          return errorResponse('INVALID_REQUEST', 'documentId, if provided, must be a non-empty string.', 400, origin)
+        }
+        documentId = parsed.documentId
+      }
+    }
   } catch {
     return errorResponse('INVALID_JSON', 'Request body must contain valid JSON.', 400, origin)
   }
 
   let source: SourceItemForPrompt[]
   try {
-    source = await readEligibleSourceMaterial(env, jwt, fetcher)
+    source = documentId
+      ? await readEligibleSourceMaterialFromDocument(documentId, env, jwt, fetcher)
+      : await readEligibleSourceMaterial(env, jwt, fetcher)
   } catch (error) {
     logger.error?.(`[PersonalMemory] source read failed: ${(error as Error).message}`)
     return errorResponse('SOURCE_READ_FAILED', 'Unable to read source material.', 502, origin)
   }
   if (source.length === 0) {
-    return errorResponse('NO_SOURCE_MATERIAL', 'No chat messages or briefings exist yet to extract personal memory from.', 422, origin)
+    return errorResponse(
+      'NO_SOURCE_MATERIAL',
+      documentId
+        ? 'This document has no extracted chunks yet -- extract it first.'
+        : 'No chat messages or briefings exist yet to extract personal memory from.',
+      422,
+      origin,
+    )
   }
   const refIdKinds = new Map(source.map((item) => [item.id, item.provenanceSourceKind]))
 

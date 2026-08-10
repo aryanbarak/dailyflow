@@ -66,6 +66,8 @@ async function defaultGetSessionToken(): Promise<string | null> {
 
 export async function triggerPersonalMemoryExtraction(
   dependencies: PersonalMemoryExtractionTriggerDependencies = {},
+  /** Task 16: when provided, the run sources from this document's chunks (agent/worker/document-memory-extraction-endpoint.ts must have chunked it first) instead of chat+briefing. Mirrors contextDerivationTriggerClient.ts's own projectId parameter shape. */
+  documentId?: string,
 ): Promise<PersonalMemoryExtractionTriggerResult> {
   const fetcher = dependencies.fetcher ?? fetch;
   const getSessionToken = dependencies.getSessionToken ?? defaultGetSessionToken;
@@ -95,7 +97,7 @@ export async function triggerPersonalMemoryExtraction(
     response = await fetcher(`${WORKER_URL}/personal-memory/extraction`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({}),
+      body: JSON.stringify(documentId ? { documentId } : {}),
     });
   } catch {
     return { ok: false, code: "NETWORK_UNREACHABLE", message: "Could not reach the personal memory extraction service." };

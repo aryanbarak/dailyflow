@@ -447,6 +447,53 @@ export type Database = {
           },
         ]
       }
+      document_chunks: {
+        Row: {
+          chunk_index: number
+          content: string
+          created_at: string
+          document_id: string
+          embedding: string
+          extraction_method: string
+          file_name: string
+          id: string
+          section_label: string
+          user_id: string
+        }
+        Insert: {
+          chunk_index: number
+          content: string
+          created_at?: string
+          document_id: string
+          embedding: string
+          extraction_method: string
+          file_name: string
+          id?: string
+          section_label: string
+          user_id: string
+        }
+        Update: {
+          chunk_index?: number
+          content?: string
+          created_at?: string
+          document_id?: string
+          embedding?: string
+          extraction_method?: string
+          file_name?: string
+          id?: string
+          section_label?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "document_chunks_document_id_fkey"
+            columns: ["document_id"]
+            isOneToOne: false
+            referencedRelation: "documents"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       documents: {
         Row: {
           ai_summary: string | null
@@ -467,6 +514,7 @@ export type Database = {
           summary_language: string | null
           tags: string[]
           title: string | null
+          type: string | null
           updated_at: string
           user_id: string
           word_count: number | null
@@ -490,6 +538,7 @@ export type Database = {
           summary_language?: string | null
           tags?: string[]
           title?: string | null
+          type?: string | null
           updated_at?: string
           user_id: string
           word_count?: number | null
@@ -513,6 +562,7 @@ export type Database = {
           summary_language?: string | null
           tags?: string[]
           title?: string | null
+          type?: string | null
           updated_at?: string
           user_id?: string
           word_count?: number | null

@@ -12,6 +12,8 @@ export interface Document {
   title: string | null;
   description: string | null;
   tags: string[];
+  /** Task 16 (Document-Sourced Memory slice 1): 'resume' when explicitly marked, else null. The only recognized value in this slice -- see 20260811000000_document_chunks_pgvector.sql's own CHECK constraint. */
+  type: string | null;
   aiSummary: string | null;
   aiSummaryPoints: string[];
   extractedTasksCount: number;
@@ -21,7 +23,7 @@ export interface Document {
 }
 
 const SELECT_COLS =
-  'id,storage_path,file_name,mime_type,size_bytes,title,description,tags,ai_summary,ai_summary_points,extracted_tasks_count,last_opened_at,created_at,updated_at';
+  'id,storage_path,file_name,mime_type,size_bytes,title,description,tags,type,ai_summary,ai_summary_points,extracted_tasks_count,last_opened_at,created_at,updated_at';
 
 interface RawRow {
   id: string;
@@ -32,6 +34,7 @@ interface RawRow {
   title: string | null;
   description: string | null;
   tags: string[] | null;
+  type: string | null;
   ai_summary: string | null;
   ai_summary_points: unknown;
   extracted_tasks_count: number | null;
@@ -50,6 +53,7 @@ function mapRow(row: RawRow): Document {
     title: row.title,
     description: row.description,
     tags: Array.isArray(row.tags) ? row.tags : [],
+    type: row.type,
     aiSummary: row.ai_summary,
     aiSummaryPoints: Array.isArray(row.ai_summary_points) ? row.ai_summary_points as string[] : [],
     extractedTasksCount: row.extracted_tasks_count ?? 0,
@@ -146,6 +150,15 @@ export async function updateTags(id: string, tags: string[]): Promise<void> {
   const { error } = await supabase
     .from("documents")
     .update({ tags })
+    .eq("id", id);
+  if (error) throw error;
+}
+
+/** Task 16: marks/unmarks a document as a resume -- the only recognized type in this slice, gating the "Extract to personal memory" action. */
+export async function updateDocumentType(id: string, type: "resume" | null): Promise<void> {
+  const { error } = await supabase
+    .from("documents")
+    .update({ type })
     .eq("id", id);
   if (error) throw error;
 }

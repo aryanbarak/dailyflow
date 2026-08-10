@@ -35,13 +35,32 @@ export const PERSONAL_MEMORY_SOURCE_VALUES = ["model", "user"] as const;
 export type PersonalMemorySource = typeof PERSONAL_MEMORY_SOURCE_VALUES[number];
 
 /**
- * ADR-0010 section 2.b's three provenance source kinds. `explicit_user_statement`
+ * ADR-0010 section 2.b's three provenance source kinds, plus 'document'
+ * (task 16, Document-Sourced Memory slice 1). `explicit_user_statement`
  * is part of the data model for forward compatibility, but no write path in
  * this implementation populates it -- its capture surface is out of scope
- * for this task (ADR-0010 section 2.b).
+ * for this task (ADR-0010 section 2.b). For 'document', sourceReferenceIds
+ * point at document_chunks.id (per-chunk precision), never documents.id.
  */
-export const PERSONAL_MEMORY_PROVENANCE_SOURCE_KINDS = ["chat_turn", "briefing", "explicit_user_statement"] as const;
+export const PERSONAL_MEMORY_PROVENANCE_SOURCE_KINDS = ["chat_turn", "briefing", "explicit_user_statement", "document"] as const;
 export type PersonalMemoryProvenanceSourceKind = typeof PERSONAL_MEMORY_PROVENANCE_SOURCE_KINDS[number];
+
+/**
+ * Task 16 Phase-B amendment: one entry per cited document_chunks row that
+ * has since been deleted (Worker re-extraction or a document hard-delete),
+ * written by the snapshot_document_chunk_provenance database trigger
+ * (20260811010000_personal_memory_document_provenance.sql) immediately
+ * before the chunk disappears. The UI source line reads the live
+ * document_chunks join first and falls back to this snapshot only for a
+ * ref id the join no longer finds.
+ */
+export interface PersonalMemoryProvenanceSnapshotEntry {
+  readonly chunkId: string;
+  readonly fileName: string;
+  readonly sectionLabel: string;
+  /** Bounded to <=200 chars by the trigger that writes it. */
+  readonly contentExcerpt: string;
+}
 
 // ---------------------------------------------------------------------------
 // Per-kind content shapes -- every kind shares `summary` as its primary
@@ -120,6 +139,8 @@ export interface PersonalMemoryRecord {
   readonly kind: PersonalMemoryRecordKind;
   readonly content: PersonalMemoryContent;
   readonly provenance: PersonalMemoryProvenance;
+  /** Task 16 Phase-B amendment: present only for a 'document'-sourced record whose cited chunk(s) have since been deleted. See PersonalMemoryProvenanceSnapshotEntry. */
+  readonly provenanceSnapshot?: readonly PersonalMemoryProvenanceSnapshotEntry[];
   readonly modelIdentity: string;
   readonly derivationVersion: string;
   readonly confidence: PersonalMemoryConfidence;

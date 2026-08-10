@@ -61,11 +61,13 @@ function geminiModelResponse(candidates: Array<Record<string, unknown>>): Respon
 function baseFetcher(overrides: {
   chatMessages?: Array<Record<string, unknown>>
   briefings?: Array<Record<string, unknown>>
+  documentChunks?: Array<Record<string, unknown>>
   geminiCandidates?: Array<Record<string, unknown>>
   onRpc?: (body: unknown) => void
 } = {}) {
   const chatMessages = overrides.chatMessages ?? [{ id: CHAT_ID, content: 'I prefer async written updates over calls.' }]
   const briefings = overrides.briefings ?? [{ id: BRIEFING_ID, content: 'You are learning React Native this month.' }]
+  const documentChunks = overrides.documentChunks ?? []
   const geminiCandidates =
     overrides.geminiCandidates ?? [
       {
@@ -82,6 +84,7 @@ function baseFetcher(overrides: {
     if (url === `${SUPABASE_URL}/auth/v1/user`) return jsonResponse({ id: 'user-1' })
     if (url.startsWith(`${SUPABASE_URL}/rest/v1/agent_chat_messages?`)) return jsonResponse(chatMessages)
     if (url.startsWith(`${SUPABASE_URL}/rest/v1/agent_briefings?`)) return jsonResponse(briefings)
+    if (url.startsWith(`${SUPABASE_URL}/rest/v1/document_chunks?`)) return jsonResponse(documentChunks)
     if (url === `${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs` && init?.method === 'POST') {
       assertRunInsertBodyIsComplete(init.body ? JSON.parse(init.body as string) : null)
       return jsonResponse([{ id: RUN_ID }])
@@ -515,6 +518,86 @@ describe('POST /personal-memory/extraction', () => {
     const body = (await response.json()) as { acceptedCount: number; droppedCount: number }
     expect(body.acceptedCount).toBe(1)
     expect(body.droppedCount).toBe(0)
+  })
+
+  // -------------------------------------------------------------------------
+  // Task 16 (Document-Sourced Memory, slice 1) -- B1: this route's source
+  // material can also be a single document's chunks, when the request body
+  // names a documentId. Every step downstream of source-gathering
+  // (prompt/schema/Gemini call/normalization/persistence) is untouched and
+  // already generic -- these tests exist to prove that branch specifically,
+  // not to re-prove the shared logic above.
+  // -------------------------------------------------------------------------
+  const CHUNK_ID = '55555555-5555-4555-8555-555555555555'
+  const DOCUMENT_ID = '66666666-6666-4666-8666-666666666666'
+
+  it('task 16: reads document_chunks (not chat/briefing) when documentId is provided, and persists the candidate with document provenance', async () => {
+    const onRpc = vi.fn()
+    const fetcher = baseFetcher({
+      documentChunks: [{ id: CHUNK_ID, content: 'Experience: Senior Engineer at Acme Corp, 2020-2026.' }],
+      geminiCandidates: [
+        {
+          kind: 'skill',
+          content: { summary: 'Senior software engineering experience', level: 'advanced' },
+          confidence: 'high',
+          provenanceSourceKind: 'document',
+          provenanceSourceRefIds: [CHUNK_ID],
+        },
+      ],
+      onRpc,
+    })
+    const response = await handlePersonalMemoryExtractionRequest(request({ documentId: DOCUMENT_ID }), validEnv, { fetcher })
+    expect(response.status).toBe(200)
+    const body = (await response.json()) as { acceptedCount: number; sourceItemCount: number }
+    expect(body.sourceItemCount).toBe(1)
+    expect(body.acceptedCount).toBe(1)
+
+    // Confirms chat/briefing were never read for a document-sourced run.
+    expect(fetcher.mock.calls.some(([input]) => String(input).includes('agent_chat_messages'))).toBe(false)
+    expect(fetcher.mock.calls.some(([input]) => String(input).includes('agent_briefings'))).toBe(false)
+    expect(fetcher.mock.calls.some(([input]) => String(input).includes(`document_chunks?document_id=eq.${DOCUMENT_ID}`))).toBe(true)
+
+    expect(onRpc).toHaveBeenCalledWith(
+      expect.objectContaining({ p_provenance_source_kind: 'document', p_provenance_source_ref_ids: [CHUNK_ID] }),
+    )
+  })
+
+  it('task 16: NO_SOURCE_MATERIAL with a document-specific message when the named document has no chunks', async () => {
+    const fetcher = baseFetcher({ documentChunks: [] })
+    const response = await handlePersonalMemoryExtractionRequest(request({ documentId: DOCUMENT_ID }), validEnv, { fetcher })
+    expect(response.status).toBe(422)
+    const body = (await response.json()) as { error: { code: string; message: string } }
+    expect(body.error.code).toBe('NO_SOURCE_MATERIAL')
+    expect(body.error.message).toMatch(/extract it first/i)
+  })
+
+  it('task 16: rejects a non-string documentId with 400 before any source read', async () => {
+    const fetcher = baseFetcher()
+    const response = await handlePersonalMemoryExtractionRequest(request({ documentId: 12345 }), validEnv, { fetcher })
+    expect(response.status).toBe(400)
+    expect(fetcher.mock.calls.some(([input]) => String(input).includes('document_chunks') || String(input).includes('agent_chat_messages'))).toBe(false)
+  })
+
+  it('task 16: a document-sourced candidate citing an unknown chunk id is dropped, never persisted', async () => {
+    const onRpc = vi.fn()
+    const fetcher = baseFetcher({
+      documentChunks: [{ id: CHUNK_ID, content: 'Skills: TypeScript, Postgres.' }],
+      geminiCandidates: [
+        {
+          kind: 'skill',
+          content: { summary: 'Knows TypeScript', level: 'advanced' },
+          confidence: 'medium',
+          provenanceSourceKind: 'document',
+          provenanceSourceRefIds: ['99999999-9999-4999-8999-999999999999'],
+        },
+      ],
+      onRpc,
+    })
+    const response = await handlePersonalMemoryExtractionRequest(request({ documentId: DOCUMENT_ID }), validEnv, { fetcher })
+    const body = (await response.json()) as { acceptedCount: number; droppedCount: number }
+    expect(body.acceptedCount).toBe(0)
+    expect(body.droppedCount).toBe(1)
+    expect(onRpc).not.toHaveBeenCalled()
   })
 })
 

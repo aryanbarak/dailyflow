@@ -18,6 +18,8 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { AlertTriangle, CheckCircle2, ChevronDown, ChevronUp, Loader2, RefreshCw, Trash2, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { isolateEmbeddedBidiRuns } from "@/lib/bidiText";
+import { useT } from "@/i18n";
+import type { ResolveDocumentChunkSources } from "@/features/documents/documentChunkSourceResolver";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -49,6 +51,8 @@ import type { PersonalMemoryExtractionTriggerResult } from "../personalMemoryExt
 export interface PersonalMemorySectionProps {
   readonly service: Pick<PersonalMemoryRecordService, "listByOwner" | "resolve" | "remove">;
   readonly triggerExtraction: () => Promise<PersonalMemoryExtractionTriggerResult>;
+  /** Task 16: resolves live document_chunks info for a document-sourced record's source line. Omit to render document-sourced cards with no source line (graceful degradation, not an error). */
+  readonly resolveDocumentSources?: ResolveDocumentChunkSources;
   /** Called after any successful resolve/delete action or a successfully-completed extraction run. */
   readonly onRecordsChanged?: () => void;
 }
@@ -71,6 +75,32 @@ const EXTRACTION_ERROR_MESSAGES: Record<string, string> = {
 
 function extractionErrorMessage(result: PersonalMemoryExtractionTriggerResult & { ok: false }): string {
   return EXTRACTION_ERROR_MESSAGES[result.code] ?? result.message;
+}
+
+// Task 16 (Document-Sourced Memory slice 1): builds a document-sourced
+// record's "file.pdf — Section (via AI transcription)" source line. Reads
+// the live-resolved chunk map first (documentSources); falls back to the
+// record's own provenanceSnapshot for a ref id the live join no longer has
+// (chunk deleted by re-extraction or a document hard-delete -- see
+// 20260811010000_personal_memory_document_provenance.sql's snapshot
+// trigger). Only the FIRST resolvable cited chunk is shown -- in practice
+// a candidate cites exactly one, and a single line is what the design
+// (docs "resume.pdf — work experience section") calls for.
+function documentSourceLine(
+  record: PersonalMemoryRecord,
+  documentSources: Readonly<Record<string, { fileName: string; sectionLabel: string }>>,
+  t: (key: "personal_memory_document_source_line", vars: Record<string, string>) => string,
+): string | undefined {
+  if (record.provenance.sourceKind !== "document") return undefined;
+  for (const chunkId of record.provenance.sourceReferenceIds) {
+    const live = documentSources[chunkId];
+    if (live) return t("personal_memory_document_source_line", { fileName: live.fileName, section: live.sectionLabel });
+    const snapshotEntry = record.provenanceSnapshot?.find((entry) => entry.chunkId === chunkId);
+    if (snapshotEntry) {
+      return t("personal_memory_document_source_line", { fileName: snapshotEntry.fileName, section: snapshotEntry.sectionLabel });
+    }
+  }
+  return undefined;
 }
 
 function CorrectionForm({
@@ -159,6 +189,7 @@ function RecordCard({
   busy,
   correcting,
   showingOriginal,
+  sourceLine,
   onToggleOriginal,
   onConfirm,
   onReject,
@@ -172,6 +203,8 @@ function RecordCard({
   busy: boolean;
   correcting: boolean;
   showingOriginal: boolean;
+  /** Task 16: only set for a document-sourced record with a resolvable source (live or snapshot). */
+  sourceLine?: string;
   onToggleOriginal: () => void;
   onConfirm: () => void;
   onReject: () => void;
@@ -201,6 +234,14 @@ function RecordCard({
           {personalMemoryRecordSecondaryText(record.kind, record.content) && (
             <p dir="auto" className="mt-0.5 text-xs text-muted-foreground">
               {isolateEmbeddedBidiRuns(personalMemoryRecordSecondaryText(record.kind, record.content))}
+            </p>
+          )}
+          {/* Task 16: document provenance source line -- file name can be
+              user-controlled (upload) and mix directions, same bidi
+              treatment as the primary/secondary text above. */}
+          {sourceLine && (
+            <p dir="auto" className="mt-0.5 text-[11px] italic text-muted-foreground/80">
+              {isolateEmbeddedBidiRuns(sourceLine)}
             </p>
           )}
         </div>
@@ -262,8 +303,10 @@ function RecordCard({
   );
 }
 
-export function PersonalMemorySection({ service, triggerExtraction, onRecordsChanged }: Readonly<PersonalMemorySectionProps>) {
+export function PersonalMemorySection({ service, triggerExtraction, resolveDocumentSources, onRecordsChanged }: Readonly<PersonalMemorySectionProps>) {
+  const { t } = useT();
   const [records, setRecords] = useState<readonly PersonalMemoryRecord[] | null>(null);
+  const [documentSources, setDocumentSources] = useState<Readonly<Record<string, { fileName: string; sectionLabel: string }>>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busyRecordId, setBusyRecordId] = useState<string | null>(null);
   const [recordErrors, setRecordErrors] = useState<Readonly<Record<string, string>>>({});
@@ -289,6 +332,31 @@ export function PersonalMemorySection({ service, triggerExtraction, onRecordsCha
     setRecords(null);
     load();
   }, [load]);
+
+  // Task 16: resolve live document_chunks info for every document-sourced
+  // record's source line, once per records load. Batched into a single
+  // call (all cited chunk ids across all records at once) rather than one
+  // call per record.
+  useEffect(() => {
+    if (!records || !resolveDocumentSources) return;
+    const chunkIds = records
+      .filter((record) => record.provenance.sourceKind === "document")
+      .flatMap((record) => record.provenance.sourceReferenceIds);
+    if (chunkIds.length === 0) return;
+    let cancelled = false;
+    resolveDocumentSources(chunkIds)
+      .then((resolved) => {
+        if (!cancelled) setDocumentSources(resolved);
+      })
+      .catch(() => {
+        // Best-effort: a resolution failure just means document-sourced
+        // cards fall back to their snapshot (or show no source line) --
+        // never a load-blocking error.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [records, resolveDocumentSources]);
 
   const handleResolve = useCallback(
     async (recordId: string, action: "confirm" | "correct" | "reject", correctedContent?: PersonalMemoryContent) => {
@@ -407,6 +475,7 @@ export function PersonalMemorySection({ service, triggerExtraction, onRecordsCha
                 busy={busyRecordId === entry.record.id}
                 correcting={correctingRecordId === entry.record.id}
                 showingOriginal={showOriginalForId === entry.record.id}
+                sourceLine={documentSourceLine(entry.record, documentSources, t)}
                 error={recordErrors[entry.record.id]}
                 onToggleOriginal={() => setShowOriginalForId((current) => (current === entry.record.id ? null : entry.record.id))}
                 onConfirm={() => handleResolve(entry.record.id, "confirm")}

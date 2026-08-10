@@ -31,6 +31,7 @@ interface PersonalMemoryRecordRow {
   content: unknown;
   provenance_source_kind: string;
   provenance_source_ref_ids: string[];
+  provenance_snapshot: unknown;
   model_identity: string;
   derivation_version: string;
   confidence: string;
@@ -119,6 +120,9 @@ function mapRowToRecord(row: PersonalMemoryRecordRow): PersonalMemoryRecord {
   };
   if (row.run_id) (record as { runId?: string }).runId = row.run_id;
   if (row.supersedes_id) (record as { supersedesId?: string }).supersedesId = row.supersedes_id;
+  if (Array.isArray(row.provenance_snapshot) && row.provenance_snapshot.length > 0) {
+    (record as { provenanceSnapshot?: unknown }).provenanceSnapshot = row.provenance_snapshot;
+  }
   return record;
 }
 
@@ -142,7 +146,7 @@ function mapRowToRun(row: PersonalMemoryExtractionRunRow): PersonalMemoryExtract
 }
 
 const RECORD_COLUMNS =
-  "id,user_id,run_id,kind,content,provenance_source_kind,provenance_source_ref_ids,model_identity,derivation_version,confidence,status,source,supersedes_id,content_fingerprint,created_at";
+  "id,user_id,run_id,kind,content,provenance_source_kind,provenance_source_ref_ids,provenance_snapshot,model_identity,derivation_version,confidence,status,source,supersedes_id,content_fingerprint,created_at";
 const RUN_COLUMNS =
   "id,user_id,model_identity,derivation_version,started_at,completed_at,prompt_token_count,response_token_count,candidate_count,accepted_count,dropped_count,outcome,failure_reason";
 

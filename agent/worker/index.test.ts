@@ -223,6 +223,41 @@ describe('handleChat mode routing', () => {
     expect(systemText).toContain('Prefers async written updates (Strength: strong)')
   })
 
+  it('task 16 (B3 consumption parity): a document-sourced confirmed fact reaches the /chat system prompt exactly like a chat-sourced one -- fetchConfirmedPersonalMemory selects only kind/content/created_at and filters only by status, never reading or branching on provenance_source_kind at all', async () => {
+    let personalMemoryUrl: string | null = null
+    // Shaped like what task 16's resume extraction would actually produce
+    // (provenance_source_kind='document' server-side) -- but this fixture
+    // row, like the real query result, carries no provenance field at all:
+    // that is the whole point being proven here.
+    const log = installFetchMock([
+      { kind: 'skill', content: { summary: 'Senior software engineering experience', level: 'advanced' }, created_at: '2026-08-11T00:00:00.000Z' },
+    ])
+    const originalFetch = globalThis.fetch
+    const capturingFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_records`)) personalMemoryUrl = url
+      return originalFetch(input, init)
+    })
+    vi.stubGlobal('fetch', capturingFetch)
+
+    const ctx = fakeExecutionContext()
+    const env = testEnv()
+    const response = await worker.fetch(chatRequest({ message: 'Hello there' }), env, ctx)
+
+    expect(response.status).toBe(200)
+    expect(log.personalMemoryReads).toBe(1)
+    // The read itself never names a provenance kind -- proving there is no
+    // branch anywhere ("if document-sourced, do X") in this query.
+    expect(personalMemoryUrl).not.toBeNull()
+    expect(personalMemoryUrl).not.toContain('provenance')
+    expect(personalMemoryUrl).not.toContain('document')
+
+    const chatCall = log.geminiCalls.find((call) => !call.generationConfig?.responseSchema)
+    const systemText = systemTextOf(chatCall)
+    expect(systemText).toContain('What I know about Aryan')
+    expect(systemText).toContain('Senior software engineering experience (Level: advanced)')
+  })
+
   it('task 11 (g): the conversation lane\'s personal_memory_records read is scoped to status=in.(user_confirmed,user_corrected) only -- proposed/rejected candidates can never leak into the /chat prompt', async () => {
     let personalMemoryUrl: string | null = null
     const log = installFetchMock([
