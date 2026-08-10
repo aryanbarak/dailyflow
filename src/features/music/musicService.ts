@@ -143,13 +143,14 @@ export const musicService = {
   },
 
   async addTrackToPlaylist(playlistId: string, track: MusicTrack): Promise<PlaylistTrack> {
+    const userId = await getUserId();
     const { data: last } = await supabase
       .from('playlist_tracks').select('position')
       .eq('playlist_id', playlistId).order('position', { ascending: false }).limit(1);
     const nextPos = last && last.length > 0 ? ((last[0] as Row).position as number) + 1 : 0;
     const { data, error } = await supabase
       .from('playlist_tracks').insert({
-        playlist_id: playlistId, youtube_id: track.youtubeId, title: track.title,
+        playlist_id: playlistId, user_id: userId, youtube_id: track.youtubeId, title: track.title,
         artist: track.artist ?? null, thumbnail_url: track.thumbnailUrl ?? null,
         duration_seconds: track.durationSeconds ?? null, position: nextPos,
       }).select().single();

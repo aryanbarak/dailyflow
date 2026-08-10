@@ -135,3 +135,55 @@ matches reality), or (b) an explicit decision to leave it as accepted
 historical drift. Everything else in section B/C is lower priority
 (dormant legacy columns, cosmetic naming) and can be scheduled whenever
 convenient, or left alone indefinitely without risk.
+
+## E. Reconciliation (task 15, 2026-08-10) — PO-approved direction: production is source of truth for data reality
+
+Re-verified all of section B live via `supabase db diff --linked --schema
+public` (read-only, schema-only) on 2026-08-10; every finding below
+reconfirmed unchanged from the 2026-08-09 audit. Migration
+`20260810000000_reconcile_high_risk_schema_drift.sql` (authored, **not
+applied** — PO authorization required) resolves the three high-risk items:
+
+- **`profiles.preferences`** — dead in application code (confirmed:
+  `profileService.ts`'s explicit column list never includes it; no other
+  DB-backed reference in `src/`). Migration drops it from the
+  migration-defined schema rather than creating it in production.
+- **`user_settings.id`** — dead in application code (confirmed: no
+  read/insert/upsert anywhere references `id`; all call sites use
+  `user_id`/`language` only, upsert `onConflict` is `user_id`). Migration
+  reconciles the migration-defined schema to production's shape (`user_id`
+  as primary key, no separate `id`).
+- **`playlist_tracks.user_id` (+ FK + RLS policy)** — migration now
+  recreates production's real ownership model exactly (column, FK to
+  `auth.users`, `"Users manage own playlist_tracks"` policy), idempotently.
+  **New discovery from re-verification, outside this migration's scope**:
+  production's column has no default and no populating trigger, and
+  `musicService.ts`'s `addTrackToPlaylist` inserts into `playlist_tracks`
+  without setting `user_id` — this schema migration documents the fact but
+  does not fix the app-code gap; flagged separately for PO/eng follow-up.
+
+The remaining section B/C drift is accepted as-is (no migration, no
+production change needed):
+
+- **`documents` legacy columns** (`file_path`, `file_size`, `name`, `size`,
+  `type`) — ACCEPTED-AS-IS: confirmed dormant pre-rename columns, zero live
+  code reference, zero risk left alone.
+- **`documents` nullability drift** (`ai_summary_points`,
+  `extracted_tasks_count`, `tags`) — ACCEPTED-AS-IS: production is more
+  permissive (nullable) than migrations; no app path relies on the
+  stricter NOT NULL, so no behavior to preserve either way.
+- **`playlists.is_public`** — ACCEPTED-AS-IS: no references in `src/`;
+  dormant production-only column.
+- **`profiles.avatar_url`** and the `id`/`user_id` `default auth.uid()`
+  pair on `profiles` — ACCEPTED-AS-IS: no references in `src/`; the
+  `auth.uid()` defaults are a manual/dashboard convenience with no
+  behavioral dependency in app code (inserts always supply `user_id`
+  explicitly).
+- **`ai_news_items`** table — ACCEPTED-AS-IS for this task; ownership of
+  the drop-migration-didn't-take issue remains with task 8c, out of scope
+  here.
+- **Cosmetic name drift** (indexes, RLS policies, triggers, constraint
+  names in section C, plus `liked_tracks`/`photos`/`play_history`
+  nullability) — ACCEPTED-AS-IS: same effective behavior under a different
+  identifier or a laxer constraint than the app depends on; not worth
+  migration churn.

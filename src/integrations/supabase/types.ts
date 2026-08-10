@@ -1149,6 +1149,7 @@ export type Database = {
           position: number
           thumbnail_url: string | null
           title: string
+          user_id: string
           youtube_id: string
         }
         Insert: {
@@ -1160,6 +1161,7 @@ export type Database = {
           position?: number
           thumbnail_url?: string | null
           title: string
+          user_id: string
           youtube_id: string
         }
         Update: {
@@ -1171,6 +1173,7 @@ export type Database = {
           position?: number
           thumbnail_url?: string | null
           title?: string
+          user_id?: string
           youtube_id?: string
         }
         Relationships: [
@@ -1263,7 +1266,6 @@ export type Database = {
           created_at: string
           display_name: string | null
           id: string
-          preferences: Json | null
           updated_at: string
           user_id: string
         }
@@ -1272,7 +1274,6 @@ export type Database = {
           created_at?: string
           display_name?: string | null
           id?: string
-          preferences?: Json | null
           updated_at?: string
           user_id: string
         }
@@ -1281,7 +1282,6 @@ export type Database = {
           created_at?: string
           display_name?: string | null
           id?: string
-          preferences?: Json | null
           updated_at?: string
           user_id?: string
         }
@@ -1664,21 +1664,18 @@ export type Database = {
       user_settings: {
         Row: {
           created_at: string
-          id: string
           language: string
           updated_at: string
           user_id: string
         }
         Insert: {
           created_at?: string
-          id?: string
           language?: string
           updated_at?: string
           user_id: string
         }
         Update: {
           created_at?: string
-          id?: string
           language?: string
           updated_at?: string
           user_id?: string
