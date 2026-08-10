@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { useAiMemory } from './useAiMemory';
 import { MEMORY_KEYS } from './aiMemoryService';
+import { useT } from '@/i18n';
 
 const KEY_ICONS: Record<string, React.ReactNode> = {
   goal_primary:    <Zap className="w-3.5 h-3.5 text-cyan-400" />,
@@ -25,6 +26,7 @@ const AUTO_KEYS = ['mood_pattern', 'habit_pattern', 'finance_pattern'];
 
 export function AiMemoryTab() {
   const { entries, isLoading, remove, getValue, getSource } = useAiMemory();
+  const { t } = useT();
 
   if (isLoading) {
     return (
@@ -81,7 +83,7 @@ export function AiMemoryTab() {
       <div className="flex items-start gap-3 p-3 rounded-lg bg-cyan-500/10 border border-cyan-500/20">
         <Info className="w-4 h-4 text-cyan-400 flex-shrink-0 mt-0.5" />
         <p className="text-xs text-cyan-300">
-          These legacy entries may be used to personalize AI responses.
+          {t('ai_memory_legacy_notice')}
         </p>
       </div>
       <p className="text-xs text-muted-foreground">

@@ -4,6 +4,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { AiMemoryTab } from "./AiMemoryTab";
 import type { MemoryEntry } from "./aiMemoryService";
+import { translations } from "@/i18n";
 
 const useAiMemoryMock = vi.hoisted(() => vi.fn());
 vi.mock("./useAiMemory", () => ({ useAiMemory: useAiMemoryMock }));
@@ -101,5 +102,30 @@ describe("AiMemoryTab -- ADR-0010 Q3 complete write-freeze (review MAJOR #1 reme
     mockHook([]);
     render(<AiMemoryTab />);
     expect(screen.queryByTitle("Clear")).not.toBeInTheDocument();
+  });
+});
+
+describe("AiMemoryTab -- task 11c PART 2: legacy notice copy no longer claims these entries are used", () => {
+  it("EN (rendered): no longer says entries 'may be used to personalize AI responses' -- says they are not used, only viewable/removable", () => {
+    mockHook([]);
+    render(<AiMemoryTab />);
+    expect(screen.queryByText(/may be used to personalize/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/no longer used by AI responses/i)).toBeInTheDocument();
+  });
+
+  // DE/FA are asserted directly against the translation dictionary rather
+  // than by switching useAppearance's persisted language store and
+  // re-rendering -- that store's zustand `persist` middleware writes
+  // through to localStorage synchronously on every setState, which is
+  // unrelated to what these tests need to prove (that the DE/FA copy
+  // itself is correct) and is exercised by this file's language-switching
+  // elsewhere in the app already.
+  it("DE: same corrected claim in German", () => {
+    expect(translations.de.ai_memory_legacy_notice).toMatch(/nicht mehr für KI-Antworten verwendet/);
+    expect(translations.de.ai_memory_legacy_notice).not.toMatch(/verwendet werden können|kann.*personalisieren/i);
+  });
+
+  it("FA: same corrected claim in Persian", () => {
+    expect(translations.fa.ai_memory_legacy_notice).toMatch(/دیگر در پاسخ‌های هوش مصنوعی استفاده نمی‌شوند/);
   });
 });

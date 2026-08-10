@@ -248,6 +248,38 @@ describe('handleChat mode routing', () => {
     expect(personalMemoryUrl).not.toContain('user_rejected')
   })
 
+  it('task 11c PART 2: a fresh-session /chat request never fetches user_context at all -- the legacy table is not part of this request\'s fetch graph, not merely filtered out afterward', async () => {
+    const log = installFetchMock()
+    const requestedUrls: string[] = []
+    const originalFetch = globalThis.fetch
+    const capturingFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      requestedUrls.push(String(input))
+      return originalFetch(input, init)
+    })
+    vi.stubGlobal('fetch', capturingFetch)
+
+    const ctx = fakeExecutionContext()
+    const env = testEnv()
+    const response = await worker.fetch(chatRequest({ message: 'Hello there' }), env, ctx)
+
+    expect(response.status).toBe(200)
+    expect(log.chatMessageWrites).toHaveLength(2)
+    expect(requestedUrls.some((url) => url.includes('user_context'))).toBe(false)
+  })
+
+  it('task 11c PART 3: the assembled Gemini system prompt for a plain chat turn carries the conversation-lane identity block, in the resolved response language', async () => {
+    const log = installFetchMock()
+    const ctx = fakeExecutionContext()
+    const env = testEnv()
+
+    const response = await worker.fetch(chatRequest({ message: 'Hello there' }), env, ctx)
+    expect(response.status).toBe(200)
+
+    const chatCall = log.geminiCalls.find((call) => !call.generationConfig?.responseSchema)
+    expect(systemTextOf(chatCall)).toContain('Flow AI')
+    expect(systemTextOf(chatCall)).toContain('never tell the user to open SmartFlow')
+  })
+
   it('an unknown mode value is treated as "chat", not an error', async () => {
     const log = installFetchMock()
     const ctx = fakeExecutionContext()
