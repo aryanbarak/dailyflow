@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
-import { buildExtractionResponseSchema, handlePersonalMemoryExtractionRequest, normalizeCandidate, type PersonalMemoryExtractionEnv } from './personal-memory-extraction-endpoint'
+import {
+  buildExtractionResponseSchema,
+  batchDocumentSource,
+  handlePersonalMemoryExtractionRequest,
+  normalizeCandidate,
+  type PersonalMemoryExtractionEnv,
+  type SourceItemForPrompt,
+} from './personal-memory-extraction-endpoint'
 
 const ORIGIN = 'https://smartflow.example'
 const SUPABASE_URL = 'https://supabase.example.co'
@@ -598,6 +605,233 @@ describe('POST /personal-memory/extraction', () => {
     expect(body.acceptedCount).toBe(0)
     expect(body.droppedCount).toBe(1)
     expect(onRpc).not.toHaveBeenCalled()
+  })
+
+  // -------------------------------------------------------------------------
+  // Task 16-fix2 -- production evidence (wrangler tail) showed document-
+  // sourced runs hitting finishReason=MAX_TOKENS: FIX 1 raises the output
+  // budget, FIX 2 batches document chunks (2-3 per model call, size-based)
+  // instead of sending the whole document in one call, and FIX 3 makes a
+  // single failed batch a partial success (EXTRACTION_PARTIAL) rather than
+  // failing the whole run. The chat/briefing path is unchanged throughout
+  // -- the 32 tests above (none touched) are the regression guard for that.
+  // -------------------------------------------------------------------------
+  const CHUNK_ID_1 = '55555555-5555-4555-8555-555555555501'
+  const CHUNK_ID_2 = '55555555-5555-4555-8555-555555555502'
+  const CHUNK_ID_3 = '55555555-5555-4555-8555-555555555503'
+  const CHUNK_ID_4 = '55555555-5555-4555-8555-555555555504'
+  const CHUNK_ID_5 = '55555555-5555-4555-8555-555555555505'
+
+  // Five 2500-char chunks: two fit in one batch (5000 <= 6000 chars), a
+  // third would push it to 7500 (> 6000), so this fixture deterministically
+  // yields three batches of [2, 2, 1] under batchDocumentSource's real
+  // defaults (MAX_DOCUMENT_CHUNKS_PER_BATCH=3, MAX_DOCUMENT_BATCH_CHARS=6000).
+  const FIVE_CHUNKS_TWO_TWO_ONE = [
+    { id: CHUNK_ID_1, content: 'A'.repeat(2500) },
+    { id: CHUNK_ID_2, content: 'B'.repeat(2500) },
+    { id: CHUNK_ID_3, content: 'C'.repeat(2500) },
+    { id: CHUNK_ID_4, content: 'D'.repeat(2500) },
+    { id: CHUNK_ID_5, content: 'E'.repeat(2500) },
+  ]
+
+  function documentCandidate(chunkId: string, summary: string) {
+    return {
+      kind: 'skill',
+      content: { summary, level: 'advanced' },
+      confidence: 'medium',
+      provenanceSourceKind: 'document',
+      provenanceSourceRefIds: [chunkId],
+    }
+  }
+
+  /**
+   * A document-sourced fetcher where each successive generateContent call
+   * (i.e. each batch) gets its own scripted response from `perCallResponses`,
+   * cycling if there are more calls than entries. Everything else mirrors
+   * baseFetcher exactly.
+   */
+  function batchAwareFetcher(overrides: {
+    documentChunks: Array<Record<string, unknown>>
+    perCallResponses: Array<() => Response>
+    onRpc?: (body: unknown) => void
+    onGenerateContentCall?: (body: unknown) => void
+  }) {
+    let callIndex = 0
+    return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === `${SUPABASE_URL}/auth/v1/user`) return jsonResponse({ id: 'user-1' })
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/document_chunks?`)) return jsonResponse(overrides.documentChunks)
+      if (url === `${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs` && init?.method === 'POST') {
+        assertRunInsertBodyIsComplete(init.body ? JSON.parse(init.body as string) : null)
+        return jsonResponse([{ id: RUN_ID }])
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs?`) && init?.method === 'PATCH') return new Response(null, { status: 204 })
+      if (url.startsWith('https://generativelanguage.googleapis.com/')) {
+        overrides.onGenerateContentCall?.(init?.body ? JSON.parse(init.body as string) : null)
+        const responder = overrides.perCallResponses[callIndex % overrides.perCallResponses.length]
+        callIndex += 1
+        return responder()
+      }
+      if (url === `${SUPABASE_URL}/rest/v1/rpc/create_personal_memory_record`) {
+        overrides.onRpc?.(init?.body ? JSON.parse(init.body as string) : null)
+        return jsonResponse({ outcome: 'created', field: { id: 'record-1', status: 'proposed' } })
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+  }
+
+  describe('batchDocumentSource (FIX 2: batching split logic)', () => {
+    it('splits 5 chunks into batches of [2, 2, 1] under the real size/count defaults', () => {
+      const source: SourceItemForPrompt[] = FIVE_CHUNKS_TWO_TWO_ONE.map((c) => ({ id: c.id, provenanceSourceKind: 'document', text: c.content }))
+      const batches = batchDocumentSource(source)
+      expect(batches.map((b) => b.length)).toEqual([2, 2, 1])
+      expect(batches[0].map((i) => i.id)).toEqual([CHUNK_ID_1, CHUNK_ID_2])
+      expect(batches[1].map((i) => i.id)).toEqual([CHUNK_ID_3, CHUNK_ID_4])
+      expect(batches[2].map((i) => i.id)).toEqual([CHUNK_ID_5])
+    })
+
+    it('caps a batch at 3 items even when char budget would allow more (count-based limit)', () => {
+      const source: SourceItemForPrompt[] = Array.from({ length: 7 }, (_, i) => ({ id: `chunk-${i}`, provenanceSourceKind: 'document' as const, text: 'short' }))
+      const batches = batchDocumentSource(source)
+      expect(batches.map((b) => b.length)).toEqual([3, 3, 1])
+    })
+
+    it('gives a single oversized chunk its own batch rather than dropping or splitting it', () => {
+      const source: SourceItemForPrompt[] = [
+        { id: 'huge', provenanceSourceKind: 'document', text: 'x'.repeat(9000) },
+        { id: 'small', provenanceSourceKind: 'document', text: 'y'.repeat(100) },
+      ]
+      const batches = batchDocumentSource(source)
+      expect(batches).toEqual([[source[0]], [source[1]]])
+    })
+
+    it('returns an empty array for empty source (defensive; the route handler never actually calls it with empty source -- NO_SOURCE_MATERIAL short-circuits first)', () => {
+      expect(batchDocumentSource([])).toEqual([])
+    })
+  })
+
+  it('FIX 1: the extraction call requests the raised output budget (4096) on every batch, sized for MAX_CANDIDATES_PER_RUN=12 full candidates', async () => {
+    const sentBodies: Array<{ generationConfig?: { maxOutputTokens?: number } }> = []
+    const fetcher = batchAwareFetcher({
+      documentChunks: FIVE_CHUNKS_TWO_TWO_ONE,
+      perCallResponses: [() => geminiModelResponse([documentCandidate(CHUNK_ID_1, 'Skill A')])],
+      onGenerateContentCall: (body) => sentBodies.push(body as { generationConfig?: { maxOutputTokens?: number } }),
+    })
+    const response = await handlePersonalMemoryExtractionRequest(request({ documentId: DOCUMENT_ID }), validEnv, { fetcher })
+    expect(response.status).toBe(200)
+    expect(sentBodies.length).toBe(3) // one per batch (2+2+1 chunks)
+    for (const body of sentBodies) expect(body.generationConfig?.maxOutputTokens).toBe(4096)
+  })
+
+  it('FIX 2 + task-14 invariant: raw candidates are merged across all batches BEFORE the MAX_CANDIDATES_PER_RUN=12 cap is applied once, to the merged total', async () => {
+    const onRpc = vi.fn()
+    const fiveCandidatesPerBatch = () => geminiModelResponse(Array.from({ length: 5 }, (_, i) => documentCandidate(CHUNK_ID_1, `Skill ${i}`)))
+    const fetcher = batchAwareFetcher({
+      documentChunks: FIVE_CHUNKS_TWO_TWO_ONE,
+      perCallResponses: [fiveCandidatesPerBatch],
+      onRpc,
+    })
+    const response = await handlePersonalMemoryExtractionRequest(request({ documentId: DOCUMENT_ID }), validEnv, { fetcher })
+    expect(response.status).toBe(200)
+    const body = (await response.json()) as { candidateCount: number; acceptedCount: number; outcome: string }
+    // 3 batches x 5 candidates = 15 raw, capped to 12 -- not 15, and not
+    // capped per-batch (which would have produced fewer than 12).
+    expect(body.candidateCount).toBe(12)
+    expect(body.acceptedCount).toBe(12)
+    expect(body.outcome).toBe('completed') // no batch failed, so no partial signal
+    expect(onRpc).toHaveBeenCalledTimes(12)
+  })
+
+  it('FIX 3: one failing batch (provider 500) does not fail the run -- successful batches\' candidates are persisted and the response reports EXTRACTION_PARTIAL with counts', async () => {
+    const onRpc = vi.fn()
+    const fetcher = batchAwareFetcher({
+      documentChunks: FIVE_CHUNKS_TWO_TWO_ONE,
+      perCallResponses: [
+        () => geminiModelResponse([documentCandidate(CHUNK_ID_1, 'Skill from batch 1'), documentCandidate(CHUNK_ID_1, 'Another skill from batch 1')]),
+        () => jsonResponse({}, 500), // batch 2 (chunks 3-4) fails
+        () => geminiModelResponse([documentCandidate(CHUNK_ID_5, 'Skill from batch 3'), documentCandidate(CHUNK_ID_5, 'Another skill from batch 3')]),
+      ],
+      onRpc,
+    })
+    const response = await handlePersonalMemoryExtractionRequest(request({ documentId: DOCUMENT_ID }), validEnv, { fetcher })
+    expect(response.status).toBe(200) // partial success is still a 200, never all-or-nothing
+    const body = (await response.json()) as {
+      outcome: string
+      code?: string
+      batchesTotal?: number
+      batchesSucceeded?: number
+      batchesFailed?: number
+      acceptedCount: number
+      candidateCount: number
+    }
+    expect(body.outcome).toBe('partial')
+    expect(body.code).toBe('EXTRACTION_PARTIAL')
+    expect(body.batchesTotal).toBe(3)
+    expect(body.batchesSucceeded).toBe(2)
+    expect(body.batchesFailed).toBe(1)
+    expect(body.candidateCount).toBe(4) // 2 + 2 from the two successful batches, the failed batch contributes 0
+    expect(body.acceptedCount).toBe(4)
+    expect(onRpc).toHaveBeenCalledTimes(4) // successful batches' candidates WERE persisted, despite batch 2's failure
+  })
+
+  it('FIX 3 (exact production signature): a MAX_TOKENS finishReason on a single batch fails only that batch -- the other batches\' candidates still get persisted and EXTRACTION_PARTIAL is reported', async () => {
+    const onRpc = vi.fn()
+    const fetcher = batchAwareFetcher({
+      documentChunks: FIVE_CHUNKS_TWO_TWO_ONE,
+      perCallResponses: [
+        () => geminiModelResponse([documentCandidate(CHUNK_ID_1, 'Skill from batch 1')]),
+        () => geminiModelResponse([documentCandidate(CHUNK_ID_3, 'Skill from batch 2')]),
+        // batch 3 (chunk 5) is truncated -- the diagnosed production bug's exact signature.
+        () => jsonResponse({ candidates: [{ finishReason: 'MAX_TOKENS', content: { parts: [{ text: '{"candidates":[{"kind":"skil' }] } }] }),
+      ],
+      onRpc,
+    })
+    const response = await handlePersonalMemoryExtractionRequest(request({ documentId: DOCUMENT_ID }), validEnv, { fetcher })
+    expect(response.status).toBe(200)
+    const body = (await response.json()) as { outcome: string; batchesSucceeded: number; batchesFailed: number; acceptedCount: number }
+    expect(body.outcome).toBe('partial')
+    expect(body.batchesSucceeded).toBe(2)
+    expect(body.batchesFailed).toBe(1)
+    expect(body.acceptedCount).toBe(2)
+    expect(onRpc).toHaveBeenCalledTimes(2)
+  })
+
+  it('FIX 3: when EVERY batch fails, the run fails exactly like the pre-existing all-or-nothing chat/briefing path (502, task-14 taxonomy, run marked failed) -- a budget/batching fix does not weaken this', async () => {
+    const patchCalls: unknown[] = []
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === `${SUPABASE_URL}/auth/v1/user`) return jsonResponse({ id: 'user-1' })
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/document_chunks?`)) return jsonResponse(FIVE_CHUNKS_TWO_TWO_ONE)
+      if (url === `${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs` && init?.method === 'POST') {
+        assertRunInsertBodyIsComplete(init.body ? JSON.parse(init.body as string) : null)
+        return jsonResponse([{ id: RUN_ID }])
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs?`) && init?.method === 'PATCH') {
+        patchCalls.push(init.body ? JSON.parse(init.body as string) : null)
+        return new Response(null, { status: 204 })
+      }
+      if (url.startsWith('https://generativelanguage.googleapis.com/')) return jsonResponse({ error: { code: 503, message: 'The model is overloaded.', status: 'UNAVAILABLE' } }, 503)
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+    const response = await handlePersonalMemoryExtractionRequest(request({ documentId: DOCUMENT_ID }), validEnv, { fetcher })
+    expect(response.status).toBe(502)
+    const body = (await response.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('PROVIDER_UNAVAILABLE')
+    expect(patchCalls).toHaveLength(1)
+    expect(patchCalls[0]).toMatchObject({ outcome: 'failed' })
+  })
+
+  it('the chat/briefing path is completely unaffected by batching -- exactly one generateContent call for the whole run, never multiple, regardless of MAX_DOCUMENT_CHUNKS_PER_BATCH', async () => {
+    let generateContentCalls = 0
+    const inner = baseFetcher()
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.startsWith('https://generativelanguage.googleapis.com/')) generateContentCalls += 1
+      return inner(input, init)
+    })
+    const response = await handlePersonalMemoryExtractionRequest(request(), validEnv, { fetcher }) // no documentId -- chat/briefing path
+    expect(response.status).toBe(200)
+    expect(generateContentCalls).toBe(1)
   })
 })
 

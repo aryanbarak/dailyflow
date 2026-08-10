@@ -31,6 +31,18 @@ export interface PersonalMemoryExtractionTriggerSuccess {
   readonly candidateCount: number;
   readonly acceptedCount: number;
   readonly droppedCount: number;
+  /**
+   * Task 16-fix2 (FIX 3): 'partial' means a document-sourced run had at
+   * least one failed batch alongside at least one successful one -- some
+   * candidates WERE persisted (acceptedCount/droppedCount above already
+   * reflect that), and the remaining sections can be retried by running
+   * extraction again. Always 'completed' for the chat/briefing path (never
+   * batched) and for a document run where every batch succeeded.
+   */
+  readonly outcome: "completed" | "partial";
+  readonly batchesTotal?: number;
+  readonly batchesSucceeded?: number;
+  readonly batchesFailed?: number;
 }
 
 export interface PersonalMemoryExtractionTriggerFailure {
@@ -123,6 +135,10 @@ export async function triggerPersonalMemoryExtraction(
     candidateCount?: unknown;
     acceptedCount?: unknown;
     droppedCount?: unknown;
+    outcome?: unknown;
+    batchesTotal?: unknown;
+    batchesSucceeded?: unknown;
+    batchesFailed?: unknown;
   };
   if (typeof result.runId !== "string") {
     return { ok: false, code: "REQUEST_FAILED", message: "The personal memory extraction service returned an incomplete result." };
@@ -135,5 +151,9 @@ export async function triggerPersonalMemoryExtraction(
     candidateCount: typeof result.candidateCount === "number" ? result.candidateCount : 0,
     acceptedCount: typeof result.acceptedCount === "number" ? result.acceptedCount : 0,
     droppedCount: typeof result.droppedCount === "number" ? result.droppedCount : 0,
+    outcome: result.outcome === "partial" ? "partial" : "completed",
+    batchesTotal: typeof result.batchesTotal === "number" ? result.batchesTotal : undefined,
+    batchesSucceeded: typeof result.batchesSucceeded === "number" ? result.batchesSucceeded : undefined,
+    batchesFailed: typeof result.batchesFailed === "number" ? result.batchesFailed : undefined,
   };
 }

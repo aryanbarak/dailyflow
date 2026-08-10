@@ -944,6 +944,11 @@ const en = {
   doc_memory_mark_resume: 'Mark as resume',
   doc_memory_unmark_resume: 'Unmark as resume',
   doc_memory_success: 'Extraction complete: {{accepted}} accepted, {{dropped}} dropped.',
+  // Task 16-fix2 (FIX 3): shown instead of doc_memory_success when a
+  // document-sourced run had at least one failed batch alongside at least
+  // one successful one -- calm, states how many sections were processed,
+  // and that running extraction again retries the rest.
+  doc_memory_partial_success: 'Extraction partially complete: {{accepted}} facts accepted from {{processed}} of {{total}} sections. You can run extraction again to retry the rest.',
   doc_memory_error_unauthenticated: 'Sign in again to extract this document to personal memory.',
   doc_memory_error_configuration_missing: 'Document memory extraction is not configured in this environment.',
   doc_memory_error_network_unreachable: 'Could not reach the document extraction service.',
@@ -1875,6 +1880,7 @@ const de: TranslationDict = {
   doc_memory_mark_resume: 'Als Lebenslauf markieren',
   doc_memory_unmark_resume: 'Markierung als Lebenslauf entfernen',
   doc_memory_success: 'Extraktion abgeschlossen: {{accepted}} übernommen, {{dropped}} verworfen.',
+  doc_memory_partial_success: 'Extraktion teilweise abgeschlossen: {{accepted}} Fakten aus {{processed}} von {{total}} Abschnitten übernommen. Sie können die Extraktion erneut starten, um die übrigen Abschnitte zu wiederholen.',
   doc_memory_error_unauthenticated: 'Bitte erneut anmelden, um dieses Dokument in persönliche Erinnerungen zu extrahieren.',
   doc_memory_error_configuration_missing: 'Die Dokumentenextraktion ist in dieser Umgebung nicht konfiguriert.',
   doc_memory_error_network_unreachable: 'Der Dokumentenextraktionsdienst konnte nicht erreicht werden.',
@@ -2801,6 +2807,7 @@ const fa: TranslationDict = {
   doc_memory_mark_resume: 'علامت‌گذاری به‌عنوان رزومه',
   doc_memory_unmark_resume: 'حذف علامت رزومه',
   doc_memory_success: 'استخراج کامل شد: {{accepted}} پذیرفته شد، {{dropped}} رد شد.',
+  doc_memory_partial_success: 'استخراج تا حدی کامل شد: {{accepted}} واقعیت از {{processed}} بخش از {{total}} بخش پذیرفته شد. می‌توانید استخراج را دوباره اجرا کنید تا بقیه بخش‌ها را امتحان کنید.',
   doc_memory_error_unauthenticated: 'برای استخراج این سند به حافظه شخصی، دوباره وارد شوید.',
   doc_memory_error_configuration_missing: 'استخراج حافظه سند در این محیط پیکربندی نشده است.',
   doc_memory_error_network_unreachable: 'سرویس استخراج سند در دسترس نبود.',

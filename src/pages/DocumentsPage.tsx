@@ -539,6 +539,20 @@ export default function DocumentsPage() {
         toast.error(documentMemoryExtractionErrorMessage(extractionResult.code, extractionResult.message, t));
         return;
       }
+      // Task 16-fix2 (FIX 3): a document-sourced run can partially succeed
+      // (some batches failed, some didn't) -- calm, distinct messaging
+      // rather than folding it into the same success toast, so the user
+      // knows some sections still need a retry.
+      if (extractionResult.outcome === 'partial') {
+        toast.warning(
+          t('doc_memory_partial_success', {
+            accepted: String(extractionResult.acceptedCount),
+            processed: String(extractionResult.batchesSucceeded ?? 0),
+            total: String(extractionResult.batchesTotal ?? 0),
+          }),
+        );
+        return;
+      }
       toast.success(t('doc_memory_success', { accepted: String(extractionResult.acceptedCount), dropped: String(extractionResult.droppedCount) }));
     } catch (err) {
       console.error('[Document memory extraction]', err);

@@ -39,7 +39,7 @@ function makeService(records: PersonalMemoryRecord[]) {
 }
 
 function successResult(overrides: Partial<PersonalMemoryExtractionTriggerResult & { ok: true }> = {}): PersonalMemoryExtractionTriggerResult {
-  return { ok: true, runId: "run-1", sourceItemCount: 4, candidateCount: 2, acceptedCount: 2, droppedCount: 0, ...overrides };
+  return { ok: true, runId: "run-1", sourceItemCount: 4, candidateCount: 2, acceptedCount: 2, droppedCount: 0, outcome: "completed", ...overrides };
 }
 
 describe("PersonalMemorySection -- rendering states", () => {

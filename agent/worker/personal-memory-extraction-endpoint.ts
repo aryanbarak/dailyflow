@@ -44,6 +44,36 @@ const MAX_CANDIDATES_PER_RUN = 12
 const DERIVATION_VERSION = 'personal-memory-extraction-v1'
 const MAX_BODY_BYTES = 1024
 
+// Task 16-fix2: production evidence (wrangler tail) showed document-sourced
+// runs hitting finishReason=MAX_TOKENS at the old budget of 1024 -- a dense
+// resume produces far more full candidates than the chat-sourced material
+// this budget was originally calibrated for. Sized for the worst realistic
+// case: MAX_CANDIDATES_PER_RUN=12 full candidates, each estimated from the
+// actual buildExtractionResponseSchema shape below (see task 16-fix2
+// report for the full arithmetic):
+//   kind (~27) + confidence (~23) + provenanceSourceKind (~35) +
+//   provenanceSourceRefIds with a realistic 3 UUID refs (~145) +
+//   content.summary at its isBoundedString cap of 300 chars (~324) +
+//   one secondary enum field (~26) = ~580 chars/candidate.
+// At ~2.5 chars/token (conservative for mixed English/German/Persian
+// content -- non-Latin scripts tokenize less efficiently than the ~4
+// chars/token typical for English prose), that's ~232 tokens/candidate;
+// 12 candidates + JSON wrapper overhead ≈ 2,816 tokens. 4096 keeps ~45%
+// headroom above that estimate.
+const MAX_OUTPUT_TOKENS_EXTRACTION = 4096
+
+// Task 16-fix2, FIX 2 (defense in depth -- a budget alone just moves the
+// cliff for an even denser resume). Document-sourced runs process chunks
+// in batches instead of one call for the whole document: chunks are capped
+// at 3000 chars each by document-memory-extraction-endpoint.ts's own
+// MAX_CHUNK_CHARS, so two full-size chunks already reach this char budget
+// -- naturally landing batches at 2 chunks for dense sections or 3 for
+// shorter ones. The chat/briefing path is UNCHANGED (still one call for
+// the whole run) -- these two constants and batchDocumentSource below are
+// only ever consulted from the document branch of the route handler.
+const MAX_DOCUMENT_CHUNKS_PER_BATCH = 3
+const MAX_DOCUMENT_BATCH_CHARS = 6000
+
 export interface PersonalMemoryExtractionEnv {
   SUPABASE_URL: string
   SUPABASE_ANON_KEY: string
@@ -238,7 +268,7 @@ interface BriefingRow {
   content: string
 }
 
-interface SourceItemForPrompt {
+export interface SourceItemForPrompt {
   id: string
   provenanceSourceKind: ProvenanceSourceKind
   text: string
@@ -306,6 +336,31 @@ async function readEligibleSourceMaterialFromDocument(
     provenanceSourceKind: 'document' as const,
     text: row.content,
   }))
+}
+
+// Task 16-fix2, FIX 2: greedy, size-based batching -- a batch grows until
+// adding the next chunk would exceed either MAX_DOCUMENT_CHUNKS_PER_BATCH
+// items or MAX_DOCUMENT_BATCH_CHARS characters, whichever comes first, then
+// a new batch starts. A single oversized item still gets its own batch
+// (never dropped, never split) rather than looping forever. Pure and
+// exported for direct unit testing -- see the "5 chunks -> batches" test.
+export function batchDocumentSource(source: readonly SourceItemForPrompt[]): SourceItemForPrompt[][] {
+  const batches: SourceItemForPrompt[][] = []
+  let current: SourceItemForPrompt[] = []
+  let currentChars = 0
+  for (const item of source) {
+    const overCount = current.length >= MAX_DOCUMENT_CHUNKS_PER_BATCH
+    const overChars = current.length > 0 && currentChars + item.text.length > MAX_DOCUMENT_BATCH_CHARS
+    if (overCount || overChars) {
+      batches.push(current)
+      current = []
+      currentChars = 0
+    }
+    current.push(item)
+    currentChars += item.text.length
+  }
+  if (current.length > 0) batches.push(current)
+  return batches
 }
 
 // ---------------------------------------------------------------------------
@@ -448,7 +503,7 @@ async function callGeminiForExtraction(
         system_instruction: { parts: [{ text: buildExtractionSystemInstruction() }] },
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         generationConfig: {
-          maxOutputTokens: 1024,
+          maxOutputTokens: MAX_OUTPUT_TOKENS_EXTRACTION,
           temperature: 0,
           responseMimeType: 'application/json',
           // Task 12 fix: gemini-2.5-flash spends output tokens on internal
@@ -539,6 +594,101 @@ async function callGeminiForExtraction(
     raw,
     promptTokenCount: data.usageMetadata?.promptTokenCount,
     responseTokenCount: data.usageMetadata?.candidatesTokenCount,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Task 16-fix2, FIX 2: the shared, single-call core -- builds the prompt
+// from whatever source items it's given and makes exactly ONE model call.
+// Deliberately returns raw, uncapped, unnormalized candidates (never slices
+// to MAX_CANDIDATES_PER_RUN itself): the chat/briefing route below slices
+// BEFORE normalizing (preserving today's exact behavior, unchanged), while
+// the document route's batching layer merges raw candidates across batches
+// FIRST and slices the merged total once -- both callers own that decision,
+// this function only owns "ask the model once". Throws ProviderCallError on
+// any failure, exactly like callGeminiForExtraction itself (uncaught here
+// on purpose -- the chat/briefing path needs the throw to propagate to its
+// existing catch block unchanged; the batched document path below catches
+// it per-batch instead).
+// ---------------------------------------------------------------------------
+interface ExtractionAttemptResult {
+  rawCandidates: unknown[]
+  promptTokenCount?: number
+  responseTokenCount?: number
+}
+
+async function runExtractionAttempt(
+  source: readonly SourceItemForPrompt[],
+  env: PersonalMemoryExtractionEnv,
+  fetcher: typeof fetch,
+  logger: Pick<Console, 'info' | 'error'>,
+): Promise<ExtractionAttemptResult> {
+  const prompt = buildExtractionPrompt(source)
+  const modelOutput = await callGeminiForExtraction(prompt, env, fetcher, logger)
+  const rawCandidates = Array.isArray((modelOutput.raw as { candidates?: unknown })?.candidates)
+    ? (modelOutput.raw as { candidates: unknown[] }).candidates
+    : []
+  return { rawCandidates, promptTokenCount: modelOutput.promptTokenCount, responseTokenCount: modelOutput.responseTokenCount }
+}
+
+// Task 16-fix2, FIX 2 (batching lives in the document source-gathering
+// layer, not the shared core above) + FIX 3 (honest partial-failure
+// semantics): batches the document's chunks (batchDocumentSource) and
+// makes ONE runExtractionAttempt call per batch, catching each batch's
+// failure independently rather than letting one bad batch fail the whole
+// run. Raw candidates from every SUCCESSFUL batch are merged into one flat
+// array here; the route handler slices that merged array to
+// MAX_CANDIDATES_PER_RUN once, after this function returns -- "merging
+// candidates across batches with MAX_CANDIDATES_PER_RUN enforced
+// application-level after the merge", same enforcement point as today's
+// single-call path, same invariant.
+interface BatchedDocumentExtractionResult {
+  rawCandidates: unknown[]
+  promptTokenCount?: number
+  responseTokenCount?: number
+  batchesTotal: number
+  batchesSucceeded: number
+  batchesFailed: number
+  /** The most recent batch failure, if any -- used to build the total-failure response when EVERY batch failed (batchesSucceeded === 0). */
+  lastFailureError: unknown
+}
+
+async function runBatchedDocumentExtraction(
+  source: readonly SourceItemForPrompt[],
+  env: PersonalMemoryExtractionEnv,
+  fetcher: typeof fetch,
+  logger: Pick<Console, 'info' | 'error'>,
+): Promise<BatchedDocumentExtractionResult> {
+  const batches = batchDocumentSource(source)
+  let batchesSucceeded = 0
+  let batchesFailed = 0
+  let lastFailureError: unknown
+  const rawCandidates: unknown[] = []
+  let promptTokenCount = 0
+  let responseTokenCount = 0
+  for (const batch of batches) {
+    try {
+      const result = await runExtractionAttempt(batch, env, fetcher, logger)
+      batchesSucceeded += 1
+      rawCandidates.push(...result.rawCandidates)
+      promptTokenCount += result.promptTokenCount ?? 0
+      responseTokenCount += result.responseTokenCount ?? 0
+    } catch (error) {
+      batchesFailed += 1
+      lastFailureError = error
+      logger.error?.(
+        `[PersonalMemory] document batch extraction failed (batch ${batchesSucceeded + batchesFailed}/${batches.length}): ${(error as Error).message}`,
+      )
+    }
+  }
+  return {
+    rawCandidates,
+    promptTokenCount: promptTokenCount || undefined,
+    responseTokenCount: responseTokenCount || undefined,
+    batchesTotal: batches.length,
+    batchesSucceeded,
+    batchesFailed,
+    lastFailureError,
   }
 }
 
@@ -686,6 +836,36 @@ async function computeContentFingerprint(kind: PersonalMemoryRecordKind, content
     .join('')
 }
 
+// Task 16-fix2: factored out of the route handler's own catch block
+// unchanged (byte-for-byte the same run-patch + log + error-response shape
+// task 14 already established) so it can also be used for the document
+// path's TOTAL failure case (every batch failed) -- see
+// runBatchedDocumentExtraction above.
+async function reportExtractionFailure(
+  error: unknown,
+  runId: string,
+  env: PersonalMemoryExtractionEnv,
+  jwt: string,
+  fetcher: typeof fetch,
+  logger: Pick<Console, 'info' | 'error'>,
+  now: () => string,
+  origin: string,
+): Promise<Response> {
+  const providerError = error instanceof ProviderCallError ? error : null
+  const taxonomy: ProviderFailureTaxonomy = providerError?.taxonomy ?? 'MODEL_OUTPUT_UNUSABLE'
+  const failureReason = truncateForLog((error as Error).message, 500)
+  await restPatchAsUser(env, jwt, `personal_memory_extraction_runs?id=eq.${runId}`, {
+    completed_at: now(),
+    outcome: 'failed',
+    failure_reason: failureReason,
+  }, fetcher).catch(() => undefined)
+  logger.error?.(`[PersonalMemory] model call failed: taxonomy=${taxonomy} ${(error as Error).message}`)
+  return errorResponse(taxonomy, EXTRACTION_TAXONOMY_MESSAGES[taxonomy], 502, origin, {
+    providerStatus: providerError?.providerStatus,
+    providerDetail: providerError?.providerDetail,
+  })
+}
+
 // ---------------------------------------------------------------------------
 // Route handler
 // ---------------------------------------------------------------------------
@@ -771,43 +951,51 @@ export async function handlePersonalMemoryExtractionRequest(
     return errorResponse('RUN_CREATE_FAILED', 'Unable to start an extraction run.', 502, origin)
   }
 
-  const prompt = buildExtractionPrompt(source)
-  let modelOutput: { raw: unknown; promptTokenCount?: number; responseTokenCount?: number }
-  try {
-    modelOutput = await callGeminiForExtraction(prompt, env, fetcher, logger)
-  } catch (error) {
-    // Task 14 fix: callGeminiForExtraction now throws a typed
-    // ProviderCallError carrying which of the three taxonomy buckets this
-    // failure belongs to, plus a pre-truncated providerDetail -- replacing
-    // the single generic MODEL_CALL_FAILED this route used to report for
-    // every case (including a rejected request that never reached a real
-    // model call at all). The full diagnostic (provider status/message/
-    // details) was already logged in full inside callGeminiForExtraction
-    // itself; this catch only needs the bounded summary for the run record
-    // and the response body.
-    const providerError = error instanceof ProviderCallError ? error : null
-    const taxonomy: ProviderFailureTaxonomy = providerError?.taxonomy ?? 'MODEL_OUTPUT_UNUSABLE'
-    const failureReason = truncateForLog((error as Error).message, 500)
-    await restPatchAsUser(env, jwt, `personal_memory_extraction_runs?id=eq.${run.id}`, {
-      completed_at: now(),
-      outcome: 'failed',
-      failure_reason: failureReason,
-    }, fetcher).catch(() => undefined)
-    logger.error?.(`[PersonalMemory] model call failed: taxonomy=${taxonomy} ${(error as Error).message}`)
-    return errorResponse(taxonomy, EXTRACTION_TAXONOMY_MESSAGES[taxonomy], 502, origin, {
-      providerStatus: providerError?.providerStatus,
-      providerDetail: providerError?.providerDetail,
-    })
+  // Task 16-fix2: the document path batches (FIX 2) and tolerates a partial
+  // failure across batches (FIX 3); the chat/briefing path is UNCHANGED --
+  // still exactly one call, and any failure still fails the whole run via
+  // reportExtractionFailure (byte-for-byte the same behavior task 14
+  // established, just factored into a shared function -- see its own
+  // comment).
+  let rawCandidatesUncapped: unknown[]
+  let promptTokenCount: number | undefined
+  let responseTokenCount: number | undefined
+  let partial: { batchesTotal: number; batchesSucceeded: number; batchesFailed: number } | undefined
+
+  if (documentId) {
+    const batched = await runBatchedDocumentExtraction(source, env, fetcher, logger)
+    if (batched.batchesSucceeded === 0) {
+      // Every batch failed -- a total failure, reported exactly like the
+      // chat/briefing path's own all-or-nothing failure (task-14 taxonomy,
+      // run marked 'failed'). batches.length >= 1 whenever source is
+      // non-empty (already checked above), so lastFailureError is set.
+      return await reportExtractionFailure(batched.lastFailureError, run.id, env, jwt, fetcher, logger, now, origin)
+    }
+    rawCandidatesUncapped = batched.rawCandidates
+    promptTokenCount = batched.promptTokenCount
+    responseTokenCount = batched.responseTokenCount
+    if (batched.batchesFailed > 0) {
+      partial = { batchesTotal: batched.batchesTotal, batchesSucceeded: batched.batchesSucceeded, batchesFailed: batched.batchesFailed }
+    }
+  } else {
+    try {
+      const attempt = await runExtractionAttempt(source, env, fetcher, logger)
+      rawCandidatesUncapped = attempt.rawCandidates
+      promptTokenCount = attempt.promptTokenCount
+      responseTokenCount = attempt.responseTokenCount
+    } catch (error) {
+      return await reportExtractionFailure(error, run.id, env, jwt, fetcher, logger, now, origin)
+    }
   }
 
-  // Task 14 fix: MAX_CANDIDATES_PER_RUN is now enforced HERE, in code, not
-  // via the response schema's own maxItems (see buildExtractionResponseSchema's
+  // Task 14 fix: MAX_CANDIDATES_PER_RUN is enforced HERE, in code, not via
+  // the response schema's own maxItems (see buildExtractionResponseSchema's
   // own comment for why -- the provider rejects the schema-level bound as
-  // too complex to serve). Same invariant, more robust enforcement point.
-  const rawCandidates = (Array.isArray((modelOutput.raw as { candidates?: unknown })?.candidates)
-    ? ((modelOutput.raw as { candidates: unknown[] }).candidates)
-    : []
-  ).slice(0, MAX_CANDIDATES_PER_RUN)
+  // too complex to serve). Task 16-fix2: for the document path this now
+  // caps the MERGED total across all successful batches -- "enforced
+  // application-level after the merge" -- the same single enforcement
+  // point, now shared by both paths instead of duplicated.
+  const rawCandidates = rawCandidatesUncapped.slice(0, MAX_CANDIDATES_PER_RUN)
   const normalized = rawCandidates.map((candidate) => normalizeCandidate(candidate, refIdKinds))
   const validCandidates = normalized.filter((candidate): candidate is ValidCandidate => candidate !== null)
   const droppedCount = normalized.length - validCandidates.length
@@ -843,14 +1031,24 @@ export async function handlePersonalMemoryExtractionRequest(
   }
 
   const completedAt = now()
+  // Task 16-fix2, FIX 3: the run row itself stays 'completed' even for a
+  // partial run -- it DID complete, and whatever candidates could be
+  // extracted WERE persisted (the honest alternative to all-or-nothing
+  // failing). The partial signal lives in the response body (outcome/code/
+  // batch counts below) and in this log line for wrangler tail visibility;
+  // it deliberately does not require a schema change to the 'completed' |
+  // 'failed' outcome CHECK constraint (personal_memory_extraction_runs,
+  // 20260808000000_personal_memory_records.sql) -- a partial run is a
+  // completed run with fewer inputs than requested, not a new DB-level
+  // state.
   await restPatchAsUser(
     env,
     jwt,
     `personal_memory_extraction_runs?id=eq.${run.id}`,
     {
       completed_at: completedAt,
-      prompt_token_count: modelOutput.promptTokenCount ?? null,
-      response_token_count: modelOutput.responseTokenCount ?? null,
+      prompt_token_count: promptTokenCount ?? null,
+      response_token_count: responseTokenCount ?? null,
       candidate_count: rawCandidates.length,
       accepted_count: acceptedCount,
       dropped_count: droppedCount,
@@ -860,7 +1058,8 @@ export async function handlePersonalMemoryExtractionRequest(
   ).catch((error) => logger.error?.(`[PersonalMemory] run completion update failed: ${(error as Error).message}`))
 
   logger.info?.(
-    `[PersonalMemory] runId=${run.id} sourceItems=${source.length} candidates=${rawCandidates.length} accepted=${acceptedCount} dropped=${droppedCount}`,
+    `[PersonalMemory] runId=${run.id} sourceItems=${source.length} candidates=${rawCandidates.length} accepted=${acceptedCount} dropped=${droppedCount}` +
+      (partial ? ` outcome=partial batchesTotal=${partial.batchesTotal} batchesSucceeded=${partial.batchesSucceeded} batchesFailed=${partial.batchesFailed}` : ''),
   )
 
   return jsonResponse(
@@ -873,6 +1072,15 @@ export async function handlePersonalMemoryExtractionRequest(
       acceptedCount,
       droppedCount,
       results,
+      // Task 16-fix2, FIX 3: EXTRACTION_PARTIAL is NOT part of
+      // ProviderFailureTaxonomy (that taxonomy is only for a TOTAL failure,
+      // still reported via reportExtractionFailure/502 above) -- it's a
+      // distinct, additive signal on an otherwise-normal 200 response,
+      // present only when the document path had at least one failed batch
+      // alongside at least one successful one.
+      ...(partial
+        ? { outcome: 'partial' as const, code: 'EXTRACTION_PARTIAL' as const, batchesTotal: partial.batchesTotal, batchesSucceeded: partial.batchesSucceeded, batchesFailed: partial.batchesFailed }
+        : { outcome: 'completed' as const }),
     },
     200,
     origin,

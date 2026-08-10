@@ -39,7 +39,7 @@ describe("triggerPersonalMemoryExtraction", () => {
 
     const result = await triggerPersonalMemoryExtraction({ fetcher, getSessionToken: async () => "token-abc" });
 
-    expect(result).toEqual({ ok: true, runId: "run-1", sourceItemCount: 5, candidateCount: 3, acceptedCount: 2, droppedCount: 1 });
+    expect(result).toEqual({ ok: true, runId: "run-1", sourceItemCount: 5, candidateCount: 3, acceptedCount: 2, droppedCount: 1, outcome: "completed" });
     const [url, init] = fetcher.mock.calls[0];
     expect(String(url)).toContain("/personal-memory/extraction");
     expect(init.method).toBe("POST");
@@ -143,6 +143,39 @@ describe("triggerPersonalMemoryExtraction", () => {
     const result = await triggerPersonalMemoryExtraction({ fetcher, getSessionToken: async () => "token-abc" });
 
     expect(result).toEqual({ ok: false, code: "MODEL_OUTPUT_UNUSABLE", message: "The model did not return a usable extraction. Please try again." });
+  });
+
+  it("task 16-fix2: maps a partial-success response (EXTRACTION_PARTIAL) to outcome:'partial' with batch counts, still ok:true", async () => {
+    const fetcher = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        runId: "run-1",
+        sourceItemCount: 5,
+        candidateCount: 4,
+        acceptedCount: 4,
+        droppedCount: 0,
+        results: [],
+        outcome: "partial",
+        code: "EXTRACTION_PARTIAL",
+        batchesTotal: 3,
+        batchesSucceeded: 2,
+        batchesFailed: 1,
+      }),
+    );
+
+    const result = await triggerPersonalMemoryExtraction({ fetcher, getSessionToken: async () => "token-abc" });
+
+    expect(result).toEqual({
+      ok: true,
+      runId: "run-1",
+      sourceItemCount: 5,
+      candidateCount: 4,
+      acceptedCount: 4,
+      droppedCount: 0,
+      outcome: "partial",
+      batchesTotal: 3,
+      batchesSucceeded: 2,
+      batchesFailed: 1,
+    });
   });
 
   it("returns REQUEST_FAILED for a 200 response missing a runId, rather than reporting false success", async () => {
