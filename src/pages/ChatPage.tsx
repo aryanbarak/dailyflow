@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { motion } from 'framer-motion'
+import { motion, useReducedMotion } from 'framer-motion'
 import {
   BookOpen,
   Bot,
@@ -10,17 +10,14 @@ import {
   CheckSquare,
   FileText,
   Flame,
+  Menu,
   MessageSquare,
   Plus,
-  Send,
-  Trash2,
   Wallet,
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import { createDirectionalMarkdownComponents, isolateEmbeddedBidiRuns } from '@/lib/bidiText'
 import { Button } from '@/components/ui/button'
-import { Textarea } from '@/components/ui/textarea'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
 import { supabase } from '@/integrations/supabase/client'
 import { useAuth } from '@/hooks/useAuth'
@@ -31,6 +28,18 @@ import { SmartflowAsciiVisual } from '@/components/smartflow'
 import { translations, useT } from '@/i18n'
 import type { TranslationKey } from '@/i18n'
 import { useChatSessions } from '@/hooks/useChatSessions'
+// Task 17a (Chat Experience v2, mobile-first foundation) -- see
+// src/features/chat/ for the new composer/drawer/scroll/theme/compact
+// pieces this page now composes. Pipeline logic below (reasoning,
+// classification, proposal handling) is UNCHANGED by this task.
+import { ChatComposer } from '@/features/chat/components/ChatComposer'
+import { ChatHeaderControls } from '@/features/chat/components/ChatHeaderControls'
+import { ConversationsDrawer } from '@/features/chat/components/ConversationsDrawer'
+import { ConversationsList } from '@/features/chat/components/ConversationsList'
+import { JumpToLatestPill } from '@/features/chat/components/JumpToLatestPill'
+import { useChatDisplayPreferences } from '@/features/chat/chatDisplayPreferencesStore'
+import { shouldAutoScrollOnNewContent } from '@/features/chat/chatScrollDecision'
+import { timeAgo } from '@/features/chat/timeAgo'
 import { useAppearance } from '@/features/settings/appearanceStore'
 import {
   createLlmReasoningCaller,
@@ -1023,11 +1032,13 @@ export function ReasoningProposalCard({
   onRunReadOnly,
   onReviewApproval,
   onRunWrite,
+  compact = false,
 }: Readonly<{
   proposal: ReasoningProposalState
   onRunReadOnly: () => void
   onReviewApproval: () => void
   onRunWrite: () => void
+  compact?: boolean
 }>) {
   const { t } = useT()
   const { result, resolution, approval, runStatus } = proposal
@@ -1054,7 +1065,7 @@ export function ReasoningProposalCard({
   const runtimeResult = proposal.readOnlyResult ?? proposal.writeResult
 
   return (
-    <div className="mb-3 rounded-xl border border-primary/20 bg-primary/[0.04] p-3">
+    <div className={cn('chat-message-enter mb-3 rounded-xl border border-primary/20 bg-primary/[0.04]', compact ? 'p-2.5' : 'p-3')}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-[10px] font-semibold uppercase tracking-widest text-primary/80">
@@ -1148,13 +1159,14 @@ export function AssistantContent({ content }: Readonly<{ content: string }>) {
   return <ReactMarkdown components={MSG_MD_COMPONENTS}>{md}</ReactMarkdown>
 }
 
-export function ChatBubble({ role, content, language }: Readonly<{
+export function ChatBubble({ role, content, language, compact = false }: Readonly<{
   role: 'user' | 'assistant'
   content: string
   language?: SupportedAiResponseLanguage
+  compact?: boolean
 }>) {
   return (
-    <div className={cn('flex gap-2.5', role === 'user' ? 'justify-end' : 'justify-start')}>
+    <div className={cn('chat-message-enter flex gap-2.5', role === 'user' ? 'justify-end' : 'justify-start')}>
       {role === 'assistant' && (
         <div className="icon-tile w-7 h-7 rounded-full shrink-0 mt-0.5">
           <Bot className="w-3.5 h-3.5 text-primary" />
@@ -1162,10 +1174,16 @@ export function ChatBubble({ role, content, language }: Readonly<{
       )}
       <div
         className={cn(
-          'max-w-[80%] rounded-xl px-4 py-2.5 text-sm leading-relaxed break-words',
+          // Task 17a, workstream 2 (reading layout): bubble line length
+          // constrained to ~65-75ch on wide screens (fluid on mobile via
+          // the max-w-[80%] fallback below that breakpoint) for
+          // readability -- a bubble should never span the full width of a
+          // wide desktop viewport.
+          'max-w-[80%] rounded-xl text-sm leading-relaxed break-words sm:max-w-[70ch]',
+          compact ? 'px-3 py-1.5 text-[13px] leading-normal' : 'px-4 py-2.5',
           role === 'user'
-            ? 'bg-primary text-primary-foreground rounded-br-sm'
-            : 'glass-card rounded-bl-sm'
+            ? 'bg-chat-bubble-user text-chat-bubble-user-foreground rounded-br-sm'
+            : 'bg-chat-bubble-assistant text-chat-bubble-assistant-foreground border border-border/40 rounded-bl-sm'
         )}
         // Task 11e: base direction is decided per content block (first-strong
         // heuristic, dir="auto"), not once for the whole bubble from the
@@ -1187,29 +1205,29 @@ export function ChatBubble({ role, content, language }: Readonly<{
   )
 }
 
+// Task 17a, workstream 3 (functional micro-animation, not performative):
+// "soft three-dot typing indicator in an assistant bubble" -- replaces
+// the previous spinner+label. Three dots pulse in a staggered wave via
+// .chat-typing-dot (index.css), transform/opacity only, and collapse to a
+// static (still visible, non-animated) state under prefers-reduced-motion
+// -- see that class's own definition for the full rationale.
 function TypingIndicator({ label }: Readonly<{ label: string }>) {
   return (
-    <div className="flex gap-2.5 justify-start">
+    <div className="chat-message-enter flex gap-2.5 justify-start">
       <div className="icon-tile w-7 h-7 rounded-full shrink-0 mt-0.5">
         <Bot className="w-3.5 h-3.5 text-primary" />
       </div>
-      <div className="glass-card rounded-xl rounded-bl-sm px-4 py-2.5 text-sm flex items-center gap-2">
-        <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-muted-foreground/40 border-t-muted-foreground" />
-        <span className="text-muted-foreground">{label}</span>
+      <div
+        className="bg-chat-bubble-assistant text-chat-bubble-assistant-foreground border border-border/40 rounded-xl rounded-bl-sm px-4 py-3 text-sm flex items-center gap-1.5"
+        role="status"
+        aria-label={label}
+      >
+        <span className="chat-typing-dot h-1.5 w-1.5 rounded-full bg-muted-foreground" style={{ animationDelay: '0ms' }} />
+        <span className="chat-typing-dot h-1.5 w-1.5 rounded-full bg-muted-foreground" style={{ animationDelay: '160ms' }} />
+        <span className="chat-typing-dot h-1.5 w-1.5 rounded-full bg-muted-foreground" style={{ animationDelay: '320ms' }} />
       </div>
     </div>
   )
-}
-
-function timeAgo(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime()
-  const mins = Math.floor(diff / 60_000)
-  if (mins < 1) return 'now'
-  if (mins < 60) return `${mins}m`
-  const hours = Math.floor(mins / 60)
-  if (hours < 24) return `${hours}h`
-  const days = Math.floor(hours / 24)
-  return `${days}d`
 }
 
 export default function ChatPage() {
@@ -1222,6 +1240,18 @@ export default function ChatPage() {
   const location = useLocation()
   const nav = useNavigate()
   const { sessions, refresh: refreshSessions, createSession, deleteSession } = useChatSessions()
+  // Task 17a (Chat Experience v2): chat-page-scoped theme + compact-mode
+  // preference, persisted alongside each other -- see
+  // chatDisplayPreferencesStore.ts's own header comment for why this is a
+  // dedicated, page-scoped store rather than reusing the app-wide
+  // appearanceStore.ts. prefersReducedMotion gates the header's own
+  // existing framer-motion fade-in (workstream 3's "reduced = instant, no
+  // motion" requirement applied to this pre-existing animation too, not
+  // just the new ones).
+  const theme = useChatDisplayPreferences((state) => state.theme)
+  const density = useChatDisplayPreferences((state) => state.density)
+  const compact = density === 'compact'
+  const prefersReducedMotion = useReducedMotion()
 
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   const [messages, setMessages] = useState<ChatMsg[]>([])
@@ -1232,7 +1262,14 @@ export default function ChatPage() {
   const [reasoningProposal, setReasoningProposal] = useState<ReasoningProposalState[] | null>(null)
   const [approvalDialogOpen, setApprovalDialogOpen] = useState(false)
   const [githubRepositoryInventory, setGithubRepositoryInventory] = useState<AgentReasoningGitHubInventory>({ status: 'unknown' })
-  const bottomRef = useRef<HTMLDivElement>(null)
+  // Task 17a: replaces the old bottomRef/scrollIntoView sentinel -- the
+  // scroll CONTAINER itself is now tracked (see the smart-scroll effect
+  // near the render section below), so a reader who has scrolled up into
+  // history is never yanked back down by a new message.
+  const messagesScrollRef = useRef<HTMLDivElement>(null)
+  const wasNearBottomRef = useRef(true)
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false)
+  const [conversationsDrawerOpen, setConversationsDrawerOpen] = useState(false)
   const initialPromptFired = useRef(false)
   const workerUrl = import.meta.env.VITE_AGENT_WORKER_URL as string
   const reasoningTransport = resolveAgentReasoningTransport(import.meta.env)
@@ -1293,11 +1330,45 @@ export default function ChatPage() {
     setActiveSessionId(null)
     setMessages([])
     setSendError(null)
+    wasNearBottomRef.current = true
+    setShowJumpToLatest(false)
   }, [])
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, sending])
+  // Task 17a, workstream 2 (smart auto-scroll): "follow new messages ONLY
+  // if the reader is already at bottom; otherwise show a 'jump to latest'
+  // pill; never yank the scroll position while reading history." The
+  // reader's bottom-proximity is tracked continuously by handleMessagesScroll
+  // below (via the pure decision function in chatScrollDecision.ts) into
+  // wasNearBottomRef, which this effect reads AFTER messages/sending has
+  // already changed -- it reflects where the reader was an instant before
+  // this update, since scroll events are independent of message updates.
+  const handleMessagesScroll = useCallback(() => {
+    const el = messagesScrollRef.current
+    if (!el) return
+    const nearBottom = shouldAutoScrollOnNewContent({
+      scrollTop: el.scrollTop,
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+    })
+    wasNearBottomRef.current = nearBottom
+    if (nearBottom) setShowJumpToLatest(false)
+  }, [])
+
+  const scrollToLatest = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    const el = messagesScrollRef.current
+    if (!el) return
+    el.scrollTo({ top: el.scrollHeight, behavior })
+    wasNearBottomRef.current = true
+    setShowJumpToLatest(false)
+  }, [])
+
+  useLayoutEffect(() => {
+    if (wasNearBottomRef.current) {
+      scrollToLatest(loading ? 'auto' : 'smooth')
+    } else {
+      setShowJumpToLatest(true)
+    }
+  }, [messages, sending, loading, scrollToLatest])
 
   const handleSend = useCallback(async (overrideText?: string) => {
     const text = (overrideText ?? draft).trim()
@@ -1720,246 +1791,225 @@ export default function ChatPage() {
   const conversationCount = messages.filter(m => m.role === 'user').length + sessions.length
   const taskCount = tasks.length
 
-  const canSend = draft.trim().length > 0 && !sending && !loading
   const showWelcome = !activeSessionId && messages.length === 0 && !sending
 
+  const handleDeleteSession = useCallback(async (id: string) => {
+    const ok = await deleteSession(id)
+    if (ok && activeSessionId === id) startNewChat()
+  }, [deleteSession, activeSessionId, startNewChat])
+
   return (
-    <div className="pb-6">
-      {/* Header */}
+    <div
+      data-chat-theme={theme}
+      data-chat-density={density}
+      className="flex h-full flex-col overflow-hidden bg-background text-foreground lg:sticky lg:top-0 lg:h-screen"
+    >
+      {/* Header -- task 17a: mobile drawer trigger + the theme/compact
+          settings cluster now live here alongside the existing new-chat
+          action. */}
       <motion.header
-        initial={{ opacity: 0, y: -10 }}
+        initial={prefersReducedMotion ? false : { opacity: 0, y: -10 }}
         animate={{ opacity: 1, y: 0 }}
-        className="px-4 sm:px-6 lg:px-8 py-4 border-b border-border"
+        className={cn('shrink-0 border-b border-border px-3 sm:px-6', compact ? 'py-2' : 'py-3')}
       >
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="icon-tile">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="h-9 w-9 shrink-0 lg:hidden"
+              onClick={() => setConversationsDrawerOpen(true)}
+              aria-label={t('chat_open_conversations')}
+            >
+              <Menu className="h-4 w-4" />
+            </Button>
+            <div className="icon-tile shrink-0">
               <Bot className="w-4 h-4 text-primary" />
             </div>
-            <div>
-              <h1 className="text-lg font-semibold leading-tight">{t('chat_title')}</h1>
-              <p className="text-xs text-muted-foreground mt-0.5">{t('chat_subtitle')}</p>
+            <div className="min-w-0">
+              <h1 className="truncate text-lg font-semibold leading-tight">{t('chat_title')}</h1>
+              <p className="mt-0.5 truncate text-xs text-muted-foreground">{t('chat_subtitle')}</p>
             </div>
           </div>
-          <Button
-            size="sm"
-            variant="outline"
-            className="gap-1.5"
-            onClick={startNewChat}
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">{t('flow_new_chat')}</span>
-          </Button>
+          <div className="flex shrink-0 items-center gap-2">
+            <ChatHeaderControls />
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1.5"
+              onClick={startNewChat}
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">{t('flow_new_chat')}</span>
+            </Button>
+          </div>
         </div>
       </motion.header>
 
-      {/* Two-column layout */}
-      <div className="flex flex-col lg:flex-row gap-5 px-4 sm:px-6 lg:px-8 pt-5">
-        {/* Center column */}
-        <div className="flex-1 min-w-0 space-y-4">
-          {/* Quick actions — shown when no active session */}
-          {showWelcome && (
-            <div>
-              <h3 className="text-sm font-semibold mb-3">{t('flow_quick_title')}</h3>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                {QUICK_ACTIONS.map((action) => (
-                  <button
-                    key={action.labelKey}
-                    type="button"
-                    disabled={sending}
-                    onClick={() => void handleSend(action.prompt)}
-                    className="glass-card flex items-center gap-3 rounded-xl p-3 text-left transition-all hover:shadow-elevated hover:scale-[1.02] hover:border-primary/25 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <div className={cn('icon-tile w-9 h-9 rounded-lg shrink-0', action.iconBg)}>
-                      <action.icon className={cn('w-4 h-4', action.iconColor)} />
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium truncate">{t(action.labelKey)}</p>
-                      <p className="text-[11px] text-muted-foreground truncate">{t(action.descKey)}</p>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
+      {/* Body: desktop sidebar (task 17a: hidden below lg -- a
+          ConversationsDrawer sheet replaces it on mobile, see below) +
+          the chat column. */}
+      <div className="flex min-h-0 flex-1">
+        <div className="hidden lg:flex lg:w-[260px] lg:shrink-0 lg:flex-col lg:border-r lg:border-border">
+          <div className="flex items-center gap-2 border-b border-border px-4 py-3">
+            <MessageSquare className="h-3.5 w-3.5 text-primary" aria-hidden="true" />
+            <span className="text-sm font-semibold">{t('flow_conversations')}</span>
+          </div>
+          <div className="flex-1 overflow-y-auto p-3">
+            <ConversationsList
+              sessions={sessions}
+              activeSessionId={activeSessionId}
+              onSelect={selectSession}
+              onDelete={handleDeleteSession}
+              compact={compact}
+            />
+          </div>
+        </div>
 
-          {/* Conversation */}
-          <Card className="glass-card card-accent">
-            <CardHeader className="px-4 py-3">
-              <CardTitle className="text-sm font-semibold flex items-center gap-2.5">
-                <div className="icon-tile w-7 h-7 rounded-md">
-                  <MessageSquare className="w-3.5 h-3.5 text-primary" />
+        {/* Chat column */}
+        <div className="relative flex min-w-0 flex-1 flex-col">
+          {/* Task 17a, workstream 2: this is the ONLY scroll container for
+              the conversation -- messages/quick-actions/proposals all live
+              inside it, the composer below is a non-scrolling flex sibling
+              that is therefore always visible without any sticky/fixed
+              positioning trick. handleMessagesScroll feeds the smart
+              auto-scroll decision (chatScrollDecision.ts). */}
+          <div
+            ref={messagesScrollRef}
+            onScroll={handleMessagesScroll}
+            className={cn('flex-1 overflow-y-auto px-3 sm:px-6', compact ? 'space-y-2 py-3' : 'space-y-3 py-4')}
+          >
+            {showWelcome && (
+              <div>
+                <h3 className="mb-3 text-sm font-semibold">{t('flow_quick_title')}</h3>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  {QUICK_ACTIONS.map((action) => (
+                    <button
+                      key={action.labelKey}
+                      type="button"
+                      disabled={sending}
+                      onClick={() => void handleSend(action.prompt)}
+                      className="glass-card flex items-center gap-3 rounded-xl p-3 text-left transition-all hover:shadow-elevated hover:scale-[1.02] hover:border-primary/25 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <div className={cn('icon-tile w-9 h-9 rounded-lg shrink-0', action.iconBg)}>
+                        <action.icon className={cn('w-4 h-4', action.iconColor)} />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">{t(action.labelKey)}</p>
+                        <p className="text-[11px] text-muted-foreground truncate">{t(action.descKey)}</p>
+                      </div>
+                    </button>
+                  ))}
                 </div>
-                {t('flow_conversation_title')}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="px-4 pb-4 pt-0">
-              {/* Messages */}
-              <div className="max-h-[450px] overflow-y-auto space-y-3 pr-1 mb-3">
-                {loading && (
-                  <div className="flex items-center justify-center py-8 text-sm text-muted-foreground gap-2">
-                    <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-                    {t('loading')}
-                  </div>
-                )}
+              </div>
+            )}
 
-                {!loading && messages.length === 0 && !sending && (
-                  <div className="py-6">
-                    <div className="glass-card relative overflow-hidden rounded-2xl p-5 w-full">
+            {loading && (
+              <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
+                <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                {t('loading')}
+              </div>
+            )}
+
+            {!loading && messages.length === 0 && !sending && (
+              <div className="py-6">
+                <div className="glass-card relative w-full overflow-hidden rounded-2xl p-5">
+                  <SmartflowAsciiVisual
+                    variant="wiremesh"
+                    className="absolute -right-8 -top-10 h-44 w-44 opacity-45 sm:h-52 sm:w-52"
+                  />
+                  <div className="relative z-10 flex items-center gap-4">
+                    <div className="h-24 w-24 shrink-0 overflow-hidden rounded-full border border-primary/10 bg-background/25">
                       <SmartflowAsciiVisual
                         variant="wiremesh"
-                        className="absolute -right-8 -top-10 h-44 w-44 opacity-45 sm:h-52 sm:w-52"
+                        className="h-full w-full opacity-80"
                       />
-                      <div className="relative z-10 flex items-center gap-4">
-                        <div className="h-24 w-24 shrink-0 overflow-hidden rounded-full border border-primary/10 bg-background/25">
-                          <SmartflowAsciiVisual
-                            variant="wiremesh"
-                            className="h-full w-full opacity-80"
-                          />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <h2 className="text-lg sm:text-xl font-semibold">
-                            {t('flow_greeting')}, {firstName} 👋
-                          </h2>
-                          <p className="text-xs text-muted-foreground mt-1">
-                            {t('flow_hero_desc')}
-                          </p>
-                        </div>
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <h2 className="text-lg font-semibold sm:text-xl">
+                        {t('flow_greeting')}, {firstName} 👋
+                      </h2>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {t('flow_hero_desc')}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="mt-4 flex gap-4 border-t border-border/30 pt-3">
+                    <div className="flex items-center gap-2">
+                      <div className="icon-tile w-7 h-7 rounded-md">
+                        <MessageSquare className="w-3.5 h-3.5 text-primary" />
                       </div>
-                      <div className="flex gap-4 mt-4 pt-3 border-t border-border/30">
-                        <div className="flex items-center gap-2">
-                          <div className="icon-tile w-7 h-7 rounded-md">
-                            <MessageSquare className="w-3.5 h-3.5 text-primary" />
-                          </div>
-                          <div>
-                            <p className="text-base font-bold leading-none">{conversationCount}</p>
-                            <p className="text-[10px] text-muted-foreground">{t('flow_stat_conversations')}</p>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <div className="icon-tile w-7 h-7 rounded-md">
-                            <CheckSquare className="w-3.5 h-3.5 text-primary" />
-                          </div>
-                          <div>
-                            <p className="text-base font-bold leading-none">{taskCount}</p>
-                            <p className="text-[10px] text-muted-foreground">{t('flow_stat_tasks')}</p>
-                          </div>
-                        </div>
+                      <div>
+                        <p className="text-base font-bold leading-none">{conversationCount}</p>
+                        <p className="text-[10px] text-muted-foreground">{t('flow_stat_conversations')}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="icon-tile w-7 h-7 rounded-md">
+                        <CheckSquare className="w-3.5 h-3.5 text-primary" />
+                      </div>
+                      <div>
+                        <p className="text-base font-bold leading-none">{taskCount}</p>
+                        <p className="text-[10px] text-muted-foreground">{t('flow_stat_tasks')}</p>
                       </div>
                     </div>
                   </div>
-                )}
-
-                {messages.map(msg => (
-                  <ChatBubble key={msg.id} role={msg.role} content={msg.content} language={msg.language} />
-                ))}
-
-                {sending && <TypingIndicator label={t('chat_typing')} />}
-
-                <div ref={bottomRef} />
-              </div>
-
-              {reasoningProposal?.map((proposal, index) => (
-                <ReasoningProposalCard
-                  key={proposal.result.proposal.id}
-                  proposal={proposal}
-                  onRunReadOnly={() => handleRunReasoningProposal(index)}
-                  onReviewApproval={() => setApprovalDialogOpen(true)}
-                  onRunWrite={handleRunWriteProposal}
-                />
-              ))}
-
-              {/* Input */}
-              <div className="border-t border-border/40 pt-3">
-                {sendError !== null && (
-                  <p className="text-xs text-destructive mb-2">{sendError}</p>
-                )}
-                <div className="flex gap-2 items-end">
-                  <Textarea
-                    value={draft}
-                    onChange={e => setDraft(e.target.value)}
-                    onKeyDown={handleKeyDown}
-                    placeholder={t('chat_placeholder')}
-                    rows={5}
-                    disabled={sending || loading}
-                    className="resize-none min-h-[120px]"
-                    dir="auto"
-                  />
-                  <Button
-                    type="button"
-                    size="sm"
-                    onClick={() => void handleSend()}
-                    disabled={!canSend}
-                    className="gap-1.5 self-end shrink-0"
-                    style={{ background: 'var(--gradient-primary)' }}
-                  >
-                    <Send className="w-3.5 h-3.5" />
-                    <span className="hidden sm:inline">
-                      {sending ? t('chat_sending') : t('chat_send')}
-                    </span>
-                  </Button>
                 </div>
               </div>
-            </CardContent>
-          </Card>
-        </div>
+            )}
 
-        {/* Right sidebar — session list */}
-        <div className="w-full lg:w-[260px] shrink-0">
-          <Card className="glass-card card-accent">
-            <CardHeader className="px-4 py-3">
-              <CardTitle className="text-sm font-semibold flex items-center gap-2.5">
-                <div className="icon-tile w-7 h-7 rounded-md">
-                  <MessageSquare className="w-3.5 h-3.5 text-primary" />
-                </div>
-                {t('flow_conversations')}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="px-4 pb-4 pt-0">
-              {sessions.length === 0 ? (
-                <p className="text-xs text-muted-foreground">
-                  {t('flow_no_conversations')}
-                </p>
-              ) : (
-                <ul className="max-h-[500px] overflow-y-auto space-y-1 -mx-1">
-                  {sessions.map(s => (
-                    <li key={s.id} className="group flex items-center">
-                      <button
-                        type="button"
-                        onClick={() => selectSession(s.id)}
-                        className={cn(
-                          'flex-1 min-w-0 text-left rounded-lg px-2.5 py-2 transition-colors',
-                          s.id === activeSessionId
-                            ? 'bg-primary/10 border border-primary/20'
-                            : 'hover:bg-secondary/30'
-                        )}
-                      >
-                        <p className="text-xs font-medium truncate" dir="auto">
-                          {s.title}
-                        </p>
-                        <p className="text-[10px] text-muted-foreground mt-0.5">
-                          {timeAgo(s.updated_at)}
-                        </p>
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="Delete conversation"
-                        onClick={async () => {
-                          const ok = await deleteSession(s.id);
-                          if (ok && activeSessionId === s.id) startNewChat();
-                        }}
-                        className="shrink-0 p-1.5 rounded-md opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-all"
-                      >
-                        <Trash2 className="w-3 h-3" />
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </CardContent>
-          </Card>
+            {messages.map(msg => (
+              <ChatBubble key={msg.id} role={msg.role} content={msg.content} language={msg.language} compact={compact} />
+            ))}
+
+            {sending && <TypingIndicator label={t('chat_typing')} />}
+
+            {reasoningProposal?.map((proposal, index) => (
+              <ReasoningProposalCard
+                key={proposal.result.proposal.id}
+                proposal={proposal}
+                onRunReadOnly={() => handleRunReasoningProposal(index)}
+                onReviewApproval={() => setApprovalDialogOpen(true)}
+                onRunWrite={handleRunWriteProposal}
+                compact={compact}
+              />
+            ))}
+          </div>
+
+          <JumpToLatestPill visible={showJumpToLatest} onClick={() => scrollToLatest('smooth')} />
+
+          {/* Composer -- task 17a workstream 1. A non-scrolling flex
+              sibling of the scroll region above, so it is ALWAYS visible
+              within this column's own box with no sticky/fixed
+              positioning needed; that box itself is kept correctly sized
+              against the visible viewport (including under an open mobile
+              keyboard) by AppLayout's h-[100dvh] mobile shell -- see that
+              file and the task 17a report's viewport-strategy writeup. */}
+          <div className="shrink-0 border-t border-border/60 bg-background/95">
+            {sendError !== null && (
+              <p className="px-3 pt-2 text-xs text-destructive sm:px-6">{sendError}</p>
+            )}
+            <ChatComposer
+              value={draft}
+              onChange={setDraft}
+              onSend={() => void handleSend()}
+              disabled={sending || loading}
+              compact={compact}
+            />
+          </div>
         </div>
       </div>
+
+      <ConversationsDrawer
+        open={conversationsDrawerOpen}
+        onOpenChange={setConversationsDrawerOpen}
+        sessions={sessions}
+        activeSessionId={activeSessionId}
+        onSelect={selectSession}
+        onDelete={handleDeleteSession}
+      />
+
       <StepApprovalDialog
         open={approvalDialogOpen}
         step={reasoningProposal?.[0]?.step ?? null}

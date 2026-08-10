@@ -47,9 +47,17 @@ function AppLayoutInner() {
           </main>
         </div>
 
-        {/* Mobile */}
-        <div className="lg:hidden flex flex-col min-h-screen">
-          <div className="flex justify-end px-4 pt-3 pb-1">
+        {/* Mobile -- task 17a: h-[100dvh] (was min-h-screen/100vh) so this
+            shell's own box genuinely shrinks when the on-screen keyboard
+            opens, on every current mobile browser that supports dvh. This
+            is what lets ChatPage's own h-full flex-column composer stay
+            correctly pinned above the keyboard with no JS height hacks --
+            see ChatPage.tsx and the task 17a report's "viewport strategy
+            chosen + why" for the full writeup. min-h-screen was a static
+            100vh floor that never shrank, so a fixed-at-the-bottom
+            composer could end up rendered behind the keyboard. */}
+        <div className="lg:hidden flex flex-col h-[100dvh]">
+          <div className="flex justify-end px-4 pt-3 pb-1 shrink-0">
             <GlobalSearch />
           </div>
           <main className="flex-1 pb-20 overflow-auto">

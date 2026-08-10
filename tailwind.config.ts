@@ -71,6 +71,24 @@ export default {
           border: "hsl(var(--sidebar-border))",
           ring: "hsl(var(--sidebar-ring))",
         },
+        // Task 17a (Chat Experience v2) -- the two bubble tokens have no
+        // pre-existing equivalent (see index.css's [data-chat-theme]
+        // blocks for values + rationale); every other chat color reuses
+        // the SAME CSS variable names as the tokens above (bg-background,
+        // text-foreground, etc.), scoped locally by [data-chat-theme] --
+        // this group exists only for the two genuinely new bubble tokens.
+        chat: {
+          bubble: {
+            user: {
+              DEFAULT: "hsl(var(--chat-bubble-user))",
+              foreground: "hsl(var(--chat-bubble-user-foreground))",
+            },
+            assistant: {
+              DEFAULT: "hsl(var(--chat-bubble-assistant))",
+              foreground: "hsl(var(--chat-bubble-assistant-foreground))",
+            },
+          },
+        },
       },
       borderRadius: {
         lg: "var(--radius)",
