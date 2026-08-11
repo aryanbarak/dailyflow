@@ -64,6 +64,56 @@ describe("isolateBidiRunsInText / isolateEmbeddedBidiRuns", () => {
     expect(isolateBidiRunsInText("   ", "k")).toEqual(["   "]);
     expect(isolateBidiRunsInText("...", "k")).toEqual(["..."]);
   });
+
+  // Task 17d, V3: production evidence -- "(Advanced Technical Support):" in
+  // a Persian sentence placed the colon/paren boundary on the wrong side.
+  // A parenthesized run with a mark from :.!? DIRECTLY attached to its
+  // closing paren (no space) now isolates as ONE unit (brackets, content,
+  // and that mark together) -- deliberately narrower than "any trailing
+  // punctuation on any run" (see the "SmartFlow." case above, and the
+  // no-attached-punctuation case just below, both UNCHANGED by this).
+  it("V3: a parenthesized Latin phrase with an attached trailing colon isolates as ONE unit -- brackets, content, and the colon together (the exact production evidence string)", () => {
+    const html = renderToString(
+      <p dir="auto">{isolateEmbeddedBidiRuns("لطفا با تیم (Advanced Technical Support): تماس بگیرید.")}</p>,
+    );
+    expect(html).toContain("<bdi>(Advanced Technical Support):</bdi>");
+    expect(html).not.toContain("<bdi>Advanced Technical Support</bdi>");
+  });
+
+  it("V3: the same parenthesized-run isolation also fires for a trailing period, exclamation mark, or question mark", () => {
+    for (const mark of [".", "!", "?"]) {
+      const html = renderToString(
+        <p dir="auto">{isolateEmbeddedBidiRuns(`این (Advanced Technical Support)${mark} است.`)}</p>,
+      );
+      expect(html).toContain(`<bdi>(Advanced Technical Support)${mark}</bdi>`);
+    }
+  });
+
+  it("V3: applies symmetrically to a Persian phrase parenthesized inside Latin text with an attached trailing mark", () => {
+    const html = renderToString(
+      <p dir="auto">{isolateEmbeddedBidiRuns("Contact the team (پشتیبانی فنی): available 24/7.")}</p>,
+    );
+    expect(html).toContain("<bdi>(پشتیبانی فنی):</bdi>");
+  });
+
+  it("V3: a parenthesized run with NO mark directly attached to its closing paren still isolates only its bare content, parens excluded -- the narrower scoping this task deliberately kept (regression guard alongside the pre-existing به-به test above)", () => {
+    const html = renderToString(<p dir="auto">{isolateEmbeddedBidiRuns("این (Advanced Technical Support) خوب است.")}</p>);
+    expect(html).toContain("<bdi>Advanced Technical Support</bdi>");
+    expect(html).not.toContain("<bdi>(Advanced Technical Support)</bdi>");
+  });
+
+  it("V3: a SINGLE-TOKEN parenthetical (e.g. a numeric count like \"(2).\") is deliberately NOT pulled into one unit -- a different, already-tested pattern (see ChatPage.test.tsx's 'Review active tasks (2).' case) that this task's fix must not disturb", () => {
+    const html = renderToString(<p dir="auto">{isolateEmbeddedBidiRuns("Review active tasks (2).")}</p>);
+    expect(html).toContain("<bdi>Review active tasks</bdi> (<bdi>2</bdi>).");
+    expect(html).not.toContain("<bdi>(2).</bdi>");
+  });
+
+  it("V3: full text content survives round-trip through the parenthesized-run isolation unchanged", () => {
+    const original = "لطفا با تیم (Advanced Technical Support): تماس بگیرید.";
+    const html = renderToString(<p dir="auto">{isolateEmbeddedBidiRuns(original)}</p>);
+    const rendered = html.replace(/<[^>]+>/g, "");
+    expect(rendered).toBe(original);
+  });
 });
 
 describe("createDirectionalMarkdownComponents", () => {

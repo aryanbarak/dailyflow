@@ -33,10 +33,36 @@ import type { ReactNode } from "react";
 // "SmartFlow رو" only matches "SmartFlow" -- that trailing punctuation or
 // space is deliberately left OUTSIDE the isolate, since it belongs to --
 // and must visually attach to -- the surrounding script's direction, not
-// the run's own.
+// the run's own. This default stays UNCHANGED (see the bidiText.test.tsx
+// "SmartFlow." case) -- ordinary sentence-final punctuation after a bare
+// run is genuinely part of the SURROUNDING sentence, not the run.
 const LATIN_RUN_SOURCE = "[A-Za-zÀ-ÖØ-öø-ÿ0-9](?:[A-Za-zÀ-ÖØ-öø-ÿ0-9 ._\\-/:@+#]*[A-Za-zÀ-ÖØ-öø-ÿ0-9])?";
 const PERSIAN_RUN_SOURCE = "[\\u0600-\\u06FF](?:[\\u0600-\\u06FF \\u200c._\\-/:@+#]*[\\u0600-\\u06FF])?";
-const BIDI_RUN_PATTERN = new RegExp(`${LATIN_RUN_SOURCE}|${PERSIAN_RUN_SOURCE}`, "g");
+
+// Task 17d, V3: production evidence -- "(Advanced Technical Support):" (a
+// parenthesized Latin PHRASE immediately followed by a colon) placed its
+// colon/paren boundary on the wrong side of the isolate. Deliberately
+// narrow on TWO axes, each protecting a real, already-tested case:
+//  1. The trailing [:.!?] is REQUIRED, not optional -- a parenthesized run
+//     with NO attached trailing mark (the existing "SmartFlow calls this
+//     feature (به به) internally." test below, where ")" is followed by a
+//     space) still isolates only its bare content, parens excluded.
+//  2. The lookahead below requires an internal SPACE -- i.e. this only
+//     fires for a multi-word PHRASE, not a single token. Without this, a
+//     numeric annotation like "Review active tasks (2)." (an existing,
+//     already-tested ChatPage.test.tsx case -- a COUNT in parens, a
+//     genuinely different pattern from a parenthesized label) would
+//     wrongly get pulled into "(2)." as one unit too; single-token
+//     parentheticals keep their pre-existing bare-content-only isolation.
+// Applied symmetrically to a Persian phrase parenthesized inside Latin
+// text too, matching this file's existing "isolate symmetrically, not
+// Latin-only" principle. Listed FIRST in the alternation so it's tried
+// before the bare-run patterns at the "(" position; if it doesn't match
+// (no ")", no attached trailing mark, or single-token content) the engine
+// falls through to the bare-run patterns, unchanged from before this task.
+const PAREN_WRAPPED_RUN_SOURCE = `\\((?=[^)]*\\s)(?:${LATIN_RUN_SOURCE}|${PERSIAN_RUN_SOURCE})\\)[:.!?]`;
+
+const BIDI_RUN_PATTERN = new RegExp(`${PAREN_WRAPPED_RUN_SOURCE}|${LATIN_RUN_SOURCE}|${PERSIAN_RUN_SOURCE}`, "g");
 
 /**
  * Splits a plain string into alternating literal segments and isolated

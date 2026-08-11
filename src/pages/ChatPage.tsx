@@ -189,9 +189,15 @@ const QUICK_ACTIONS: QuickAction[] = [
 // identically by ChatPage, AgentBriefingCard, WeeklyBriefingPage, and
 // TasksPage -- one solution, not a per-page patch. Only the visual class
 // names are specific to this page, passed straight through unchanged.
+// Task 17d, workstream 3 (design polish -- typography scale for long-form
+// Persian answers): paragraph/list spacing bumped one notch (mb-1->mb-2,
+// space-y-0.5->space-y-1) for clearer visual separation between blocks in
+// longer multi-paragraph replies -- existing Tailwind spacing scale only,
+// no new tokens, no layout change (still the same mb-*/space-y-* utilities
+// this file already used, just the next step up).
 const MSG_MD_COMPONENTS = createDirectionalMarkdownComponents({
-  p: 'mb-1 last:mb-0',
-  ul: 'mt-1 list-disc space-y-0.5 ps-4',
+  p: 'mb-2 last:mb-0',
+  ul: 'mt-1 list-disc space-y-1 ps-4',
 })
 
 type ReasoningRunStatus = 'idle' | 'running' | 'success' | 'failed' | 'approval_required' | 'approved' | 'rejected'

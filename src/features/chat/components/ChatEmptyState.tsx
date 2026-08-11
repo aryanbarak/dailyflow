@@ -70,9 +70,26 @@ export function ChatEmptyState({ greetingName, theme, actions, disabled, onSelec
           so mobile never ships the card/orb/chip DOM at all, only a single
           line of text. `lg:hidden` matches this app's own mobile/desktop
           breakpoint (see AppLayout.tsx's `hidden lg:flex` / `lg:hidden`
-          split). */}
-      <div data-testid="chat-empty-state-mobile" className="block px-1 py-3 text-center text-sm text-muted-foreground lg:hidden">
-        {t("flow_greeting")}, {greetingName} 👋
+          split).
+          Task 17d, workstream 3 (design polish -- the PO's own device
+          screenshot showed this as "a bare line floating in space"):
+          start-aligned instead of centered (a centered line of text with
+          nothing else around it reads like a placeholder/error state in a
+          chat surface; start-aligned near the top of the empty scroll area
+          reads as an intentional greeting), anchored with the SAME
+          icon-tile + Bot icon pattern already used for every message
+          avatar on this page (not a new component), and the name itself
+          gets one step of visual weight (font-medium text-foreground)
+          against the softer greeting lead-in (text-muted-foreground) --
+          still a single line of non-interactive text, still no
+          card/border/background surface, still no chips: D2 stands. */}
+      <div data-testid="chat-empty-state-mobile" className="flex items-center gap-2.5 px-4 pb-2 pt-6 lg:hidden">
+        <div className="icon-tile h-8 w-8 shrink-0 rounded-full">
+          <Bot className="h-4 w-4 text-primary" aria-hidden="true" />
+        </div>
+        <p className="text-sm text-muted-foreground">
+          {t("flow_greeting")}, <span className="font-medium text-foreground">{greetingName}</span> 👋
+        </p>
       </div>
 
       {/* Desktop: task 17b's full welcome card + orb + chip row, unchanged. */}
