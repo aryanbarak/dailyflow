@@ -75,17 +75,30 @@ describe("E2: Persian assistant text with trailing punctuation (task 17c)", () =
   });
 });
 
-describe("E3: Persian user bubble alignment (task 17c)", () => {
+describe("E3: Persian user bubble alignment (task 17c; direction resolution reworked by task 17e, W1)", () => {
+  // Task 17e, W1: the bubble's own dir is now an EXPLICIT "rtl"/"ltr"
+  // (resolveMessageBaseDirection in ChatPage.tsx), not "auto" -- a bare
+  // dir="auto" silently fails for exactly a pure single-language message
+  // (isolateEmbeddedBidiRuns wraps its ENTIRE strong-character content into
+  // <bdi>, and dir="auto"'s own search skips <bdi> content, finding
+  // nothing to detect a direction from) -- see ChatPage.tsx's own comment
+  // on resolveMessageBaseDirection for the full production trace. This also
+  // makes the assertion below reliable in jsdom for the first time: an
+  // EXPLICIT dir="rtl"/"ltr" is a plain UA-stylesheet mapping, not
+  // jsdom's own auto-directionality implementation (flagged elsewhere in
+  // this file, see the NOTE above, as inconsistent for structurally
+  // equivalent cases).
   it("resolves CSS direction to rtl for Persian user content (text-align:start therefore resolves to the visual right, not a hardcoded left)", () => {
     const { container } = render(<ChatBubble role="user" content="امروز چطوری؟" />);
-    const bubble = container.querySelector('[dir="auto"]')!;
-    expect(bubble).toHaveAttribute("dir", "auto");
+    const bubble = container.querySelector('[dir="rtl"]')!;
+    expect(bubble).not.toBeNull();
     expect(getComputedStyle(bubble).direction).toBe("rtl");
   });
 
   it("resolves CSS direction to ltr for English user content in the SAME component (proves the direction is genuinely content-driven, not a fixed rtl override)", () => {
     const { container } = render(<ChatBubble role="user" content="How are you today?" />);
-    const bubble = container.querySelector('[dir="auto"]')!;
+    const bubble = container.querySelector('[dir="ltr"]')!;
+    expect(bubble).not.toBeNull();
     expect(getComputedStyle(bubble).direction).toBe("ltr");
   });
 
@@ -98,5 +111,104 @@ describe("E3: Persian user bubble alignment (task 17c)", () => {
   it("the Persian run is isolated (<bdi>) inside the user bubble too, same as assistant messages", () => {
     const { container } = render(<ChatBubble role="user" content="امروز چطوری؟" />);
     expect(container.querySelector("bdi")).not.toBeNull();
+  });
+});
+
+// Task 17e, W1. Device evidence (post-17d build, app UI language
+// non-Persian, conversation Persian): PURE-Persian bubbles ("!سلام",
+// ":برایتان لیست می‌کنم") showed terminal punctuation at the wrong visual
+// end -- no Latin tokens involved, so not the 11e mixed-run class 17d's V3
+// already covers. Root cause (see resolveMessageBaseDirection's own
+// comment in ChatPage.tsx): a pure single-language message has ALL of its
+// strong characters captured by isolateEmbeddedBidiRuns's <bdi> run(s),
+// since a run only ever ends on a strong character of its own script --
+// leaving nothing but neutral terminal punctuation OUTSIDE any <bdi>.
+// dir="auto"'s own browser-native detection explicitly skips <bdi>
+// content, so it finds no strong character to resolve from and falls back
+// to the ambient/inherited direction -- which, with nothing between the
+// bubble and ChatPage's own root to interrupt it, was the page root's
+// dir={isRTL ? 'rtl' : 'ltr'} (ChatPage.tsx), driven by the APP UI
+// LANGUAGE the user picked in Settings, not by what they actually typed or
+// what the assistant actually replied with. Fixed by computing the
+// bubble's own dir explicitly from the message's raw content
+// (resolveMessageBaseDirection), so it can never again be decided by
+// anything outside the message itself. These four combinations are the
+// exhaustive matrix of {app UI language} x {message language} the device
+// evidence's own hypothesis named.
+describe("W1 (task 17e): message direction resolves from the message's own content, independent of the app-language page root", () => {
+  const renderInAppRoot = (appDir: "rtl" | "ltr", content: string) =>
+    render(
+      <div dir={appDir}>
+        <ChatBubble role="assistant" content={content} />
+      </div>,
+    );
+
+  // The bubble's own content div is located via its unique `.rounded-xl`
+  // class (the ancestor app-root wrapper and the avatar tile never carry
+  // that class), NOT via a bare `[dir=...]` selector on the whole
+  // container -- the ancestor wrapper legitimately carries the OTHER dir
+  // value (it stands in for the real app root), so asserting "no element
+  // anywhere has dir=X" would wrongly fail on that ancestor itself.
+  it("FA-app / FA-msg: a Persian app root with a Persian message resolves the bubble to rtl, with the terminal mark immediately outside the isolate", () => {
+    const { container } = renderInAppRoot("rtl", "سلام! برایتان لیست می‌کنم:");
+    const bubble = container.querySelector(".rounded-xl")!;
+    expect(bubble).toHaveAttribute("dir", "rtl");
+    // Terminal punctuation sits directly adjacent to its own run's closing
+    // </bdi>, in DOM order -- structural proof of correct placement,
+    // independent of any pixel-level rendering jsdom cannot perform.
+    expect(bubble.innerHTML).toMatch(/<\/bdi>!/);
+    expect(bubble.innerHTML).toMatch(/<\/bdi>:/);
+  });
+
+  it("EN-app / FA-msg (the reported broken combo): an English app root with a Persian message STILL resolves the bubble to rtl -- the app's own UI-language root must not leak in", () => {
+    const { container } = renderInAppRoot("ltr", "سلام! برایتان لیست می‌کنم:");
+    const bubble = container.querySelector(".rounded-xl")!;
+    expect(bubble).toHaveAttribute("dir", "rtl");
+    expect(bubble.innerHTML).toMatch(/<\/bdi>!/);
+    expect(bubble.innerHTML).toMatch(/<\/bdi>:/);
+  });
+
+  it("FA-app / EN-msg: a Persian app root with an English message resolves the bubble to ltr, not the app root's rtl", () => {
+    const { container } = renderInAppRoot("rtl", "Let me write it.");
+    const bubble = container.querySelector(".rounded-xl")!;
+    expect(bubble).toHaveAttribute("dir", "ltr");
+    expect(bubble.innerHTML).toMatch(/<\/bdi>\./);
+  });
+
+  it("EN-app / EN-msg: an English app root with an English message resolves the bubble to ltr", () => {
+    const { container } = renderInAppRoot("ltr", "Let me write it.");
+    const bubble = container.querySelector(".rounded-xl")!;
+    expect(bubble).toHaveAttribute("dir", "ltr");
+    expect(bubble.innerHTML).toMatch(/<\/bdi>\./);
+  });
+});
+
+// Task 17e, W2. Device evidence: assistant bubbles capped at ~70-80% width
+// on a phone-narrow column wasted both margins. Below lg, assistant
+// bubbles now use the full column width minus the avatar gutter, user
+// bubbles (no avatar) use 92%; the 70ch reading-measure cap now only
+// applies at lg+ (see ChatBubble's own comment in ChatPage.tsx).
+describe("W2 (task 17e): mobile bubble width -- full column minus avatar gutter below lg, 70ch cap only at lg+", () => {
+  it("assistant bubble: full width minus the avatar gutter below lg, 70ch cap at lg+", () => {
+    const { container } = render(<ChatBubble role="assistant" content="Hello there." />);
+    const bubble = container.querySelector(".rounded-xl")!;
+    expect(bubble.className).toMatch(/max-w-\[calc\(100%-2\.5rem\)\]/);
+    expect(bubble.className).toMatch(/lg:max-w-\[70ch\]/);
+  });
+
+  it("user bubble: 92% below lg, 70ch cap at lg+", () => {
+    const { container } = render(<ChatBubble role="user" content="Hello there." />);
+    const bubble = container.querySelector(".rounded-xl")!;
+    expect(bubble.className).toMatch(/max-w-\[92%\]/);
+    expect(bubble.className).toMatch(/lg:max-w-\[70ch\]/);
+  });
+
+  it("no leftover sm:max-w-[70ch] or plain max-w-[80%] remains on either bubble role", () => {
+    const assistant = render(<ChatBubble role="assistant" content="Hi." />).container.innerHTML;
+    const user = render(<ChatBubble role="user" content="Hi." />).container.innerHTML;
+    for (const html of [assistant, user]) {
+      expect(html).not.toMatch(/\bsm:max-w-\[70ch\]/);
+      expect(html).not.toMatch(/\bmax-w-\[80%\]/);
+    }
   });
 });

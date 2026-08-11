@@ -1193,6 +1193,56 @@ export function AssistantContent({ content }: Readonly<{ content: string }>) {
   return <ReactMarkdown components={MSG_MD_COMPONENTS}>{md}</ReactMarkdown>
 }
 
+// Task 17e, W1: mirrors the SAME "first-strong character" heuristic the
+// browser's own `dir="auto"` uses (UAX#9 P2/P3) -- but computed directly
+// over the RAW message string, before any bdi-isolation. This is necessary
+// because `dir="auto"`'s own native search explicitly SKIPS the contents of
+// <bdi> descendants (see the HTML Standard's auto-directionality
+// algorithm): once isolateEmbeddedBidiRuns (11e) wraps ALL of a message's
+// strong-direction characters into <bdi> run(s) -- which happens for every
+// PURE single-language message, since a run only ends on a strong character
+// of its own script -- the only things left OUTSIDE any <bdi> are neutral
+// characters (terminal punctuation like "!"/":"/"."), and dir="auto" has
+// nothing left to detect a direction from. Its fallback then inherits the
+// nearest ambient direction instead -- which, with no other block between
+// here and ChatPage's own root, was this page's `dir={isRTL ? 'rtl' :
+// 'ltr'}` (see ChatPage's root below), driven by the APP UI LANGUAGE, not
+// the message's own content. A rendered-DOM diagnostic confirmed this
+// exactly: a pure-Persian message like "سلام! برایتان لیست می‌کنم:" isolates
+// to `<bdi>سلام</bdi>! <bdi>برایتان لیست می‌کنم</bdi>:` -- zero strong
+// characters remain outside any <bdi> -- so with a non-Persian app UI
+// language (root dir="ltr"), the bubble's own base direction fell back to
+// the WRONG "ltr", misplacing the trailing "!"/":" at the wrong visual end.
+// (Mixed-run messages, e.g. 17d's V3 "AI/ML." case, don't hit this: the
+// surrounding-language portion of a mixed message always leaves ITS OWN
+// strong characters outside any isolate, so dir="auto" self-resolves fine
+// without ever needing the ambient fallback.)
+//
+// Computing this explicitly, from the message's own raw content, and
+// setting it as a literal `dir="rtl"`/`dir="ltr"` (not "auto") on the
+// bubble's content root breaks that inheritance chain at exactly this
+// point: this element's own direction can never again be decided by
+// anything outside the message itself, and it becomes the correct ambient
+// anchor for every markdown block below it (AssistantContent's p/ul/li,
+// still plain dir="auto" -- src/lib/bidiText.tsx, untouched by this task --
+// which now falls back, on the same zero-strong-char edge case, to this
+// CORRECT value instead of the page root's UI-language one). Heading
+// elements (h1-h6) aren't given any dir override at all by
+// createDirectionalMarkdownComponents and aren't used in this reply
+// surface today -- they simply inherit this same corrected ambient
+// direction normally, with no independent auto-detection of their own to
+// go wrong.
+const STRONG_RTL_CHAR_SOURCE = '\\u0600-\\u06FF'
+const STRONG_LTR_CHAR_SOURCE = 'A-Za-zÀ-ÖØ-öø-ÿ'
+const FIRST_STRONG_CHAR_PATTERN = new RegExp(`[${STRONG_RTL_CHAR_SOURCE}${STRONG_LTR_CHAR_SOURCE}]`)
+const STRONG_RTL_CHAR_PATTERN = new RegExp(`[${STRONG_RTL_CHAR_SOURCE}]`)
+
+function resolveMessageBaseDirection(text: string): 'rtl' | 'ltr' {
+  const match = text.match(FIRST_STRONG_CHAR_PATTERN)
+  if (!match) return 'ltr'
+  return STRONG_RTL_CHAR_PATTERN.test(match[0]) ? 'rtl' : 'ltr'
+}
+
 export function ChatBubble({ role, content, language, compact = false }: Readonly<{
   role: 'user' | 'assistant'
   content: string
@@ -1209,26 +1259,35 @@ export function ChatBubble({ role, content, language, compact = false }: Readonl
       <div
         className={cn(
           // Task 17a, workstream 2 (reading layout): bubble line length
-          // constrained to ~65-75ch on wide screens (fluid on mobile via
-          // the max-w-[80%] fallback below that breakpoint) for
-          // readability -- a bubble should never span the full width of a
-          // wide desktop viewport.
-          'max-w-[80%] rounded-xl text-sm leading-relaxed break-words sm:max-w-[70ch]',
+          // constrained on wide screens for readability. Task 17e, W2:
+          // below lg, both the old shared 80% cap and the sm:70ch tier
+          // wasted margin on a phone-narrow column -- assistant bubbles now
+          // use the full column width minus the avatar gutter (avatar
+          // w-7/28px + gap-2.5/10px = 38px, rounded up to 2.5rem/40px so
+          // the bubble's own edge never rides flush against the avatar);
+          // user bubbles (no avatar to clear) use a wide but not edge-to-
+          // edge 92%. The 70ch reading-measure cap now only applies at
+          // lg+, where the sidebar is visible and the column is wide.
+          role === 'user' ? 'max-w-[92%] lg:max-w-[70ch]' : 'max-w-[calc(100%-2.5rem)] lg:max-w-[70ch]',
+          'rounded-xl text-sm leading-relaxed break-words',
           compact ? 'px-3 py-1.5 text-[13px] leading-normal' : 'px-4 py-2.5',
           role === 'user'
             ? 'bg-chat-bubble-user text-chat-bubble-user-foreground rounded-br-sm'
             : 'bg-chat-bubble-assistant text-chat-bubble-assistant-foreground border border-border/40 rounded-bl-sm'
         )}
-        // Task 11e: base direction is decided per content block (first-strong
-        // heuristic, dir="auto"), not once for the whole bubble from the
-        // resolved response language -- that per-bubble language-based
-        // direction was the root cause of the production bug (it doesn't
-        // isolate embedded opposite-direction runs, and it stopped mattering
-        // anyway once AssistantContent's own per-block dir="auto" overrode
-        // it for every markdown paragraph/list). Plain user-bubble text gets
-        // the exact same per-block treatment now, including Latin-run
-        // isolation, instead of only a bare dir="auto" with no isolation.
-        dir="auto"
+        // Task 11e: base direction is decided per content block, not once
+        // for the whole bubble from the resolved response language -- that
+        // per-bubble language-based direction was the root cause of the
+        // original production bug (it doesn't isolate embedded opposite-
+        // direction runs). Task 17e, W1: that per-block direction is now
+        // resolveMessageBaseDirection(content) -- an explicit rtl/ltr
+        // computed from THIS message's own raw content -- rather than a
+        // bare dir="auto", for the reason documented at length on
+        // resolveMessageBaseDirection above: dir="auto"'s own browser-
+        // native detection silently fails (and leaks the app UI language's
+        // direction instead) for exactly the pure-single-language messages
+        // this bubble renders most often.
+        dir={resolveMessageBaseDirection(content)}
         lang={language}
       >
         {role === 'assistant'

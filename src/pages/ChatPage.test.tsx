@@ -754,7 +754,7 @@ describe("ChatPage LLM reasoning UX boundary", () => {
     }, "de")).toBe("Ich konnte die Aufgabenerledigung nicht sicher bestatigen.");
   });
 
-  it("task 11e: the bubble container's own base direction is always dir=\"auto\" (first-strong heuristic), never hardcoded from the resolved response language -- that per-bubble language-derived direction was the task 11e production bug", () => {
+  it("task 11e/17e: the bubble container's own base direction is never hardcoded from the resolved response language -- that per-bubble language-derived direction was the original task 11e production bug", () => {
     const mixed = renderToString(
       <ChatBubble
         role="assistant"
@@ -772,15 +772,37 @@ describe("ChatPage LLM reasoning UX boundary", () => {
       <ChatBubble role="assistant" language="fa" content="امروز ۲ کار فعال داری." />,
     );
 
-    // No bubble, of any language, ever gets a hardcoded ltr/rtl dir anymore.
+    // Task 17e, W1: the bubble container's dir is now an EXPLICIT rtl/ltr
+    // computed from the message's own raw content (resolveMessageBaseDirection
+    // in ChatPage.tsx) -- NOT the bare dir="auto" this test previously
+    // required. A bare dir="auto" silently fails for exactly a PURE
+    // single-language message: isolateEmbeddedBidiRuns wraps ALL of its
+    // strong characters into <bdi> run(s) (a run only ends on a strong
+    // character), leaving nothing but neutral punctuation outside any <bdi>
+    // -- and dir="auto"'s own browser-native search explicitly SKIPS <bdi>
+    // content, so it finds nothing and falls back to the ambient direction
+    // (which, in production, leaked in from the page root's APP UI
+    // LANGUAGE, not the message). This is NOT a reversion to the original
+    // 11e bug: that bug set direction from the `language` METADATA field
+    // with no content inspection or run isolation at all; this instead
+    // inspects the message's own first strong CHARACTER directly (ignoring
+    // `language` entirely) and still isolates every embedded opposite-
+    // direction run exactly as before -- see the <bdi> assertions below,
+    // unchanged from this test's original intent.
+    expect(mixed).toContain('dir="rtl"'); // starts with Persian "این"
+    expect(english).toContain('dir="ltr"'); // starts with Latin "Review"
+    expect(german).toContain('dir="ltr"'); // starts with Latin "Heute"
+    expect(farsi).toContain('dir="rtl"'); // starts with Persian "امروز"
     for (const html of [mixed, english, german, farsi]) {
-      expect(html).not.toContain('dir="rtl"');
-      expect(html).not.toContain('dir="ltr"');
+      // Never MORE than one explicit dir -- exactly the bubble container,
+      // nothing else on this render path gets a hardcoded rtl/ltr.
+      expect(html.match(/dir="(?:rtl|ltr)"/g)?.length).toBe(1);
     }
 
-    // Outer bubble container (1) + one dir="auto" per markdown paragraph (3
-    // for `mixed`'s three \n\n-separated blocks) = 4.
-    expect(mixed.match(/dir="auto"/g)?.length).toBe(4);
+    // Every markdown block (bidiText.tsx, untouched by task 17e) still gets
+    // its own dir="auto" -- one per \n\n-separated paragraph in `mixed`.
+    expect(mixed.match(/dir="auto"/g)?.length).toBe(3);
+
     // The embedded English/German blocks inside the Persian-flow message are
     // isolated as their own <bdi> run(s) -- proving embedded opposite-
     // direction runs are actually isolated, not just given a base dir. "(2)"
