@@ -48,14 +48,27 @@ describe("Project Workspace browser boundaries", () => {
   });
 
   it("Sidebar and mobile navigation link to /projects with no hard-coded UUID and no direct demo-route link", () => {
-    const sources = [read("src/components/layout/Sidebar.tsx"), read("src/components/layout/MobileNav.tsx")];
+    // Task 17c: MobileNav.tsx's own nav-item arrays (mainNavItems/
+    // moreNavItems, including the /projects entry this test checks for)
+    // were extracted into a sibling data-only module, mobileNavItems.ts --
+    // done to avoid a NEW react-refresh/only-export-components lint
+    // warning from a file exporting both components and plain constants,
+    // not a behavior change. MobileNav.tsx itself still renders that exact
+    // same data (imported, not inlined) -- updated here to check the file
+    // that now actually contains the literal path string, not a change to
+    // what this test protects.
+    const sources = [
+      read("src/components/layout/Sidebar.tsx"),
+      read("src/components/layout/MobileNav.tsx"),
+      read("src/components/layout/mobileNavItems.ts"),
+    ];
 
     for (const source of sources) {
       expect(source).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i);
       expect(source).not.toMatch(/\/projects\/demo/);
     }
     expect(sources[0]).toContain('path: "/projects"');
-    expect(sources[1]).toContain('path: "/projects"');
+    expect(sources[2]).toContain('path: "/projects"');
   });
 
   it("does not introduce semantic memory, vector, RAG, LLM, automation, approval, commit, or push behavior", () => {

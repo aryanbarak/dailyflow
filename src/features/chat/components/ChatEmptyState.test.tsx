@@ -108,3 +108,54 @@ describe("ChatEmptyState", () => {
     expect(html).toContain("disabled=\"\"");
   });
 });
+
+// Task 17c, PO decision D2: "NO quick-action cards/chips on mobile AT ALL...
+// Desktop keeps 17b's chip row (breakpoint-gated)." Verified structurally,
+// not just via a CSS class name: the mobile block is a genuinely separate
+// subtree containing zero chip/card/orb markup, not the same markup merely
+// hidden by a `hidden` utility class -- extracted from the full HTML string
+// via the two data-testid markers so each block's OWN markup can be
+// inspected in isolation.
+describe("ChatEmptyState D2: mobile has no chip/card/orb markup at all", () => {
+  function extractTestBlock(html: string, testId: string): string {
+    const marker = `data-testid="${testId}"`;
+    const start = html.indexOf(marker);
+    expect(start, `expected a [${marker}] element`).toBeGreaterThan(-1);
+    // Both blocks are simple, non-nested-div-of-the-same-testid content --
+    // grabbing up to the next data-testid marker (or end of string for the
+    // last one) is enough to isolate each block's own markup.
+    const nextMarkerIndex = html.indexOf("data-testid=", start + marker.length);
+    return html.slice(start, nextMarkerIndex === -1 ? undefined : nextMarkerIndex);
+  }
+
+  it("the mobile block (lg:hidden) contains no chip buttons, no role=listitem, no card, and no orbital motif", () => {
+    const html = renderToString(
+      <ChatEmptyState greetingName="Aryan" theme="dark" actions={[action]} disabled={false} onSelectPrompt={vi.fn()} />,
+    );
+    const mobileBlock = extractTestBlock(html, "chat-empty-state-mobile");
+    expect(mobileBlock).not.toContain("role=\"listitem\"");
+    expect(mobileBlock).not.toContain("<button");
+    expect(mobileBlock).not.toContain("glass-card");
+    expect(mobileBlock).not.toContain("--flow-gradient-orb");
+    expect(mobileBlock).toContain("Aryan");
+  });
+
+  it("the mobile block is marked lg:hidden and the desktop block is marked hidden lg:block (breakpoint gating)", () => {
+    const html = renderToString(
+      <ChatEmptyState greetingName="Aryan" theme="dark" actions={[action]} disabled={false} onSelectPrompt={vi.fn()} />,
+    );
+    const mobileBlock = extractTestBlock(html, "chat-empty-state-mobile");
+    const desktopBlock = extractTestBlock(html, "chat-empty-state-desktop");
+    expect(mobileBlock).toMatch(/class="[^"]*\blg:hidden\b/);
+    expect(desktopBlock).toMatch(/class="[^"]*\bhidden\b[^"]*\blg:block\b/);
+  });
+
+  it("the desktop block still renders the full chip row (D2 only removes chips from MOBILE, desktop keeps them)", () => {
+    const html = renderToString(
+      <ChatEmptyState greetingName="Aryan" theme="dark" actions={[action]} disabled={false} onSelectPrompt={vi.fn()} />,
+    );
+    const desktopBlock = extractTestBlock(html, "chat-empty-state-desktop");
+    expect(desktopBlock).toContain('role="listitem"');
+    expect(desktopBlock).toContain(action.labelKey === "flow_action_study" ? "Study With Me" : "");
+  });
+});

@@ -11,12 +11,21 @@ const LINE_HEIGHT = 20;
 const PADDING = 16;
 
 describe("clampComposerHeight", () => {
-  it("grows to the natural content height between 1 and 5 lines", () => {
+  // Task 17c, PO decision D1: composer base height is now a 2-line minimum
+  // (was 1 line under 17a) -- this locks that value in explicitly so a
+  // future accidental revert is caught here, not just via the "never below
+  // minimum" test below (which passes for ANY minimum, since it reads
+  // COMPOSER_MIN_LINES symbolically rather than asserting its value).
+  it("the configured minimum is 2 lines (task 17c, D1 -- was 1 line under 17a)", () => {
+    expect(COMPOSER_MIN_LINES).toBe(2);
+  });
+
+  it("grows to the natural content height between the minimum and 5 lines", () => {
     const threeLines = LINE_HEIGHT * 3 + PADDING;
     expect(clampComposerHeight(threeLines, LINE_HEIGHT, PADDING)).toBe(threeLines);
   });
 
-  it("never goes below the 1-line minimum, even for empty/near-empty content", () => {
+  it("never goes below the configured line minimum, even for empty/near-empty content", () => {
     const minHeight = LINE_HEIGHT * COMPOSER_MIN_LINES + PADDING;
     expect(clampComposerHeight(5, LINE_HEIGHT, PADDING)).toBe(minHeight);
   });
@@ -32,7 +41,14 @@ describe("clampComposerHeight", () => {
   });
 
   it("defaults verticalPaddingPx to 0 when omitted", () => {
-    expect(clampComposerHeight(LINE_HEIGHT, LINE_HEIGHT)).toBe(LINE_HEIGHT);
+    // Task 17c, D1: the requested height here must clear the NEW 2-line
+    // minimum (was 1 line under 17a) on its own, otherwise this would be
+    // testing the min-height clamp instead of the padding default -- a
+    // single line height (the old test's value) now always gets clamped
+    // up to the 2-line floor regardless of padding, which would make this
+    // assertion pass for the wrong reason.
+    const threeLines = LINE_HEIGHT * 3;
+    expect(clampComposerHeight(threeLines, LINE_HEIGHT)).toBe(threeLines);
   });
 });
 

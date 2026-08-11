@@ -41,8 +41,7 @@ function reasoningResult(): AgentReasoningResult {
     responseLanguage: "en",
     validationReasons: ["validated"],
     toolId: "tasks.list",
-    rawModelText: "{}",
-    promptPreview: { containsTasks: true, containsEvents: false, containsLearning: false, containsWorkspace: false },
+    promptPreview: { containsTaskNotes: false, containsRawMemory: false, containsAuditPolicy: false, containsUserId: false },
   };
 }
 

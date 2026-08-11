@@ -1,10 +1,12 @@
-// SmartFlow -- Chat Experience v2 (task 17a). Pure auto-grow math for the
-// composer textarea: 1 line minimum, ~5 lines maximum, then internal
-// scroll takes over. Kept separate from the DOM-measurement code (which
-// lives in ChatComposer.tsx, reading textarea.scrollHeight via a ref) so
-// the clamping policy itself is unit-testable with plain numbers.
+// SmartFlow -- Chat Experience v2 (task 17a; base height revised in task
+// 17c, PO decision D1). Pure auto-grow math for the composer textarea: a
+// 2-line minimum (D1 -- was 1 line under 17a), ~5 lines maximum (17a's
+// original cap, unchanged), then internal scroll takes over. Kept separate
+// from the DOM-measurement code (which lives in ChatComposer.tsx, reading
+// textarea.scrollHeight via a ref) so the clamping policy itself is
+// unit-testable with plain numbers.
 
-export const COMPOSER_MIN_LINES = 1;
+export const COMPOSER_MIN_LINES = 2;
 export const COMPOSER_MAX_LINES = 5;
 
 /**

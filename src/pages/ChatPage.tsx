@@ -9,14 +9,13 @@ import {
   CheckCircle2,
   FileText,
   Flame,
-  Menu,
   MessageSquare,
-  Plus,
   Wallet,
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import { createDirectionalMarkdownComponents, isolateEmbeddedBidiRuns } from '@/lib/bidiText'
 import { Button } from '@/components/ui/button'
+import { Sheet, SheetContent } from '@/components/ui/sheet'
 import { cn } from '@/lib/utils'
 import { supabase } from '@/integrations/supabase/client'
 import { useAuth } from '@/hooks/useAuth'
@@ -26,12 +25,18 @@ import { SmartFlowIcon } from '@/components/SmartFlowLogo'
 import { translations, useT } from '@/i18n'
 import type { TranslationKey } from '@/i18n'
 import { useChatSessions } from '@/hooks/useChatSessions'
+// Task 17c, PO decisions D3/D4: the mobile bottom nav is removed on this
+// page (AppLayout.tsx); its "More" sheet content is reused here verbatim
+// instead of being rebuilt -- see MobileNav.tsx's own comment on why these
+// are exported.
+import { NavItemsGrid } from '@/components/layout/MobileNav'
+import { mainNavItems, moreNavItems } from '@/components/layout/mobileNavItems'
 // Task 17a (Chat Experience v2, mobile-first foundation) -- see
 // src/features/chat/ for the new composer/drawer/scroll/theme/compact
 // pieces this page now composes. Pipeline logic below (reasoning,
 // classification, proposal handling) is UNCHANGED by this task.
 import { ChatComposer } from '@/features/chat/components/ChatComposer'
-import { ChatHeaderControls } from '@/features/chat/components/ChatHeaderControls'
+import { ChatPageHeader } from '@/features/chat/components/ChatPageHeader'
 import { ChatEmptyState, type ChatEmptyStateAction } from '@/features/chat/components/ChatEmptyState'
 import { ConversationsDrawer } from '@/features/chat/components/ConversationsDrawer'
 import { ConversationsList } from '@/features/chat/components/ConversationsList'
@@ -1258,7 +1263,7 @@ export default function ChatPage() {
   const { profile } = useProfile()
   const { tasks, isLoading: tasksLoading, error: tasksError } = useTasks()
   const workspace = useWorkspace()
-  const { t } = useT()
+  const { t, isRTL } = useT()
   const interfaceLanguage = useAppearance((state) => state.language)
   const location = useLocation()
   const nav = useNavigate()
@@ -1293,6 +1298,11 @@ export default function ChatPage() {
   const wasNearBottomRef = useRef(true)
   const [showJumpToLatest, setShowJumpToLatest] = useState(false)
   const [conversationsDrawerOpen, setConversationsDrawerOpen] = useState(false)
+  // Task 17c, PO decisions D3/D4: the mobile bottom nav is gone on this
+  // page (AppLayout.tsx), so this "More" sheet -- reusing MobileNav's own
+  // NavItemsGrid/mainNavItems/moreNavItems -- is now the only way to reach
+  // any other page from here.
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false)
   const initialPromptFired = useRef(false)
   const workerUrl = import.meta.env.VITE_AGENT_WORKER_URL as string
   const reasoningTransport = resolveAgentReasoningTransport(import.meta.env)
@@ -1839,55 +1849,32 @@ export default function ChatPage() {
 
   return (
     <div
+      dir={isRTL ? 'rtl' : 'ltr'}
       data-chat-theme={theme}
       data-chat-density={density}
       className="flex h-full flex-col overflow-hidden bg-background text-foreground lg:sticky lg:top-0 lg:h-screen"
     >
-      {/* Header -- task 17a: mobile drawer trigger + the theme/compact
-          settings cluster live here alongside the new-chat action.
-          Task 17b: single row, full "Flow AI" brand text (never truncated
-          -- chat_title IS the literal "Flow AI" string in every locale),
-          the old subtitle line removed (that second line of chrome text
-          under the title is what the task's "remove the second chrome
-          row" targets). The logo mark/controls/New Chat all restyle for
-          Dark Cosmic for free via the derived --primary/--border/etc.
-          token chain in index.css -- no code changes needed here. */}
-      <motion.header
-        initial={prefersReducedMotion ? false : { opacity: 0, y: -10 }}
-        animate={{ opacity: 1, y: 0 }}
-        className={cn('shrink-0 border-b border-border px-3 sm:px-6', compact ? 'py-2' : 'py-3')}
-      >
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex min-w-0 items-center gap-2">
-            <Button
-              type="button"
-              size="icon"
-              variant="ghost"
-              className="h-9 w-9 shrink-0 lg:hidden"
-              onClick={() => setConversationsDrawerOpen(true)}
-              aria-label={t('chat_open_conversations')}
-            >
-              <Menu className="h-4 w-4" />
-            </Button>
-            <div className="icon-tile shrink-0">
-              <Bot className="w-4 h-4 text-primary" />
-            </div>
-            <h1 className="whitespace-nowrap text-lg font-semibold leading-tight">{t('chat_title')}</h1>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <ChatHeaderControls />
-            <Button
-              size="sm"
-              variant="outline"
-              className="gap-1.5"
-              onClick={startNewChat}
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">{t('flow_new_chat')}</span>
-            </Button>
-          </div>
-        </div>
-      </motion.header>
+      {/* Header -- task 17c, PO decision D4, final single-row layout:
+          [More menu] [Conversations] -- "Flow AI" -- [theme/density] [New].
+          Extracted into its own component (ChatPageHeader.tsx) so it's
+          independently testable without ChatPage's heavy hook dependencies.
+          The explicit `dir` on this page's own root (above) is what makes
+          this row -- and every other logical-property-positioned element on
+          this page (the composer's send button, etc.) -- genuinely mirror
+          under RTL: `dir="auto"` on individual text leaves (message bubbles)
+          only ever resolved THEIR OWN content's direction, it never
+          established an ambient `direction` for sibling/structural elements
+          like a button positioned via `end-*`. Task 17c's E4 fix (see
+          ChatComposer.test.tsx's own comment) and this header's mirroring
+          both rely on that one root-level fix, not a scattered per-element
+          one. */}
+      <ChatPageHeader
+        compact={compact}
+        prefersReducedMotion={prefersReducedMotion}
+        onOpenMoreMenu={() => setMoreMenuOpen(true)}
+        onOpenConversations={() => setConversationsDrawerOpen(true)}
+        onStartNewChat={startNewChat}
+      />
 
       {/* Body: desktop sidebar (task 17a: hidden below lg -- a
           ConversationsDrawer sheet replaces it on mobile, see below) +
@@ -2007,6 +1994,20 @@ export default function ChatPage() {
         onSelect={selectSession}
         onDelete={handleDeleteSession}
       />
+
+      {/* "More" navigation -- task 17c D3/D4: reuses MobileNav's own sheet
+          content (NavItemsGrid) with the FULL item set (mainNavItems +
+          moreNavItems), since the bottom nav itself is absent on this page
+          and this is the only remaining way to reach any other page. */}
+      <Sheet open={moreMenuOpen} onOpenChange={setMoreMenuOpen}>
+        <SheetContent side="bottom" className="h-auto rounded-t-2xl" aria-label={t('chat_open_more_menu')}>
+          <NavItemsGrid
+            items={[...mainNavItems, ...moreNavItems]}
+            onNavigate={(path) => { setMoreMenuOpen(false); nav(path) }}
+            isActive={(path) => location.pathname === path || location.pathname.startsWith(`${path}/`)}
+          />
+        </SheetContent>
+      </Sheet>
 
       <StepApprovalDialog
         open={approvalDialogOpen}

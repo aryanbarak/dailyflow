@@ -103,3 +103,63 @@ describe("ChatComposer", () => {
     expect(button.className).toContain("w-11");
   });
 });
+
+// Task 17c, E4: production evidence showed Persian text starting at the
+// LEFT edge and flowing UNDER the send button. Root cause (verified via a
+// throwaway diagnostic, not guessed): the field's `pe-12` padding and the
+// button's `end-1` position are LOGICAL properties, which only resolve
+// against the ELEMENT'S OWN computed `direction` -- and neither the field
+// nor the button had one of their own; `dir="auto"` on the textarea only
+// ever resolves THAT element's own direction from ITS OWN text content, it
+// does not cascade sideways to the sibling send button the way an ancestor
+// `dir="rtl"` does. Since nothing anywhere in ChatPage's tree set an
+// ambient `dir`, the button's inherited `direction` was ALWAYS "ltr"
+// regardless of interface language -- so in Persian, the button stayed on
+// the visual right while the RTL-resolved textarea reserved its large
+// `pe-12` clearance on the visual LEFT instead, leaving the button
+// unprotected on the right and the text overlapping it. The fix is at the
+// ROOT: ChatPage's own wrapper now sets `dir={isRTL ? "rtl" : "ltr"}` (see
+// ChatPage.tsx), which gives every logical-property descendant -- including
+// this composer -- a REAL, correctly-flipping direction to resolve against.
+// This test proves that fix actually reaches the composer's own elements.
+describe("ChatComposer E4: RTL non-overlap (task 17c)", () => {
+  it("the field only ever uses LOGICAL inline-end padding (pe-*), never a physical pr-*/pl-* class", () => {
+    render(<ChatComposer value="hi" onChange={vi.fn()} onSend={vi.fn()} disabled={false} />);
+    const textarea = screen.getByRole("textbox");
+    expect(textarea.className).toMatch(/\bpe-12\b/);
+    expect(textarea.className).not.toMatch(/\bpr-\d|\bpl-\d/);
+  });
+
+  it("under an ancestor dir=rtl (what ChatPage's fixed root now provides), the button resolves a real RTL direction -- not the LTR default it would get with no ambient dir at all", () => {
+    render(
+      <div dir="rtl">
+        <ChatComposer value="سلام" onChange={vi.fn()} onSend={vi.fn()} disabled={false} />
+      </div>,
+    );
+    const textarea = screen.getByRole("textbox");
+    const button = screen.getByRole("button");
+    // The textarea has its OWN dir="auto", which correctly resolves from
+    // ITS OWN content ("سلام" is Persian) -- this is expected, unrelated to
+    // the ancestor. The BUTTON has no dir of its own, so its direction can
+    // ONLY come from the ancestor -- this is the actual thing E4's fix
+    // changes, and the assertion that matters here.
+    expect(getComputedStyle(textarea).direction).toBe("rtl");
+    expect(getComputedStyle(button).direction).toBe("rtl");
+  });
+
+  it("with NO ambient dir at all (the pre-fix state), the button's inherited direction stays ltr regardless of the textarea's own dir=auto -- reproducing the exact bug E4 reported", () => {
+    render(<ChatComposer value="سلام" onChange={vi.fn()} onSend={vi.fn()} disabled={false} />);
+    const button = screen.getByRole("button");
+    // The button is a SIBLING of the textarea, not a descendant -- the
+    // textarea's own dir="auto" (which DOES resolve to rtl for Persian
+    // content) has no bearing on the button's inherited direction at all.
+    expect(getComputedStyle(button).direction).toBe("ltr");
+  });
+
+  it("the send button only ever uses the logical end-1 position, never a physical left-1/right-1 class (regression guard, task 17a's own assertion)", () => {
+    render(<ChatComposer value="hi" onChange={vi.fn()} onSend={vi.fn()} disabled={false} />);
+    const button = screen.getByRole("button");
+    expect(button.className).toContain("end-1");
+    expect(button.className).not.toMatch(/\bleft-1\b|\bright-1\b/);
+  });
+});

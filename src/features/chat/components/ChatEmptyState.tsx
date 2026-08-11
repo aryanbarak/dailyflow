@@ -30,6 +30,11 @@ import { SmartflowAsciiVisual } from "@/components/smartflow";
 // greeting text -- the explicit regression this task called out against
 // the OLD design's large absolutely-positioned SmartflowAsciiVisual
 // background, which spanned behind/around the heading text.
+//
+// Task 17c, PO decision D2: on mobile the card/orb/chip row above are gone
+// entirely -- a genuinely separate, simpler subtree (a one-line greeting
+// only) renders instead, not the same markup hidden by CSS. Desktop keeps
+// the full card + chip row unchanged.
 
 export type FlowQuickActionAccent = "study" | "plan" | "analyze" | "review" | "report" | "career";
 
@@ -57,76 +62,91 @@ export function ChatEmptyState({ greetingName, theme, actions, disabled, onSelec
   const isDark = theme === "dark";
 
   return (
-    <div dir={isRTL ? "rtl" : "ltr"} className="space-y-4 py-6">
-      <div
-        className="glass-card relative w-full overflow-hidden rounded-2xl p-5"
-        style={
-          isDark
-            ? {
-                backgroundImage: "var(--flow-gradient-card)",
-                borderColor: "var(--flow-border-soft)",
-                boxShadow: "var(--flow-shadow-card)",
-              }
-            : undefined
-        }
-      >
-        {isDark && (
-          <div
-            aria-hidden="true"
-            className="pointer-events-none absolute -end-10 -top-10 h-36 w-36 shrink-0 rounded-full"
-            style={{ background: "var(--flow-gradient-orb)", boxShadow: "var(--flow-shadow-orb)" }}
-          />
-        )}
-        <div className="relative z-10 flex items-center gap-4">
-          {isDark ? (
-            <div
-              className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full"
-              style={{ background: "var(--flow-glow-violet-soft)" }}
-            >
-              <Bot className="h-6 w-6" style={{ color: "var(--flow-primary-bright)" }} aria-hidden="true" />
-            </div>
-          ) : (
-            <div className="h-14 w-14 shrink-0 overflow-hidden rounded-full border border-primary/10 bg-background/25">
-              <SmartflowAsciiVisual variant="wiremesh" className="h-full w-full opacity-80" />
-            </div>
-          )}
-          <div className="min-w-0 flex-1">
-            <h2 className="text-lg font-semibold sm:text-xl">
-              {t("flow_greeting")}, {greetingName} 👋
-            </h2>
-            <p className="mt-1 text-xs text-muted-foreground">{t("flow_hero_desc")}</p>
-          </div>
-        </div>
+    <div dir={isRTL ? "rtl" : "ltr"}>
+      {/* Task 17c, PO decision D2: "NO quick-action cards/chips on mobile AT
+          ALL. Mobile empty state = compact one-line greeting + composer
+          only." This is a genuinely SEPARATE, simpler subtree from the
+          desktop block below -- not the same markup merely hidden by CSS --
+          so mobile never ships the card/orb/chip DOM at all, only a single
+          line of text. `lg:hidden` matches this app's own mobile/desktop
+          breakpoint (see AppLayout.tsx's `hidden lg:flex` / `lg:hidden`
+          split). */}
+      <div data-testid="chat-empty-state-mobile" className="block px-1 py-3 text-center text-sm text-muted-foreground lg:hidden">
+        {t("flow_greeting")}, {greetingName} 👋
       </div>
 
-      <div>
-        <h3 className="mb-2 text-sm font-semibold">{t("flow_quick_title")}</h3>
-        <div className="scrollbar-hide flex gap-2 overflow-x-auto pb-1" role="list">
-          {actions.map((action) => (
-            <button
-              key={action.id}
-              type="button"
-              role="listitem"
-              disabled={disabled}
-              onClick={() => onSelectPrompt(action.prompt)}
-              className="glass-card flex w-[176px] shrink-0 flex-col items-start gap-2 rounded-xl p-3 text-start transition-all hover:shadow-elevated hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-50"
-            >
+      {/* Desktop: task 17b's full welcome card + orb + chip row, unchanged. */}
+      <div data-testid="chat-empty-state-desktop" className="hidden space-y-4 py-6 lg:block">
+        <div
+          className="glass-card relative w-full overflow-hidden rounded-2xl p-5"
+          style={
+            isDark
+              ? {
+                  backgroundImage: "var(--flow-gradient-card)",
+                  borderColor: "var(--flow-border-soft)",
+                  boxShadow: "var(--flow-shadow-card)",
+                }
+              : undefined
+          }
+        >
+          {isDark && (
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute -end-10 -top-10 h-36 w-36 shrink-0 rounded-full"
+              style={{ background: "var(--flow-gradient-orb)", boxShadow: "var(--flow-shadow-orb)" }}
+            />
+          )}
+          <div className="relative z-10 flex items-center gap-4">
+            {isDark ? (
               <div
-                className={cn("icon-tile h-9 w-9 shrink-0 rounded-lg", !isDark && action.iconBg)}
-                style={isDark ? { background: `var(--flow-${action.accent}-bg)` } : undefined}
+                className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full"
+                style={{ background: "var(--flow-glow-violet-soft)" }}
               >
-                <action.icon
-                  className={cn("h-4 w-4", !isDark && action.iconColor)}
-                  style={isDark ? { color: `var(--flow-${action.accent})` } : undefined}
-                  aria-hidden="true"
-                />
+                <Bot className="h-6 w-6" style={{ color: "var(--flow-primary-bright)" }} aria-hidden="true" />
               </div>
-              <div className="min-w-0">
-                <p className="text-sm font-medium">{t(action.labelKey)}</p>
-                <p className="text-[11px] text-muted-foreground">{t(action.descKey)}</p>
+            ) : (
+              <div className="h-14 w-14 shrink-0 overflow-hidden rounded-full border border-primary/10 bg-background/25">
+                <SmartflowAsciiVisual variant="wiremesh" className="h-full w-full opacity-80" />
               </div>
-            </button>
-          ))}
+            )}
+            <div className="min-w-0 flex-1">
+              <h2 className="text-lg font-semibold sm:text-xl">
+                {t("flow_greeting")}, {greetingName} 👋
+              </h2>
+              <p className="mt-1 text-xs text-muted-foreground">{t("flow_hero_desc")}</p>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <h3 className="mb-2 text-sm font-semibold">{t("flow_quick_title")}</h3>
+          <div className="scrollbar-hide flex gap-2 overflow-x-auto pb-1" role="list">
+            {actions.map((action) => (
+              <button
+                key={action.id}
+                type="button"
+                role="listitem"
+                disabled={disabled}
+                onClick={() => onSelectPrompt(action.prompt)}
+                className="glass-card flex w-[176px] shrink-0 flex-col items-start gap-2 rounded-xl p-3 text-start transition-all hover:shadow-elevated hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <div
+                  className={cn("icon-tile h-9 w-9 shrink-0 rounded-lg", !isDark && action.iconBg)}
+                  style={isDark ? { background: `var(--flow-${action.accent}-bg)` } : undefined}
+                >
+                  <action.icon
+                    className={cn("h-4 w-4", !isDark && action.iconColor)}
+                    style={isDark ? { color: `var(--flow-${action.accent})` } : undefined}
+                    aria-hidden="true"
+                  />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-medium">{t(action.labelKey)}</p>
+                  <p className="text-[11px] text-muted-foreground">{t(action.descKey)}</p>
+                </div>
+              </button>
+            ))}
+          </div>
         </div>
       </div>
     </div>

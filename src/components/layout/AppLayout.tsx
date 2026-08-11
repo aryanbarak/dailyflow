@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Outlet } from "react-router-dom";
+import { Outlet, useLocation } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { MobileNav } from "./MobileNav";
 import { OfflineBadge } from "@/components/OfflineBadge";
@@ -10,9 +10,21 @@ import { PageTitleProvider } from "@/contexts/PageTitleContext";
 import { LaunchExperience } from "@/components/LaunchExperience";
 import { LaunchProvider, useLaunch } from "@/contexts/LaunchContext";
 import { SmartflowPointerFollower } from "@/components/smartflow";
+import { cn } from "@/lib/utils";
+
+// Task 17c, PO decisions D3/D4: on the mobile Flow AI page ONLY, the
+// bottom nav is removed (chat takes the full height; navigation moves into
+// a "More" entry in ChatPage's own header, reusing MobileNav's sheet -- see
+// MobileNav.tsx's exported NavItemsGrid/mainNavItems/moreNavItems) and the
+// global search row is removed (it merges into the conversations drawer's
+// own search field -- see ConversationsDrawer.tsx). Every other page's
+// mobile shell is completely unchanged.
+const PAGES_WITHOUT_MOBILE_CHROME = new Set(["/chat"]);
 
 function AppLayoutInner() {
   const { shouldShowAppShell } = useLaunch();
+  const location = useLocation();
+  const hideMobileChrome = PAGES_WITHOUT_MOBILE_CHROME.has(location.pathname);
   useAlarms();
 
   const appShellStyle = {
@@ -57,13 +69,15 @@ function AppLayoutInner() {
             100vh floor that never shrank, so a fixed-at-the-bottom
             composer could end up rendered behind the keyboard. */}
         <div className="lg:hidden flex flex-col h-[100dvh]">
-          <div className="flex justify-end px-4 pt-3 pb-1 shrink-0">
-            <GlobalSearch />
-          </div>
-          <main className="flex-1 pb-20 overflow-auto">
+          {!hideMobileChrome && (
+            <div className="flex justify-end px-4 pt-3 pb-1 shrink-0">
+              <GlobalSearch />
+            </div>
+          )}
+          <main className={cn("flex-1 overflow-auto", !hideMobileChrome && "pb-20")}>
             <Outlet />
           </main>
-          <MobileNav />
+          {!hideMobileChrome && <MobileNav />}
         </div>
 
         <MiniPlayer />

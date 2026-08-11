@@ -1,47 +1,52 @@
 import { useState } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
-import {
-  LayoutDashboard,
-  Calendar,
-  CheckSquare,
-  Wallet,
-  Menu,
-  Users,
-  FileText,
-  Music,
-  Image,
-  Settings,
-  Bot,
-  Flame,
-  BookOpen,
-  MessageSquare,
-  FolderKanban,
-} from "lucide-react";
+import { Menu } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { SmartFlowLogo } from "@/components/SmartFlowLogo";
 import { useT } from "@/i18n";
-import type { TranslationKey } from "@/i18n";
+import { mainNavItems, moreNavItems, type MobileNavItem } from "./mobileNavItems";
 
-const mainNavItems: { icon: React.ElementType; key: TranslationKey; path: string }[] = [
-  { icon: LayoutDashboard, key: 'nav_dashboard', path: "/" },
-  { icon: MessageSquare, key: 'nav_chat', path: "/chat" },
-  { icon: Bot, key: 'nav_tutor_app', path: "/tutor/app" },
-  { icon: CheckSquare, key: 'nav_tasks', path: "/tasks" },
-];
+// Task 17c (D3/D4): extracted so ChatPage's own header "More" entry can
+// reuse the EXACT same sheet content (logo + item grid) this bottom nav
+// already renders -- "reuse the existing MobileNav sheet content... reuse,
+// don't rebuild." ChatPage passes the FULL item set (mainNavItems +
+// moreNavItems combined), since on that one page the bottom nav itself is
+// gone (D3) and this becomes the only way to reach any other page; every
+// other page keeps its unchanged bottom nav + this same "more" grid showing
+// only moreNavItems, exactly as before.
+export interface NavItemsGridProps {
+  readonly items: readonly MobileNavItem[];
+  readonly onNavigate: (path: string) => void;
+  readonly isActive: (path: string) => boolean;
+}
 
-const moreNavItems: { icon: React.ElementType; key: TranslationKey; path: string }[] = [
-  { icon: FolderKanban, key: 'nav_projects', path: "/projects" },
-  { icon: Calendar, key: 'nav_calendar', path: "/calendar" },
-  { icon: Flame, key: 'nav_habits', path: "/habits" },
-  { icon: BookOpen, key: 'nav_journal', path: "/journal" },
-  { icon: Wallet, key: 'nav_finance', path: "/finance" },
-  { icon: Users, key: 'nav_family', path: "/family" },
-  { icon: FileText, key: 'nav_documents', path: "/documents" },
-  { icon: Image, key: 'nav_photos', path: "/photos" },
-  { icon: Music, key: 'nav_music', path: "/music" },
-  { icon: Settings, key: 'nav_settings', path: "/settings" },
-];
+export function NavItemsGrid({ items, onNavigate, isActive }: NavItemsGridProps) {
+  const { t } = useT();
+  return (
+    <div className="py-4">
+      <div className="mb-6 px-2">
+        <SmartFlowLogo size={36} />
+      </div>
+      <div className="grid grid-cols-4 gap-4">
+        {items.map((item) => (
+          <button
+            key={item.path}
+            type="button"
+            onClick={() => onNavigate(item.path)}
+            className={cn(
+              "flex flex-col items-center gap-2 p-3 rounded-xl transition-colors",
+              isActive(item.path) ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-secondary"
+            )}
+          >
+            <item.icon className="w-6 h-6" />
+            <span className="text-xs">{t(item.key)}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 export function MobileNav() {
   const location = useLocation();
@@ -77,31 +82,11 @@ export function MobileNav() {
             </button>
           </SheetTrigger>
           <SheetContent side="bottom" className="h-auto rounded-t-2xl">
-            <div className="py-4">
-              <div className="mb-6 px-2">
-                <SmartFlowLogo size={36} />
-              </div>
-              <div className="grid grid-cols-4 gap-4">
-                {moreNavItems.map((item) => {
-                  const isActive =
-                    location.pathname === item.path || location.pathname.startsWith(`${item.path}/`);
-                  return (
-                    <button
-                      key={item.path}
-                      type="button"
-                      onClick={() => { setOpen(false); navigate(item.path); }}
-                      className={cn(
-                        "flex flex-col items-center gap-2 p-3 rounded-xl transition-colors",
-                        isActive ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-secondary"
-                      )}
-                    >
-                      <item.icon className="w-6 h-6" />
-                      <span className="text-xs">{t(item.key)}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
+            <NavItemsGrid
+              items={moreNavItems}
+              onNavigate={(path) => { setOpen(false); navigate(path); }}
+              isActive={(path) => location.pathname === path || location.pathname.startsWith(`${path}/`)}
+            />
           </SheetContent>
         </Sheet>
       </div>
