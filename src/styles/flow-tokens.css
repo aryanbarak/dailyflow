@@ -1,0 +1,119 @@
+:root {
+  /* =========================================================
+     FLOW AI — DARK COSMIC DESIGN TOKENS
+     ========================================================= */
+  /* ---------- Core backgrounds ---------- */
+  --flow-bg: #050615;
+  --flow-bg-deep: #03040F;
+  --flow-bg-elevated: #090B1C;
+  /* ---------- Surfaces ---------- */
+  --flow-surface-1: #0B0D20;
+  --flow-surface-2: #0F1128;
+  --flow-surface-3: #13152E;
+  /* Glass / cards */
+  --flow-card-bg: rgba(14, 16, 38, 0.78);
+  --flow-card-bg-hover: rgba(20, 22, 48, 0.90);
+  --flow-glass-bg: rgba(11, 13, 32, 0.72);
+  /* ---------- Borders ---------- */
+  --flow-border: #272B4B;
+  --flow-border-soft: rgba(112, 120, 180, 0.22);
+  --flow-border-active: rgba(125, 92, 255, 0.62);
+  /* ---------- Primary violet ---------- */
+  --flow-primary-50: #F1EDFF;
+  --flow-primary-100: #DDD4FF;
+  --flow-primary-200: #C2B1FF;
+  --flow-primary-300: #A88BFF;
+  --flow-primary-400: #916BFF;
+  --flow-primary-500: #7C4DFF;
+  --flow-primary-600: #6938F0;
+  --flow-primary-700: #5527C9;
+  --flow-primary-800: #3D1D94;
+  --flow-primary-900: #28155F;
+  /* Main accent */
+  --flow-primary: #7C4DFF;
+  --flow-primary-bright: #9A6BFF;
+  /* ---------- Secondary blue ---------- */
+  --flow-blue: #4F73FF;
+  --flow-blue-bright: #678BFF;
+  --flow-blue-deep: #1C3D98;
+  /* ---------- Cyan ---------- */
+  --flow-cyan: #62DDF4;
+  --flow-cyan-muted: #3C9EB7;
+  /* ---------- Semantic quick-action accents ---------- */
+  --flow-study: #9B5CFF;
+  --flow-plan: #F06AC6;
+  --flow-analyze: #55E38A;
+  --flow-review: #5F91FF;
+  --flow-report: #62D9EA;
+  --flow-career: #F3A044;
+  /* Corresponding translucent icon backgrounds */
+  --flow-study-bg: rgba(124, 77, 255, 0.18);
+  --flow-plan-bg: rgba(240, 106, 198, 0.14);
+  --flow-analyze-bg: rgba(85, 227, 138, 0.12);
+  --flow-review-bg: rgba(79, 115, 255, 0.15);
+  --flow-report-bg: rgba(98, 217, 234, 0.13);
+  --flow-career-bg: rgba(243, 160, 68, 0.14);
+  /* ---------- Text ---------- */
+  --flow-text-primary: #F7F7FC;
+  --flow-text-secondary: #A5A8C2;
+  --flow-text-tertiary: #777C9A;
+  --flow-text-disabled: #555A76;
+  /* ---------- Icon colors ---------- */
+  --flow-icon-primary: #F3F3FA;
+  --flow-icon-secondary: #9EA3BF;
+  --flow-icon-active: #8B61FF;
+  /* ---------- Glow ---------- */
+  --flow-glow-violet: rgba(124, 77, 255, 0.48);
+  --flow-glow-violet-soft: rgba(124, 77, 255, 0.18);
+  --flow-glow-blue: rgba(79, 115, 255, 0.30);
+  --flow-glow-white: rgba(225, 220, 255, 0.55);
+  /* ---------- Dividers ---------- */
+  --flow-divider: rgba(117, 124, 170, 0.16);
+  /* ---------- Shadows ---------- */
+  --flow-shadow-card:
+    0 16px 40px rgba(0, 0, 0, 0.28);
+  --flow-shadow-primary:
+    0 0 18px rgba(124, 77, 255, 0.42),
+    0 0 42px rgba(92, 56, 220, 0.22);
+  --flow-shadow-orb:
+    0 0 18px rgba(161, 121, 255, 0.72),
+    0 0 48px rgba(104, 61, 255, 0.48),
+    0 0 90px rgba(69, 45, 190, 0.24);
+  /* ---------- Gradients ---------- */
+  --flow-gradient-background:
+    radial-gradient(
+      circle at 50% 15%,
+      #101332 0%,
+      #080A1D 35%,
+      #050615 70%,
+      #03040F 100%
+    );
+  --flow-gradient-primary:
+    linear-gradient(
+      135deg,
+      #4F73FF 0%,
+      #7C4DFF 48%,
+      #A45EFF 100%
+    );
+  --flow-gradient-orb:
+    radial-gradient(
+      circle,
+      #F0E8FF 0%,
+      #B69AFF 13%,
+      #7C4DFF 31%,
+      #4021A5 55%,
+      rgba(45, 24, 120, 0) 78%
+    );
+  --flow-gradient-card:
+    linear-gradient(
+      145deg,
+      rgba(18, 21, 49, 0.92),
+      rgba(8, 10, 27, 0.88)
+    );
+  --flow-gradient-bottom-nav:
+    linear-gradient(
+      180deg,
+      rgba(17, 19, 44, 0.98),
+      rgba(9, 11, 29, 0.98)
+    );
+}

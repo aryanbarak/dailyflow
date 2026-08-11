@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { motion, useReducedMotion } from 'framer-motion'
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import {
   BookOpen,
   Bot,
   Briefcase,
   Calendar,
   CheckCircle2,
-  CheckSquare,
   FileText,
   Flame,
   Menu,
@@ -24,7 +23,6 @@ import { useAuth } from '@/hooks/useAuth'
 import { useProfile } from '@/features/profile/useProfile'
 import { useTasks } from '@/hooks/useTasks'
 import { SmartFlowIcon } from '@/components/SmartFlowLogo'
-import { SmartflowAsciiVisual } from '@/components/smartflow'
 import { translations, useT } from '@/i18n'
 import type { TranslationKey } from '@/i18n'
 import { useChatSessions } from '@/hooks/useChatSessions'
@@ -34,11 +32,13 @@ import { useChatSessions } from '@/hooks/useChatSessions'
 // classification, proposal handling) is UNCHANGED by this task.
 import { ChatComposer } from '@/features/chat/components/ChatComposer'
 import { ChatHeaderControls } from '@/features/chat/components/ChatHeaderControls'
+import { ChatEmptyState, type ChatEmptyStateAction } from '@/features/chat/components/ChatEmptyState'
 import { ConversationsDrawer } from '@/features/chat/components/ConversationsDrawer'
 import { ConversationsList } from '@/features/chat/components/ConversationsList'
 import { JumpToLatestPill } from '@/features/chat/components/JumpToLatestPill'
 import { useChatDisplayPreferences } from '@/features/chat/chatDisplayPreferencesStore'
 import { shouldAutoScrollOnNewContent } from '@/features/chat/chatScrollDecision'
+import { isChatEmptyState } from '@/features/chat/emptyStateVisibility'
 import { timeAgo } from '@/features/chat/timeAgo'
 import { useAppearance } from '@/features/settings/appearanceStore'
 import {
@@ -96,62 +96,85 @@ interface ChatMsg {
   language?: SupportedAiResponseLanguage
 }
 
+// Task 17b: `accent` is the Flow AI semantic accent slug
+// (src/styles/flow-tokens.css's --flow-<accent>/--flow-<accent>-bg pair)
+// each action maps to in Dark Cosmic -- see ChatEmptyState.tsx. iconBg/
+// iconColor are unchanged and still used verbatim for the light theme
+// (PO scope: "light theme untouched"). These six actions and their prompts
+// are REUSED exactly as-is (task 17b: "reuse the existing quick-action
+// definitions/i18n from the current home surface... do not invent new
+// copy") -- this array already IS that canonical definition; nothing here
+// was renamed, reworded, or re-prompted for this task.
 interface QuickAction {
+  id: string
   labelKey: TranslationKey
   descKey: TranslationKey
   icon: React.ElementType
   iconBg: string
   iconColor: string
+  accent: ChatEmptyStateAction['accent']
   prompt: string
 }
 
 const QUICK_ACTIONS: QuickAction[] = [
   {
+    id: 'study',
     labelKey: 'flow_action_study',
     descKey: 'flow_action_study_desc',
     icon: BookOpen,
     iconBg: 'bg-blue-500/15',
     iconColor: 'text-blue-400',
+    accent: 'study',
     prompt: 'Help me study and review a concept for my FIAE exam.',
   },
   {
+    id: 'plan',
     labelKey: 'flow_action_plan',
     descKey: 'flow_action_plan_desc',
     icon: Calendar,
     iconBg: 'bg-violet-500/15',
     iconColor: 'text-violet-400',
+    accent: 'plan',
     prompt: 'Help me plan my day effectively based on my tasks and goals.',
   },
   {
+    id: 'habits',
     labelKey: 'flow_action_habits',
     descKey: 'flow_action_habits_desc',
     icon: Flame,
     iconBg: 'bg-orange-500/15',
     iconColor: 'text-orange-400',
+    accent: 'analyze',
     prompt: 'Analyze my habits and give me insights on my patterns.',
   },
   {
+    id: 'finance',
     labelKey: 'flow_action_finance',
     descKey: 'flow_action_finance_desc',
     icon: Wallet,
     iconBg: 'bg-emerald-500/15',
     iconColor: 'text-emerald-400',
+    accent: 'review',
     prompt: 'Review my finances and help me understand my spending.',
   },
   {
+    id: 'weekly',
     labelKey: 'flow_action_weekly',
     descKey: 'flow_action_weekly_desc',
     icon: FileText,
     iconBg: 'bg-cyan-500/15',
     iconColor: 'text-cyan-400',
+    accent: 'report',
     prompt: 'Give me a weekly summary of my progress and priorities.',
   },
   {
+    id: 'career',
     labelKey: 'flow_action_career',
     descKey: 'flow_action_career_desc',
     icon: Briefcase,
     iconBg: 'bg-rose-500/15',
     iconColor: 'text-rose-400',
+    accent: 'career',
     prompt: 'Help me with my job search and interview preparation.',
   },
 ]
@@ -1788,10 +1811,26 @@ export default function ChatPage() {
     profile?.displayName?.trim()?.split(' ')[0] ||
     user?.email?.split('@')[0] ||
     'there'
-  const conversationCount = messages.filter(m => m.role === 'user').length + sessions.length
-  const taskCount = tasks.length
 
-  const showWelcome = !activeSessionId && messages.length === 0 && !sending
+  // Task 17b (conversation-first architecture): the ONE pure decision of
+  // whether the empty state (welcome card + quick-action chips) is showing
+  // -- replaces the two separate, slightly different ad-hoc conditions
+  // task 17a used for its "quick actions" grid and "hero" card (the hero's
+  // old condition never checked activeSessionId, a latent gap this also
+  // closes). See emptyStateVisibility.ts.
+  const isEmptyState = isChatEmptyState({
+    hasActiveSession: activeSessionId !== null,
+    messageCount: messages.length,
+    isSending: sending,
+  })
+
+  // Task 17b architecture decision: a quick-action chip tap INSERTS its
+  // starter prompt into the composer -- it does NOT auto-send (overrides
+  // task 17a's original grid, which called handleSend(action.prompt)
+  // directly). The user reviews/edits before sending, same as typing.
+  const insertQuickActionPrompt = useCallback((prompt: string) => {
+    setDraft(prompt)
+  }, [])
 
   const handleDeleteSession = useCallback(async (id: string) => {
     const ok = await deleteSession(id)
@@ -1805,8 +1844,14 @@ export default function ChatPage() {
       className="flex h-full flex-col overflow-hidden bg-background text-foreground lg:sticky lg:top-0 lg:h-screen"
     >
       {/* Header -- task 17a: mobile drawer trigger + the theme/compact
-          settings cluster now live here alongside the existing new-chat
-          action. */}
+          settings cluster live here alongside the new-chat action.
+          Task 17b: single row, full "Flow AI" brand text (never truncated
+          -- chat_title IS the literal "Flow AI" string in every locale),
+          the old subtitle line removed (that second line of chrome text
+          under the title is what the task's "remove the second chrome
+          row" targets). The logo mark/controls/New Chat all restyle for
+          Dark Cosmic for free via the derived --primary/--border/etc.
+          token chain in index.css -- no code changes needed here. */}
       <motion.header
         initial={prefersReducedMotion ? false : { opacity: 0, y: -10 }}
         animate={{ opacity: 1, y: 0 }}
@@ -1827,10 +1872,7 @@ export default function ChatPage() {
             <div className="icon-tile shrink-0">
               <Bot className="w-4 h-4 text-primary" />
             </div>
-            <div className="min-w-0">
-              <h1 className="truncate text-lg font-semibold leading-tight">{t('chat_title')}</h1>
-              <p className="mt-0.5 truncate text-xs text-muted-foreground">{t('chat_subtitle')}</p>
-            </div>
+            <h1 className="whitespace-nowrap text-lg font-semibold leading-tight">{t('chat_title')}</h1>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <ChatHeaderControls />
@@ -1880,82 +1922,38 @@ export default function ChatPage() {
             onScroll={handleMessagesScroll}
             className={cn('flex-1 overflow-y-auto px-3 sm:px-6', compact ? 'space-y-2 py-3' : 'space-y-3 py-4')}
           >
-            {showWelcome && (
-              <div>
-                <h3 className="mb-3 text-sm font-semibold">{t('flow_quick_title')}</h3>
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                  {QUICK_ACTIONS.map((action) => (
-                    <button
-                      key={action.labelKey}
-                      type="button"
-                      disabled={sending}
-                      onClick={() => void handleSend(action.prompt)}
-                      className="glass-card flex items-center gap-3 rounded-xl p-3 text-left transition-all hover:shadow-elevated hover:scale-[1.02] hover:border-primary/25 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      <div className={cn('icon-tile w-9 h-9 rounded-lg shrink-0', action.iconBg)}>
-                        <action.icon className={cn('w-4 h-4', action.iconColor)} />
-                      </div>
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium truncate">{t(action.labelKey)}</p>
-                        <p className="text-[11px] text-muted-foreground truncate">{t(action.descKey)}</p>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
+            {/* Task 17b (conversation-first architecture): the mockup's
+                lobby page, distilled into the empty-state of THIS chat
+                surface -- welcome card + quick-action chips, animating out
+                (17a's motion rules, reduced-motion honored) the instant the
+                first message is sent, leaving nothing above the messages
+                but the header. See ChatEmptyState.tsx for the welcome
+                card/orb/chip implementation and emptyStateVisibility.ts for
+                the isEmptyState decision. */}
+            <AnimatePresence>
+              {isEmptyState && (
+                <motion.div
+                  key="chat-empty-state"
+                  initial={prefersReducedMotion ? false : { opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -8 }}
+                  transition={{ duration: prefersReducedMotion ? 0.01 : 0.18, ease: 'easeOut' }}
+                >
+                  <ChatEmptyState
+                    greetingName={firstName}
+                    theme={theme}
+                    actions={QUICK_ACTIONS}
+                    disabled={sending}
+                    onSelectPrompt={insertQuickActionPrompt}
+                  />
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             {loading && (
               <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
                 <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
                 {t('loading')}
-              </div>
-            )}
-
-            {!loading && messages.length === 0 && !sending && (
-              <div className="py-6">
-                <div className="glass-card relative w-full overflow-hidden rounded-2xl p-5">
-                  <SmartflowAsciiVisual
-                    variant="wiremesh"
-                    className="absolute -right-8 -top-10 h-44 w-44 opacity-45 sm:h-52 sm:w-52"
-                  />
-                  <div className="relative z-10 flex items-center gap-4">
-                    <div className="h-24 w-24 shrink-0 overflow-hidden rounded-full border border-primary/10 bg-background/25">
-                      <SmartflowAsciiVisual
-                        variant="wiremesh"
-                        className="h-full w-full opacity-80"
-                      />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <h2 className="text-lg font-semibold sm:text-xl">
-                        {t('flow_greeting')}, {firstName} 👋
-                      </h2>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        {t('flow_hero_desc')}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="mt-4 flex gap-4 border-t border-border/30 pt-3">
-                    <div className="flex items-center gap-2">
-                      <div className="icon-tile w-7 h-7 rounded-md">
-                        <MessageSquare className="w-3.5 h-3.5 text-primary" />
-                      </div>
-                      <div>
-                        <p className="text-base font-bold leading-none">{conversationCount}</p>
-                        <p className="text-[10px] text-muted-foreground">{t('flow_stat_conversations')}</p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div className="icon-tile w-7 h-7 rounded-md">
-                        <CheckSquare className="w-3.5 h-3.5 text-primary" />
-                      </div>
-                      <div>
-                        <p className="text-base font-bold leading-none">{taskCount}</p>
-                        <p className="text-[10px] text-muted-foreground">{t('flow_stat_tasks')}</p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
               </div>
             )}
 

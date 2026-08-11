@@ -86,7 +86,18 @@ export function ChatComposer({ value, onChange, onSend, disabled, compact = fals
           dir="auto"
           aria-label={t("chat_placeholder")}
           className={cn(
-            "min-h-0 resize-none rounded-2xl border-border bg-background/70 py-2.5 ps-3.5 pe-12 text-sm leading-relaxed shadow-none transition-[height] duration-100 focus-visible:ring-1",
+            // Task 17b: the field's own surface uses --glass-bg directly
+            // (rather than the bg-background/70 opacity trick) so it
+            // matches the PO's token map literally -- "composer ->
+            // --flow-glass-bg" -- for both themes: light's --glass-bg is
+            // task 17a's existing frosted-white value (unchanged look),
+            // dark's --glass-bg is now exactly --flow-glass-bg (see
+            // index.css's [data-chat-theme="dark"] block). The focus
+            // affordance ("with --flow-border-active on focus") comes for
+            // free from focus-visible:ring-1 already reading --ring, which
+            // is also derived from --flow-border-active in dark -- no
+            // composer-specific focus CSS needed.
+            "min-h-0 resize-none rounded-2xl border-border bg-[hsl(var(--glass-bg))] py-2.5 ps-3.5 pe-12 text-sm leading-relaxed shadow-none transition-[height] duration-100 focus-visible:ring-1",
             compact && "py-2 text-[13px]",
           )}
         />
