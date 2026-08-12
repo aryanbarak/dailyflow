@@ -239,3 +239,134 @@ describe("ChatComposer E4 (task 17c): ambient RTL direction still reaches the co
     expect(getComputedStyle(button).direction).toBe("ltr");
   });
 });
+
+// Task 19 (Attach file in Flow AI): the attach control is opt-in -- it
+// renders ONLY when onAttachFile is provided, which is exactly why every
+// test ABOVE this point (none of which pass that prop) keeps working
+// unmodified: they still see exactly one button (send), same as before this
+// task.
+describe("ChatComposer -- attach control (task 19)", () => {
+  it("renders no attach button at all when onAttachFile is not provided (pre-task-19 callers unaffected)", () => {
+    render(<ChatComposer value="" onChange={vi.fn()} onSend={vi.fn()} disabled={false} />);
+    expect(screen.getAllByRole("button")).toHaveLength(1);
+  });
+
+  it("renders an attach button, as a real flex sibling BEFORE the textarea, when onAttachFile is provided", () => {
+    render(<ChatComposer value="" onChange={vi.fn()} onSend={vi.fn()} disabled={false} onAttachFile={vi.fn()} />);
+    const buttons = screen.getAllByRole("button");
+    expect(buttons).toHaveLength(2);
+    const attachButton = screen.getByRole("button", { name: /attach/i });
+    const textarea = screen.getByRole("textbox");
+    expect(attachButton.parentElement).toBe(textarea.parentElement);
+    const siblings = Array.from(attachButton.parentElement!.children);
+    // First in DOM order -- mirrors automatically for RTL exactly like the
+    // send button (LAST in DOM order) already does, per V1's own convention.
+    expect(siblings.indexOf(attachButton)).toBeLessThan(siblings.indexOf(textarea));
+  });
+
+  it("the attach button meets the >=44px touch-target minimum, same as the send button", () => {
+    render(<ChatComposer value="" onChange={vi.fn()} onSend={vi.fn()} disabled={false} onAttachFile={vi.fn()} />);
+    const attachButton = screen.getByRole("button", { name: /attach/i });
+    expect(attachButton.className).toContain("h-11");
+    expect(attachButton.className).toContain("w-11");
+    expect(attachButton.className).not.toMatch(/\babsolute\b/);
+  });
+
+  it("clicking the attach button opens the hidden file input (structural, not absolutely-positioned)", async () => {
+    const user = userEvent.setup();
+    render(<ChatComposer value="" onChange={vi.fn()} onSend={vi.fn()} disabled={false} onAttachFile={vi.fn()} />);
+    const attachButton = screen.getByRole("button", { name: /attach/i });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const clickSpy = vi.spyOn(fileInput, "click");
+    await user.click(attachButton);
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("selecting a file through the hidden input calls onAttachFile with that File", async () => {
+    const onAttachFile = vi.fn();
+    render(<ChatComposer value="" onChange={vi.fn()} onSend={vi.fn()} disabled={false} onAttachFile={onAttachFile} />);
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File(["hello"], "notes.txt", { type: "text/plain" });
+    await userEvent.upload(fileInput, file);
+    expect(onAttachFile).toHaveBeenCalledTimes(1);
+    expect(onAttachFile.mock.calls[0][0]).toBe(file);
+  });
+
+  it("the hidden file input's accept attribute matches the accepted attachment mime types", () => {
+    render(<ChatComposer value="" onChange={vi.fn()} onSend={vi.fn()} disabled={false} onAttachFile={vi.fn()} />);
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    expect(fileInput.accept).toContain("application/pdf");
+    expect(fileInput.accept).toContain("image/png");
+    expect(fileInput.accept).toContain("text/plain");
+  });
+
+  it("attach and disabled/attachBusy: the attach button is disabled while the composer itself is disabled or an upload is in progress", () => {
+    render(<ChatComposer value="" onChange={vi.fn()} onSend={vi.fn()} disabled={false} onAttachFile={vi.fn()} attachBusy />);
+    expect(screen.getByRole("button", { name: /attach/i })).toBeDisabled();
+  });
+
+  it("renders the attachment chip with file name and formatted size when attachedFile is set", () => {
+    const file = new File(["x".repeat(2048)], "statement.txt", { type: "text/plain" });
+    render(<ChatComposer value="" onChange={vi.fn()} onSend={vi.fn()} disabled={false} onAttachFile={vi.fn()} attachedFile={file} />);
+    expect(screen.getByTestId("chat-attachment-chip")).toHaveTextContent("statement.txt");
+    expect(screen.getByTestId("chat-attachment-chip")).toHaveTextContent("2.0 KB");
+  });
+
+  it("the chip's file name is routed through bidi isolation for RTL/mixed-direction file names", () => {
+    const file = new File(["x"], "پرونده.pdf", { type: "application/pdf" });
+    render(<ChatComposer value="" onChange={vi.fn()} onSend={vi.fn()} disabled={false} onAttachFile={vi.fn()} attachedFile={file} />);
+    const chip = screen.getByTestId("chat-attachment-chip");
+    // isolateEmbeddedBidiRuns wraps the minority-direction run in a <bdi> --
+    // the exact assertion documentTypeMigration-style tests in this repo use
+    // to prove the utility was actually invoked, not just plain interpolation.
+    expect(chip.querySelector("bdi")).not.toBeNull();
+  });
+
+  it("clicking remove on the chip calls onRemoveAttachedFile", async () => {
+    const onRemove = vi.fn();
+    const file = new File(["x"], "doc.pdf", { type: "application/pdf" });
+    render(
+      <ChatComposer
+        value=""
+        onChange={vi.fn()}
+        onSend={vi.fn()}
+        disabled={false}
+        onAttachFile={vi.fn()}
+        attachedFile={file}
+        onRemoveAttachedFile={onRemove}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: /remove/i }));
+    expect(onRemove).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders no chip at all when there is no attachedFile", () => {
+    render(<ChatComposer value="" onChange={vi.fn()} onSend={vi.fn()} disabled={false} onAttachFile={vi.fn()} />);
+    expect(screen.queryByTestId("chat-attachment-chip")).toBeNull();
+  });
+
+  it("renders attachError text (e.g. an unsupported-type or too-large rejection message) with role=alert", () => {
+    render(
+      <ChatComposer value="" onChange={vi.fn()} onSend={vi.fn()} disabled={false} onAttachFile={vi.fn()} attachError="File too large. Maximum size is 10 MB." />,
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("File too large");
+  });
+
+  it("V1 non-overlap still holds with the attach button present: textarea stays flex-1/min-w-0, both buttons stay shrink-0", () => {
+    render(<ChatComposer value="hi" onChange={vi.fn()} onSend={vi.fn()} disabled={false} onAttachFile={vi.fn()} />);
+    const textarea = screen.getByRole("textbox");
+    const attachButton = screen.getByRole("button", { name: /attach/i });
+    const sendButton = screen.getByRole("button", { name: /send/i });
+    expect(textarea.className).toMatch(/\bflex-1\b/);
+    expect(textarea.className).toMatch(/\bmin-w-0\b/);
+    expect(attachButton.className).toMatch(/\bshrink-0\b/);
+    expect(sendButton.className).toMatch(/\bshrink-0\b/);
+  });
+
+  it("V2 2-line minimum is unaffected by the attach control's presence", () => {
+    render(<ChatComposer value="" onChange={vi.fn()} onSend={vi.fn()} disabled={false} onAttachFile={vi.fn()} />);
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    expect(textarea).toHaveAttribute("rows", "2");
+    expect(textarea.style.minHeight).toContain("3.25em");
+  });
+});

@@ -1,4 +1,5 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
   Upload,
@@ -212,6 +213,8 @@ function ToolCard({
 
 export default function DocumentsPage() {
   const { t } = useT();
+  const location = useLocation();
+  const nav = useNavigate();
   const {
     documents,
     isLoading,
@@ -251,6 +254,25 @@ export default function DocumentsPage() {
     () => (documents as Document[]).find(d => d.id === aiSelectedDocId) ?? null,
     [documents, aiSelectedDocId],
   );
+
+  // Task 19 (Attach file in Flow AI): the chat composer's post-send "Add to
+  // personal memory?" offer navigates here with { preselectDocumentId } --
+  // this deep-links straight into the EXISTING AI tab / type-selector +
+  // "Add to personal memory" flow (scope item 4) rather than reimplementing
+  // any of it. Mirrors ChatPage.tsx's own initialPrompt-from-location-state
+  // pattern: consume once (guarded so a later, unrelated navigation.state
+  // change or a re-render never re-fires it), then clear the state so a
+  // manual back/forward doesn't replay it.
+  const consumedPreselect = useRef(false);
+  useEffect(() => {
+    const preselectId = (location.state as { preselectDocumentId?: string } | null)?.preselectDocumentId;
+    if (!preselectId || consumedPreselect.current) return;
+    consumedPreselect.current = true;
+    setActiveTab("ai");
+    handleAiDocChange(preselectId);
+    nav(location.pathname, { replace: true, state: {} });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- handleAiDocChange is a plain function redefined every render (not memoized, matches this file's existing convention for its other AI-panel handlers); including it would re-fire this effect on every render and defeat the consumedPreselect guard.
+  }, [location.state, location.pathname, nav]);
 
   // AI preview state
   const [aiPreviewText, setAiPreviewText] = useState<string | null>(null);

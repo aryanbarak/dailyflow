@@ -29,7 +29,14 @@
 // plain-text transcription, subject to the M1-M3 mitigations below, rather
 // than adding a dependency this Worker has never had one of.
 
-const MAX_SOURCE_FILE_BYTES = 20 * 1024 * 1024 // matches docs_file_size_error's existing 20MB upload cap (src/i18n/index.ts); task 18 renamed from MAX_PDF_BYTES -- this bound now also gates plain-text uploads
+// Task 19 (Attach file in Flow AI): exported so chat-attachment-context.ts
+// can apply the SAME ceiling to an in-conversation attachment's service-role
+// download -- a single source of truth, not a second magic number, even
+// though the browser-side chat attach control applies its own tighter 10MB
+// cap before upload (chatAttachmentValidation.ts) -- this is defense in
+// depth against a documentId referencing a larger document uploaded some
+// other way (e.g. directly via the Documents page).
+export const MAX_SOURCE_FILE_BYTES = 20 * 1024 * 1024 // matches docs_file_size_error's existing 20MB upload cap (src/i18n/index.ts); task 18 renamed from MAX_PDF_BYTES -- this bound now also gates plain-text uploads
 const MAX_EXTRACTED_TEXT_CHARS = 20000 // resumes are short documents; generous headroom for a multi-page CV, still bounded
 const MAX_CHUNK_CHARS = 3000
 const EMBEDDING_MODEL = 'gemini-embedding-001' // text-embedding-004 was retired Jan 2026 (task 16-fix); successor model
@@ -80,9 +87,12 @@ function errorResponse(code: string, message: string, status: number, origin: st
 // Task 14 taxonomy, reused verbatim (same three values, same meaning) --
 // mirrors context-derivation-endpoint.ts's own duplicated copy; this module
 // cannot import that one either (zero-cross-import convention).
-type ProviderFailureTaxonomy = 'PROVIDER_REQUEST_REJECTED' | 'PROVIDER_UNAVAILABLE' | 'MODEL_OUTPUT_UNUSABLE'
+// Task 19: exported so chat-attachment-context.ts's own ProviderCallError
+// handling can share the exact same taxonomy type rather than a third
+// hand-copied union.
+export type ProviderFailureTaxonomy = 'PROVIDER_REQUEST_REJECTED' | 'PROVIDER_UNAVAILABLE' | 'MODEL_OUTPUT_UNUSABLE'
 
-class ProviderCallError extends Error {
+export class ProviderCallError extends Error {
   constructor(
     message: string,
     readonly taxonomy: ProviderFailureTaxonomy,
@@ -94,7 +104,7 @@ class ProviderCallError extends Error {
   }
 }
 
-const TAXONOMY_MESSAGES: Record<ProviderFailureTaxonomy, string> = {
+export const TAXONOMY_MESSAGES: Record<ProviderFailureTaxonomy, string> = {
   PROVIDER_REQUEST_REJECTED: 'The request to the AI model was rejected. This is a configuration issue on our side, not a problem with your data.',
   PROVIDER_UNAVAILABLE: 'The AI model is temporarily unavailable. Please try again in a moment.',
   MODEL_OUTPUT_UNUSABLE: 'The model did not return a usable transcription. Please try again.',
@@ -138,7 +148,11 @@ function resolveConfig(env: DocumentMemoryExtractionEnv): { ready: true } | { re
 // uses service role throughout instead of forwarding the user's JWT.
 // ---------------------------------------------------------------------------
 
-async function restGetServiceRole<T>(env: DocumentMemoryExtractionEnv, path: string, fetcher: typeof fetch): Promise<T> {
+// Task 19: exported for chat-attachment-context.ts's own service-role
+// document lookup -- same ownership-verification posture (explicit
+// user_id=eq.<authenticated userId> filter applied by the caller), not a
+// second copy of this REST helper.
+export async function restGetServiceRole<T>(env: DocumentMemoryExtractionEnv, path: string, fetcher: typeof fetch): Promise<T> {
   const response = await fetcher(`${env.SUPABASE_URL}/rest/v1/${path}`, {
     headers: { Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`, apikey: env.SUPABASE_SERVICE_KEY, Accept: 'application/json' },
   })
@@ -175,7 +189,10 @@ async function restDeleteServiceRole(env: DocumentMemoryExtractionEnv, path: str
   }
 }
 
-async function downloadFromStorage(env: DocumentMemoryExtractionEnv, storagePath: string, fetcher: typeof fetch): Promise<ArrayBuffer> {
+// Task 19: exported for chat-attachment-context.ts's reuse -- an attached
+// document lives in the SAME storage bucket/path convention as any other
+// document (documentsService.ts), so the download mechanics are identical.
+export async function downloadFromStorage(env: DocumentMemoryExtractionEnv, storagePath: string, fetcher: typeof fetch): Promise<ArrayBuffer> {
   const response = await fetcher(`${env.SUPABASE_URL}/storage/v1/object/documents/${storagePath}`, {
     headers: { Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`, apikey: env.SUPABASE_SERVICE_KEY },
   })
@@ -183,7 +200,10 @@ async function downloadFromStorage(env: DocumentMemoryExtractionEnv, storagePath
   return response.arrayBuffer()
 }
 
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
+// Task 19: exported for chat-attachment-context.ts's image branch (sends the
+// downloaded bytes as inlineData, same encoding this file already uses for
+// a PDF's transcription call).
+export function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer)
   let binary = ''
   const chunkSize = 8192
@@ -231,7 +251,10 @@ export function boundExtractedText(rawText: string): string {
 // ---------------------------------------------------------------------------
 const TRANSCRIPTION_INSTRUCTION = 'Return the complete plain text of this document verbatim. Output nothing else.'
 
-async function transcribePdf(
+// Task 19: exported so chat-attachment-context.ts's PDF branch reuses this
+// EXACT transcription call (same M1-M3 mitigations, same untrusted-input
+// discipline) rather than a second, drifting copy.
+export async function transcribePdf(
   pdfBase64: string,
   env: DocumentMemoryExtractionEnv,
   fetcher: typeof fetch,

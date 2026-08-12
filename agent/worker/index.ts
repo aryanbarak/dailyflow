@@ -13,6 +13,7 @@ import { handleGitHubIntegrationRequest } from './github-integration'
 import { handleContextDerivationRequest } from './context-derivation-endpoint'
 import { handlePersonalMemoryExtractionRequest } from './personal-memory-extraction-endpoint'
 import { handleDocumentMemoryExtractionRequest } from './document-memory-extraction-endpoint'
+import { buildAttachmentTextPart, resolveChatAttachment } from './chat-attachment-context'
 
 // ADR-0010 Product Owner Resolution Q4: always-on background extraction
 // into user_context is DISABLED by this decision (SUPERSEDE per Q3 --
@@ -654,12 +655,14 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
   let sessionId: string
   let mode: 'reasoning' | 'chat'
   let responseLanguage: ReasoningResponseLanguage
+  let documentId: string | null
   try {
     const body = await request.json() as {
       message?: unknown
       session_id?: unknown
       mode?: unknown
       responseLanguage?: unknown
+      documentId?: unknown
     }
     const parsed = typeof body.message === 'string' ? body.message.trim() : ''
     if (parsed === '') {
@@ -674,6 +677,11 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
     responseLanguage = typeof body.responseLanguage === 'string' && RESPONSE_LANGUAGES.has(body.responseLanguage)
       ? (body.responseLanguage as ReasoningResponseLanguage)
       : 'auto'
+    // Task 19 (Attach file in Flow AI): an optional reference to a document
+    // already uploaded via the SAME documents bucket/table any other
+    // document uses (documentsService.ts) -- resolved below, turn-scoped
+    // (see the comment at its use site for exactly what that means).
+    documentId = typeof body.documentId === 'string' && body.documentId.trim() !== '' ? body.documentId.trim() : null
   } catch {
     return json({ error: 'Invalid JSON body' }, 400, origin)
   }
@@ -710,10 +718,37 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
       .map(r => ({ role: r.role as ChatMessage['role'], content: r.content }))
       .reverse()
 
-    const system = buildChatSystemPrompt(language, confirmedMemory)
-    const fullHistory: ChatMessage[] = [...history, { role: 'user', content: message }]
+    // Task 19: resolve the optional attachment for THIS turn only. Nothing
+    // resolved here is persisted (the ORIGINAL, unaugmented `message` is
+    // what gets written to agent_chat_messages below) -- so a re-loaded
+    // history on a LATER turn (including a page reload mid-session) never
+    // carries the attachment's content again. If the user wants the model
+    // to keep referencing the same file, they attach it again; that is the
+    // deliberately simple, bounded scoping choice for this task (see the
+    // task 19 report's turn-scoping section).
+    let modelFacingMessage = message
+    let attachmentImage: { mimeType: string; base64: string } | undefined
+    if (documentId) {
+      const attachment = await resolveChatAttachment(documentId, userId, env)
+      if (attachment.ok && attachment.part.kind === 'text') {
+        modelFacingMessage = `${message}\n\n${buildAttachmentTextPart(attachment.part.fileName, attachment.part.text)}`
+      } else if (attachment.ok && attachment.part.kind === 'image') {
+        attachmentImage = { mimeType: attachment.part.mimeType, base64: attachment.part.base64 }
+      } else if (!attachment.ok) {
+        // Calm, not an error (task 19 scope): the turn still proceeds
+        // without the attachment's content -- this deterministic,
+        // app-authored note (never model output) is the ONLY thing added,
+        // so the model can acknowledge the miss naturally instead of
+        // silently ignoring what the user just attached.
+        console.log(`[Chat] attachment unavailable: documentId=${documentId} code=${attachment.code}`)
+        modelFacingMessage = `${message}\n\n[Note: the attached file could not be read -- ${attachment.message}]`
+      }
+    }
 
-    const reply = await callGeminiChat(system, fullHistory, env)
+    const system = buildChatSystemPrompt(language, confirmedMemory)
+    const fullHistory: ChatMessage[] = [...history, { role: 'user', content: modelFacingMessage }]
+
+    const reply = await callGeminiChat(system, fullHistory, env, {}, attachmentImage)
 
     // Persist both after a successful Gemini call so no orphaned turns are saved on error
     await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'user', content: message })
@@ -797,16 +832,28 @@ async function callGeminiChat(
   system: string,
   history: ChatMessage[],
   env: Env,
-  options: ChatOptions = {}
+  options: ChatOptions = {},
+  // Task 19: an image attachment is sent as inlineData on the LAST turn's
+  // parts only (the /documents/analyze precedent in this same file) -- it
+  // is never attached to any earlier turn, which is what keeps an image
+  // attachment turn-scoped exactly like the text-attachment path above.
+  imageAttachment?: { mimeType: string; base64: string }
 ): Promise<string> {
   const maxOutputTokens = options.maxOutputTokens ?? 1024
   const temperature = options.temperature ?? 0.7
 
   // Gemini uses 'model' for the assistant role
-  const contents = history.map(msg => ({
-    role: msg.role === 'assistant' ? 'model' : 'user',
-    parts: [{ text: msg.content }],
-  }))
+  const lastIndex = history.length - 1
+  const contents = history.map((msg, index) => {
+    const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [{ text: msg.content }]
+    if (imageAttachment && index === lastIndex && msg.role === 'user') {
+      parts.push({ inlineData: { mimeType: imageAttachment.mimeType, data: imageAttachment.base64 } })
+    }
+    return {
+      role: msg.role === 'assistant' ? 'model' : 'user',
+      parts,
+    }
+  })
 
   console.log('[Chat] sending', history.length, 'turns to Gemini')
 

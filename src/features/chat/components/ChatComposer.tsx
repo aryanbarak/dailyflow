@@ -1,10 +1,15 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
-import { Send } from "lucide-react";
+import { Paperclip, Send, X } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
+import { isolateEmbeddedBidiRuns } from "@/lib/bidiText";
 import { clampComposerHeight, COMPOSER_MIN_LINES, isComposerOverflowing, prefersDesktopEnterToSend } from "../composerSizing";
+import {
+  CHAT_ATTACHMENT_ACCEPTED_MIME_TYPES,
+  formatAttachmentSize,
+} from "../chatAttachmentValidation";
 
 // Task 17d, V2: the field's line-height multiplier (Tailwind's
 // leading-relaxed = 1.625), used to build a CSS-only `min-height` floor
@@ -34,11 +39,32 @@ export interface ChatComposerProps {
   readonly onSend: () => void;
   readonly disabled: boolean;
   readonly compact?: boolean;
+  // Task 19 (Attach file in Flow AI): all optional, and the attach control
+  // renders ONLY when onAttachFile is provided -- every pre-task-19 caller/
+  // test that omits these props keeps rendering exactly one button (the
+  // send button), unaffected by this addition.
+  readonly attachedFile?: File | null;
+  readonly onAttachFile?: (file: File) => void;
+  readonly onRemoveAttachedFile?: () => void;
+  readonly attachBusy?: boolean;
+  readonly attachError?: string | null;
 }
 
-export function ChatComposer({ value, onChange, onSend, disabled, compact = false }: ChatComposerProps) {
+export function ChatComposer({
+  value,
+  onChange,
+  onSend,
+  disabled,
+  compact = false,
+  attachedFile = null,
+  onAttachFile,
+  onRemoveAttachedFile,
+  attachBusy = false,
+  attachError = null,
+}: ChatComposerProps) {
   const { t } = useT();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const lineHeightPxRef = useRef(0);
 
   // Auto-grow: measured against the field's OWN computed line-height
@@ -105,6 +131,16 @@ export function ChatComposer({ value, onChange, onSend, disabled, compact = fals
     if (canSend) onSend();
   };
 
+  const handleAttachClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = ""; // allow re-selecting the same file after removal
+    if (file && onAttachFile) onAttachFile(file);
+  };
+
   return (
     // Task 17d, V1: on a real Android device, Persian composer text still
     // clipped behind the send button despite task 17c's E4 direction fix --
@@ -124,8 +160,72 @@ export function ChatComposer({ value, onChange, onSend, disabled, compact = fals
     // box model GUARANTEES regardless of font metrics, zoom, or Android
     // rendering quirks. Overlap is now geometrically impossible by
     // construction, not by two independent numbers happening to match.
-    <div className={cn("flex items-end gap-3", compact ? "px-2 py-1.5" : "px-3 py-2")}>
-      <Textarea
+    //
+    // Task 19: the attachment chip/error live ABOVE this flex row (their own
+    // block-level siblings in a column), never inside it -- keeping the row
+    // itself exactly the same two/three-item flex layout V1 already
+    // guarantees non-overlapping, just with one more shrink-0 item.
+    <div className="flex flex-col gap-1.5">
+      {attachedFile && (
+        <div
+          className={cn("flex items-center gap-2 rounded-lg border border-border/50 bg-background/40 py-1.5 text-xs", compact ? "mx-2 px-2.5" : "mx-3 px-3")}
+          data-testid="chat-attachment-chip"
+        >
+          <Paperclip className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+          {/* File names are arbitrary user/OS-provided text -- mixed-direction
+              (e.g. a Persian name with a Latin ".pdf" extension) needs the
+              same bidi isolation every other user-generated text surface
+              uses (task 11e/17f convention), not plain interpolation. */}
+          <span className="min-w-0 flex-1 truncate" dir="auto">
+            {isolateEmbeddedBidiRuns(attachedFile.name)}
+          </span>
+          <span className="shrink-0 text-muted-foreground">{formatAttachmentSize(attachedFile.size)}</span>
+          <button
+            type="button"
+            onClick={onRemoveAttachedFile}
+            disabled={attachBusy}
+            aria-label={t("chat_attach_remove")}
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full hover:bg-muted disabled:opacity-50"
+          >
+            <X className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+        </div>
+      )}
+      {attachError && (
+        <p className={cn("text-xs text-destructive", compact ? "mx-2" : "mx-3")} role="alert">
+          {attachError}
+        </p>
+      )}
+      <div className={cn("flex items-end gap-3", compact ? "px-2 py-1.5" : "px-3 py-2")}>
+        {onAttachFile && (
+          <>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept={CHAT_ATTACHMENT_ACCEPTED_MIME_TYPES.join(",")}
+              onChange={handleFileInputChange}
+              className="hidden"
+              aria-hidden="true"
+              tabIndex={-1}
+            />
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              onClick={handleAttachClick}
+              disabled={disabled || attachBusy}
+              aria-label={t("chat_attach_file")}
+              // Same >=44px touch target and shrink-0 box-model guarantee as
+              // the send button below -- a real flex sibling, first in DOM
+              // order so it mirrors automatically for RTL exactly like the
+              // send button mirrors by being LAST (task 17d, V1 convention).
+              className="mb-1 h-11 w-11 shrink-0 rounded-full p-0"
+            >
+              <Paperclip className="h-4 w-4" aria-hidden="true" />
+            </Button>
+          </>
+        )}
+        <Textarea
         ref={textareaRef}
         value={value}
         onChange={(event) => onChange(event.target.value)}
@@ -197,6 +297,7 @@ export function ChatComposer({ value, onChange, onSend, disabled, compact = fals
       >
         <Send className="h-4 w-4" aria-hidden="true" />
       </Button>
+      </div>
     </div>
   );
 }

@@ -35,6 +35,8 @@ import { mainNavItems, moreNavItems } from '@/components/layout/mobileNavItems'
 // pieces this page now composes. Pipeline logic below (reasoning,
 // classification, proposal handling) is UNCHANGED by this task.
 import { ChatComposer } from '@/features/chat/components/ChatComposer'
+import { validateChatAttachment } from '@/features/chat/chatAttachmentValidation'
+import { createDocument, uploadToStorage, type Document } from '@/features/documents/documentsService'
 import { ChatPageHeader } from '@/features/chat/components/ChatPageHeader'
 import { ChatEmptyState, type ChatEmptyStateAction } from '@/features/chat/components/ChatEmptyState'
 import { ConversationsDrawer } from '@/features/chat/components/ConversationsDrawer'
@@ -1338,6 +1340,19 @@ export default function ChatPage() {
   const [loading, setLoading] = useState(false)
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
+  // Task 19 (Attach file in Flow AI): attachedFile is the raw selection
+  // (drives the composer's chip render immediately); attachedDocument is
+  // set once the upload into the SAME documents bucket/table any other
+  // document uses (documentsService.ts) has actually completed -- only a
+  // real, persisted document's id is ever sent to the worker. memoryOffer
+  // is the dismissible post-send affordance (scope item 4); it is entirely
+  // separate from write persistence -- routing to it never itself writes
+  // anything to personal memory.
+  const [attachedFile, setAttachedFile] = useState<File | null>(null)
+  const [attachedDocument, setAttachedDocument] = useState<Document | null>(null)
+  const [attachBusy, setAttachBusy] = useState(false)
+  const [attachError, setAttachError] = useState<string | null>(null)
+  const [memoryOffer, setMemoryOffer] = useState<{ documentId: string; fileName: string } | null>(null)
   const [reasoningProposal, setReasoningProposal] = useState<ReasoningProposalState[] | null>(null)
   const [approvalDialogOpen, setApprovalDialogOpen] = useState(false)
   const [githubRepositoryInventory, setGithubRepositoryInventory] = useState<AgentReasoningGitHubInventory>({ status: 'unknown' })
@@ -1494,6 +1509,64 @@ export default function ChatPage() {
     }
   }, [messages, sending, loading, scrollToLatest])
 
+  // Task 19: validate, then upload into the SAME documents bucket/table any
+  // other document uses (documentsService.ts) -- the attachment appears in
+  // Documents afterwards, subject to the same RLS and hard-delete semantics,
+  // exactly like scope item 2 requires. type is left NULL (untyped);
+  // createDocument's own insert never sets it, so it defaults to null.
+  // Extraction to personal memory is never triggered here (scope item 4 is
+  // an offer only, routed to the EXISTING slice-2 flow).
+  const handleAttachFile = useCallback(async (file: File) => {
+    const validation = validateChatAttachment(file)
+    // Task 19 quirk (this repo builds with tsconfig.app.json's strict:
+    // false): `!validation.ok` fails to narrow this discriminated union at
+    // all under strict:false (verified in isolation -- a real TS behavior,
+    // not a typo), while an explicit `=== false` equality check narrows
+    // correctly. Use the explicit form here for exactly that reason.
+    if (validation.ok === false) {
+      setAttachError(validation.reason === 'too_large' ? t('chat_attach_too_large') : t('chat_attach_unsupported_type'))
+      return
+    }
+    if (!user) return
+    setAttachError(null)
+    setAttachedFile(file)
+    setAttachBusy(true)
+    try {
+      const { storagePath, fileName } = await uploadToStorage(user.id, file)
+      const document = await createDocument({
+        storagePath,
+        fileName,
+        mimeType: file.type,
+        sizeBytes: file.size,
+      })
+      setAttachedDocument(document)
+    } catch (err) {
+      console.error('[ChatPage] attachment upload failed:', err)
+      setAttachError(t('chat_attach_upload_failed'))
+      setAttachedFile(null)
+    } finally {
+      setAttachBusy(false)
+    }
+  }, [user, t])
+
+  const handleRemoveAttachedFile = useCallback(() => {
+    // The uploaded document itself is NOT deleted -- it is already a real,
+    // persisted Document (per scope item 2, "hard-delete semantics" apply
+    // the same way any other document's do, via the Documents page, not
+    // implicitly from the composer). This only detaches it from the
+    // in-progress chat turn.
+    setAttachedFile(null)
+    setAttachedDocument(null)
+    setAttachError(null)
+  }, [])
+
+  // Task 19, scope item 4: the two extraction-capable mime types --
+  // mirrors document-memory-extraction-endpoint.ts's own PDF/plain-text gate
+  // exactly (isDocExtractable in DocumentsPage.tsx). An image attachment has
+  // no extraction path, so the offer never appears for one.
+  const isMemoryOfferEligible = (mimeType: string | null) =>
+    mimeType === 'application/pdf' || mimeType === 'text/plain'
+
   const handleSend = useCallback(async (overrideText?: string) => {
     const text = (overrideText ?? draft).trim()
     if (text === '' || sending) return
@@ -1507,6 +1580,10 @@ export default function ChatPage() {
     if (!overrideText) setDraft('')
     setSending(true)
     setSendError(null)
+    // Task 19: captured once, at the moment of send -- the turn this
+    // attachment applies to. Cleared from the composer below regardless of
+    // outcome, so it is never silently re-sent on a later, unrelated turn.
+    const sentDocument = attachedDocument
 
     let sessionId = activeSessionId
 
@@ -1544,6 +1621,9 @@ export default function ChatPage() {
             session_id: sessionId,
             responseLanguage,
             responseLanguageInstruction,
+            // Task 19: turn-scoped -- only ever the document attached to
+            // THIS specific turn, never a stale reference from an earlier one.
+            documentId: sentDocument?.id ?? null,
           }),
         })
         if (!res.ok) throw new Error(`Worker responded ${res.status}`)
@@ -1689,6 +1769,21 @@ export default function ChatPage() {
         { id: `a-${Date.now() + 1}`, role: 'assistant', content: outcome.content, language: responseLanguage },
       ])
 
+      // Task 19: the composer's attachment is turn-scoped -- always cleared
+      // after a successful send, whether or not it was actually used. If it
+      // was an extraction-capable document (PDF/plain-text), offer the
+      // EXISTING slice-2 flow (scope item 4); an image attachment has no
+      // extraction path, so no offer appears for one.
+      if (sentDocument) {
+        setAttachedFile(null)
+        setAttachedDocument(null)
+        setMemoryOffer(
+          isMemoryOfferEligible(sentDocument.mimeType)
+            ? { documentId: sentDocument.id, fileName: sentDocument.fileName }
+            : null,
+        )
+      }
+
       void refreshSessions()
     } catch {
       setSendError(t('chat_error_send'))
@@ -1696,7 +1791,7 @@ export default function ChatPage() {
     } finally {
       setSending(false)
     }
-  }, [draft, sending, workerUrl, t, activeSessionId, createSession, refreshSessions, interfaceLanguage, workspace, tasks, tasksLoading, tasksError, githubRepositoryInventory])
+  }, [draft, sending, workerUrl, t, activeSessionId, createSession, refreshSessions, interfaceLanguage, workspace, tasks, tasksLoading, tasksError, githubRepositoryInventory, attachedDocument])
 
   useEffect(() => {
     const prompt = (location.state as { initialPrompt?: string } | null)?.initialPrompt
@@ -2065,12 +2160,50 @@ export default function ChatPage() {
             {sendError !== null && (
               <p className="px-3 pt-2 text-xs text-destructive sm:px-6">{sendError}</p>
             )}
+            {/* Task 19, scope item 4: a plain, dismissible affordance, not a
+                modal -- routes to the EXISTING slice-2 flow (document type
+                selection + propose/confirm) on DocumentsPage; nothing is
+                ever extracted or stored to memory from here. */}
+            {memoryOffer && (
+              <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-xs sm:px-6">
+                <span className="min-w-0 truncate text-muted-foreground">{t('chat_attach_memory_offer')}</span>
+                <div className="flex shrink-0 items-center gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-7 px-2.5 text-xs"
+                    onClick={() => {
+                      const offer = memoryOffer
+                      setMemoryOffer(null)
+                      if (offer) nav('/documents', { state: { preselectDocumentId: offer.documentId } })
+                    }}
+                  >
+                    {t('chat_attach_memory_offer_action')}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 px-2.5 text-xs"
+                    onClick={() => setMemoryOffer(null)}
+                  >
+                    {t('chat_attach_memory_offer_dismiss')}
+                  </Button>
+                </div>
+              </div>
+            )}
             <ChatComposer
               value={draft}
               onChange={setDraft}
               onSend={() => void handleSend()}
               disabled={sending || loading}
               compact={compact}
+              attachedFile={attachedFile}
+              onAttachFile={(file) => void handleAttachFile(file)}
+              onRemoveAttachedFile={handleRemoveAttachedFile}
+              attachBusy={attachBusy}
+              attachError={attachError}
             />
           </div>
         </div>
