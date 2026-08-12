@@ -190,11 +190,16 @@ describe("W1 (task 17e/17f): message direction resolves from the message's own c
 // bubbles now use the full column width minus the avatar gutter, user
 // bubbles (no avatar) use 92%; the 70ch reading-measure cap now only
 // applies at lg+ (see ChatBubble's own comment in ChatPage.tsx).
-describe("W2 (task 17e): mobile bubble width -- full column minus avatar gutter below lg, 70ch cap only at lg+", () => {
-  it("assistant bubble: full width minus the avatar gutter below lg, 70ch cap at lg+", () => {
+describe("W2 (task 17e, width updated by task 17g Y2 once the avatar gutter was removed): mobile bubble width below lg, 70ch cap only at lg+", () => {
+  // Task 17g, Y2: the assistant avatar (and the gutter its w-7 + gap-2.5
+  // used to reserve, `calc(100%-2.5rem)`) is gone -- the assistant bubble
+  // now uses the full column width (max-w-full) below lg, starting flush
+  // at the column edge.
+  it("assistant bubble: full width (no more avatar gutter to reserve) below lg, 70ch cap at lg+", () => {
     const { container } = render(<ChatBubble role="assistant" content="Hello there." />);
     const bubble = container.querySelector(".rounded-xl")!;
-    expect(bubble.className).toMatch(/max-w-\[calc\(100%-2\.5rem\)\]/);
+    expect(bubble.className).toMatch(/\bmax-w-full\b/);
+    expect(bubble.className).not.toMatch(/calc\(100%-2\.5rem\)/);
     expect(bubble.className).toMatch(/lg:max-w-\[70ch\]/);
   });
 

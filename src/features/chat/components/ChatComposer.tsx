@@ -164,8 +164,17 @@ export function ChatComposer({ value, onChange, onSend, disabled, compact = fals
           // composer-specific focus CSS needed. Task 17d, workstream 3
           // (design polish -- affordance): ring width bumped 1->2 so the
           // focus state reads clearly as "you're typing here," still the
-          // same --ring color token, no new token.
-          "min-w-0 flex-1 resize-none rounded-2xl border-border bg-[hsl(var(--glass-bg))] px-3.5 py-2.5 text-sm leading-relaxed shadow-none transition-[height] duration-100 focus-visible:ring-2",
+          // same --ring color token, no new token. Task 17g, Y1: shadcn's
+          // base Textarea component applies a permanent `border
+          // border-input` by default; this override recoloured it
+          // (`border-border`) but that's still a decorative outline
+          // visible all the time, not just on focus. PO decision: the
+          // FOCUS ring stays (affordance, focus-visible:ring-2 below --
+          // only visible on focus); any always-on decorative outline
+          // goes. `border-0` overrides the base component's border WIDTH
+          // (the previous override only changed its colour), removing it
+          // entirely.
+          "min-w-0 flex-1 resize-none rounded-2xl border-0 bg-[hsl(var(--glass-bg))] px-3.5 py-2.5 text-sm leading-relaxed shadow-none transition-[height] duration-100 focus-visible:ring-2",
           compact && "py-2 text-[13px]",
         )}
       />

@@ -59,13 +59,42 @@ function AppLayoutInner() {
       <LaunchExperience />
 
       <div style={appShellStyle} aria-hidden={!shouldShowAppShell}>
-        <SmartflowPointerFollower />
+        {/* Task 17g, Y4: production evidence -- a glowing orb (this cursor-
+            following radial-gradient/blur/glow circle) rendered floating
+            over the middle of the conversation on desktop. It's global app
+            chrome, unrelated to task 17b's own empty-state orb, and has no
+            relationship to isChatEmptyState/message count at all -- it just
+            tracks the mouse, so it was equally visible whether the
+            conversation was empty or full, wherever the pointer happened to
+            sit. 17b's "exactly two glow placements" restraint rule was
+            always scoped to the CHAT surface specifically (see index.css's
+            own comment on the typing-indicator glow: "no glow in the
+            scrolling message list, no page-level orb under text"); this
+            component was never one of the two, so it's disabled on the
+            chat page only (`hideMobileChrome`, the same flag already used
+            to special-case this page) -- every OTHER page keeps the cursor
+            flourish exactly as before, unaffected. */}
+        {!hideMobileChrome && <SmartflowPointerFollower />}
         <OfflineBadge />
 
         {/* Desktop */}
         <div className="hidden lg:flex">
           <Sidebar />
-          <main className="flex-1 min-h-screen overflow-auto">
+          {/* Task 17g, Y5: production evidence -- two scrollbars appeared
+              simultaneously on desktop (nested scroll containers). ChatPage
+              manages its OWN vertical space entirely internally (its root
+              is `lg:sticky lg:top-0 lg:h-screen`, with the message list's
+              own `overflow-y-auto` region -- see ChatPage.tsx -- doing the
+              real scrolling), so this outer <main>'s `overflow-auto` was a
+              REDUNDANT second scroll container for the chat page
+              specifically: whenever chat's own rendered height didn't
+              exactly match this main's available height, the browser's
+              plain default scrollbar appeared here too, alongside chat's
+              own styled inner one. Scoped to the chat page ONLY
+              (`hideMobileChrome`) -- every other page still needs this
+              main to scroll normally, since they don't self-manage an
+              internal scroll region the way chat does. */}
+          <main className={cn("flex-1 min-h-screen", hideMobileChrome ? "overflow-hidden" : "overflow-auto")}>
             <Outlet />
           </main>
         </div>

@@ -3,7 +3,6 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import {
   BookOpen,
-  Bot,
   Briefcase,
   Calendar,
   CheckCircle2,
@@ -1225,30 +1224,38 @@ export function ChatBubble({ role, content, language, compact = false }: Readonl
   compact?: boolean
 }>) {
   return (
-    <div className={cn('chat-message-enter flex gap-2.5', role === 'user' ? 'justify-end' : 'justify-start')}>
-      {role === 'assistant' && (
-        <div className="icon-tile w-7 h-7 rounded-full shrink-0 mt-0.5">
-          <Bot className="w-3.5 h-3.5 text-primary" />
-        </div>
-      )}
+    // Task 17g, Y2: the assistant avatar (icon-tile + Bot) that used to sit
+    // here was removed -- turn identity is now carried entirely by
+    // alignment + bubble colour (user = end-aligned + gradient/primary;
+    // assistant = start-aligned + surface), matching the PO's explicit
+    // decision. The empty-state greeting's OWN avatar (ChatEmptyState.tsx)
+    // is untouched -- that one was called out as intentional (task 17d).
+    <div className={cn('chat-message-enter flex', role === 'user' ? 'justify-end' : 'justify-start')}>
       <div
         className={cn(
           // Task 17a, workstream 2 (reading layout): bubble line length
-          // constrained on wide screens for readability. Task 17e, W2:
-          // below lg, both the old shared 80% cap and the sm:70ch tier
-          // wasted margin on a phone-narrow column -- assistant bubbles now
-          // use the full column width minus the avatar gutter (avatar
-          // w-7/28px + gap-2.5/10px = 38px, rounded up to 2.5rem/40px so
-          // the bubble's own edge never rides flush against the avatar);
-          // user bubbles (no avatar to clear) use a wide but not edge-to-
-          // edge 92%. The 70ch reading-measure cap now only applies at
-          // lg+, where the sidebar is visible and the column is wide.
-          role === 'user' ? 'max-w-[92%] lg:max-w-[70ch]' : 'max-w-[calc(100%-2.5rem)] lg:max-w-[70ch]',
+          // constrained on wide screens for readability. Task 17e, W2 /
+          // 17g, Y2: below lg, user bubbles (no avatar to clear) use a
+          // wide but not edge-to-edge 92%; assistant bubbles now use the
+          // FULL column width (100%, task 17g removed the avatar gutter
+          // this used to reserve -- the bubble starts flush at the column
+          // edge). The 70ch reading-measure cap only applies at lg+, where
+          // the column is wide (task 17g, Y3: the column itself is now
+          // ALSO capped to a reading measure -- see this page's root
+          // render below -- so this per-bubble cap and the column cap
+          // never fight: 70ch is comfortably narrower than the column's
+          // own max-w-3xl, so the bubble cap is always the binding one).
+          role === 'user' ? 'max-w-[92%] lg:max-w-[70ch]' : 'max-w-full lg:max-w-[70ch]',
           'rounded-xl text-sm leading-relaxed break-words',
           compact ? 'px-3 py-1.5 text-[13px] leading-normal' : 'px-4 py-2.5',
+          // Task 17g, Y1: the assistant bubble's decorative
+          // `border border-border/40` outline is removed entirely --
+          // separation from the page now comes from --chat-bubble-
+          // assistant (backed by --flow-surface-2 in Dark Cosmic) against
+          // the page's own background gradient alone, no outline needed.
           role === 'user'
             ? 'bg-chat-bubble-user text-chat-bubble-user-foreground rounded-br-sm'
-            : 'bg-chat-bubble-assistant text-chat-bubble-assistant-foreground border border-border/40 rounded-bl-sm'
+            : 'bg-chat-bubble-assistant text-chat-bubble-assistant-foreground rounded-bl-sm'
         )}
         // Task 11e: base direction is decided per content block, not once
         // for the whole bubble from the resolved response language -- that
@@ -1279,14 +1286,18 @@ export function ChatBubble({ role, content, language, compact = false }: Readonl
 // .chat-typing-dot (index.css), transform/opacity only, and collapse to a
 // static (still visible, non-animated) state under prefers-reduced-motion
 // -- see that class's own definition for the full rationale.
+// Task 17g, Y1/Y2: the typing indicator shares the assistant bubble's own
+// visual chrome (same border/avatar treatment it used to have), so it gets
+// the SAME two fixes for consistency -- a real reply and the "thinking"
+// indicator now render identically borderless/avatar-less, matching Y1's
+// design principle ("separation comes from --flow-surface-2 against the
+// page gradient only") uniformly rather than leaving an inconsistent
+// bordered-avatar'd exception for this one element.
 function TypingIndicator({ label }: Readonly<{ label: string }>) {
   return (
-    <div className="chat-message-enter flex gap-2.5 justify-start">
-      <div className="icon-tile w-7 h-7 rounded-full shrink-0 mt-0.5">
-        <Bot className="w-3.5 h-3.5 text-primary" />
-      </div>
+    <div className="chat-message-enter flex justify-start">
       <div
-        className="bg-chat-bubble-assistant text-chat-bubble-assistant-foreground border border-border/40 rounded-xl rounded-bl-sm px-4 py-3 text-sm flex items-center gap-1.5"
+        className="bg-chat-bubble-assistant text-chat-bubble-assistant-foreground rounded-xl rounded-bl-sm px-4 py-3 text-sm flex items-center gap-1.5"
         role="status"
         aria-label={label}
       >
