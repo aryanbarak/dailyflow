@@ -65,8 +65,8 @@ describe("personalMemoryRecordDisplayStatus / isPersonalMemoryRecordActionable",
     expect(personalMemoryRecordDisplayStatus(r)).toBe("rejected");
   });
 
-  it("hides a superseded row (unreachable in v1 -- no automatic supersession -- but must not crash)", () => {
-    const r = record({ status: "superseded" });
+  it("hides a superseded row from its own top-level entry -- reachable since task 18 (confirm_personal_memory_record_update), but still only ever surfaced via the superseding record's own 'previous version' affordance, never as its own list item", () => {
+    const r = record({ status: "superseded", supersededById: "record-new", supersededAt: "2026-08-12T00:00:00.000Z" });
     expect(personalMemoryRecordDisplayStatus(r)).toBeNull();
   });
 });
@@ -127,6 +127,52 @@ describe("groupVisiblePersonalMemoryRecords", () => {
   it("returns an empty array when nothing is visible", () => {
     const records = [record({ status: "user_corrected", source: "model" }), record({ status: "superseded" })];
     expect(groupVisiblePersonalMemoryRecords(records)).toEqual([]);
+  });
+
+  // Task 18, B3: a confirmed update (source="model" or "user", NOT a
+  // correction) also carries supersedesId -- the "previous version"
+  // affordance must attach for this case too, not only "corrected".
+  it("attaches the superseded record to a plain CONFIRMED entry's previous-version affordance when supersedesId is set via a confirmed update (not a correction)", () => {
+    const old = record({ id: "old", kind: "skill", status: "superseded", source: "model", content: { summary: "TypeScript", level: "intermediate" }, supersededById: "new", supersededAt: "2026-08-12T00:00:00.000Z" });
+    const updated = record({ id: "new", kind: "skill", status: "user_confirmed", source: "model", supersedesId: "old", content: { summary: "TypeScript", level: "advanced" } });
+
+    const grouped = groupVisiblePersonalMemoryRecords([old, updated]);
+    const skillEntries = grouped.find((g) => g.kind === "skill")?.entries ?? [];
+
+    expect(skillEntries.map((e) => e.record.id)).toEqual(["new"]);
+    expect(skillEntries[0].displayStatus).toBe("confirmed");
+    expect(skillEntries[0].originalRecord?.id).toBe("old");
+  });
+
+  // Task 18, B2: a still-proposed candidate with possibleUpdateOfId set
+  // gets updateTarget attached ONLY if the target is still loaded and not
+  // itself already superseded.
+  it("attaches updateTarget to a proposed candidate whose possibleUpdateOfId resolves to a live existing record", () => {
+    const existing = record({ id: "existing", kind: "skill", status: "user_confirmed", source: "model", content: { summary: "TypeScript", level: "intermediate" } });
+    const candidate = record({ id: "candidate", kind: "skill", status: "proposed", source: "model", possibleUpdateOfId: "existing", content: { summary: "TypeScript", level: "advanced" } });
+
+    const grouped = groupVisiblePersonalMemoryRecords([existing, candidate]);
+    const skillEntries = grouped.find((g) => g.kind === "skill")?.entries ?? [];
+    const candidateEntry = skillEntries.find((e) => e.record.id === "candidate");
+
+    expect(candidateEntry?.updateTarget?.id).toBe("existing");
+  });
+
+  it("does NOT attach updateTarget when the suggested target is already superseded by something else (a stale suggestion)", () => {
+    const staleTarget = record({ id: "stale", kind: "skill", status: "superseded", supersededById: "someone-else", supersededAt: "2026-08-12T00:00:00.000Z" });
+    const candidate = record({ id: "candidate", kind: "skill", status: "proposed", possibleUpdateOfId: "stale" });
+
+    const grouped = groupVisiblePersonalMemoryRecords([staleTarget, candidate], { showRejected: true });
+    const candidateEntry = grouped.find((g) => g.kind === "skill")?.entries.find((e) => e.record.id === "candidate");
+
+    expect(candidateEntry?.updateTarget).toBeUndefined();
+  });
+
+  it("does NOT attach updateTarget when the referenced record isn't in the loaded set at all", () => {
+    const candidate = record({ id: "candidate", kind: "skill", status: "proposed", possibleUpdateOfId: "not-loaded" });
+    const grouped = groupVisiblePersonalMemoryRecords([candidate]);
+    const candidateEntry = grouped.find((g) => g.kind === "skill")?.entries.find((e) => e.record.id === "candidate");
+    expect(candidateEntry?.updateTarget).toBeUndefined();
   });
 });
 

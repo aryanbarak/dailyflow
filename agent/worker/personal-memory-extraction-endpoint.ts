@@ -955,6 +955,190 @@ async function reportExtractionFailure(
 }
 
 // ---------------------------------------------------------------------------
+// Task 18, B1 -- propose-time overlap detection. Deterministic FIRST (kind +
+// normalized subject text); only if that finds nothing does this fall back
+// to embedding cosine similarity. Produces a SUGGESTION only
+// (possible_update_of_id, stored by create_personal_memory_record) -- never
+// itself merges, supersedes, or drops anything. "NEVER auto-merge on a
+// model's or a similarity score's word alone" -- the actual supersession
+// only ever happens via confirm_personal_memory_record_update, on an
+// explicit user Confirm (see the migration's own comment).
+//
+// THRESHOLD CALIBRATION (real gemini-embedding-001 calls, not simulated --
+// see the task 18 report for the full probe data): the task's own starting
+// point of 0.88 was tested against the two real motivating pairs first --
+//   "IT Specialist for Application Development (IHK)" vs
+//   "Fachinformatiker für Anwendungsentwicklung (IHK)"      -> 0.8497
+//   "Wants to complete the IHK Fachinformatiker exam" vs
+//   "Goal: finish the IHK certified IT specialist qualification" -> 0.8492
+// BOTH score BELOW 0.88 -- that threshold would have missed the exact
+// cross-language duplicate this feature exists to catch. Lowering the
+// threshold to catch them was checked against genuinely-different-subject
+// pairs of the same kind (the real risk: a WRONG merge), e.g.
+//   "Fachinformatiker für Anwendungsentwicklung (IHK)" vs
+//   "Fachinformatiker für Systemintegration (IHK)" (different credential) -> 0.8039
+//   "Learning React Native" vs "Learning Flutter"                          -> 0.7694
+//   "TypeScript" vs "JavaScript"                                           -> 0.6551
+// 0.83 sits in the empirical gap between the highest "must stay separate"
+// score (0.8039) and the lowest "must match" score (0.8492) found across
+// this probe set, favoring the "stay separate" side of that gap per the
+// task's own conservative bias. NOTE: a same-subject VALUE FLIP (e.g. a
+// stated preference reversing) also scores high on this scale (0.94+) --
+// this is correctly treated as a MATCH (an update candidate), not a false
+// positive to guard against: "same subject, different value" is exactly
+// B1's other named case, and the UI never applies it without an explicit
+// user Confirm regardless of which path (deterministic or embedding)
+// produced the suggestion.
+// ---------------------------------------------------------------------------
+
+const OVERLAP_EMBEDDING_MODEL = 'gemini-embedding-001'
+const OVERLAP_EMBEDDING_DIMENSIONS = 768
+const OVERLAP_EMBEDDING_NORM_EPSILON = 1e-3
+export const OVERLAP_EMBEDDING_THRESHOLD = 0.83
+// Bounds the fallback's own cost: at most this many same-kind existing
+// records are fetched/embedded per run, matching the order-of-magnitude
+// bound every other read in this file already uses (MAX_CHAT_MESSAGES_PER_RUN,
+// MAX_DOCUMENT_CHUNKS_PER_RUN).
+const MAX_EXISTING_RECORDS_FOR_OVERLAP_CHECK = 50
+
+/** Case/diacritics/whitespace-insensitive -- "TypeScript", "typescript ", "Über uns" vs "Uber uns" all normalize identically. Exported for direct unit testing. */
+export function normalizeOverlapSubjectText(text: string): string {
+  return text
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '') // strip combining diacritical marks left behind by NFD decomposition (e.g. the umlaut dots in "ü" -> "u" + U+0308)
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, ' ')
+}
+
+function l2NormalizeOverlap(values: readonly number[]): number[] {
+  const norm = Math.sqrt(values.reduce((sum, v) => sum + v * v, 0))
+  if (norm === 0) return values.slice() as number[]
+  return values.map((v) => v / norm)
+}
+
+/** Both inputs are already unit-normalized, so this is a plain dot product. Exported for direct unit testing. */
+export function cosineSimilarity(a: readonly number[], b: readonly number[]): number {
+  let sum = 0
+  for (let i = 0; i < a.length; i += 1) sum += a[i] * b[i]
+  return sum
+}
+
+/** Mirrors document-memory-extraction-endpoint.ts's own embedChunk (same model, same dimensionality, same client-side L2-normalization requirement) -- duplicated, not imported, per this file's own zero-cross-import convention. */
+async function embedTextForOverlap(
+  text: string,
+  env: PersonalMemoryExtractionEnv,
+  fetcher: typeof fetch,
+  logger: Pick<Console, 'info' | 'error'>,
+): Promise<number[] | null> {
+  const modelUrl = new URL(`https://generativelanguage.googleapis.com/v1beta/models/${OVERLAP_EMBEDDING_MODEL}:embedContent`)
+  modelUrl.searchParams.set('key', env.GEMINI_API_KEY ?? '')
+  let response: Response
+  try {
+    response = await fetcher(modelUrl.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: { parts: [{ text }] }, outputDimensionality: OVERLAP_EMBEDDING_DIMENSIONS }),
+    })
+  } catch (networkError) {
+    logger.error?.(`[PersonalMemory] overlap embedding call failed before any response: path=${modelUrl.pathname} error=${(networkError as Error).message}`)
+    return null
+  }
+  if (!response.ok) {
+    logger.error?.(`[PersonalMemory] overlap embedding provider rejected request: path=${modelUrl.pathname} httpStatus=${response.status}`)
+    return null
+  }
+  const data = (await response.json()) as { embedding?: { values?: unknown } }
+  const values = data.embedding?.values
+  if (!Array.isArray(values) || values.length !== OVERLAP_EMBEDDING_DIMENSIONS || !values.every((v) => typeof v === 'number')) {
+    return null
+  }
+  const normalized = l2NormalizeOverlap(values as number[])
+  const norm = Math.sqrt(normalized.reduce((sum, v) => sum + v * v, 0))
+  if (Math.abs(norm - 1) > OVERLAP_EMBEDDING_NORM_EPSILON) return null
+  return normalized
+}
+
+interface ExistingRecordForOverlap {
+  id: string
+  kind: string
+  summary: string
+  status: string
+}
+
+// Only records a NEW candidate could plausibly "update" -- excludes
+// 'superseded' (already retired; the live successor is what should be
+// matched against instead) and 'user_rejected' (ADR-0010 Q1: rejection is
+// a deliberate "not a fact I want tracked" signal -- proposing an "update"
+// to it would contradict that signal). 'proposed' is included so two
+// pending candidates for the same fact from different runs get merged into
+// one review item instead of sitting side by side.
+const OVERLAP_TARGET_STATUSES = ['proposed', 'user_confirmed', 'user_corrected']
+
+async function readExistingRecordsForOverlapCheck(
+  kinds: readonly string[],
+  env: PersonalMemoryExtractionEnv,
+  jwt: string,
+  fetcher: typeof fetch,
+): Promise<ExistingRecordForOverlap[]> {
+  if (kinds.length === 0) return []
+  const uniqueKinds = [...new Set(kinds)]
+  const rows = await restGetAsUser<Array<{ id: string; kind: string; content: { summary?: unknown }; status: string }>>(
+    env,
+    jwt,
+    `personal_memory_records?kind=in.(${uniqueKinds.join(',')})&status=in.(${OVERLAP_TARGET_STATUSES.join(',')})` +
+      `&select=id,kind,content,status&order=created_at.desc&limit=${MAX_EXISTING_RECORDS_FOR_OVERLAP_CHECK}`,
+    fetcher,
+  )
+  return rows
+    .filter((row) => typeof row.content?.summary === 'string')
+    .map((row) => ({ id: row.id, kind: row.kind, summary: row.content.summary as string, status: row.status }))
+}
+
+/**
+ * Deterministic-first, embedding-fallback-second. Returns the id of the
+ * best overlap target, or null if none clears either bar. NEVER called for
+ * more than one purpose than "compute a suggestion" -- the caller decides
+ * what to do with it (attach it to create_personal_memory_record's own
+ * p_possible_update_of_id, nothing more).
+ */
+async function findPossibleUpdateTarget(
+  candidateKind: string,
+  candidateSummary: string,
+  existingRecords: readonly ExistingRecordForOverlap[],
+  env: PersonalMemoryExtractionEnv,
+  fetcher: typeof fetch,
+  logger: Pick<Console, 'info' | 'error'>,
+): Promise<string | null> {
+  const sameKind = existingRecords.filter((r) => r.kind === candidateKind)
+  if (sameKind.length === 0) return null
+
+  const normalizedCandidate = normalizeOverlapSubjectText(candidateSummary)
+  const deterministicMatch = sameKind.find((r) => normalizeOverlapSubjectText(r.summary) === normalizedCandidate)
+  if (deterministicMatch) return deterministicMatch.id
+
+  // Embedding fallback -- best-effort: an embedding failure here degrades
+  // to "no suggestion found" (the candidate is still created normally,
+  // just without a possible_update_of_id), never fails the whole
+  // extraction run.
+  const candidateEmbedding = await embedTextForOverlap(candidateSummary, env, fetcher, logger)
+  if (!candidateEmbedding) return null
+
+  let bestId: string | null = null
+  let bestScore = OVERLAP_EMBEDDING_THRESHOLD
+  for (const record of sameKind) {
+    const recordEmbedding = await embedTextForOverlap(record.summary, env, fetcher, logger)
+    if (!recordEmbedding) continue
+    const score = cosineSimilarity(candidateEmbedding, recordEmbedding)
+    if (score >= bestScore) {
+      bestScore = score
+      bestId = record.id
+    }
+  }
+  return bestId
+}
+
+// ---------------------------------------------------------------------------
 // Route handler
 // ---------------------------------------------------------------------------
 
@@ -1095,11 +1279,30 @@ export async function handlePersonalMemoryExtractionRequest(
   const validCandidates = normalized.filter((candidate): candidate is ValidCandidate => candidate !== null)
   const droppedCount = normalized.length - validCandidates.length
 
+  // Task 18, B1: fetch this user's existing overlap-eligible records ONCE
+  // per run (not once per candidate), scoped to only the kinds actually
+  // present among this run's valid candidates. Best-effort: a read
+  // failure here degrades to "no overlap suggestions this run" rather than
+  // failing the whole run -- the extraction itself already succeeded.
+  const existingRecordsForOverlap = await readExistingRecordsForOverlapCheck(
+    validCandidates.map((c) => c.kind),
+    env,
+    jwt,
+    fetcher,
+  ).catch((error: unknown) => {
+    logger.error?.(`[PersonalMemory] overlap-check read failed (continuing without overlap suggestions): ${(error as Error).message}`)
+    return [] as ExistingRecordForOverlap[]
+  })
+
   let acceptedCount = 0
   const results: Array<{ kind: string; outcome: string }> = []
   for (const candidate of validCandidates) {
     try {
       const fingerprint = await computeContentFingerprint(candidate.kind, candidate.content)
+      const candidateSummary = typeof candidate.content.summary === 'string' ? candidate.content.summary : ''
+      const possibleUpdateOfId = candidateSummary
+        ? await findPossibleUpdateTarget(candidate.kind, candidateSummary, existingRecordsForOverlap, env, fetcher, logger)
+        : null
       const outcome = await rpcAsUser<{ outcome: 'created' | 'duplicate_suppressed' }>(
         env,
         jwt,
@@ -1114,6 +1317,7 @@ export async function handlePersonalMemoryExtractionRequest(
           p_derivation_version: DERIVATION_VERSION,
           p_confidence: candidate.confidence,
           p_content_fingerprint: fingerprint,
+          p_possible_update_of_id: possibleUpdateOfId,
         },
         fetcher,
       )

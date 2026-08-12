@@ -116,6 +116,57 @@ describe("createSupabasePersonalMemoryRecordRepository -- resolve", () => {
   });
 });
 
+describe("createSupabasePersonalMemoryRecordRepository -- confirmUpdate (task 18, B2/B3)", () => {
+  it("calls confirm_personal_memory_record_update with the candidate and superseded ids, and maps both returned rows", async () => {
+    const rpc = vi.fn(async () => ({
+      data: {
+        outcome: "update_confirmed",
+        candidate: fakeRow({ id: "candidate-1", status: "user_confirmed", supersedes_id: "old-1" }),
+        superseded: fakeRow({ id: "old-1", status: "superseded", superseded_by_id: "candidate-1", superseded_at: "2026-08-12T00:00:00.000Z" }),
+      },
+      error: null,
+    }));
+    const repository = createSupabasePersonalMemoryRecordRepository(fakeClient({ rpc }));
+
+    const result = await repository.confirmUpdate({ candidateRecordId: "candidate-1", supersededRecordId: "old-1" });
+
+    expect(rpc).toHaveBeenCalledWith("confirm_personal_memory_record_update", {
+      p_candidate_record_id: "candidate-1",
+      p_superseded_record_id: "old-1",
+    });
+    expect(result.outcome).toBe("update_confirmed");
+    expect(result.candidate.id).toBe("candidate-1");
+    expect(result.candidate.supersedesId).toBe("old-1");
+    expect(result.superseded.id).toBe("old-1");
+    expect(result.superseded.status).toBe("superseded");
+    expect(result.superseded.supersededById).toBe("candidate-1");
+    expect(result.superseded.supersededAt).toBe("2026-08-12T00:00:00.000Z");
+  });
+
+  it("maps a RECORD_ALREADY_SUPERSEDED error to a typed transaction error", async () => {
+    const rpc = vi.fn(async () => ({ data: null, error: { message: "RECORD_ALREADY_SUPERSEDED" } }));
+    const repository = createSupabasePersonalMemoryRecordRepository(fakeClient({ rpc }));
+
+    await expect(repository.confirmUpdate({ candidateRecordId: "c", supersededRecordId: "already-superseded" })).rejects.toBeInstanceOf(
+      PersonalMemoryRecordTransactionError,
+    );
+  });
+
+  it("maps a KIND_MISMATCH error to a typed transaction error", async () => {
+    const rpc = vi.fn(async () => ({ data: null, error: { message: "KIND_MISMATCH" } }));
+    const repository = createSupabasePersonalMemoryRecordRepository(fakeClient({ rpc }));
+
+    await expect(repository.confirmUpdate({ candidateRecordId: "c", supersededRecordId: "s" })).rejects.toBeInstanceOf(PersonalMemoryRecordTransactionError);
+  });
+
+  it("wraps an unrecognized error as a generic persistence error", async () => {
+    const rpc = vi.fn(async () => ({ data: null, error: { message: "unexpected database error" } }));
+    const repository = createSupabasePersonalMemoryRecordRepository(fakeClient({ rpc }));
+
+    await expect(repository.confirmUpdate({ candidateRecordId: "c", supersededRecordId: "s" })).rejects.toBeInstanceOf(PersonalMemoryRecordPersistenceError);
+  });
+});
+
 describe("createSupabasePersonalMemoryRecordRepository -- remove (ADR-0010 Q1)", () => {
   it("maps a deleted outcome", async () => {
     const rpc = vi.fn(async () => ({ data: { outcome: "deleted", id: "record-1" }, error: null }));

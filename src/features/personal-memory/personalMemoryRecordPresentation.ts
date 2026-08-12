@@ -93,8 +93,18 @@ export function isPersonalMemoryRecordActionable(record: PersonalMemoryRecord): 
 export interface PersonalMemoryDisplayEntry {
   readonly record: PersonalMemoryRecord;
   readonly displayStatus: PersonalMemoryDisplayStatus;
-  /** Present only for a "corrected" entry -- the pre-correction original, for the history affordance. Never rendered as its own list entry. */
+  /** Present whenever record.supersedesId resolves to a still-loaded record -- the record THIS one replaced (via correction or a confirmed update), for the "previous version" history affordance. Never rendered as its own list entry. */
   readonly originalRecord?: PersonalMemoryRecord;
+  /**
+   * Task 18, B2: present only for a still-"proposed" entry whose
+   * possibleUpdateOfId (B1's propose-time overlap suggestion) resolves to
+   * a still-loaded, not-yet-superseded existing record. When set, the UI
+   * presents this candidate as an UPDATE to updateTarget (existing ->
+   * proposed diff) rather than a plain new proposal -- see
+   * PersonalMemorySection.tsx's RecordCard. Purely presentational: never
+   * implies anything has actually been merged.
+   */
+  readonly updateTarget?: PersonalMemoryRecord;
 }
 
 /**
@@ -117,10 +127,29 @@ export function groupVisiblePersonalMemoryRecords(
     if (!displayStatus) continue;
     if (displayStatus === "rejected" && !showRejected) continue;
 
-    const entry: PersonalMemoryDisplayEntry =
-      displayStatus === "corrected" && record.supersedesId
-        ? { record, displayStatus, originalRecord: byId.get(record.supersedesId) }
-        : { record, displayStatus };
+    // Task 18, B3: `supersedesId` now has TWO possible origins -- a
+    // content correction (displayStatus "corrected", source "user") or a
+    // confirmed update-of-a-different-record (displayStatus "confirmed",
+    // source "model" or "user", set by confirm_personal_memory_record_update).
+    // Both mean the identical thing to a reader ("the record this one
+    // replaced") and share the SAME "previous version" affordance -- so
+    // this attaches originalRecord whenever supersedesId is set, not only
+    // for the "corrected" case.
+    //
+    // Task 18, B2: a still-"proposed" record whose possibleUpdateOfId (B1's
+    // suggestion) resolves to a still-loaded, LIVE target (not itself
+    // already superseded -- a stale suggestion against a target some OTHER
+    // confirmed update has since retired is not shown as an update
+    // candidate, just a plain proposal) gets updateTarget attached.
+    let entry: PersonalMemoryDisplayEntry = record.supersedesId
+      ? { record, displayStatus, originalRecord: byId.get(record.supersedesId) }
+      : { record, displayStatus };
+    if (displayStatus === "proposed" && record.possibleUpdateOfId) {
+      const target = byId.get(record.possibleUpdateOfId);
+      if (target && target.status !== "superseded") {
+        entry = { ...entry, updateTarget: target };
+      }
+    }
 
     const bucket = grouped.get(record.kind);
     if (bucket) bucket.push(entry);

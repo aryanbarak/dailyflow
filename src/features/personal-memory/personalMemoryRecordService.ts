@@ -21,6 +21,8 @@
 import {
   PersonalMemoryRecordError,
   type CompletePersonalMemoryExtractionRunInput,
+  type ConfirmPersonalMemoryRecordUpdateInput,
+  type ConfirmPersonalMemoryRecordUpdateResult,
   type CreatePersonalMemoryExtractionRunInput,
   type CreatePersonalMemoryRecordInput,
   type CreatePersonalMemoryRecordResult,
@@ -58,6 +60,16 @@ const TRANSACTION_ERROR_MAP: Record<string, PersonalMemoryRecordError["code"] | 
   UNSUPPORTED_PROVENANCE_SOURCE_KIND: "UNSUPPORTED_PROVENANCE_SOURCE_KIND",
   RECORD_NOT_FOUND: "RECORD_NOT_FOUND",
   RECORD_NOT_PROPOSED: "RECORD_NOT_PROPOSED",
+  // Task 18, B3: confirm_personal_memory_record_update's candidate-side
+  // errors carry the identical meaning as the existing RECORD_NOT_FOUND/
+  // RECORD_NOT_PROPOSED codes -- mapped onto them rather than growing a
+  // parallel pair with no semantic difference.
+  CANDIDATE_NOT_FOUND: "RECORD_NOT_FOUND",
+  CANDIDATE_NOT_PROPOSED: "RECORD_NOT_PROPOSED",
+  SUPERSEDED_RECORD_NOT_FOUND: "SUPERSEDED_RECORD_NOT_FOUND",
+  RECORD_ALREADY_SUPERSEDED: "RECORD_ALREADY_SUPERSEDED",
+  KIND_MISMATCH: "KIND_MISMATCH",
+  INVALID_SUPERSESSION_PAIR: "INVALID_SUPERSESSION_PAIR",
 };
 
 function toServiceError(error: unknown, fallbackMessage: string): PersonalMemoryRecordError {
@@ -75,6 +87,8 @@ function toServiceError(error: unknown, fallbackMessage: string): PersonalMemory
 export interface PersonalMemoryRecordService {
   create(input: unknown): Promise<CreatePersonalMemoryRecordResult>;
   resolve(input: ResolvePersonalMemoryRecordInput): Promise<ResolvePersonalMemoryRecordResult>;
+  /** Task 18, B2/B3: confirms a proposed candidate as an update to a different existing record -- see the repository's own doc comment. */
+  confirmUpdate(input: ConfirmPersonalMemoryRecordUpdateInput): Promise<ConfirmPersonalMemoryRecordUpdateResult>;
   remove(recordId: string): Promise<DeletePersonalMemoryRecordResult>;
   listByOwner(): Promise<readonly PersonalMemoryRecord[]>;
   /** ADR-0011: only `user_confirmed`/`user_corrected` records, status-filtered at the repository query. */
@@ -172,6 +186,18 @@ export function createPersonalMemoryRecordService(
         return await repository.resolve(input, correctedContentFingerprint);
       } catch (error) {
         throw toServiceError(error, "Unable to resolve personal memory record.");
+      }
+    },
+
+    async confirmUpdate(input) {
+      await requireOwnerId();
+      if (input.candidateRecordId === input.supersededRecordId) {
+        throw new PersonalMemoryRecordError("INVALID_SUPERSESSION_PAIR", "A record cannot supersede itself.");
+      }
+      try {
+        return await repository.confirmUpdate(input);
+      } catch (error) {
+        throw toServiceError(error, "Unable to confirm the personal memory record update.");
       }
     },
 

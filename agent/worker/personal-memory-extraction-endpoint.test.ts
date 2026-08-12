@@ -3,8 +3,11 @@ import {
   buildExtractionResponseSchema,
   buildExtractionSystemInstruction,
   batchDocumentSource,
+  cosineSimilarity,
   handlePersonalMemoryExtractionRequest,
   normalizeCandidate,
+  normalizeOverlapSubjectText,
+  OVERLAP_EMBEDDING_THRESHOLD,
   type PersonalMemoryExtractionEnv,
   type SourceItemForPrompt,
 } from './personal-memory-extraction-endpoint'
@@ -72,6 +75,8 @@ function baseFetcher(overrides: {
   documentChunks?: Array<Record<string, unknown>>
   documentType?: string | null
   geminiCandidates?: Array<Record<string, unknown>>
+  existingRecordsForOverlap?: Array<Record<string, unknown>>
+  embeddingValuesByText?: Record<string, number[]>
   onRpc?: (body: unknown) => void
   onGenerateContentCall?: (body: unknown) => void
 } = {}) {
@@ -79,6 +84,7 @@ function baseFetcher(overrides: {
   const briefings = overrides.briefings ?? [{ id: BRIEFING_ID, content: 'You are learning React Native this month.' }]
   const documentChunks = overrides.documentChunks ?? []
   const documentType = overrides.documentType === undefined ? null : overrides.documentType
+  const existingRecordsForOverlap = overrides.existingRecordsForOverlap ?? []
   const geminiCandidates =
     overrides.geminiCandidates ?? [
       {
@@ -101,11 +107,27 @@ function baseFetcher(overrides: {
     if (url.startsWith(`${SUPABASE_URL}/rest/v1/documents?`) && url.includes('select=type')) {
       return jsonResponse([{ type: documentType }])
     }
+    // Task 18, B1: readExistingRecordsForOverlapCheck's own lookup.
+    if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_records?`) && url.includes('select=id,kind,content,status')) {
+      return jsonResponse(existingRecordsForOverlap)
+    }
     if (url === `${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs` && init?.method === 'POST') {
       assertRunInsertBodyIsComplete(init.body ? JSON.parse(init.body as string) : null)
       return jsonResponse([{ id: RUN_ID }])
     }
     if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs?`) && init?.method === 'PATCH') return new Response(null, { status: 204 })
+    // Task 18, B1: embedContent calls for the overlap-check fallback -- a
+    // deterministic, test-scripted vector per input text (so a test can
+    // control which pairs "match"), always via a REAL 768-length,
+    // already-unit-length response shape (embedTextForOverlap L2-normalizes
+    // it again itself, so any non-zero vector works).
+    if (url.startsWith('https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent')) {
+      const body = init?.body ? (JSON.parse(init.body as string) as { content: { parts: Array<{ text: string }> } }) : null
+      const text = body?.content.parts[0]?.text ?? ''
+      const scripted = overrides.embeddingValuesByText?.[text]
+      const values = scripted ?? Array.from({ length: 768 }, (_, i) => (i === 0 ? 1 : 0))
+      return jsonResponse({ embedding: { values } })
+    }
     if (url.startsWith('https://generativelanguage.googleapis.com/')) {
       overrides.onGenerateContentCall?.(init?.body ? JSON.parse(init.body as string) : null)
       return geminiModelResponse(geminiCandidates)
@@ -703,6 +725,7 @@ describe('POST /personal-memory/extraction', () => {
   function batchAwareFetcher(overrides: {
     documentChunks: Array<Record<string, unknown>>
     perCallResponses: Array<() => Response>
+    existingRecordsForOverlap?: Array<Record<string, unknown>>
     onRpc?: (body: unknown) => void
     onGenerateContentCall?: (body: unknown) => void
   }) {
@@ -712,11 +735,23 @@ describe('POST /personal-memory/extraction', () => {
       if (url === `${SUPABASE_URL}/auth/v1/user`) return jsonResponse({ id: 'user-1' })
       if (url.startsWith(`${SUPABASE_URL}/rest/v1/document_chunks?`)) return jsonResponse(overrides.documentChunks)
       if (url.startsWith(`${SUPABASE_URL}/rest/v1/documents?`) && url.includes('select=type')) return jsonResponse([{ type: null }])
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_records?`) && url.includes('select=id,kind,content,status')) {
+        return jsonResponse(overrides.existingRecordsForOverlap ?? [])
+      }
       if (url === `${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs` && init?.method === 'POST') {
         assertRunInsertBodyIsComplete(init.body ? JSON.parse(init.body as string) : null)
         return jsonResponse([{ id: RUN_ID }])
       }
       if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs?`) && init?.method === 'PATCH') return new Response(null, { status: 204 })
+      // Task 18, B1: embedContent is a DISTINCT endpoint from generateContent
+      // -- must not be swallowed by the generic generateContent branch below
+      // (perCallResponses/callIndex is for batched generateContent calls
+      // only). Returns a fixed non-matching vector -- these batch/FIX-1-3
+      // tests aren't testing overlap detection itself (see the dedicated
+      // "B1 overlap detection" describe block for that).
+      if (url.startsWith('https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent')) {
+        return jsonResponse({ embedding: { values: Array.from({ length: 768 }, (_, i) => (i === 0 ? 1 : 0)) } })
+      }
       if (url.startsWith('https://generativelanguage.googleapis.com/')) {
         overrides.onGenerateContentCall?.(init?.body ? JSON.parse(init.body as string) : null)
         const responder = overrides.perCallResponses[callIndex % overrides.perCallResponses.length]
@@ -984,5 +1019,182 @@ describe('buildExtractionSystemInstruction (task 18, A3 type-aware guidance)', (
   it('an unrecognized or null documentType falls back to the base instruction unchanged', () => {
     expect(buildExtractionSystemInstruction(null)).toBe(buildExtractionSystemInstruction())
     expect(buildExtractionSystemInstruction('unknown-type')).toBe(buildExtractionSystemInstruction())
+  })
+})
+
+describe('normalizeOverlapSubjectText (task 18, B1)', () => {
+  it('is case-insensitive and whitespace-insensitive', () => {
+    expect(normalizeOverlapSubjectText('TypeScript')).toBe(normalizeOverlapSubjectText('  typescript  '))
+  })
+
+  it('collapses internal repeated whitespace', () => {
+    expect(normalizeOverlapSubjectText('IT   Specialist')).toBe(normalizeOverlapSubjectText('IT Specialist'))
+  })
+
+  it('is diacritics-insensitive', () => {
+    expect(normalizeOverlapSubjectText('Über uns')).toBe(normalizeOverlapSubjectText('Uber uns'))
+  })
+
+  it('genuinely different subjects normalize to different strings', () => {
+    expect(normalizeOverlapSubjectText('TypeScript')).not.toBe(normalizeOverlapSubjectText('JavaScript'))
+  })
+})
+
+describe('cosineSimilarity (task 18, B1)', () => {
+  it('is 1 for identical unit vectors', () => {
+    expect(cosineSimilarity([1, 0, 0], [1, 0, 0])).toBeCloseTo(1, 10)
+  })
+
+  it('is 0 for orthogonal unit vectors', () => {
+    expect(cosineSimilarity([1, 0, 0], [0, 1, 0])).toBeCloseTo(0, 10)
+  })
+
+  it('is -1 for opposite unit vectors', () => {
+    expect(cosineSimilarity([1, 0, 0], [-1, 0, 0])).toBeCloseTo(-1, 10)
+  })
+})
+
+// -------------------------------------------------------------------------
+// Task 18, B1 -- propose-time overlap detection, end to end through the
+// real route handler. THRESHOLD (0.83) and its calibration story are
+// documented on OVERLAP_EMBEDDING_THRESHOLD's own declaration -- these
+// tests exercise the DETECTION WIRING (deterministic-first,
+// embedding-fallback-second, passed through to create_personal_memory_record
+// as p_possible_update_of_id), not the threshold's real-world numeric
+// justification (that's the report's own probe data, backed by real Gemini
+// calls, not fake fixture vectors).
+// -------------------------------------------------------------------------
+describe('B1 overlap detection (task 18)', () => {
+  const EXISTING_ID = '77777777-7777-4777-8777-777777777777'
+
+  it('deterministic match: same kind + normalized-equal summary is found WITHOUT ever calling the embedding endpoint', async () => {
+    const onRpc = vi.fn()
+    const fetcher = baseFetcher({
+      existingRecordsForOverlap: [{ id: EXISTING_ID, kind: 'skill', content: { summary: 'TypeScript', level: 'intermediate' }, status: 'user_confirmed' }],
+      geminiCandidates: [
+        { kind: 'skill', content: { summary: 'TypeScript', level: 'advanced' }, confidence: 'high', provenanceSourceKind: 'chat_turn', provenanceSourceRefIds: [CHAT_ID] },
+      ],
+      onRpc,
+    })
+    const response = await handlePersonalMemoryExtractionRequest(request(), validEnv, { fetcher })
+    expect(response.status).toBe(200)
+    expect(onRpc).toHaveBeenCalledWith(expect.objectContaining({ p_possible_update_of_id: EXISTING_ID }))
+    expect(fetcher.mock.calls.some(([input]) => String(input).includes(':embedContent'))).toBe(false)
+  })
+
+  it('case/whitespace-only differences still deterministically match (no embedding call)', async () => {
+    const onRpc = vi.fn()
+    const fetcher = baseFetcher({
+      existingRecordsForOverlap: [{ id: EXISTING_ID, kind: 'personal_fact', content: { summary: '  IT Specialist for Application Development (IHK)  ' }, status: 'user_confirmed' }],
+      geminiCandidates: [
+        { kind: 'personal_fact', content: { summary: 'it specialist for application development (ihk)' }, confidence: 'high', provenanceSourceKind: 'chat_turn', provenanceSourceRefIds: [CHAT_ID] },
+      ],
+      onRpc,
+    })
+    await handlePersonalMemoryExtractionRequest(request(), validEnv, { fetcher })
+    expect(onRpc).toHaveBeenCalledWith(expect.objectContaining({ p_possible_update_of_id: EXISTING_ID }))
+    expect(fetcher.mock.calls.some(([input]) => String(input).includes(':embedContent'))).toBe(false)
+  })
+
+  it('embedding fallback: cross-language paraphrase (no deterministic match) clears the threshold and is found', async () => {
+    const onRpc = vi.fn()
+    const candidateText = 'Fachinformatiker für Anwendungsentwicklung (IHK)'
+    const existingText = 'IT Specialist for Application Development (IHK)'
+    const fetcher = baseFetcher({
+      existingRecordsForOverlap: [{ id: EXISTING_ID, kind: 'personal_fact', content: { summary: existingText }, status: 'user_confirmed' }],
+      geminiCandidates: [
+        { kind: 'personal_fact', content: { summary: candidateText }, confidence: 'high', provenanceSourceKind: 'chat_turn', provenanceSourceRefIds: [CHAT_ID] },
+      ],
+      // Scripted vectors: candidate and existing text are nearly parallel
+      // (clears 0.83) -- this test proves the WIRING (fallback triggers,
+      // score compared, id passed through), not the real model's actual
+      // score for this pair (see the report's own real-call probe data).
+      embeddingValuesByText: {
+        [candidateText]: [1, 0, 0, ...Array(765).fill(0)],
+        [existingText]: [0.95, Math.sqrt(1 - 0.95 * 0.95), 0, ...Array(765).fill(0)],
+      },
+      onRpc,
+    })
+    const response = await handlePersonalMemoryExtractionRequest(request(), validEnv, { fetcher })
+    expect(response.status).toBe(200)
+    expect(fetcher.mock.calls.some(([input]) => String(input).includes(':embedContent'))).toBe(true)
+    expect(onRpc).toHaveBeenCalledWith(expect.objectContaining({ p_possible_update_of_id: EXISTING_ID }))
+  })
+
+  it('NON-match: a genuinely different subject of the same kind clears neither the deterministic nor the embedding bar -- p_possible_update_of_id is null', async () => {
+    const onRpc = vi.fn()
+    const candidateText = 'JavaScript'
+    const existingText = 'TypeScript'
+    const fetcher = baseFetcher({
+      existingRecordsForOverlap: [{ id: EXISTING_ID, kind: 'skill', content: { summary: existingText }, status: 'user_confirmed' }],
+      geminiCandidates: [
+        { kind: 'skill', content: { summary: candidateText }, confidence: 'high', provenanceSourceKind: 'chat_turn', provenanceSourceRefIds: [CHAT_ID] },
+      ],
+      // Scripted vectors well below the 0.83 threshold (orthogonal).
+      embeddingValuesByText: {
+        [candidateText]: [1, 0, 0, ...Array(765).fill(0)],
+        [existingText]: [0, 1, 0, ...Array(765).fill(0)],
+      },
+      onRpc,
+    })
+    await handlePersonalMemoryExtractionRequest(request(), validEnv, { fetcher })
+    expect(onRpc).toHaveBeenCalledWith(expect.objectContaining({ p_possible_update_of_id: null }))
+  })
+
+  it('a same-text existing record of a DIFFERENT kind is never considered a match', async () => {
+    const onRpc = vi.fn()
+    const fetcher = baseFetcher({
+      existingRecordsForOverlap: [{ id: EXISTING_ID, kind: 'goal', content: { summary: 'TypeScript' }, status: 'user_confirmed' }],
+      geminiCandidates: [
+        { kind: 'skill', content: { summary: 'TypeScript', level: 'advanced' }, confidence: 'high', provenanceSourceKind: 'chat_turn', provenanceSourceRefIds: [CHAT_ID] },
+      ],
+      onRpc,
+    })
+    await handlePersonalMemoryExtractionRequest(request(), validEnv, { fetcher })
+    expect(onRpc).toHaveBeenCalledWith(expect.objectContaining({ p_possible_update_of_id: null }))
+    // Different kind means sameKind.length === 0 -- returns before ever
+    // reaching the embedding fallback.
+    expect(fetcher.mock.calls.some(([input]) => String(input).includes(':embedContent'))).toBe(false)
+  })
+
+  it('the existing-records read is scoped to the actual kinds present among this run\'s valid candidates, and excludes superseded/rejected statuses in the query itself', async () => {
+    const fetcher = baseFetcher({
+      geminiCandidates: [
+        { kind: 'skill', content: { summary: 'TypeScript' }, confidence: 'high', provenanceSourceKind: 'chat_turn', provenanceSourceRefIds: [CHAT_ID] },
+      ],
+    })
+    await handlePersonalMemoryExtractionRequest(request(), validEnv, { fetcher })
+    const overlapReadCall = fetcher.mock.calls.find(([input]) => String(input).includes('personal_memory_records?') && String(input).includes('select=id,kind,content,status'))
+    expect(overlapReadCall).toBeDefined()
+    const url = String(overlapReadCall![0])
+    expect(url).toContain('kind=in.(skill)')
+    expect(url).toContain('status=in.(proposed,user_confirmed,user_corrected)')
+    expect(url).not.toContain('superseded')
+    expect(url).not.toContain('rejected')
+  })
+
+  it('an overlap-check read failure degrades to no suggestion, never fails the run', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === `${SUPABASE_URL}/auth/v1/user`) return jsonResponse({ id: 'user-1' })
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/agent_chat_messages?`)) return jsonResponse([{ id: CHAT_ID, content: 'x' }])
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/agent_briefings?`)) return jsonResponse([])
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_records?`)) return new Response('boom', { status: 500 })
+      if (url === `${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs` && init?.method === 'POST') return jsonResponse([{ id: RUN_ID }])
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs?`) && init?.method === 'PATCH') return new Response(null, { status: 204 })
+      if (url.startsWith('https://generativelanguage.googleapis.com/')) {
+        return geminiModelResponse([{ kind: 'skill', content: { summary: 'TypeScript' }, confidence: 'high', provenanceSourceKind: 'chat_turn', provenanceSourceRefIds: [CHAT_ID] }])
+      }
+      if (url === `${SUPABASE_URL}/rest/v1/rpc/create_personal_memory_record`) return jsonResponse({ outcome: 'created', field: { id: 'record-1', status: 'proposed' } })
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+    const response = await handlePersonalMemoryExtractionRequest(request(), validEnv, { fetcher })
+    expect(response.status).toBe(200)
+    const body = (await response.json()) as { acceptedCount: number }
+    expect(body.acceptedCount).toBe(1)
+  })
+
+  it('OVERLAP_EMBEDDING_THRESHOLD is 0.83 (see this constant\'s own declaration for the empirical calibration story)', () => {
+    expect(OVERLAP_EMBEDDING_THRESHOLD).toBe(0.83)
   })
 })

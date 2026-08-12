@@ -35,6 +35,7 @@ function makeService(records: PersonalMemoryRecord[]) {
     listByOwner: vi.fn().mockResolvedValue(records),
     resolve: vi.fn(),
     remove: vi.fn(),
+    confirmUpdate: vi.fn(),
   };
 }
 
@@ -77,7 +78,7 @@ describe("PersonalMemorySection -- rendering states", () => {
   });
 
   it("surfaces a load failure honestly", async () => {
-    const service = { listByOwner: vi.fn().mockRejectedValue(new Error("boom")), resolve: vi.fn(), remove: vi.fn() };
+    const service = { listByOwner: vi.fn().mockRejectedValue(new Error("boom")), resolve: vi.fn(), remove: vi.fn(), confirmUpdate: vi.fn() };
     render(<PersonalMemorySection service={service} triggerExtraction={vi.fn()} />);
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Personal memory could not be loaded.");
@@ -224,7 +225,7 @@ describe("PersonalMemorySection -- corrected/original history affordance", () =>
     expect(screen.queryByText("Superseded summary")).not.toBeInTheDocument();
   });
 
-  it("reveals the pre-correction original only via the correction's 'View original' affordance, read-only and clearly labeled", async () => {
+  it("reveals the pre-correction original only via the correction's 'Previous versions' affordance, read-only and clearly labeled", async () => {
     const user = userEvent.setup();
     const service = makeService([
       record({ id: "orig", status: "user_corrected", source: "model", content: { summary: "Original summary" } }),
@@ -235,10 +236,91 @@ describe("PersonalMemorySection -- corrected/original history affordance", () =>
     expect(await screen.findByText("Corrected summary")).toBeInTheDocument();
     expect(screen.queryByText("Original summary")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /view original/i }));
+    await user.click(screen.getByRole("button", { name: /previous versions/i }));
 
     expect(await screen.findByText("Original summary")).toBeInTheDocument();
-    expect(screen.getByText(/superseded by your correction/i)).toBeInTheDocument();
+    expect(screen.getByText("Previous version")).toBeInTheDocument();
+  });
+});
+
+// Task 18, B2: an overlap-detected candidate (possibleUpdateOfId resolved
+// to a live existing record by groupVisiblePersonalMemoryRecords) is
+// presented as an UPDATE -- existing value struck through, proposed value
+// below it -- with the same Confirm/Correct/Reject/Delete verbs, but
+// Confirm calls service.confirmUpdate (atomic), never service.resolve.
+describe("PersonalMemorySection -- update-candidate presentation (task 18, B2)", () => {
+  it("shows the existing value (struck through) and the proposed value for an update candidate, not a plain proposal", async () => {
+    const existing = record({ id: "existing", kind: "skill", status: "user_confirmed", source: "model", content: { summary: "TypeScript", level: "intermediate" } });
+    const candidate = record({ id: "candidate", kind: "skill", status: "proposed", source: "model", possibleUpdateOfId: "existing", content: { summary: "TypeScript", level: "advanced" } });
+    const service = makeService([existing, candidate]);
+    render(<PersonalMemorySection service={service} triggerExtraction={vi.fn()} />);
+
+    await waitFor(() => expect(service.listByOwner).toHaveBeenCalled());
+    expect(await screen.findByText("This looks like an update to the record above.")).toBeInTheDocument();
+    expect(screen.getByText(/TypeScript — Level: intermediate/)).toBeInTheDocument();
+    expect(screen.getByText(/TypeScript — Level: advanced/)).toBeInTheDocument();
+  });
+
+  it("Confirm on an update candidate calls service.confirmUpdate with the candidate and target ids, never service.resolve", async () => {
+    const user = userEvent.setup();
+    const existing = record({ id: "existing", kind: "skill", status: "user_confirmed", source: "model", content: { summary: "TypeScript", level: "intermediate" } });
+    const candidate = record({ id: "candidate", kind: "skill", status: "proposed", source: "model", possibleUpdateOfId: "existing", content: { summary: "TypeScript", level: "advanced" } });
+    const service = makeService([existing, candidate]);
+    service.confirmUpdate.mockResolvedValue({
+      outcome: "update_confirmed",
+      candidate: { ...candidate, status: "user_confirmed", supersedesId: "existing" },
+      superseded: { ...existing, status: "superseded", supersededById: "candidate", supersededAt: "2026-08-12T00:00:00.000Z" },
+    });
+    render(<PersonalMemorySection service={service} triggerExtraction={vi.fn()} />);
+    await waitFor(() => expect(service.listByOwner).toHaveBeenCalled());
+
+    const confirmButtons = await screen.findAllByRole("button", { name: /confirm/i });
+    await user.click(confirmButtons[0]);
+
+    await waitFor(() => expect(service.confirmUpdate).toHaveBeenCalledWith({ candidateRecordId: "candidate", supersededRecordId: "existing" }));
+    expect(service.resolve).not.toHaveBeenCalled();
+  });
+
+  it("Reject on an update candidate calls the normal reject flow (service.resolve) -- the suggested target is never touched", async () => {
+    const user = userEvent.setup();
+    const existing = record({ id: "existing", kind: "skill", status: "user_confirmed", source: "model", content: { summary: "TypeScript", level: "intermediate" } });
+    const candidate = record({ id: "candidate", kind: "skill", status: "proposed", source: "model", possibleUpdateOfId: "existing", content: { summary: "TypeScript", level: "advanced" } });
+    const service = makeService([existing, candidate]);
+    service.resolve.mockResolvedValue({ outcome: "user_rejected", record: { ...candidate, status: "user_rejected" } });
+    render(<PersonalMemorySection service={service} triggerExtraction={vi.fn()} />);
+    await waitFor(() => expect(service.listByOwner).toHaveBeenCalled());
+
+    // Exact match, not /reject/i -- the toolbar's own "Hide rejected"/"Show
+    // rejected" toggle button also matches a loose "reject" substring.
+    const rejectButtons = await screen.findAllByRole("button", { name: "Reject" });
+    await user.click(rejectButtons[0]);
+
+    await waitFor(() => expect(service.resolve).toHaveBeenCalledWith({ recordId: "candidate", action: "reject" }));
+    expect(service.confirmUpdate).not.toHaveBeenCalled();
+  });
+
+  it("a plain proposal (no possibleUpdateOfId) still Confirms via the normal resolve flow, unaffected by the update-candidate feature", async () => {
+    const user = userEvent.setup();
+    const plain = record({ id: "plain", status: "proposed" });
+    const service = makeService([plain]);
+    service.resolve.mockResolvedValue({ outcome: "user_confirmed", record: { ...plain, status: "user_confirmed" } });
+    render(<PersonalMemorySection service={service} triggerExtraction={vi.fn()} />);
+    await waitFor(() => expect(service.listByOwner).toHaveBeenCalled());
+
+    await user.click(await screen.findByRole("button", { name: /confirm/i }));
+
+    await waitFor(() => expect(service.resolve).toHaveBeenCalledWith({ recordId: "plain", action: "confirm" }));
+    expect(service.confirmUpdate).not.toHaveBeenCalled();
+  });
+
+  it("a proposed record whose possibleUpdateOfId points at a NOT-loaded record renders as a plain proposal (no crash, no diff view)", async () => {
+    const candidate = record({ id: "candidate", status: "proposed", possibleUpdateOfId: "not-loaded-anywhere" });
+    const service = makeService([candidate]);
+    render(<PersonalMemorySection service={service} triggerExtraction={vi.fn()} />);
+    await waitFor(() => expect(service.listByOwner).toHaveBeenCalled());
+
+    expect(await screen.findByText("Learn React Native")).toBeInTheDocument();
+    expect(screen.queryByText("This looks like an update to the record above.")).not.toBeInTheDocument();
   });
 });
 

@@ -29,6 +29,7 @@ function fakeRepository(overrides: Partial<PersonalMemoryRecordRepository> = {})
   return {
     insert: vi.fn(),
     resolve: vi.fn(),
+    confirmUpdate: vi.fn(),
     remove: vi.fn(),
     findById: vi.fn(async () => null),
     listByOwner: vi.fn(async () => []),
@@ -164,6 +165,39 @@ describe("createPersonalMemoryRecordService -- resolve", () => {
       expect.objectContaining({ recordId: "record-1", action: "correct" }),
       expect.stringMatching(/^[0-9a-f]{64}$/),
     );
+  });
+});
+
+describe("createPersonalMemoryRecordService -- confirmUpdate (task 18, B2/B3)", () => {
+  it("delegates to the repository with the candidate and superseded ids", async () => {
+    const confirmUpdate = vi.fn(async () => ({
+      outcome: "update_confirmed" as const,
+      candidate: proposedRecord({ id: "candidate-1", status: "user_confirmed", supersedesId: "old-1" }),
+      superseded: proposedRecord({ id: "old-1", status: "superseded", supersededById: "candidate-1", supersededAt: "2026-08-12T00:00:00.000Z" }),
+    }));
+    const repository = fakeRepository({ confirmUpdate });
+    const service = createPersonalMemoryRecordService({ repository, resolveOwnerId: async () => "user-1" });
+
+    const result = await service.confirmUpdate({ candidateRecordId: "candidate-1", supersededRecordId: "old-1" });
+
+    expect(result.outcome).toBe("update_confirmed");
+    expect(confirmUpdate).toHaveBeenCalledWith({ candidateRecordId: "candidate-1", supersededRecordId: "old-1" });
+  });
+
+  it("rejects a record superseding itself before ever touching the repository", async () => {
+    const repository = fakeRepository();
+    const service = createPersonalMemoryRecordService({ repository, resolveOwnerId: async () => "user-1" });
+
+    await expect(service.confirmUpdate({ candidateRecordId: "same-id", supersededRecordId: "same-id" })).rejects.toBeInstanceOf(PersonalMemoryRecordError);
+    expect(repository.confirmUpdate).not.toHaveBeenCalled();
+  });
+
+  it("throws UNAUTHENTICATED when no owner is resolved, before touching the repository", async () => {
+    const repository = fakeRepository();
+    const service = createPersonalMemoryRecordService({ repository, resolveOwnerId: async () => null });
+
+    await expect(service.confirmUpdate({ candidateRecordId: "a", supersededRecordId: "b" })).rejects.toBeInstanceOf(PersonalMemoryRecordError);
+    expect(repository.confirmUpdate).not.toHaveBeenCalled();
   });
 });
 

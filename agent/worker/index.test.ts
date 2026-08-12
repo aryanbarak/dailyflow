@@ -283,6 +283,39 @@ describe('handleChat mode routing', () => {
     expect(personalMemoryUrl).not.toContain('user_rejected')
   })
 
+  it("task 18, B3: the SAME status filter also excludes 'superseded' -- a fact that has been replaced by a confirmed update never reaches the /chat prompt, exactly like a still-proposed or rejected one", async () => {
+    // 'superseded' only became a reachable status with task 18's
+    // confirm_personal_memory_record_update -- this test names it
+    // explicitly (the pre-task-18 test above only asserted 'proposed'/
+    // 'user_rejected' were excluded, since 'superseded' had no live write
+    // path yet to be worth naming). fetchConfirmedPersonalMemory's own
+    // query is UNCHANGED by task 18 (status=in.(user_confirmed,
+    // user_corrected) already excluded any OTHER status by construction) --
+    // this is a regression guard for that continuing to hold, not a new
+    // code path.
+    let personalMemoryUrl: string | null = null
+    const log = installFetchMock([
+      { kind: 'skill', content: { summary: 'TypeScript', level: 'advanced' }, created_at: '2026-08-12T00:00:00.000Z' },
+    ])
+    const originalFetch = globalThis.fetch
+    const capturingFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_records`)) personalMemoryUrl = url
+      return originalFetch(input, init)
+    })
+    vi.stubGlobal('fetch', capturingFetch)
+
+    const ctx = fakeExecutionContext()
+    const env = testEnv()
+    const response = await worker.fetch(chatRequest({ message: 'Hello there' }), env, ctx)
+
+    expect(response.status).toBe(200)
+    expect(log.personalMemoryReads).toBe(1)
+    expect(personalMemoryUrl).not.toBeNull()
+    expect(personalMemoryUrl).toContain('status=in.(user_confirmed,user_corrected)')
+    expect(personalMemoryUrl).not.toContain('superseded')
+  })
+
   it('task 11c PART 2: a fresh-session /chat request never fetches user_context at all -- the legacy table is not part of this request\'s fetch graph, not merely filtered out afterward', async () => {
     const log = installFetchMock()
     const requestedUrls: string[] = []

@@ -31,6 +31,14 @@ export const PERSONAL_MEMORY_STATUS_VALUES = [
 ] as const;
 export type PersonalMemoryStatus = typeof PERSONAL_MEMORY_STATUS_VALUES[number];
 
+/**
+ * Task 18, B3: 'superseded' is now REACHABLE (previously "unreachable in
+ * v1" per ADR-0010's own Implementation Notes) -- confirm_personal_memory_record_update
+ * is the sole write path that ever sets it, and only on an explicit user
+ * Confirm of an update proposal (never automatically). See
+ * 20260813000000_personal_memory_supersession.sql.
+ */
+
 export const PERSONAL_MEMORY_SOURCE_VALUES = ["model", "user"] as const;
 export type PersonalMemorySource = typeof PERSONAL_MEMORY_SOURCE_VALUES[number];
 
@@ -146,7 +154,23 @@ export interface PersonalMemoryRecord {
   readonly confidence: PersonalMemoryConfidence;
   readonly status: PersonalMemoryStatus;
   readonly source: PersonalMemorySource;
+  /**
+   * Set either by resolve_personal_memory_record's 'correct' branch (a
+   * content correction of THIS record) or, since task 18, by
+   * confirm_personal_memory_record_update (this record superseded a
+   * DIFFERENT existing record via a confirmed update proposal) -- both
+   * mean the identical thing to a reader: "the record this one replaced."
+   * See personalMemoryRecordPresentation.ts's groupVisiblePersonalMemoryRecords
+   * for how the UI's "previous version" affordance uses this uniformly for
+   * both origins.
+   */
   readonly supersedesId?: string;
+  /** Task 18, B1: a propose-time overlap-detection SUGGESTION (set by create_personal_memory_record) that this record might be an update to the referenced one. Never itself means anything happened -- only presentational, until a user explicitly confirms it via confirmUpdate. */
+  readonly possibleUpdateOfId?: string;
+  /** Task 18, B3: present only when status === "superseded" -- the record that superseded this one, if it still exists (ON DELETE SET NULL -- may be absent even for a superseded record, see superseded_by_id's own migration comment). */
+  readonly supersededById?: string;
+  /** Task 18, B3: present only when status === "superseded" -- WHEN, permanently (never nulled by any delete, unlike supersededById). */
+  readonly supersededAt?: string;
   readonly contentFingerprint: string;
   readonly createdAt: string;
 }
@@ -210,6 +234,25 @@ export interface DeletePersonalMemoryRecordResult {
   readonly id: string;
 }
 
+// ---------------------------------------------------------------------------
+// Confirm-as-update (task 18, B2/B3) -- the sole path for confirming a
+// still-proposed candidate as an update to a DIFFERENT existing record.
+// Distinct from ResolvePersonalMemoryRecordInput's "confirm" action, which
+// only ever operates on the one record being resolved -- this atomically
+// touches TWO records (see confirm_personal_memory_record_update).
+// ---------------------------------------------------------------------------
+
+export interface ConfirmPersonalMemoryRecordUpdateInput {
+  readonly candidateRecordId: string;
+  readonly supersededRecordId: string;
+}
+
+export interface ConfirmPersonalMemoryRecordUpdateResult {
+  readonly outcome: "update_confirmed";
+  readonly candidate: PersonalMemoryRecord;
+  readonly superseded: PersonalMemoryRecord;
+}
+
 export type PersonalMemoryRecordErrorCode =
   | "UNAUTHENTICATED"
   | "RUN_NOT_FOUND"
@@ -217,6 +260,10 @@ export type PersonalMemoryRecordErrorCode =
   | "UNSUPPORTED_PROVENANCE_SOURCE_KIND"
   | "RECORD_NOT_FOUND"
   | "RECORD_NOT_PROPOSED"
+  | "SUPERSEDED_RECORD_NOT_FOUND"
+  | "RECORD_ALREADY_SUPERSEDED"
+  | "KIND_MISMATCH"
+  | "INVALID_SUPERSESSION_PAIR"
   | "INVALID_INPUT"
   | "PERSISTENCE_FAILED";
 

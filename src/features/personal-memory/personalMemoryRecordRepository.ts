@@ -11,6 +11,8 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
   CompletePersonalMemoryExtractionRunInput,
+  ConfirmPersonalMemoryRecordUpdateInput,
+  ConfirmPersonalMemoryRecordUpdateResult,
   CreatePersonalMemoryExtractionRunInput,
   CreatePersonalMemoryRecordInput,
   CreatePersonalMemoryRecordResult,
@@ -38,6 +40,12 @@ interface PersonalMemoryRecordRow {
   status: string;
   source: string;
   supersedes_id: string | null;
+  /** Task 18, B1. */
+  possible_update_of_id: string | null;
+  /** Task 18, B3. */
+  superseded_by_id: string | null;
+  /** Task 18, B3. */
+  superseded_at: string | null;
   content_fingerprint: string;
   created_at: string;
 }
@@ -76,6 +84,17 @@ const RECORD_TRANSACTION_ERROR_CODES = new Set([
   // inferredProjectContextFieldRepository.ts's identical DUPLICATE_LOOKUP_FAILED
   // handling.
   "DUPLICATE_LOOKUP_FAILED",
+  // Task 18, B3: confirm_personal_memory_record_update's own raised codes.
+  // CANDIDATE_NOT_FOUND/CANDIDATE_NOT_PROPOSED are mapped onto the
+  // already-existing RECORD_NOT_FOUND/RECORD_NOT_PROPOSED codes at the
+  // service layer (identical meaning, no need for a parallel pair) -- the
+  // rest are genuinely new conditions this RPC alone can raise.
+  "CANDIDATE_NOT_FOUND",
+  "CANDIDATE_NOT_PROPOSED",
+  "SUPERSEDED_RECORD_NOT_FOUND",
+  "RECORD_ALREADY_SUPERSEDED",
+  "KIND_MISMATCH",
+  "INVALID_SUPERSESSION_PAIR",
 ]);
 
 export class PersonalMemoryRecordTransactionError extends Error {
@@ -120,6 +139,9 @@ function mapRowToRecord(row: PersonalMemoryRecordRow): PersonalMemoryRecord {
   };
   if (row.run_id) (record as { runId?: string }).runId = row.run_id;
   if (row.supersedes_id) (record as { supersedesId?: string }).supersedesId = row.supersedes_id;
+  if (row.possible_update_of_id) (record as { possibleUpdateOfId?: string }).possibleUpdateOfId = row.possible_update_of_id;
+  if (row.superseded_by_id) (record as { supersededById?: string }).supersededById = row.superseded_by_id;
+  if (row.superseded_at) (record as { supersededAt?: string }).supersededAt = row.superseded_at;
   if (Array.isArray(row.provenance_snapshot) && row.provenance_snapshot.length > 0) {
     (record as { provenanceSnapshot?: unknown }).provenanceSnapshot = row.provenance_snapshot;
   }
@@ -146,7 +168,7 @@ function mapRowToRun(row: PersonalMemoryExtractionRunRow): PersonalMemoryExtract
 }
 
 const RECORD_COLUMNS =
-  "id,user_id,run_id,kind,content,provenance_source_kind,provenance_source_ref_ids,provenance_snapshot,model_identity,derivation_version,confidence,status,source,supersedes_id,content_fingerprint,created_at";
+  "id,user_id,run_id,kind,content,provenance_source_kind,provenance_source_ref_ids,provenance_snapshot,model_identity,derivation_version,confidence,status,source,supersedes_id,possible_update_of_id,superseded_by_id,superseded_at,content_fingerprint,created_at";
 const RUN_COLUMNS =
   "id,user_id,model_identity,derivation_version,started_at,completed_at,prompt_token_count,response_token_count,candidate_count,accepted_count,dropped_count,outcome,failure_reason";
 
@@ -158,6 +180,13 @@ export interface PersonalMemoryRecordRepository {
    * inferredProjectContextFieldRepository.ts's own `resolve`.
    */
   resolve(input: ResolvePersonalMemoryRecordInput, correctedContentFingerprint?: string): Promise<ResolvePersonalMemoryRecordResult>;
+  /**
+   * Task 18, B2/B3: confirms a still-proposed candidate as an update to a
+   * DIFFERENT existing record, atomically (confirm_personal_memory_record_update
+   * -- one function body, one transaction). No silent supersession: only
+   * ever called on an explicit user action.
+   */
+  confirmUpdate(input: ConfirmPersonalMemoryRecordUpdateInput): Promise<ConfirmPersonalMemoryRecordUpdateResult>;
   /** ADR-0010 Q1: hard delete at any status. No ADR-0009 analogue. */
   remove(recordId: string): Promise<DeletePersonalMemoryRecordResult>;
   findById(ownerId: string, recordId: string): Promise<PersonalMemoryRecord | null>;
@@ -228,6 +257,28 @@ export function createSupabasePersonalMemoryRecordRepository(
         throw new PersonalMemoryRecordPersistenceError("The resolve transaction returned an incomplete result.");
       }
       return { outcome: result.outcome, record: mapRowToRecord(result.field) };
+    },
+
+    async confirmUpdate(input) {
+      const { data, error } = await client.rpc("confirm_personal_memory_record_update", {
+        p_candidate_record_id: input.candidateRecordId,
+        p_superseded_record_id: input.supersededRecordId,
+      });
+
+      if (error) {
+        const code = extractTransactionErrorCode(error);
+        if (code) throw new PersonalMemoryRecordTransactionError(code, "The update-confirmation transaction was rejected.");
+        throw new PersonalMemoryRecordPersistenceError("Unable to confirm personal memory record update.", error);
+      }
+      const result = data as { outcome?: "update_confirmed"; candidate?: PersonalMemoryRecordRow; superseded?: PersonalMemoryRecordRow };
+      if (result.outcome !== "update_confirmed" || !result.candidate?.id || !result.superseded?.id) {
+        throw new PersonalMemoryRecordPersistenceError("The update-confirmation transaction returned an incomplete result.");
+      }
+      return {
+        outcome: "update_confirmed",
+        candidate: mapRowToRecord(result.candidate),
+        superseded: mapRowToRecord(result.superseded),
+      };
     },
 
     async remove(recordId) {

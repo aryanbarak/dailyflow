@@ -49,7 +49,7 @@ import type { PersonalMemoryContent, PersonalMemoryRecord, PersonalMemoryRecordK
 import type { PersonalMemoryExtractionTriggerResult } from "../personalMemoryExtractionTriggerClient";
 
 export interface PersonalMemorySectionProps {
-  readonly service: Pick<PersonalMemoryRecordService, "listByOwner" | "resolve" | "remove">;
+  readonly service: Pick<PersonalMemoryRecordService, "listByOwner" | "resolve" | "remove" | "confirmUpdate">;
   readonly triggerExtraction: () => Promise<PersonalMemoryExtractionTriggerResult>;
   /** Task 16: resolves live document_chunks info for a document-sourced record's source line. Omit to render document-sourced cards with no source line (graceful degradation, not an error). */
   readonly resolveDocumentSources?: ResolveDocumentChunkSources;
@@ -192,6 +192,7 @@ function RecordCard({
   sourceLine,
   onToggleOriginal,
   onConfirm,
+  onConfirmUpdate,
   onReject,
   onStartCorrect,
   onCancelCorrect,
@@ -207,6 +208,8 @@ function RecordCard({
   sourceLine?: string;
   onToggleOriginal: () => void;
   onConfirm: () => void;
+  /** Task 18, B2: called instead of onConfirm when entry.updateTarget is set -- confirms this candidate AS AN UPDATE (atomically supersedes the target). */
+  onConfirmUpdate: () => void;
   onReject: () => void;
   onStartCorrect: () => void;
   onCancelCorrect: () => void;
@@ -214,7 +217,7 @@ function RecordCard({
   onRequestDelete: () => void;
   error?: string;
 }>) {
-  const { record, displayStatus, originalRecord } = entry;
+  const { record, displayStatus, originalRecord, updateTarget } = entry;
   const actionable = isPersonalMemoryRecordActionable(record);
   const helpText = personalMemoryDisplayStatusHelpText(displayStatus);
 
@@ -222,19 +225,46 @@ function RecordCard({
     <li className="rounded-md border border-border bg-card p-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          {/* Task 11e: mixed-direction hygiene -- these titles/summaries are
-              derived from user content (chat, briefings) and can freely mix
-              Persian and Latin tokens (a product name, a URL). dir="auto"
-              picks the block's own base direction; isolateEmbeddedBidiRuns
-              isolates any bare embedded Latin run so it can't visually
-              reorder relative to its own surrounding punctuation. */}
-          <p dir="auto" className="text-sm font-medium text-foreground">
-            {isolateEmbeddedBidiRuns(personalMemoryRecordPrimaryText(record.content))}
-          </p>
-          {personalMemoryRecordSecondaryText(record.kind, record.content) && (
-            <p dir="auto" className="mt-0.5 text-xs text-muted-foreground">
-              {isolateEmbeddedBidiRuns(personalMemoryRecordSecondaryText(record.kind, record.content))}
-            </p>
+          {/* Task 18, B2: an overlap-detected candidate is presented as an
+              UPDATE to the existing record it might replace -- "existing
+              value -> proposed value" -- rather than a plain new proposal.
+              This is a SUGGESTION (see personalMemoryRecordPresentation.ts's
+              own updateTarget comment): nothing has been merged yet: it
+              only takes effect on an explicit Confirm below
+              (onConfirmUpdate), which atomically supersedes updateTarget. */}
+          {updateTarget ? (
+            <div className="space-y-1">
+              <p dir="auto" className="text-xs text-muted-foreground line-through decoration-muted-foreground/50">
+                {isolateEmbeddedBidiRuns(personalMemoryRecordPrimaryText(updateTarget.content))}
+                {personalMemoryRecordSecondaryText(updateTarget.kind, updateTarget.content)
+                  ? ` — ${personalMemoryRecordSecondaryText(updateTarget.kind, updateTarget.content)}`
+                  : ""}
+              </p>
+              <p dir="auto" className="text-sm font-medium text-foreground">
+                {isolateEmbeddedBidiRuns(personalMemoryRecordPrimaryText(record.content))}
+                {personalMemoryRecordSecondaryText(record.kind, record.content)
+                  ? ` — ${personalMemoryRecordSecondaryText(record.kind, record.content)}`
+                  : ""}
+              </p>
+              <p className="text-[11px] text-muted-foreground">This looks like an update to the record above.</p>
+            </div>
+          ) : (
+            <>
+              {/* Task 11e: mixed-direction hygiene -- these titles/summaries are
+                  derived from user content (chat, briefings) and can freely mix
+                  Persian and Latin tokens (a product name, a URL). dir="auto"
+                  picks the block's own base direction; isolateEmbeddedBidiRuns
+                  isolates any bare embedded Latin run so it can't visually
+                  reorder relative to its own surrounding punctuation. */}
+              <p dir="auto" className="text-sm font-medium text-foreground">
+                {isolateEmbeddedBidiRuns(personalMemoryRecordPrimaryText(record.content))}
+              </p>
+              {personalMemoryRecordSecondaryText(record.kind, record.content) && (
+                <p dir="auto" className="mt-0.5 text-xs text-muted-foreground">
+                  {isolateEmbeddedBidiRuns(personalMemoryRecordSecondaryText(record.kind, record.content))}
+                </p>
+              )}
+            </>
           )}
           {/* Task 16: document provenance source line -- file name can be
               user-controlled (upload) and mix directions, same bidi
@@ -257,7 +287,12 @@ function RecordCard({
           {error}
         </p>
       )}
-      {displayStatus === "corrected" && originalRecord && (
+      {/* Task 18, B3: "previous versions" collapsed affordance -- covers
+          BOTH origins of supersedesId (a content correction, or a
+          confirmed update via onConfirmUpdate). Generic wording
+          ("Previous version") on purpose: this card doesn't need to
+          explain WHY the earlier value was replaced, only that it was. */}
+      {originalRecord && (
         <div className="mt-2">
           <button
             type="button"
@@ -265,12 +300,12 @@ function RecordCard({
             className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
           >
             {showingOriginal ? <ChevronUp className="h-3 w-3" aria-hidden="true" /> : <ChevronDown className="h-3 w-3" aria-hidden="true" />}
-            View original
+            Previous versions
           </button>
           {showingOriginal && (
             <div className="mt-1 rounded-md border border-border bg-muted/40 p-2">
-              <p className="text-[11px] font-medium text-muted-foreground">Superseded by your correction</p>
-              <p className="mt-1 text-xs text-muted-foreground">{personalMemoryRecordPrimaryText(originalRecord.content)}</p>
+              <p className="text-[11px] font-medium text-muted-foreground">Previous version</p>
+              <p dir="auto" className="mt-1 text-xs text-muted-foreground">{isolateEmbeddedBidiRuns(personalMemoryRecordPrimaryText(originalRecord.content))}</p>
             </div>
           )}
         </div>
@@ -278,7 +313,7 @@ function RecordCard({
       <div className="mt-3 flex flex-wrap gap-2">
         {actionable && !correcting && (
           <>
-            <Button type="button" size="sm" onClick={onConfirm} disabled={busy}>
+            <Button type="button" size="sm" onClick={updateTarget ? onConfirmUpdate : onConfirm} disabled={busy}>
               <CheckCircle2 className="mr-1 h-3.5 w-3.5" aria-hidden="true" />
               Confirm
             </Button>
@@ -383,6 +418,36 @@ export function PersonalMemorySection({ service, triggerExtraction, resolveDocum
     [load, onRecordsChanged, service],
   );
 
+  // Task 18, B2/B3: confirms a candidate AS AN UPDATE to its updateTarget --
+  // atomically supersedes the target (confirm_personal_memory_record_update).
+  // Reject on an update-candidate is deliberately UNCHANGED (handleResolve
+  // above, "reject" action) -- rejecting only ever affects the candidate
+  // itself; the suggested target is never touched, exactly matching the PO
+  // decision ("rejecting leaves the existing record untouched").
+  const handleConfirmUpdate = useCallback(
+    async (candidateRecordId: string, supersededRecordId: string) => {
+      setBusyRecordId(candidateRecordId);
+      setRecordErrors((current) => {
+        const next = { ...current };
+        delete next[candidateRecordId];
+        return next;
+      });
+      try {
+        await service.confirmUpdate({ candidateRecordId, supersededRecordId });
+        await load();
+        onRecordsChanged?.();
+      } catch (error) {
+        setRecordErrors((current) => ({
+          ...current,
+          [candidateRecordId]: error instanceof Error ? error.message : "The update could not be confirmed.",
+        }));
+      } finally {
+        setBusyRecordId(null);
+      }
+    },
+    [load, onRecordsChanged, service],
+  );
+
   const handleDelete = useCallback(async () => {
     if (!deleteTarget) return;
     const recordId = deleteTarget.id;
@@ -479,6 +544,7 @@ export function PersonalMemorySection({ service, triggerExtraction, resolveDocum
                 error={recordErrors[entry.record.id]}
                 onToggleOriginal={() => setShowOriginalForId((current) => (current === entry.record.id ? null : entry.record.id))}
                 onConfirm={() => handleResolve(entry.record.id, "confirm")}
+                onConfirmUpdate={() => entry.updateTarget && handleConfirmUpdate(entry.record.id, entry.updateTarget.id)}
                 onReject={() => handleResolve(entry.record.id, "reject")}
                 onStartCorrect={() => setCorrectingRecordId(entry.record.id)}
                 onCancelCorrect={() => setCorrectingRecordId(null)}
