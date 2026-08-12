@@ -3,6 +3,10 @@ import { supabase } from "@/integrations/supabase/client";
 export const DOCUMENTS_BUCKET =
   import.meta.env.VITE_SUPABASE_STORAGE_BUCKET || "documents";
 
+/** Task 18 (Document-Sourced Memory slice 2): the four recognized document types -- see 20260812000000_document_types_and_sensitivity.sql's own CHECK constraint. Widened from task 16's resume-only set. */
+export type DocumentType = "resume" | "financial" | "personal" | "business";
+export const DOCUMENT_TYPES: readonly DocumentType[] = ["resume", "financial", "personal", "business"];
+
 export interface Document {
   id: string;
   storagePath: string;
@@ -12,7 +16,7 @@ export interface Document {
   title: string | null;
   description: string | null;
   tags: string[];
-  /** Task 16 (Document-Sourced Memory slice 1): 'resume' when explicitly marked, else null. The only recognized value in this slice -- see 20260811000000_document_chunks_pgvector.sql's own CHECK constraint. */
+  /** Task 16/18 (Document-Sourced Memory): one of DOCUMENT_TYPES when explicitly assigned, else null (untyped -- no "Add to personal memory" action shown). Loosely typed as `string | null` here (matching the generated-Supabase-types convention this repo already uses for this column) rather than `DocumentType | null`, so an old/foreign value never fails to type-check; callers narrow via isSupportedDocumentType where it matters. */
   type: string | null;
   aiSummary: string | null;
   aiSummaryPoints: string[];
@@ -154,8 +158,12 @@ export async function updateTags(id: string, tags: string[]): Promise<void> {
   if (error) throw error;
 }
 
-/** Task 16: marks/unmarks a document as a resume -- the only recognized type in this slice, gating the "Extract to personal memory" action. */
-export async function updateDocumentType(id: string, type: "resume" | null): Promise<void> {
+export function isSupportedDocumentType(value: string | null): value is DocumentType {
+  return value !== null && (DOCUMENT_TYPES as readonly string[]).includes(value);
+}
+
+/** Task 16/18: sets or clears a document's type, gating the "Add to personal memory" action and its extraction behaviour. */
+export async function updateDocumentType(id: string, type: DocumentType | null): Promise<void> {
   const { error } = await supabase
     .from("documents")
     .update({ type })

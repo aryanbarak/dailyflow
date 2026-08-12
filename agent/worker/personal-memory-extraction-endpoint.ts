@@ -338,6 +338,28 @@ async function readEligibleSourceMaterialFromDocument(
   }))
 }
 
+// Task 18, A3: the document's own type (resume/financial/personal/
+// business/null), read so buildExtractionSystemInstruction can add
+// type-specific guidance. Best-effort: a lookup failure degrades to "no
+// type-specific guidance" rather than failing the whole extraction run --
+// the deterministic containsFinancialIdentifier check below is the actual
+// guarantee against a financial identifier reaching storage and does not
+// depend on this lookup succeeding.
+async function readDocumentType(
+  documentId: string,
+  env: PersonalMemoryExtractionEnv,
+  jwt: string,
+  fetcher: typeof fetch,
+): Promise<string | null> {
+  const rows = await restGetAsUser<Array<{ type: string | null }>>(
+    env,
+    jwt,
+    `documents?id=eq.${encodeURIComponent(documentId)}&select=type`,
+    fetcher,
+  )
+  return rows[0]?.type ?? null
+}
+
 // Task 16-fix2, FIX 2: greedy, size-based batching -- a batch grows until
 // adding the next chunk would exceed either MAX_DOCUMENT_CHUNKS_PER_BATCH
 // items or MAX_DOCUMENT_BATCH_CHARS characters, whichever comes first, then
@@ -367,8 +389,27 @@ export function batchDocumentSource(source: readonly SourceItemForPrompt[]): Sou
 // Prompt + Gemini structured-output schema
 // ---------------------------------------------------------------------------
 
-export function buildExtractionSystemInstruction(): string {
-  return [
+// Task 18, A3: type-aware guidance appended to the base system instruction
+// for a document-sourced run only (chat/briefing runs pass no
+// documentType and get the base instruction unchanged, byte for byte, from
+// before this task). Financial is the "important case" the task calls out
+// explicitly: extract ONLY stable facts, never a transaction/balance/
+// running total. This is PROMPT GUIDANCE ONLY -- politeness, not the
+// guarantee. The actual guarantee against an identifier (IBAN, account
+// number, card number) reaching storage is containsFinancialIdentifier
+// below, enforced deterministically on every candidate regardless of
+// documentType or provenance, exactly mirroring how containsSensitiveContent
+// already enforces the health/relationships/emotional-state exclusion
+// unconditionally rather than only for chat-sourced candidates.
+const DOCUMENT_TYPE_EXTRACTION_GUIDANCE: Record<string, string> = {
+  resume: 'This source material is a résumé/CV. Extract durable skills, qualifications, and roles -- never a specific date range or employer-confidential detail beyond what a normal résumé already discloses.',
+  financial: 'This source material is a financial statement. Extract ONLY stable, durable facts about the user\'s financial LIFE, such as "primary bank is X" or "monthly rent is paid to Y" -- NEVER a specific transaction, balance, running total, account number, IBAN, card number, or any other numeric identifier. If nothing in the material rises to a stable fact of this kind, propose nothing at all for this material.',
+  personal: 'This source material is a personal document. Extract only stable, durable personal facts -- never a specific date, address, or identifier copied from the document.',
+  business: 'This source material is a business document. Extract only stable, durable facts about the user\'s own business context or role -- never confidential figures, specific deal terms, or identifiers.',
+}
+
+export function buildExtractionSystemInstruction(documentType?: string | null): string {
+  const base = [
     'You extract durable, long-term personal facts about a user from their own chat messages and their latest generated briefing.',
     'Return exactly one JSON object and no prose -- no markdown code fences, no explanation before or after the object.',
     'The source material may be written in Persian, German, English, or a mix of these in the same message.',
@@ -379,7 +420,9 @@ export function buildExtractionSystemInstruction(): string {
     'You MUST NOT extract health information, relationship/family information, or emotional-state information, even if the user discusses it -- these categories are permanently excluded, no matter how clearly stated.',
     'Do not extract specific dates, amounts, or anything framed as "today", "this week", or "this month" -- only stable, durable facts.',
     'You never execute, approve, authorize, or claim completion of any action.',
-  ].join(' ')
+  ]
+  const typeGuidance = documentType ? DOCUMENT_TYPE_EXTRACTION_GUIDANCE[documentType] : undefined
+  return typeGuidance ? [...base, typeGuidance].join(' ') : base.join(' ')
 }
 
 export function buildExtractionPrompt(source: readonly SourceItemForPrompt[]): string {
@@ -490,6 +533,7 @@ async function callGeminiForExtraction(
   env: PersonalMemoryExtractionEnv,
   fetcher: typeof fetch,
   logger: Pick<Console, 'info' | 'error'>,
+  documentType?: string | null,
 ): Promise<{ raw: unknown; promptTokenCount?: number; responseTokenCount?: number }> {
   const modelUrl = new URL(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(env.GEMINI_MODEL ?? '')}:generateContent`)
   modelUrl.searchParams.set('key', env.GEMINI_API_KEY ?? '')
@@ -500,7 +544,7 @@ async function callGeminiForExtraction(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        system_instruction: { parts: [{ text: buildExtractionSystemInstruction() }] },
+        system_instruction: { parts: [{ text: buildExtractionSystemInstruction(documentType) }] },
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         generationConfig: {
           maxOutputTokens: MAX_OUTPUT_TOKENS_EXTRACTION,
@@ -622,9 +666,10 @@ async function runExtractionAttempt(
   env: PersonalMemoryExtractionEnv,
   fetcher: typeof fetch,
   logger: Pick<Console, 'info' | 'error'>,
+  documentType?: string | null,
 ): Promise<ExtractionAttemptResult> {
   const prompt = buildExtractionPrompt(source)
-  const modelOutput = await callGeminiForExtraction(prompt, env, fetcher, logger)
+  const modelOutput = await callGeminiForExtraction(prompt, env, fetcher, logger, documentType)
   const rawCandidates = Array.isArray((modelOutput.raw as { candidates?: unknown })?.candidates)
     ? (modelOutput.raw as { candidates: unknown[] }).candidates
     : []
@@ -658,6 +703,7 @@ async function runBatchedDocumentExtraction(
   env: PersonalMemoryExtractionEnv,
   fetcher: typeof fetch,
   logger: Pick<Console, 'info' | 'error'>,
+  documentType?: string | null,
 ): Promise<BatchedDocumentExtractionResult> {
   const batches = batchDocumentSource(source)
   let batchesSucceeded = 0
@@ -668,7 +714,7 @@ async function runBatchedDocumentExtraction(
   let responseTokenCount = 0
   for (const batch of batches) {
     try {
-      const result = await runExtractionAttempt(batch, env, fetcher, logger)
+      const result = await runExtractionAttempt(batch, env, fetcher, logger, documentType)
       batchesSucceeded += 1
       rawCandidates.push(...result.rawCandidates)
       promptTokenCount += result.promptTokenCount ?? 0
@@ -742,6 +788,45 @@ const SENSITIVE_CONTENT_PATTERNS: readonly RegExp[] = [
   /\bgrief\b/i, /\bmood\b/i, /\blonely\b/i, /\bloneliness\b/i, /\bburn(ed|t)?[ -]?out\b/i,
 ]
 
+/**
+ * Task 18, A3 -- HARD SENSITIVITY RULE: an IBAN, account number, card
+ * number, or similar identifier must NEVER appear in a fact's text.
+ * Enforced HERE, deterministically, on every candidate regardless of
+ * documentType, kind, or provenance -- exactly mirroring how
+ * containsSensitiveContent below already enforces the health/relationships/
+ * emotional-state exclusion unconditionally rather than only for
+ * document-sourced or financial-typed candidates. The extraction prompt's
+ * own financial-specific guidance (buildExtractionSystemInstruction) is
+ * politeness; this is the guarantee.
+ *
+ * Shape-only matching, no mod-97 IBAN checksum validation -- not required:
+ * a shape match is sufficient grounds to drop a candidate. A false
+ * positive drops a candidate (safe, the accepted trade-off direction
+ * SENSITIVE_CONTENT_PATTERNS already documents); a false negative would
+ * let a real identifier reach storage (the actual harm this exists to
+ * prevent), so this errs toward over-rejection.
+ *
+ * IBAN_SHAPE_PATTERN matches EITHER a single unspaced run of 15-34
+ * characters (2 letters + 2 digits + 11-30 more alnum, e.g.
+ * "DE89370400440532013000") OR the conventional printed grouping of
+ * EXACTLY 4 characters per group separated by a single space (e.g. "DE89
+ * 3704 0044 0532 0130 00") -- deliberately NOT "one optional space before
+ * any character," which was tried first and rejected: it made ordinary
+ * prose following a coincidental 2-letter+2-digit token (e.g. "Room AB12
+ * booked for the...") match too, since natural-language words chained
+ * through that looser rule. Requiring literal 4-character groups (matching
+ * how IBANs are actually printed) avoids that false-positive class while
+ * still catching both the spaced and unspaced real shapes.
+ */
+const IBAN_SHAPE_PATTERN = /\b[A-Za-z]{2}\d{2}(?:[A-Za-z0-9]{11,30}|(?:[ ][A-Za-z0-9]{4}){2,7}(?:[ ][A-Za-z0-9]{1,4})?)\b/
+const ACCOUNT_OR_CARD_NUMBER_PATTERN = /\b\d(?:[ -]?\d){7,}\b/
+
+function containsFinancialIdentifier(content: Record<string, unknown>): boolean {
+  return Object.values(content).some(
+    (value) => typeof value === 'string' && (IBAN_SHAPE_PATTERN.test(value) || ACCOUNT_OR_CARD_NUMBER_PATTERN.test(value)),
+  )
+}
+
 function isBoundedString(value: unknown, maxLength = 300): value is string {
   return typeof value === 'string' && value.trim().length > 0 && value.trim().length <= maxLength
 }
@@ -814,6 +899,9 @@ export function normalizeCandidate(raw: unknown, refIdKinds: ReadonlyMap<string,
   // Defense in depth (see file header): reject regardless of what the
   // prompt already instructs the model not to produce.
   if (containsSensitiveContent(content)) return null
+  // Task 18, A3 HARD SENSITIVITY RULE: reject regardless of documentType --
+  // see containsFinancialIdentifier's own comment.
+  if (containsFinancialIdentifier(content)) return null
 
   return {
     kind: kind as PersonalMemoryRecordKind,
@@ -916,6 +1004,7 @@ export async function handlePersonalMemoryExtractionRequest(
   }
 
   let source: SourceItemForPrompt[]
+  let documentType: string | null = null
   try {
     source = documentId
       ? await readEligibleSourceMaterialFromDocument(documentId, env, jwt, fetcher)
@@ -923,6 +1012,12 @@ export async function handlePersonalMemoryExtractionRequest(
   } catch (error) {
     logger.error?.(`[PersonalMemory] source read failed: ${(error as Error).message}`)
     return errorResponse('SOURCE_READ_FAILED', 'Unable to read source material.', 502, origin)
+  }
+  if (documentId) {
+    documentType = await readDocumentType(documentId, env, jwt, fetcher).catch((error: unknown) => {
+      logger.error?.(`[PersonalMemory] document type lookup failed (continuing without type-specific guidance): ${(error as Error).message}`)
+      return null
+    })
   }
   if (source.length === 0) {
     return errorResponse(
@@ -963,7 +1058,7 @@ export async function handlePersonalMemoryExtractionRequest(
   let partial: { batchesTotal: number; batchesSucceeded: number; batchesFailed: number } | undefined
 
   if (documentId) {
-    const batched = await runBatchedDocumentExtraction(source, env, fetcher, logger)
+    const batched = await runBatchedDocumentExtraction(source, env, fetcher, logger, documentType)
     if (batched.batchesSucceeded === 0) {
       // Every batch failed -- a total failure, reported exactly like the
       // chat/briefing path's own all-or-nothing failure (task-14 taxonomy,

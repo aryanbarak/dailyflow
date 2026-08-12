@@ -62,8 +62,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useDocuments } from "@/features/documents/useDocuments";
-import type { Document } from "@/features/documents/documentsService";
-import { updateAiSummary, updateExtractedTasksCount, updateTags, updateDocumentType, downloadDocument } from "@/features/documents/documentsService";
+import type { Document, DocumentType } from "@/features/documents/documentsService";
+import { updateAiSummary, updateExtractedTasksCount, updateTags, updateDocumentType, downloadDocument, DOCUMENT_TYPES } from "@/features/documents/documentsService";
 import { documentAiService, type SummaryResult } from "@/features/documents/documentAiService";
 import { triggerDocumentMemoryChunking } from "@/features/documents/documentMemoryExtractionTriggerClient";
 import { triggerPersonalMemoryExtraction } from "@/features/personal-memory/personalMemoryExtractionTriggerClient";
@@ -77,8 +77,9 @@ import { PdfOcrTool } from "@/features/documents/components/PdfOcrTool";
 import { ImageToPdfTool } from "@/features/documents/components/ImageToPdfTool";
 import { TextEditorTool, type TextEditorHandle } from "@/features/documents/components/TextEditorTool";
 import { TtsTool } from "@/features/documents/components/TtsTool";
-import { useT } from "@/i18n";
+import { useT, type TranslationKey } from "@/i18n";
 import { cn } from "@/lib/utils";
+import { isolateEmbeddedBidiRuns } from "@/lib/bidiText";
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
 
@@ -97,6 +98,16 @@ function formatDate(value: string | null) {
 
 function isPdf(mimeType: string | null, fileName: string) {
   return mimeType?.includes("pdf") || fileName.toLowerCase().endsWith(".pdf");
+}
+
+/** Task 18: plain-text documents (e.g. a .txt bank statement) skip PDF transcription entirely -- see document-memory-extraction-endpoint.ts's native_text branch. Deliberately narrower than isTextMime below (which also matches html/json/xml) -- those aren't a supported extraction source. */
+function isDocPlainText(mimeType: string | null, fileName: string) {
+  return mimeType === "text/plain" || fileName.toLowerCase().endsWith(".txt");
+}
+
+/** Task 18: the two document sources document-memory-extraction-endpoint.ts can actually extract from -- PDF (model transcription) or plain text (native read). Every other mime type has no extraction path, so the type selector + "Add to personal memory" action stay hidden for it, exactly as task 16's PDF-only gate already did. */
+function isDocExtractable(mimeType: string | null, fileName: string) {
+  return isPdf(mimeType, fileName) || isDocPlainText(mimeType, fileName);
 }
 
 function isHtml(mimeType: string | null, fileName: string) {
@@ -359,6 +370,10 @@ export default function DocumentsPage() {
 
   const isDocPdf = (doc: Document) => isPdf(doc.mimeType, doc.fileName);
   const isDocText = (doc: Document) => isTextMime(doc.mimeType);
+  // Task 18: gates the type selector + "Add to personal memory" action --
+  // narrower than isDocText above (that one also matches html/json/xml,
+  // used only for the AI ask/summarize tools, not extraction).
+  const isDocMemoryExtractable = (doc: Document) => isDocExtractable(doc.mimeType, doc.fileName);
 
   // Helper: call AI with text or PDF depending on doc type
   const callAiForDoc = async (doc: Document, prompt: string, language?: string): Promise<string> => {
@@ -505,13 +520,15 @@ export default function DocumentsPage() {
     finally { setAiLoading(null); }
   };
 
-  // Task 16 (Document-Sourced Memory slice 1): toggles documents.type
-  // between 'resume' and null -- the only recognized type in this slice,
-  // gating the "Extract to personal memory" action below.
-  const handleToggleResumeType = async () => {
+  // Task 18 (Document-Sourced Memory slice 2): unified type setter,
+  // replacing task 16's resume-only boolean toggle. Any of DOCUMENT_TYPES
+  // (or null, to clear it) can be set directly from the type selector --
+  // an existing 'resume'-typed document keeps working unchanged, since
+  // 'resume' is still one of the recognized values.
+  const handleSetDocumentType = async (type: DocumentType | null) => {
     if (!aiSelectedDoc) return;
     try {
-      await updateDocumentType(aiSelectedDoc.id, aiSelectedDoc.type === 'resume' ? null : 'resume');
+      await updateDocumentType(aiSelectedDoc.id, type);
       await refresh();
     } catch (err) {
       console.error('[Document type]', err);
@@ -519,12 +536,14 @@ export default function DocumentsPage() {
     }
   };
 
-  // Task 16: one user-facing action sequencing two Worker calls -- chunk +
-  // embed the resume (document-memory-extraction-endpoint.ts), then run
-  // fact extraction over those chunks through the EXISTING personal-memory
-  // pipeline (personal-memory-extraction-endpoint.ts, parameterized by
-  // documentId -- see that file's own B1 comment). Whichever step fails,
-  // its own taxonomy code is surfaced -- never a generic label.
+  // Task 16/18: one user-facing action ("Add to personal memory")
+  // sequencing two Worker calls -- chunk + embed the document
+  // (document-memory-extraction-endpoint.ts, type-aware chunking/
+  // extraction-method since task 18), then run fact extraction over those
+  // chunks through the EXISTING personal-memory pipeline
+  // (personal-memory-extraction-endpoint.ts, parameterized by documentId --
+  // see that file's own B1 comment). Whichever step fails, its own
+  // taxonomy code is surfaced -- never a generic label.
   const handleExtractToPersonalMemory = async () => {
     if (!aiSelectedDoc) return;
     setAiLoading('memory-extract');
@@ -1214,7 +1233,16 @@ export default function DocumentsPage() {
                       <div className="flex items-start gap-4">
                         <FileTypeIcon cat={fileCategory(aiSelectedDoc.mimeType, aiSelectedDoc.fileName)} />
                         <div className="flex-1 min-w-0">
-                          <h4 className="text-base font-semibold truncate">{aiSelectedDoc.title ?? aiSelectedDoc.fileName}</h4>
+                          {/* Task 18: file names/titles are mixed-direction
+                              (a Persian/Arabic file name saved by a Latin-
+                              keyboard OS, or vice versa) -- routed through
+                              bidiText.tsx's isolateEmbeddedBidiRuns +
+                              dir="auto", the same pattern
+                              PersonalMemorySection.tsx already established
+                              for this exact kind of text. */}
+                          <h4 dir="auto" className="text-base font-semibold truncate">
+                            {isolateEmbeddedBidiRuns(aiSelectedDoc.title ?? aiSelectedDoc.fileName)}
+                          </h4>
                           <div className="flex items-center gap-2 mt-1 flex-wrap">
                             <span className="text-[10px] px-2 py-0.5 rounded-full bg-secondary font-bold tracking-wider">
                               {mimeLabel(aiSelectedDoc.mimeType, aiSelectedDoc.fileName)}
@@ -1444,18 +1472,36 @@ export default function DocumentsPage() {
                           {t('docs_ai_auto_tag')}
                         </Button>
 
-                        {/* Task 16: Document-Sourced Memory slice 1 -- resume marking + extraction */}
-                        {isDocPdf(aiSelectedDoc) && (
+                        {/* Task 18 (Document-Sourced Memory slice 2): unified type
+                            selector + single "Add to personal memory" action,
+                            replacing task 16's resume-only "Mark as resume"/
+                            "Unmark as resume" toggle. Gated on
+                            isDocMemoryExtractable (PDF or plain text -- the only
+                            two paths document-memory-extraction-endpoint.ts
+                            implements); an existing 'resume'-typed document keeps
+                            working unchanged, since 'resume' is still one of the
+                            selector's options. */}
+                        {isDocMemoryExtractable(aiSelectedDoc) && (
                           <div className="border-t border-border/40 pt-2 space-y-2">
-                            <Button
-                              size="sm" variant="outline" className="w-full justify-start gap-2 text-xs"
-                              disabled={aiLoading !== null}
-                              onClick={() => void handleToggleResumeType()}
-                            >
-                              <FileText className="w-3.5 h-3.5 text-sky-400" />
-                              {aiSelectedDoc.type === 'resume' ? t('doc_memory_unmark_resume') : t('doc_memory_mark_resume')}
-                            </Button>
-                            {aiSelectedDoc.type === 'resume' && (
+                            <div className="space-y-1">
+                              <label htmlFor="doc-memory-type-select" className="text-xs font-medium text-muted-foreground">
+                                {t('doc_memory_type_label')}
+                              </label>
+                              <select
+                                id="doc-memory-type-select"
+                                title={t('doc_memory_type_label')}
+                                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-xs"
+                                value={aiSelectedDoc.type ?? ''}
+                                disabled={aiLoading !== null}
+                                onChange={e => void handleSetDocumentType((e.target.value || null) as DocumentType | null)}
+                              >
+                                <option value="">{t('doc_memory_type_placeholder')}</option>
+                                {DOCUMENT_TYPES.map(docType => (
+                                  <option key={docType} value={docType}>{t(`doc_memory_type_${docType}` as TranslationKey)}</option>
+                                ))}
+                              </select>
+                            </div>
+                            {aiSelectedDoc.type !== null && (
                               <Button
                                 size="sm" variant="outline" className="w-full justify-start gap-2 text-xs"
                                 disabled={aiLoading !== null}

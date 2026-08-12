@@ -44,6 +44,11 @@ const FIXTURES: readonly Fixture[] = [
   { label: "sensitive: checkup (proven bypass, review MAJOR #2)", kind: "commitment", content: { summary: "Annual checkup next month", status: "active" }, expectValid: false },
   { label: "sensitive: son (neighbor)", kind: "personal_fact", content: { summary: "My son just started high school" }, expectValid: false },
   { label: "sensitive: dentist appointment (neighbor)", kind: "commitment", content: { summary: "Dentist appointment next Tuesday", status: "active" }, expectValid: false },
+  // Task 18, A3 HARD SENSITIVITY RULE: IBAN/account/card-number-shaped
+  // identifiers must be DROPPED, never stored, regardless of kind.
+  { label: "financial: German IBAN shape (spaced) must be DROPPED", kind: "personal_fact", content: { summary: "IBAN is DE89 3704 0044 0532 0130 00", category: "general" }, expectValid: false },
+  { label: "financial: plain long digit run (account number) must be DROPPED", kind: "personal_fact", content: { summary: "Account number 1234567890123456 on file", category: "general" }, expectValid: false },
+  { label: "financial: stable fact with no identifier is accepted", kind: "personal_fact", content: { summary: "Primary bank is Sparkasse Holstein", category: "general" }, expectValid: true },
 ];
 
 describe.each(FIXTURES)("$label", ({ kind, content, expectValid }) => {

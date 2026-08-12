@@ -135,6 +135,39 @@ const SENSITIVE_CONTENT_PATTERNS: readonly RegExp[] = [
   /\bburn(ed|t)?[ -]?out\b/i,
 ];
 
+/**
+ * Task 18, A3 -- HARD SENSITIVITY RULE: an IBAN, account number, card
+ * number, or similar identifier must NEVER appear in a fact's text.
+ * Enforced HERE, deterministically, on every candidate regardless of
+ * document type, kind, or provenance -- mirrors containsSensitiveContent
+ * above's own unconditional enforcement exactly. Duplicated in
+ * agent/worker/personal-memory-extraction-endpoint.ts (that module cannot
+ * import this one -- see this file's own header), guarded by
+ * personalMemoryValidationEquivalence.test.ts.
+ *
+ * Shape-only matching, no mod-97 IBAN checksum validation -- not required:
+ * a shape match is sufficient grounds to drop a candidate. A false
+ * positive drops a candidate (safe, same trade-off direction
+ * SENSITIVE_CONTENT_PATTERNS already documents); a false negative would
+ * let a real identifier reach storage (the actual harm this exists to
+ * prevent).
+ *
+ * IBAN_SHAPE_PATTERN matches EITHER a single unspaced 15-34 character run
+ * (2 letters + 2 digits + 11-30 more alnum) OR the conventional printed
+ * grouping of EXACTLY 4 characters per group separated by a single space
+ * -- see the Worker's mirrored copy for why "one optional space before
+ * any character" (tried first) was rejected: it made ordinary prose
+ * following a coincidental 2-letter+2-digit token false-match too.
+ */
+const IBAN_SHAPE_PATTERN = /\b[A-Za-z]{2}\d{2}(?:[A-Za-z0-9]{11,30}|(?:[ ][A-Za-z0-9]{4}){2,7}(?:[ ][A-Za-z0-9]{1,4})?)\b/;
+const ACCOUNT_OR_CARD_NUMBER_PATTERN = /\b\d(?:[ -]?\d){7,}\b/;
+
+function containsFinancialIdentifier(record: Record<string, unknown>): boolean {
+  return Object.values(record).some(
+    (value) => typeof value === "string" && (IBAN_SHAPE_PATTERN.test(value) || ACCOUNT_OR_CARD_NUMBER_PATTERN.test(value)),
+  );
+}
+
 export interface PersonalMemoryValidationIssueLocal {
   readonly code: string;
   readonly message: string;
@@ -317,6 +350,15 @@ export function validatePersonalMemoryContent<K extends PersonalMemoryRecordKind
     return {
       valid: false,
       errors: [{ code: "SENSITIVE_CONTENT_EXCLUDED", message: "Content matches an excluded sensitive category (health, relationships/family, or emotional state) and cannot be stored (ADR-0010 Q2)." }],
+    };
+  }
+
+  // Task 18, A3 HARD SENSITIVITY RULE: reject regardless of document
+  // type -- see containsFinancialIdentifier's own comment.
+  if (containsFinancialIdentifier(raw)) {
+    return {
+      valid: false,
+      errors: [{ code: "FINANCIAL_IDENTIFIER_EXCLUDED", message: "Content matches an IBAN/account-number/card-number shape and cannot be stored (task 18 hard sensitivity rule)." }],
     };
   }
 

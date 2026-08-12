@@ -1,4 +1,7 @@
-// SmartFlow -- Document-Sourced Memory, slice 1 (task 16).
+// SmartFlow -- Document-Sourced Memory, slice 1 (task 16) + slice 2 (task
+// 18, A3: type-aware chunking + a native_text path for plain-text
+// documents, both added below without touching slice 1's PDF/resume
+// behaviour).
 //
 // POST /documents/extract-memory -- an authenticated, production-capable
 // Worker route mirroring personal-memory-extraction-endpoint.ts's and
@@ -26,13 +29,18 @@
 // plain-text transcription, subject to the M1-M3 mitigations below, rather
 // than adding a dependency this Worker has never had one of.
 
-const MAX_PDF_BYTES = 20 * 1024 * 1024 // matches docs_file_size_error's existing 20MB upload cap (src/i18n/index.ts)
+const MAX_SOURCE_FILE_BYTES = 20 * 1024 * 1024 // matches docs_file_size_error's existing 20MB upload cap (src/i18n/index.ts); task 18 renamed from MAX_PDF_BYTES -- this bound now also gates plain-text uploads
 const MAX_EXTRACTED_TEXT_CHARS = 20000 // resumes are short documents; generous headroom for a multi-page CV, still bounded
 const MAX_CHUNK_CHARS = 3000
 const EMBEDDING_MODEL = 'gemini-embedding-001' // text-embedding-004 was retired Jan 2026 (task 16-fix); successor model
 const EMBEDDING_DIMENSIONS = 768 // requested via outputDimensionality -- gemini-embedding-001's native output is 3072-dim
 const EMBEDDING_NORM_EPSILON = 1e-3 // sanity-check tolerance for the post-normalization unit norm
-const EXTRACTION_METHOD = 'model_transcription' as const // M2: the only value this slice ever writes -- see document_chunks.extraction_method's own comment
+// Task 18, A3: extraction_method is now chosen per document rather than a
+// single fixed constant -- 'model_transcription' for PDFs (unchanged),
+// 'native_text' for plain-text documents, which skip the Gemini
+// transcription call entirely (see the route handler's own branch below and
+// 20260812000000_document_types_and_sensitivity.sql's widened CHECK).
+type ExtractionMethod = 'model_transcription' | 'native_text'
 
 export interface DocumentMemoryExtractionEnv {
   SUPABASE_URL: string
@@ -341,7 +349,33 @@ function splitOversizedChunk(chunk: TextChunk): TextChunk[] {
   return parts.filter((part) => part.content.length > 0)
 }
 
-export function chunkResumeText(text: string): TextChunk[] {
+/** Bounded size-based chunking, no structural cue -- the fallback for every non-resume type (and for a resume that didn't have enough recognizable headers). */
+function chunkBySize(text: string): TextChunk[] {
+  const chunks: TextChunk[] = []
+  for (let start = 0, index = 1; start < text.length; start += MAX_CHUNK_CHARS, index += 1) {
+    const content = text.slice(start, start + MAX_CHUNK_CHARS).trim()
+    if (content.length > 0) chunks.push({ sectionLabel: `Part ${index}`, content })
+  }
+  return chunks
+}
+
+// Task 18, A3: type-aware chunking. 'resume' keeps slice 1's
+// section-header heuristic unchanged (SECTION_HEADER_PATTERNS below, with
+// its own <2-headers-found fallback to size-based chunking, also
+// unchanged). Every OTHER type (financial/personal/business) -- and any
+// document with no type at all -- skips the header heuristic entirely and
+// always uses bounded size-based chunking: "Experience"/"Education"-style
+// resume headers are not just unhelpful but actively misleading for e.g. a
+// financial statement, which could coincidentally contain a line that
+// happens to match one of those patterns (a "Summary" section, a
+// "Zusammenfassung" heading) and get mis-sectioned as if it were resume
+// content. Deliberately NOT building a per-type structural parser in this
+// slice (task instruction: "do NOT build elaborate per-type parsers") --
+// financial/personal/business documents all get the identical, honest,
+// bounded fallback rather than a bespoke cue for one of them.
+export function chunkDocumentText(text: string, documentType: string | null): TextChunk[] {
+  if (documentType !== 'resume') return chunkBySize(text)
+
   const lines = text.split(/\r?\n/)
   const sectioned: TextChunk[] = []
   let currentLabel: string | null = null
@@ -366,14 +400,7 @@ export function chunkResumeText(text: string): TextChunk[] {
   // Fallback: fewer than 2 recognized section headers found -- size-based
   // chunking over the whole bounded text instead (per task: "fall back to
   // size-based chunks").
-  if (sectioned.length < 2) {
-    const fallback: TextChunk[] = []
-    for (let start = 0, index = 1; start < text.length; start += MAX_CHUNK_CHARS, index += 1) {
-      const content = text.slice(start, start + MAX_CHUNK_CHARS).trim()
-      if (content.length > 0) fallback.push({ sectionLabel: `Part ${index}`, content })
-    }
-    return fallback;
-  }
+  if (sectioned.length < 2) return chunkBySize(text)
 
   return sectioned.flatMap(splitOversizedChunk)
 }
@@ -504,46 +531,60 @@ export async function handleDocumentMemoryExtractionRequest(
   const document = documentRows[0]
   if (!document) return errorResponse('DOCUMENT_NOT_FOUND', 'Document was not found for this user.', 404, origin)
 
-  if (document.mime_type !== 'application/pdf') {
-    return errorResponse('UNSUPPORTED_DOCUMENT_TYPE', 'Only PDF documents can be extracted to personal memory in this slice.', 400, origin)
+  // Task 18, A3: widened from PDF-only to PDF + plain text -- a .txt
+  // document (e.g. a bank statement export) never needs a model
+  // transcription step, see the native_text branch below.
+  const isPdfDocument = document.mime_type === 'application/pdf'
+  const isPlainTextDocument = document.mime_type === 'text/plain'
+  if (!isPdfDocument && !isPlainTextDocument) {
+    return errorResponse('UNSUPPORTED_DOCUMENT_TYPE', 'Only PDF or plain-text documents can be extracted to personal memory.', 400, origin)
   }
 
   // Storage fetch + size bound -- before spending anything on a Gemini
   // call.
-  let pdfBytes: ArrayBuffer
+  let fileBytes: ArrayBuffer
   try {
-    pdfBytes = await downloadFromStorage(env, document.storage_path, fetcher)
+    fileBytes = await downloadFromStorage(env, document.storage_path, fetcher)
   } catch (error) {
     logger.error?.(`[DocumentMemory] storage download failed: ${(error as Error).message}`)
     return errorResponse('STORAGE_READ_FAILED', 'Unable to read the document from storage.', 502, origin)
   }
-  if (pdfBytes.byteLength === 0) {
+  if (fileBytes.byteLength === 0) {
     return errorResponse('NO_SOURCE_MATERIAL', 'This document is empty.', 422, origin)
   }
-  if (pdfBytes.byteLength > MAX_PDF_BYTES) {
-    return errorResponse('DOCUMENT_TOO_LARGE', `Document exceeds the ${Math.floor(MAX_PDF_BYTES / (1024 * 1024))}MB extraction limit.`, 413, origin)
+  if (fileBytes.byteLength > MAX_SOURCE_FILE_BYTES) {
+    return errorResponse('DOCUMENT_TOO_LARGE', `Document exceeds the ${Math.floor(MAX_SOURCE_FILE_BYTES / (1024 * 1024))}MB extraction limit.`, 413, origin)
   }
 
-  const pdfBase64 = arrayBufferToBase64(pdfBytes)
-
   let extractedText: string
-  try {
-    extractedText = await transcribePdf(pdfBase64, env, fetcher, logger)
-  } catch (error) {
-    const providerError = error instanceof ProviderCallError ? error : null
-    const taxonomy: ProviderFailureTaxonomy = providerError?.taxonomy ?? 'MODEL_OUTPUT_UNUSABLE'
-    logger.error?.(`[DocumentMemory] transcription failed: taxonomy=${taxonomy} ${(error as Error).message}`)
-    return errorResponse(taxonomy, TAXONOMY_MESSAGES[taxonomy], 502, origin, {
-      providerStatus: providerError?.providerStatus,
-      providerDetail: providerError?.providerDetail,
-    })
+  let extractionMethod: ExtractionMethod
+  if (isPlainTextDocument) {
+    // Task 18, A3: the document's bytes ARE the text -- no model call, no
+    // transcription taxonomy to handle, and more honest provenance
+    // (native_text) than laundering a plain-text read through a model.
+    extractedText = boundExtractedText(new TextDecoder('utf-8', { fatal: false }).decode(fileBytes))
+    extractionMethod = 'native_text'
+  } else {
+    const pdfBase64 = arrayBufferToBase64(fileBytes)
+    try {
+      extractedText = await transcribePdf(pdfBase64, env, fetcher, logger)
+    } catch (error) {
+      const providerError = error instanceof ProviderCallError ? error : null
+      const taxonomy: ProviderFailureTaxonomy = providerError?.taxonomy ?? 'MODEL_OUTPUT_UNUSABLE'
+      logger.error?.(`[DocumentMemory] transcription failed: taxonomy=${taxonomy} ${(error as Error).message}`)
+      return errorResponse(taxonomy, TAXONOMY_MESSAGES[taxonomy], 502, origin, {
+        providerStatus: providerError?.providerStatus,
+        providerDetail: providerError?.providerDetail,
+      })
+    }
+    extractionMethod = 'model_transcription'
   }
 
   if (extractedText.length === 0) {
     return errorResponse('NO_SOURCE_MATERIAL', 'No readable text was found in this document.', 422, origin)
   }
 
-  const chunks = chunkResumeText(extractedText)
+  const chunks = chunkDocumentText(extractedText, document.type)
   if (chunks.length === 0) {
     return errorResponse('NO_SOURCE_MATERIAL', 'No readable text was found in this document.', 422, origin)
   }
@@ -586,7 +627,7 @@ export async function handleDocumentMemoryExtractionRequest(
         chunk_index: index,
         section_label: chunk.sectionLabel,
         content: chunk.content,
-        extraction_method: EXTRACTION_METHOD,
+        extraction_method: extractionMethod,
         embedding: embeddingToPgvectorLiteral(chunk.embedding),
       })),
       fetcher,
@@ -599,7 +640,7 @@ export async function handleDocumentMemoryExtractionRequest(
   logger.info?.(`[DocumentMemory] documentId=${documentId} fileName=${document.file_name} chunks=${embeddedChunks.length}`)
 
   return jsonResponse(
-    { documentId, chunkCount: embeddedChunks.length, extractionMethod: EXTRACTION_METHOD },
+    { documentId, chunkCount: embeddedChunks.length, extractionMethod },
     200,
     origin,
   )

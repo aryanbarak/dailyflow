@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   buildExtractionResponseSchema,
+  buildExtractionSystemInstruction,
   batchDocumentSource,
   handlePersonalMemoryExtractionRequest,
   normalizeCandidate,
@@ -69,12 +70,15 @@ function baseFetcher(overrides: {
   chatMessages?: Array<Record<string, unknown>>
   briefings?: Array<Record<string, unknown>>
   documentChunks?: Array<Record<string, unknown>>
+  documentType?: string | null
   geminiCandidates?: Array<Record<string, unknown>>
   onRpc?: (body: unknown) => void
+  onGenerateContentCall?: (body: unknown) => void
 } = {}) {
   const chatMessages = overrides.chatMessages ?? [{ id: CHAT_ID, content: 'I prefer async written updates over calls.' }]
   const briefings = overrides.briefings ?? [{ id: BRIEFING_ID, content: 'You are learning React Native this month.' }]
   const documentChunks = overrides.documentChunks ?? []
+  const documentType = overrides.documentType === undefined ? null : overrides.documentType
   const geminiCandidates =
     overrides.geminiCandidates ?? [
       {
@@ -92,12 +96,20 @@ function baseFetcher(overrides: {
     if (url.startsWith(`${SUPABASE_URL}/rest/v1/agent_chat_messages?`)) return jsonResponse(chatMessages)
     if (url.startsWith(`${SUPABASE_URL}/rest/v1/agent_briefings?`)) return jsonResponse(briefings)
     if (url.startsWith(`${SUPABASE_URL}/rest/v1/document_chunks?`)) return jsonResponse(documentChunks)
+    // Task 18, A3: readDocumentType's own lookup (best-effort -- see its
+    // header comment), distinct from the document_chunks branch above.
+    if (url.startsWith(`${SUPABASE_URL}/rest/v1/documents?`) && url.includes('select=type')) {
+      return jsonResponse([{ type: documentType }])
+    }
     if (url === `${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs` && init?.method === 'POST') {
       assertRunInsertBodyIsComplete(init.body ? JSON.parse(init.body as string) : null)
       return jsonResponse([{ id: RUN_ID }])
     }
     if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs?`) && init?.method === 'PATCH') return new Response(null, { status: 204 })
-    if (url.startsWith('https://generativelanguage.googleapis.com/')) return geminiModelResponse(geminiCandidates)
+    if (url.startsWith('https://generativelanguage.googleapis.com/')) {
+      overrides.onGenerateContentCall?.(init?.body ? JSON.parse(init.body as string) : null)
+      return geminiModelResponse(geminiCandidates)
+    }
     if (url === `${SUPABASE_URL}/rest/v1/rpc/create_personal_memory_record`) {
       overrides.onRpc?.(init?.body ? JSON.parse(init.body as string) : null)
       return jsonResponse({ outcome: 'created', field: { id: 'record-1', status: 'proposed' } })
@@ -569,6 +581,44 @@ describe('POST /personal-memory/extraction', () => {
     )
   })
 
+  // Task 18, A3: end-to-end proof that the document's OWN type reaches the
+  // actual generateContent request's system_instruction -- not just a unit
+  // test of buildExtractionSystemInstruction in isolation.
+  it("task 18: a document-sourced run looks up the document's type and includes it in the system_instruction sent to Gemini", async () => {
+    const onGenerateContentCall = vi.fn()
+    const fetcher = baseFetcher({
+      documentChunks: [{ id: CHUNK_ID, content: 'Primary bank is Sparkasse Holstein.' }],
+      documentType: 'financial',
+      geminiCandidates: [
+        { kind: 'personal_fact', content: { summary: 'Primary bank is Sparkasse Holstein', category: 'general' }, confidence: 'high', provenanceSourceKind: 'document', provenanceSourceRefIds: [CHUNK_ID] },
+      ],
+      onGenerateContentCall,
+    })
+    const response = await handlePersonalMemoryExtractionRequest(request({ documentId: DOCUMENT_ID }), validEnv, { fetcher })
+    expect(response.status).toBe(200)
+
+    expect(fetcher.mock.calls.some(([input]) => String(input).includes(`documents?id=eq.${DOCUMENT_ID}&select=type`))).toBe(true)
+    expect(onGenerateContentCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        system_instruction: { parts: [{ text: expect.stringContaining('financial statement') }] },
+      }),
+    )
+  })
+
+  it('task 18: a document with no type set gets the base system_instruction, unchanged', async () => {
+    const onGenerateContentCall = vi.fn()
+    const fetcher = baseFetcher({
+      documentChunks: [{ id: CHUNK_ID, content: 'Some resume-shaped text.' }],
+      documentType: null,
+      onGenerateContentCall,
+    })
+    await handlePersonalMemoryExtractionRequest(request({ documentId: DOCUMENT_ID }), validEnv, { fetcher })
+
+    const [[sentBody]] = onGenerateContentCall.mock.calls as [[{ system_instruction: { parts: Array<{ text: string }> } }]]
+    expect(sentBody.system_instruction.parts[0].text).not.toContain('financial statement')
+    expect(sentBody.system_instruction.parts[0].text).toBe(buildExtractionSystemInstruction())
+  })
+
   it('task 16: NO_SOURCE_MATERIAL with a document-specific message when the named document has no chunks', async () => {
     const fetcher = baseFetcher({ documentChunks: [] })
     const response = await handlePersonalMemoryExtractionRequest(request({ documentId: DOCUMENT_ID }), validEnv, { fetcher })
@@ -661,6 +711,7 @@ describe('POST /personal-memory/extraction', () => {
       const url = String(input)
       if (url === `${SUPABASE_URL}/auth/v1/user`) return jsonResponse({ id: 'user-1' })
       if (url.startsWith(`${SUPABASE_URL}/rest/v1/document_chunks?`)) return jsonResponse(overrides.documentChunks)
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/documents?`) && url.includes('select=type')) return jsonResponse([{ type: null }])
       if (url === `${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs` && init?.method === 'POST') {
         assertRunInsertBodyIsComplete(init.body ? JSON.parse(init.body as string) : null)
         return jsonResponse([{ id: RUN_ID }])
@@ -874,5 +925,64 @@ describe('normalizeCandidate', () => {
       refIdKinds,
     )
     expect(result).toBeNull()
+  })
+
+  // Task 18, A3 HARD SENSITIVITY RULE: dropped regardless of kind or
+  // documentType -- this is the deterministic guarantee, not the prompt.
+  it('DROPS a candidate whose summary contains a realistic German IBAN shape (spaced, as commonly printed)', () => {
+    const result = normalizeCandidate(
+      { kind: 'personal_fact', content: { summary: 'IBAN is DE89 3704 0044 0532 0130 00', category: 'general' }, confidence: 'medium', provenanceSourceKind: 'chat_turn', provenanceSourceRefIds: [CHAT_ID] },
+      refIdKinds,
+    )
+    expect(result).toBeNull()
+  })
+
+  it('DROPS a candidate whose summary contains an unspaced IBAN-shaped run', () => {
+    const result = normalizeCandidate(
+      { kind: 'personal_fact', content: { summary: 'IBAN DE89370400440532013000', category: 'general' }, confidence: 'medium', provenanceSourceKind: 'chat_turn', provenanceSourceRefIds: [CHAT_ID] },
+      refIdKinds,
+    )
+    expect(result).toBeNull()
+  })
+
+  it('DROPS a candidate whose summary contains a plain long digit run (account/card number shape)', () => {
+    const result = normalizeCandidate(
+      { kind: 'personal_fact', content: { summary: 'Account number 1234567890123456 on file', category: 'general' }, confidence: 'medium', provenanceSourceKind: 'chat_turn', provenanceSourceRefIds: [CHAT_ID] },
+      refIdKinds,
+    )
+    expect(result).toBeNull()
+  })
+
+  it('accepts a genuinely stable financial fact with no identifier in it', () => {
+    const result = normalizeCandidate(
+      { kind: 'personal_fact', content: { summary: 'Primary bank is Sparkasse Holstein', category: 'general' }, confidence: 'medium', provenanceSourceKind: 'document', provenanceSourceRefIds: [CHAT_ID] },
+      new Map([[CHAT_ID, 'document']]),
+    )
+    expect(result).not.toBeNull()
+  })
+})
+
+describe('buildExtractionSystemInstruction (task 18, A3 type-aware guidance)', () => {
+  it('the base instruction (no documentType) is unchanged from before task 18', () => {
+    const instruction = buildExtractionSystemInstruction()
+    expect(instruction).not.toContain('financial statement')
+    expect(instruction).toContain('You extract durable, long-term personal facts')
+  })
+
+  it("documentType='financial' appends the never-a-transaction/balance/identifier guidance", () => {
+    const instruction = buildExtractionSystemInstruction('financial')
+    expect(instruction).toContain('financial statement')
+    expect(instruction).toContain('NEVER a specific transaction, balance, running total, account number, IBAN, card number')
+  })
+
+  it("documentType='resume'/'personal'/'business' each append their own type-specific line", () => {
+    expect(buildExtractionSystemInstruction('resume')).toContain('résumé/CV')
+    expect(buildExtractionSystemInstruction('personal')).toContain('personal document')
+    expect(buildExtractionSystemInstruction('business')).toContain('business document')
+  })
+
+  it('an unrecognized or null documentType falls back to the base instruction unchanged', () => {
+    expect(buildExtractionSystemInstruction(null)).toBe(buildExtractionSystemInstruction())
+    expect(buildExtractionSystemInstruction('unknown-type')).toBe(buildExtractionSystemInstruction())
   })
 })

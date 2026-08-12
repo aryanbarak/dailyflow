@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   handleDocumentMemoryExtractionRequest,
-  chunkResumeText,
+  chunkDocumentText,
   stripControlCharacters,
   boundExtractedText,
   l2Normalize,
@@ -61,7 +61,7 @@ function baseFetcher(overrides: {
   document?: { id: string; storage_path: string; file_name: string; mime_type: string | null; type: string | null } | null
   transcriptionText?: string
   transcriptionFinishReason?: string
-  pdfBytes?: ArrayBuffer
+  fileBytes?: ArrayBuffer
   onChunkInsert?: (body: unknown) => void
 } = {}) {
   const document = overrides.document === undefined
@@ -69,13 +69,13 @@ function baseFetcher(overrides: {
     : overrides.document
   const transcriptionText = overrides.transcriptionText ?? RESUME_TEXT
   const finishReason = overrides.transcriptionFinishReason ?? 'STOP'
-  const pdfBytes = overrides.pdfBytes ?? FAKE_PDF_BYTES
+  const fileBytes = overrides.fileBytes ?? FAKE_PDF_BYTES
 
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     if (url === `${SUPABASE_URL}/auth/v1/user`) return jsonResponse({ id: AUTHENTICATED_USER_ID })
     if (url.startsWith(`${SUPABASE_URL}/rest/v1/documents?`)) return jsonResponse(document ? [document] : [])
-    if (url.startsWith(`${SUPABASE_URL}/storage/v1/object/documents/`)) return new Response(pdfBytes, { status: 200 })
+    if (url.startsWith(`${SUPABASE_URL}/storage/v1/object/documents/`)) return new Response(fileBytes, { status: 200 })
     if (url.startsWith('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent')) {
       return jsonResponse({ candidates: [{ finishReason, content: { parts: [{ text: transcriptionText }] } }] })
     }
@@ -148,8 +148,8 @@ describe('POST /documents/extract-memory', () => {
     expect(String(documentsCall?.[0])).toContain(`user_id=eq.${AUTHENTICATED_USER_ID}`)
   })
 
-  it('rejects a non-PDF document with 400 before any provider call', async () => {
-    const fetcher = baseFetcher({ document: { id: DOCUMENT_ID, storage_path: 'x', file_name: 'notes.txt', mime_type: 'text/plain', type: null } })
+  it('rejects an unsupported mime type (neither PDF nor plain text) with 400 before any provider call', async () => {
+    const fetcher = baseFetcher({ document: { id: DOCUMENT_ID, storage_path: 'x', file_name: 'photo.png', mime_type: 'image/png', type: null } })
     const response = await handleDocumentMemoryExtractionRequest(request(), validEnv, { fetcher })
     expect(response.status).toBe(400)
     const body = (await response.json()) as { error: { code: string } }
@@ -157,9 +157,31 @@ describe('POST /documents/extract-memory', () => {
     expect(fetcher.mock.calls.some(([input]) => String(input).includes('generativelanguage'))).toBe(false)
   })
 
+  // Task 18, A3: a plain-text document (e.g. a .txt bank statement) is now
+  // a SUPPORTED mime type -- it takes the native_text path (no
+  // transcription call at all), not UNSUPPORTED_DOCUMENT_TYPE.
+  it('a plain-text document is accepted and never calls the transcription (generateContent) endpoint', async () => {
+    const plainTextBytes = new TextEncoder().encode('Primary bank is Sparkasse Holstein.\n\nMonthly rent is paid to Musterstraße Verwaltung.').buffer
+    const onChunkInsert = vi.fn()
+    const fetcher = baseFetcher({
+      document: { id: DOCUMENT_ID, storage_path: 'x', file_name: 'statement.txt', mime_type: 'text/plain', type: 'financial' },
+      fileBytes: plainTextBytes,
+      onChunkInsert,
+    })
+    const response = await handleDocumentMemoryExtractionRequest(request(), validEnv, { fetcher })
+    expect(response.status).toBe(200)
+    // No generateContent (transcription) call -- only embedContent, which
+    // every accepted path (PDF or plain text) still needs.
+    expect(fetcher.mock.calls.some(([input]) => String(input).includes(':generateContent'))).toBe(false)
+    expect(fetcher.mock.calls.some(([input]) => String(input).includes(':embedContent'))).toBe(true)
+    expect(onChunkInsert).toHaveBeenCalled()
+    const insertedRows = onChunkInsert.mock.calls[0][0] as Array<{ extraction_method: string }>
+    expect(insertedRows.every((row) => row.extraction_method === 'native_text')).toBe(true)
+  })
+
   it('untrusted-input bounds: an oversized PDF is rejected with a clear code before any provider call', async () => {
     const oversized = new ArrayBuffer(21 * 1024 * 1024)
-    const fetcher = baseFetcher({ pdfBytes: oversized })
+    const fetcher = baseFetcher({ fileBytes: oversized })
     const response = await handleDocumentMemoryExtractionRequest(request(), validEnv, { fetcher })
     expect(response.status).toBe(413)
     const body = (await response.json()) as { error: { code: string } }
@@ -168,7 +190,7 @@ describe('POST /documents/extract-memory', () => {
   })
 
   it('an empty stored file is NO_SOURCE_MATERIAL, not a provider error', async () => {
-    const fetcher = baseFetcher({ pdfBytes: new ArrayBuffer(0) })
+    const fetcher = baseFetcher({ fileBytes: new ArrayBuffer(0) })
     const response = await handleDocumentMemoryExtractionRequest(request(), validEnv, { fetcher })
     expect(response.status).toBe(422)
     const body = (await response.json()) as { error: { code: string } }
@@ -370,42 +392,73 @@ describe('boundExtractedText', () => {
   })
 })
 
-describe('chunkResumeText', () => {
-  it('splits by recognized EN section headers', () => {
-    const chunks = chunkResumeText(RESUME_TEXT)
-    const labels = chunks.map((c) => c.sectionLabel)
-    expect(labels).toEqual(['Summary', 'Experience', 'Education', 'Skills'])
-    expect(chunks.find((c) => c.sectionLabel === 'Experience')?.content).toContain('Senior Engineer at Acme Corp')
+describe('chunkDocumentText', () => {
+  describe("documentType='resume' (slice 1 behaviour, unchanged)", () => {
+    it('splits by recognized EN section headers', () => {
+      const chunks = chunkDocumentText(RESUME_TEXT, 'resume')
+      const labels = chunks.map((c) => c.sectionLabel)
+      expect(labels).toEqual(['Summary', 'Experience', 'Education', 'Skills'])
+      expect(chunks.find((c) => c.sectionLabel === 'Experience')?.content).toContain('Senior Engineer at Acme Corp')
+    })
+
+    it('splits by recognized DE section headers', () => {
+      const text = [
+        'Zusammenfassung',
+        'Erfahrener Softwareentwickler.',
+        '',
+        'Berufserfahrung',
+        'Senior Entwickler bei Acme, 2020-2026.',
+        '',
+        'Ausbildung',
+        'BSc Informatik.',
+      ].join('\n')
+      const chunks = chunkDocumentText(text, 'resume')
+      expect(chunks.map((c) => c.sectionLabel)).toEqual(['Zusammenfassung', 'Berufserfahrung', 'Ausbildung'])
+    })
+
+    it('falls back to size-based chunking when fewer than 2 section headers are recognized', () => {
+      const text = 'No headers here, just a long block of prose. '.repeat(200)
+      const chunks = chunkDocumentText(text, 'resume')
+      expect(chunks.length).toBeGreaterThan(1)
+      expect(chunks.every((c) => c.sectionLabel.startsWith('Part '))).toBe(true)
+      expect(chunks.every((c) => c.content.length <= 3000)).toBe(true)
+    })
+
+    it('sub-splits an oversized recognized section while keeping its label', () => {
+      const text = ['Experience', 'x'.repeat(7000), '', 'Education', 'short'].join('\n')
+      const chunks = chunkDocumentText(text, 'resume')
+      const experienceChunks = chunks.filter((c) => c.sectionLabel === 'Experience')
+      expect(experienceChunks.length).toBeGreaterThan(1)
+      expect(experienceChunks.every((c) => c.content.length <= 3000)).toBe(true)
+    })
   })
 
-  it('splits by recognized DE section headers', () => {
-    const text = [
-      'Zusammenfassung',
-      'Erfahrener Softwareentwickler.',
-      '',
-      'Berufserfahrung',
-      'Senior Entwickler bei Acme, 2020-2026.',
-      '',
-      'Ausbildung',
-      'BSc Informatik.',
-    ].join('\n')
-    const chunks = chunkResumeText(text)
-    expect(chunks.map((c) => c.sectionLabel)).toEqual(['Zusammenfassung', 'Berufserfahrung', 'Ausbildung'])
-  })
+  // Task 18, A3: every non-resume type (and untyped documents) always uses
+  // bounded size-based chunking -- NEVER the resume header heuristic, even
+  // when the text happens to contain a line that would otherwise match one
+  // of SECTION_HEADER_PATTERNS (e.g. a financial statement with its own
+  // "Summary" line). "Do NOT build elaborate per-type parsers in this
+  // slice" -- financial/personal/business all get the identical fallback.
+  describe("documentType != 'resume' (financial/personal/business/null): always size-based, header heuristic never applies", () => {
+    it.each(['financial', 'personal', 'business', null] as const)('documentType=%s ignores recognizable section headers entirely', (documentType) => {
+      const chunks = chunkDocumentText(RESUME_TEXT, documentType)
+      expect(chunks.every((c) => c.sectionLabel.startsWith('Part '))).toBe(true)
+      expect(chunks.map((c) => c.sectionLabel)).not.toContain('Experience')
+    })
 
-  it('falls back to size-based chunking when fewer than 2 section headers are recognized', () => {
-    const text = 'No headers here, just a long block of prose. '.repeat(200)
-    const chunks = chunkResumeText(text)
-    expect(chunks.length).toBeGreaterThan(1)
-    expect(chunks.every((c) => c.sectionLabel.startsWith('Part '))).toBe(true)
-    expect(chunks.every((c) => c.content.length <= 3000)).toBe(true)
-  })
+    it('a financial statement with a line matching a resume header pattern ("Summary") is NOT mis-sectioned', () => {
+      const text = ['Summary', 'Primary bank is Sparkasse Holstein.', '', 'Kenntnisse', 'Not actually a skills section.'].join('\n')
+      const chunks = chunkDocumentText(text, 'financial')
+      expect(chunks).toHaveLength(1)
+      expect(chunks[0].sectionLabel).toBe('Part 1')
+      expect(chunks[0].content).toContain('Sparkasse Holstein')
+    })
 
-  it('sub-splits an oversized recognized section while keeping its label', () => {
-    const text = ['Experience', 'x'.repeat(7000), '', 'Education', 'short'].join('\n')
-    const chunks = chunkResumeText(text)
-    const experienceChunks = chunks.filter((c) => c.sectionLabel === 'Experience')
-    expect(experienceChunks.length).toBeGreaterThan(1)
-    expect(experienceChunks.every((c) => c.content.length <= 3000)).toBe(true)
+    it('still bounds each chunk to MAX_CHUNK_CHARS for a long financial document', () => {
+      const text = 'Primary bank is Sparkasse Holstein. '.repeat(200)
+      const chunks = chunkDocumentText(text, 'financial')
+      expect(chunks.length).toBeGreaterThan(1)
+      expect(chunks.every((c) => c.content.length <= 3000)).toBe(true)
+    })
   })
 })

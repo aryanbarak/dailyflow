@@ -103,6 +103,43 @@ describe("validatePersonalMemoryContent -- sensitive-category defense in depth (
   });
 });
 
+// Task 18, A3 -- HARD SENSITIVITY RULE: an IBAN/account-number/card-number
+// shape must NEVER appear in a fact's text, deterministically, regardless
+// of kind or document type. Test with a realistic German IBAN shape and a
+// plain long digit run, per the task's own instruction.
+describe("validatePersonalMemoryContent -- financial identifier hard rule (task 18, A3)", () => {
+  it("DROPS content containing a realistic German IBAN shape (spaced, as commonly printed)", () => {
+    const result = validatePersonalMemoryContent("personal_fact", { summary: "IBAN is DE89 3704 0044 0532 0130 00", category: "general" });
+    expect(result.valid).toBe(false);
+    if (result.valid === false) {
+      expect(result.errors.some((issue) => issue.code === "FINANCIAL_IDENTIFIER_EXCLUDED")).toBe(true);
+    }
+  });
+
+  it("DROPS content containing an unspaced IBAN-shaped run", () => {
+    const result = validatePersonalMemoryContent("personal_fact", { summary: "IBAN DE89370400440532013000", category: "general" });
+    expect(result.valid).toBe(false);
+  });
+
+  it("DROPS content containing a plain long digit run (account/card number shape)", () => {
+    const result = validatePersonalMemoryContent("personal_fact", { summary: "Account number 1234567890123456 on file", category: "general" });
+    expect(result.valid).toBe(false);
+    if (result.valid === false) {
+      expect(result.errors.some((issue) => issue.code === "FINANCIAL_IDENTIFIER_EXCLUDED")).toBe(true);
+    }
+  });
+
+  it("does NOT drop a genuinely stable financial fact that contains no identifier", () => {
+    const result = validatePersonalMemoryContent("personal_fact", { summary: "Primary bank is Sparkasse Holstein", category: "general" });
+    expect(result.valid).toBe(true);
+  });
+
+  it("does NOT drop ordinary prose that happens to contain a short 2-letter+2-digit token followed by unrelated words", () => {
+    const result = validatePersonalMemoryContent("goal", { summary: "Room AB12 booked for the roadmap planning session" });
+    expect(result.valid).toBe(true);
+  });
+});
+
 describe("kind/confidence/provenance-source-kind guards", () => {
   it("isSupportedPersonalMemoryRecordKind accepts exactly the six approved kinds", () => {
     for (const kind of ["preference", "goal", "working_pattern", "commitment", "personal_fact", "skill"]) {
