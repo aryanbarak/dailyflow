@@ -13,6 +13,14 @@
 // follows those files' own established pattern: real component tests for
 // what IS mountable (ChatBubble, TypingIndicator via a message with
 // `sending`), source-verification for what isn't.
+//
+// UPDATE, task 17h: Y4's own call was wrong -- the "stray orb" was
+// app-shell chrome the PO actually likes, unrelated to 17b's chat-surface
+// glow rule Y4 invoked to justify gating it. The Y4 describe block below
+// now asserts the RESTORED (unconditional, app-wide) behaviour instead;
+// see AppLayout.tsx's own task 17h comment and
+// SmartflowPointerFollowerPreferences.test.tsx for the new
+// enabled/colour/size/opacity settings coverage.
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -116,22 +124,21 @@ describe("Y3 (task 17g): the message COLUMN itself is capped to a reading measur
   });
 });
 
-describe("Y4 (task 17g): no stray orb renders on the conversation view -- only the two permitted glow placements remain", () => {
-  it("SmartflowPointerFollower (the cursor-following glow) is disabled on the chat page specifically", () => {
-    expect(appLayoutSource).toMatch(/\{!hideMobileChrome && <SmartflowPointerFollower \/>\}/);
+describe("Y4 (task 17g's gate REVERSED by task 17h): the cursor-following pointer glow renders on every route again, including chat -- it's app-shell chrome, a concern separate from 17b's chat-surface glow rule", () => {
+  it("SmartflowPointerFollower renders unconditionally in AppLayout again (task 17g's per-page gate was removed)", () => {
+    expect(appLayoutSource).toMatch(/\n\s*<SmartflowPointerFollower \/>/);
+    expect(appLayoutSource).not.toMatch(/hideMobileChrome && <SmartflowPointerFollower/);
   });
 
-  it("every OTHER page still renders SmartflowPointerFollower unconditionally elsewhere (only gated for chat, not removed app-wide)", () => {
-    // The import and the conditional usage both remain -- this is a
-    // per-page gate, not a deletion of the feature.
+  it("AppLayout still imports SmartflowPointerFollower", () => {
     expect(appLayoutSource).toMatch(/import \{ SmartflowPointerFollower \} from "@\/components\/smartflow"/);
   });
 
-  it("the empty-state's own contained orb is untouched -- still one of the two permitted placements", () => {
+  it("the empty-state's own contained orb is untouched -- still one of 17b's two permitted CHAT-SURFACE placements (a separate rule from the pointer follower)", () => {
     expect(emptyStateSource).toMatch(/var\(--flow-gradient-orb\)/);
   });
 
-  it("no ChatBubble/TypingIndicator render path introduces any new glow/orb token", () => {
+  it("no ChatBubble/TypingIndicator render path introduces any new glow/orb token on the chat surface itself -- 17b's rule is unaffected by 17h restoring the (unrelated) pointer follower", () => {
     expect(chatPageSource).not.toMatch(/--flow-gradient-orb/);
     expect(chatPageSource).not.toMatch(/--flow-glow-/);
   });

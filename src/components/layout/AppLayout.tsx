@@ -59,22 +59,26 @@ function AppLayoutInner() {
       <LaunchExperience />
 
       <div style={appShellStyle} aria-hidden={!shouldShowAppShell}>
-        {/* Task 17g, Y4: production evidence -- a glowing orb (this cursor-
-            following radial-gradient/blur/glow circle) rendered floating
-            over the middle of the conversation on desktop. It's global app
-            chrome, unrelated to task 17b's own empty-state orb, and has no
-            relationship to isChatEmptyState/message count at all -- it just
-            tracks the mouse, so it was equally visible whether the
-            conversation was empty or full, wherever the pointer happened to
-            sit. 17b's "exactly two glow placements" restraint rule was
-            always scoped to the CHAT surface specifically (see index.css's
-            own comment on the typing-indicator glow: "no glow in the
-            scrolling message list, no page-level orb under text"); this
-            component was never one of the two, so it's disabled on the
-            chat page only (`hideMobileChrome`, the same flag already used
-            to special-case this page) -- every OTHER page keeps the cursor
-            flourish exactly as before, unaffected. */}
-        {!hideMobileChrome && <SmartflowPointerFollower />}
+        {/* Task 17h: RESTORED after task 17g incorrectly gated this off the
+            chat page as a "stray orb" regression -- the PO likes the
+            cursor-following glow and wants it back on every page, unchanged
+            in behaviour. This is APP-SHELL CHROME (global, cursor-driven,
+            rendered by AppLayout for every route) and is a SEPARATE concern
+            from task 17b's "exactly two glow placements" restraint rule,
+            which is scoped to the CHAT SURFACE itself only (ChatEmptyState's
+            own contained orb + the typing-indicator dots -- see index.css's
+            comment on the typing-indicator glow and
+            ChatPageChromeCleanup.test.tsx's Y4 block). Do NOT re-gate this
+            off /chat (or any other route) to satisfy 17b's rule again --
+            that rule was never about this component in the first place. It
+            is now user-configurable instead (Settings -> Appearance ->
+            "Pointer glow": on/off, colour (from the existing --flow-*
+            palette only), size, opacity -- see appearanceStore.ts's orb*
+            fields/ORB_* constants and SmartflowPointerFollower.tsx, which
+            reads them and applies size/colour/opacity via CSS custom
+            properties on its own root element, never inside its per-frame
+            animation loop). */}
+        <SmartflowPointerFollower />
         <OfflineBadge />
 
         {/* Desktop */}

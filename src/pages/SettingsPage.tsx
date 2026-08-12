@@ -21,7 +21,11 @@ import { Input } from '@/components/ui/input';
 import { useAuth } from '@/hooks/useAuth';
 import { useProfile } from '@/features/profile/useProfile';
 import { usePreferences } from '@/hooks/usePreferences';
-import { useAppearance, ACCENT_COLORS, DENSITY_OPTIONS, type Language } from '@/features/settings/appearanceStore';
+import {
+  useAppearance, ACCENT_COLORS, DENSITY_OPTIONS,
+  ORB_COLOR_VAR, ORB_OPACITY_STEPS,
+  type Language, type OrbColor, type OrbSize,
+} from '@/features/settings/appearanceStore';
 import { useNotificationPrefs } from '@/features/settings/notificationSettings';
 import { dataExportService } from '@/features/settings/dataExportService';
 import { supabase } from '@/integrations/supabase/client';
@@ -69,6 +73,13 @@ const AVATAR_COLORS = [
   '#0EA5E9', '#8B5CF6', '#EC4899', '#F59E0B',
   '#10B981', '#EF4444', '#6366F1', '#14B8A6',
 ];
+
+// Task 17h: pointer-glow colour choices, restricted to the existing
+// --flow-* palette (ORB_COLOR_VAR maps each to its token) -- order here
+// is display order only, matches the PO's own listing (primary/blue/cyan,
+// then the six quick-action accents).
+const ORB_COLOR_KEYS: OrbColor[] = ['primary', 'blue', 'cyan', 'study', 'plan', 'analyze', 'review', 'report', 'career'];
+const ORB_SIZE_KEYS: OrbSize[] = ['small', 'medium', 'large', 'xl'];
 
 function readAiDefaults(): AiDefaults {
   const stored = safeGet<Partial<AiDefaults>>(storageKey('ai-defaults'), {});
@@ -390,8 +401,14 @@ function SecurityTab() {
 
 function AppearanceTab() {
   const { theme, setTheme } = useTheme();
-  const { density, accentColor, reducedMotion, language, setDensity, setAccentColor, setReducedMotion, setLanguage } = useAppearance();
+  const {
+    density, accentColor, reducedMotion, language,
+    orbEnabled, orbColor, orbSize, orbOpacity,
+    setDensity, setAccentColor, setReducedMotion, setLanguage,
+    setOrbEnabled, setOrbColor, setOrbSize, setOrbOpacity,
+  } = useAppearance();
   const { preferences, setTheme: setPrefTheme, setCurrency } = usePreferences();
+  const { t } = useT();
 
   const [aiDefaults, setAiDefaults] = useState<AiDefaults>(() => readAiDefaults());
   // Conversation Quality v1 (task 9): "Default mode" -> "Default topic
@@ -605,6 +622,84 @@ function AppearanceTab() {
             Save AI defaults
           </button>
         </div>
+      </SectionCard>
+
+      {/* Task 17h: settings for SmartflowPointerFollower, the app-wide
+          cursor-following glow restored (and made configurable) by this
+          task -- see AppLayout.tsx and smartflow-pointer-follower.tsx for
+          the component itself, appearanceStore.ts's orb* fields/ORB_*
+          constants for why this store owns it. */}
+      <SectionCard title={t('settings_orb_title')}>
+        <SettingRow label={t('settings_orb_enabled')} desc={t('settings_orb_enabled_desc')}>
+          <Toggle checked={orbEnabled} onChange={setOrbEnabled} label={t('settings_orb_enabled')} />
+        </SettingRow>
+        {orbEnabled && (
+          <>
+            <div className="py-3.5 border-b border-border space-y-2">
+              <p className="text-sm font-medium">{t('settings_orb_color')}</p>
+              <div className="flex gap-2 flex-wrap">
+                {ORB_COLOR_KEYS.map(key => (
+                  <button
+                    key={key}
+                    type="button"
+                    aria-label={t(`settings_orb_color_${key}` as TranslationKey)}
+                    onClick={() => setOrbColor(key)}
+                    className="w-8 h-8 rounded-full transition-all hover:scale-110 flex items-center justify-center"
+                    style={{
+                      backgroundColor: `var(${ORB_COLOR_VAR[key]})`,
+                      outline: orbColor === key ? `3px solid var(${ORB_COLOR_VAR[key]})` : 'none',
+                      outlineOffset: '2px',
+                      transform: orbColor === key ? 'scale(1.15)' : undefined,
+                    }}
+                  >
+                    {orbColor === key && <Check size={14} className="text-white" />}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="py-3.5 border-b border-border space-y-2">
+              <p className="text-sm font-medium">{t('settings_orb_size')}</p>
+              <div className="flex gap-2 flex-wrap">
+                {ORB_SIZE_KEYS.map(key => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setOrbSize(key)}
+                    className="px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors"
+                    style={{
+                      borderColor: orbSize === key ? 'hsl(var(--primary))' : 'hsl(var(--border))',
+                      background: orbSize === key ? 'hsl(var(--primary) / 0.08)' : 'transparent',
+                    }}
+                  >
+                    {t(`settings_orb_size_${key}` as TranslationKey)}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="py-3.5 space-y-2">
+              <p className="text-sm font-medium">{t('settings_orb_opacity')}</p>
+              <div className="flex gap-2 flex-wrap">
+                {ORB_OPACITY_STEPS.map(step => (
+                  <button
+                    key={step}
+                    type="button"
+                    aria-label={`${t('settings_orb_opacity')} ${Math.round(step * 100)}%`}
+                    onClick={() => setOrbOpacity(step)}
+                    className="px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors"
+                    style={{
+                      borderColor: orbOpacity === step ? 'hsl(var(--primary))' : 'hsl(var(--border))',
+                      background: orbOpacity === step ? 'hsl(var(--primary) / 0.08)' : 'transparent',
+                    }}
+                  >
+                    {Math.round(step * 100)}%
+                  </button>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
       </SectionCard>
 
       <SectionCard title="Accessibility">
