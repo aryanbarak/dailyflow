@@ -1,7 +1,7 @@
 import { Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
-import { isolateEmbeddedBidiRuns } from "@/lib/bidiText";
+import { isolateEmbeddedBidiRuns, resolveMessageBaseDirection } from "@/lib/bidiText";
 import type { ChatSession } from "@/hooks/useChatSessions";
 import { timeAgo } from "../timeAgo";
 
@@ -34,12 +34,28 @@ export function ConversationsList({ sessions, activeSessionId, onSelect, onDelet
             type="button"
             onClick={() => onSelect(session.id)}
             className={cn(
-              "min-w-0 flex-1 rounded-lg px-2.5 text-left transition-colors",
+              "min-w-0 flex-1 rounded-lg px-2.5 text-start transition-colors",
               compact ? "py-1.5" : "py-2",
               session.id === activeSessionId ? "border border-primary/20 bg-primary/10" : "hover:bg-secondary/30",
             )}
           >
-            <p className="truncate text-xs font-medium" dir="auto">
+            {/* Task 17f, B3: a Persian title used to ellipsize on the WRONG
+                side ("…نظرت آینده") -- root cause was TWO stacked bugs: (1)
+                the hardcoded `text-left` above (now `text-start`, a logical
+                property) forced left alignment regardless of the title's
+                own direction, defeating `truncate`'s per-direction ellipsis
+                placement; (2) `dir="auto"` here suffered the exact same
+                17e-class leak as chat bubbles (a pure-Persian title, once
+                bidiText.tsx wrapped it whole in a <bdi>, had nothing left
+                for its own auto-detection to find). Task 17f's bidiText.tsx
+                rewrite fixes (2) at the isolation layer directly (a title's
+                own dominant script is never swallowed now); this ALSO
+                takes the explicit, content-derived resolveMessageBaseDirection
+                (the same helper the chat bubble root uses, 17e/17f R1) so
+                truncation direction never depends on the app UI language
+                either, matching every other per-message direction decision
+                in this app. */}
+            <p className="truncate text-xs font-medium" dir={resolveMessageBaseDirection(session.title)}>
               {isolateEmbeddedBidiRuns(session.title)}
             </p>
             <p className="mt-0.5 text-[10px] text-muted-foreground">{timeAgo(session.updated_at)}</p>

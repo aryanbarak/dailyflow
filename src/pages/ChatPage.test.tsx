@@ -773,22 +773,14 @@ describe("ChatPage LLM reasoning UX boundary", () => {
     );
 
     // Task 17e, W1: the bubble container's dir is now an EXPLICIT rtl/ltr
-    // computed from the message's own raw content (resolveMessageBaseDirection
-    // in ChatPage.tsx) -- NOT the bare dir="auto" this test previously
-    // required. A bare dir="auto" silently fails for exactly a PURE
-    // single-language message: isolateEmbeddedBidiRuns wraps ALL of its
-    // strong characters into <bdi> run(s) (a run only ends on a strong
-    // character), leaving nothing but neutral punctuation outside any <bdi>
-    // -- and dir="auto"'s own browser-native search explicitly SKIPS <bdi>
-    // content, so it finds nothing and falls back to the ambient direction
-    // (which, in production, leaked in from the page root's APP UI
-    // LANGUAGE, not the message). This is NOT a reversion to the original
-    // 11e bug: that bug set direction from the `language` METADATA field
-    // with no content inspection or run isolation at all; this instead
-    // inspects the message's own first strong CHARACTER directly (ignoring
-    // `language` entirely) and still isolates every embedded opposite-
-    // direction run exactly as before -- see the <bdi> assertions below,
-    // unchanged from this test's original intent.
+    // computed from the message's own raw content (resolveMessageBaseDirection,
+    // promoted into src/lib/bidiText.tsx by task 17f) -- NOT the bare
+    // dir="auto" this test previously required. This is NOT a reversion to
+    // the original 11e bug: that bug set direction from the `language`
+    // METADATA field with no content inspection or run isolation at all;
+    // this instead inspects the message's own first strong CHARACTER
+    // directly (ignoring `language` entirely) and still isolates every
+    // embedded MINORITY-direction run -- see the <bdi> assertions below.
     expect(mixed).toContain('dir="rtl"'); // starts with Persian "این"
     expect(english).toContain('dir="ltr"'); // starts with Latin "Review"
     expect(german).toContain('dir="ltr"'); // starts with Latin "Heute"
@@ -799,18 +791,25 @@ describe("ChatPage LLM reasoning UX boundary", () => {
       expect(html.match(/dir="(?:rtl|ltr)"/g)?.length).toBe(1);
     }
 
-    // Every markdown block (bidiText.tsx, untouched by task 17e) still gets
-    // its own dir="auto" -- one per \n\n-separated paragraph in `mixed`.
+    // Every markdown block (bidiText.tsx) still gets its own dir="auto" --
+    // one per \n\n-separated paragraph in `mixed`.
     expect(mixed.match(/dir="auto"/g)?.length).toBe(3);
 
-    // The embedded English/German blocks inside the Persian-flow message are
-    // isolated as their own <bdi> run(s) -- proving embedded opposite-
-    // direction runs are actually isolated, not just given a base dir. "(2)"
-    // isolates its digit separately from the surrounding parentheses, which
-    // correctly stay outside the isolate (they belong to the paragraph's own
-    // direction, not the Latin run's).
-    expect(mixed).toContain("<bdi>Review active tasks</bdi> (<bdi>2</bdi>).");
-    expect(mixed).toContain("<bdi>Heute sind 2 Termine frei</bdi>.");
+    // Task 17f rewrite of bidiText.tsx (R2/R3): isolation now targets ONLY
+    // the MINORITY-direction run relative to each paragraph's own dominant
+    // script -- the dominant-script text is left as plain, unwrapped
+    // characters (this is the actual fix for the 17e root cause: a block
+    // that is never fully swallowed by an isolate always has real strong
+    // characters left for dir="auto" to resolve from). "این نتیجه برای" is
+    // Persian-dominant, so only the embedded "Review active tasks" (the
+    // Latin minority run) isolates; "Review active tasks (2)." and "Heute
+    // sind 2 Termine frei." are each their OWN single-script paragraph
+    // (English/German respectively -- a lone digit has no strong bidi type
+    // of its own, R2), so NEITHER paragraph has anything to isolate at all.
+    expect(mixed).toContain("این نتیجه برای <bdi>Review active tasks</bdi> است.");
+    expect(mixed).toContain('<p dir="auto" class="mb-2 last:mb-0">Review active tasks (2).</p>');
+    expect(mixed).toContain('<p dir="auto" class="mb-2 last:mb-0">Heute sind 2 Termine frei.</p>');
+    expect(mixed.match(/<bdi>/g)?.length).toBe(1);
   });
 
   it("isolates an English proposal inside Persian flow without mirroring proposal controls", () => {

@@ -9,11 +9,10 @@ import {
   CheckCircle2,
   FileText,
   Flame,
-  MessageSquare,
   Wallet,
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
-import { createDirectionalMarkdownComponents, isolateEmbeddedBidiRuns } from '@/lib/bidiText'
+import { createDirectionalMarkdownComponents, isolateEmbeddedBidiRuns, resolveMessageBaseDirection } from '@/lib/bidiText'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent } from '@/components/ui/sheet'
 import { cn } from '@/lib/utils'
@@ -25,6 +24,7 @@ import { SmartFlowIcon } from '@/components/SmartFlowLogo'
 import { translations, useT } from '@/i18n'
 import type { TranslationKey } from '@/i18n'
 import { useChatSessions } from '@/hooks/useChatSessions'
+import { persistActiveSessionId, readPersistedActiveSessionId, resolveActiveSessionOnMount } from '@/features/chat/activeSessionResolver'
 // Task 17c, PO decisions D3/D4: the mobile bottom nav is removed on this
 // page (AppLayout.tsx); its "More" sheet content is reused here verbatim
 // instead of being rebuilt -- see MobileNav.tsx's own comment on why these
@@ -39,7 +39,6 @@ import { ChatComposer } from '@/features/chat/components/ChatComposer'
 import { ChatPageHeader } from '@/features/chat/components/ChatPageHeader'
 import { ChatEmptyState, type ChatEmptyStateAction } from '@/features/chat/components/ChatEmptyState'
 import { ConversationsDrawer } from '@/features/chat/components/ConversationsDrawer'
-import { ConversationsList } from '@/features/chat/components/ConversationsList'
 import { JumpToLatestPill } from '@/features/chat/components/JumpToLatestPill'
 import { useChatDisplayPreferences } from '@/features/chat/chatDisplayPreferencesStore'
 import { shouldAutoScrollOnNewContent } from '@/features/chat/chatScrollDecision'
@@ -1193,55 +1192,31 @@ export function AssistantContent({ content }: Readonly<{ content: string }>) {
   return <ReactMarkdown components={MSG_MD_COMPONENTS}>{md}</ReactMarkdown>
 }
 
-// Task 17e, W1: mirrors the SAME "first-strong character" heuristic the
-// browser's own `dir="auto"` uses (UAX#9 P2/P3) -- but computed directly
-// over the RAW message string, before any bdi-isolation. This is necessary
-// because `dir="auto"`'s own native search explicitly SKIPS the contents of
-// <bdi> descendants (see the HTML Standard's auto-directionality
-// algorithm): once isolateEmbeddedBidiRuns (11e) wraps ALL of a message's
-// strong-direction characters into <bdi> run(s) -- which happens for every
-// PURE single-language message, since a run only ends on a strong character
-// of its own script -- the only things left OUTSIDE any <bdi> are neutral
-// characters (terminal punctuation like "!"/":"/"."), and dir="auto" has
-// nothing left to detect a direction from. Its fallback then inherits the
-// nearest ambient direction instead -- which, with no other block between
-// here and ChatPage's own root, was this page's `dir={isRTL ? 'rtl' :
-// 'ltr'}` (see ChatPage's root below), driven by the APP UI LANGUAGE, not
-// the message's own content. A rendered-DOM diagnostic confirmed this
-// exactly: a pure-Persian message like "سلام! برایتان لیست می‌کنم:" isolates
-// to `<bdi>سلام</bdi>! <bdi>برایتان لیست می‌کنم</bdi>:` -- zero strong
-// characters remain outside any <bdi> -- so with a non-Persian app UI
-// language (root dir="ltr"), the bubble's own base direction fell back to
-// the WRONG "ltr", misplacing the trailing "!"/":" at the wrong visual end.
-// (Mixed-run messages, e.g. 17d's V3 "AI/ML." case, don't hit this: the
-// surrounding-language portion of a mixed message always leaves ITS OWN
-// strong characters outside any isolate, so dir="auto" self-resolves fine
-// without ever needing the ambient fallback.)
-//
-// Computing this explicitly, from the message's own raw content, and
-// setting it as a literal `dir="rtl"`/`dir="ltr"` (not "auto") on the
-// bubble's content root breaks that inheritance chain at exactly this
-// point: this element's own direction can never again be decided by
-// anything outside the message itself, and it becomes the correct ambient
-// anchor for every markdown block below it (AssistantContent's p/ul/li,
-// still plain dir="auto" -- src/lib/bidiText.tsx, untouched by this task --
-// which now falls back, on the same zero-strong-char edge case, to this
-// CORRECT value instead of the page root's UI-language one). Heading
-// elements (h1-h6) aren't given any dir override at all by
-// createDirectionalMarkdownComponents and aren't used in this reply
-// surface today -- they simply inherit this same corrected ambient
-// direction normally, with no independent auto-detection of their own to
-// go wrong.
-const STRONG_RTL_CHAR_SOURCE = '\\u0600-\\u06FF'
-const STRONG_LTR_CHAR_SOURCE = 'A-Za-zÀ-ÖØ-öø-ÿ'
-const FIRST_STRONG_CHAR_PATTERN = new RegExp(`[${STRONG_RTL_CHAR_SOURCE}${STRONG_LTR_CHAR_SOURCE}]`)
-const STRONG_RTL_CHAR_PATTERN = new RegExp(`[${STRONG_RTL_CHAR_SOURCE}]`)
-
-function resolveMessageBaseDirection(text: string): 'rtl' | 'ltr' {
-  const match = text.match(FIRST_STRONG_CHAR_PATTERN)
-  if (!match) return 'ltr'
-  return STRONG_RTL_CHAR_PATTERN.test(match[0]) ? 'rtl' : 'ltr'
-}
+// Task 17e, W1 (promoted into src/lib/bidiText.tsx by task 17f, R1): the
+// bubble's own base direction is resolveMessageBaseDirection(content) --
+// the SAME "first-strong character" heuristic `dir="auto"` itself uses
+// (UAX#9 P2/P3), computed directly over the RAW message string, before any
+// bdi-isolation. This is necessary because `dir="auto"`'s own native
+// search explicitly SKIPS the contents of <bdi> descendants (see the HTML
+// Standard's auto-directionality algorithm): a pure single-language
+// message used to have ALL of its strong characters swallowed into <bdi>
+// run(s) by isolateEmbeddedBidiRuns, leaving `dir="auto"` nothing to detect
+// a direction from -- its fallback then inherited the ambient direction,
+// which (with nothing else interrupting the chain) was this page's own
+// `dir={isRTL ? 'rtl' : 'ltr'}` root, driven by the APP UI LANGUAGE, not
+// the message's own content. Task 17f's rewrite of bidiText.tsx fixes this
+// at its root (isolateEmbeddedBidiRuns no longer wraps a block's DOMINANT-
+// script text at all, only genuinely minority-direction runs -- see that
+// file's own header comment), which makes this explicit dir computation
+// belt-and-suspenders rather than strictly load-bearing for every case --
+// but it stays, since it is still the one guaranteed-correct anchor for
+// the (now much rarer) case of a message with literally zero minority-
+// direction content for `dir="auto"` to have needed in the first place,
+// and it costs nothing to keep. Heading elements (h1-h6) aren't given any
+// dir override at all by createDirectionalMarkdownComponents and aren't
+// used in this reply surface today -- they simply inherit this same
+// ambient direction normally, with no independent auto-detection of their
+// own to go wrong.
 
 export function ChatBubble({ role, content, language, compact = false }: Readonly<{
   role: 'user' | 'assistant'
@@ -1332,7 +1307,7 @@ export default function ChatPage() {
   const interfaceLanguage = useAppearance((state) => state.language)
   const location = useLocation()
   const nav = useNavigate()
-  const { sessions, refresh: refreshSessions, createSession, deleteSession } = useChatSessions()
+  const { sessions, isLoading: sessionsLoading, refresh: refreshSessions, createSession, deleteSession } = useChatSessions()
   // Task 17a (Chat Experience v2): chat-page-scoped theme + compact-mode
   // preference, persisted alongside each other -- see
   // chatDisplayPreferencesStore.ts's own header comment for why this is a
@@ -1430,7 +1405,47 @@ export default function ChatPage() {
     setSendError(null)
     wasNearBottomRef.current = true
     setShowJumpToLatest(false)
+    // Task 17f, C1b: an explicit New Chat is a deliberate "start fresh"
+    // action -- clear persistence too, so an accidental reload right after
+    // (before anything is sent) doesn't drag back the PREVIOUS session.
+    // Once something is actually sent, handleSend's own persistence effect
+    // (below) takes back over with the new session's real id.
+    persistActiveSessionId(null)
   }, [])
+
+  // Task 17f, C1b: session continuity across a fresh mount. Production
+  // evidence: pull-to-refresh inside the chat reloads the PWA (see this
+  // page's root/scroll-container overscroll-behavior fix for the other
+  // half of this bug) and the reload used to land on a brand-new EMPTY
+  // chat -- root cause was that `activeSessionId` (above) had NO
+  // persistence and NO restoration logic at all; every fresh mount simply
+  // started at `null`. This effect runs the pure resolveActiveSessionOnMount
+  // decision (activeSessionResolver.ts) exactly ONCE, as soon as
+  // useChatSessions has finished its own first load (sessionsLoading
+  // false) -- the `hasResolvedInitialSession` ref guard is load-bearing:
+  // without it, this would re-fire and stomp the user's CURRENT session
+  // every time `sessions` refreshes later (e.g. after sending a message
+  // creates a new session, or after a title updates), which would silently
+  // fight both "+" New Chat and drawer selection.
+  const hasResolvedInitialSession = useRef(false)
+  useEffect(() => {
+    if (hasResolvedInitialSession.current || sessionsLoading) return
+    hasResolvedInitialSession.current = true
+    const resolution = resolveActiveSessionOnMount({
+      persistedSessionId: readPersistedActiveSessionId(),
+      sessions,
+      explicitNewChat: false,
+    })
+    if (resolution.kind === 'resume') selectSession(resolution.sessionId)
+  }, [sessionsLoading, sessions, selectSession])
+
+  // Task 17f, C1b: keep persistence in sync with whichever session is
+  // actually active, from WHATEVER path set it (drawer selection,
+  // handleSend creating a new session, or the restoration effect above) --
+  // one write site, not duplicated at each call site.
+  useEffect(() => {
+    persistActiveSessionId(activeSessionId)
+  }, [activeSessionId])
 
   // Task 17a, workstream 2 (smart auto-scroll): "follow new messages ONLY
   // if the reader is already at bottom; otherwise show a 'jump to latest'
@@ -1917,7 +1932,7 @@ export default function ChatPage() {
       dir={isRTL ? 'rtl' : 'ltr'}
       data-chat-theme={theme}
       data-chat-density={density}
-      className="flex h-full flex-col overflow-hidden bg-background text-foreground lg:sticky lg:top-0 lg:h-screen"
+      className="flex h-full flex-col overflow-hidden overscroll-contain bg-background text-foreground lg:sticky lg:top-0 lg:h-screen"
     >
       {/* Header -- task 17c, PO decision D4, final single-row layout:
           [More menu] [Conversations] -- "Flow AI" -- [theme/density] [New].
@@ -1941,38 +1956,37 @@ export default function ChatPage() {
         onStartNewChat={startNewChat}
       />
 
-      {/* Body: desktop sidebar (task 17a: hidden below lg -- a
-          ConversationsDrawer sheet replaces it on mobile, see below) +
-          the chat column. */}
+      {/* Body: the chat column. Task 17f, B1 (PO decision): the persistent
+          desktop Conversations panel that used to live here has been
+          REMOVED entirely -- desktop now matches mobile, the conversation
+          list lives ONLY in ConversationsDrawer (below), opened from the
+          History icon in the header next to New Chat (see
+          ChatPageHeader.tsx) -- one pattern, one code path, no
+          desktop-only sidebar variant to keep in sync. Task 17f, B2: the
+          chat column takes the freed width, but centres itself at lg+
+          (`lg:mx-auto lg:max-w-3xl`) rather than stretching edge-to-edge
+          on a wide desktop viewport -- 17e's own `lg:max-w-[70ch]` bubble
+          cap (ChatBubble, this file) still governs individual message
+          reading measure; this is a wider container width so bubbles have
+          comfortable breathing room around them, not a second reading cap. */}
       <div className="flex min-h-0 flex-1">
-        <div className="hidden lg:flex lg:w-[260px] lg:shrink-0 lg:flex-col lg:border-r lg:border-border">
-          <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-            <MessageSquare className="h-3.5 w-3.5 text-primary" aria-hidden="true" />
-            <span className="text-sm font-semibold">{t('flow_conversations')}</span>
-          </div>
-          <div className="flex-1 overflow-y-auto p-3">
-            <ConversationsList
-              sessions={sessions}
-              activeSessionId={activeSessionId}
-              onSelect={selectSession}
-              onDelete={handleDeleteSession}
-              compact={compact}
-            />
-          </div>
-        </div>
-
         {/* Chat column */}
-        <div className="relative flex min-w-0 flex-1 flex-col">
+        <div className="relative flex min-w-0 flex-1 flex-col lg:mx-auto lg:max-w-3xl">
           {/* Task 17a, workstream 2: this is the ONLY scroll container for
               the conversation -- messages/quick-actions/proposals all live
               inside it, the composer below is a non-scrolling flex sibling
               that is therefore always visible without any sticky/fixed
               positioning trick. handleMessagesScroll feeds the smart
-              auto-scroll decision (chatScrollDecision.ts). */}
+              auto-scroll decision (chatScrollDecision.ts). Task 17f, C1a:
+              `overscroll-contain` stops a scrolled-to-top pull/rubber-band
+              gesture here from chaining up into the browser's native
+              pull-to-refresh (which was reloading the whole PWA -- see
+              this page's root and index.css's html/body for the other
+              scroll-chain stops). */}
           <div
             ref={messagesScrollRef}
             onScroll={handleMessagesScroll}
-            className={cn('flex-1 overflow-y-auto px-3 sm:px-6', compact ? 'space-y-2 py-3' : 'space-y-3 py-4')}
+            className={cn('flex-1 overflow-y-auto overscroll-contain px-3 sm:px-6', compact ? 'space-y-2 py-3' : 'space-y-3 py-4')}
           >
             {/* Task 17b (conversation-first architecture): the mockup's
                 lobby page, distilled into the empty-state of THIS chat

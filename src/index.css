@@ -278,6 +278,22 @@
     background: #07060E;
   }
 
+  /* Task 17f, C1a: pull-to-refresh inside the chat (Android PWA standalone)
+     triggered a full browser reload -- the native rubber-band/pull-to-
+     refresh gesture chains up from a scrolled-to-top inner container all
+     the way to the document root by default. `overscroll-behavior:
+     contain` on html/body stops that chain at the PAGE level; the chat's
+     own scroll containers (ChatPage.tsx's messages region, AppLayout's
+     mobile shell, ConversationsDrawer's list) each also get their own
+     `overscroll-contain` so the chain is stopped at EVERY level, not just
+     the outermost one -- see this task's report for the full list. Safe
+     globally: `contain` only stops the OVERSCROLL chain past a boundary,
+     it never blocks ordinary scrolling within a container. */
+  html,
+  body {
+    overscroll-behavior: contain;
+  }
+
   body {
     @apply text-foreground font-sans antialiased;
     background: #07060E;

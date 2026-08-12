@@ -58,7 +58,10 @@ function parseDateOnly(value: string) {
 // identically by ChatPage, AgentBriefingCard, and WeeklyBriefingPage. Only
 // the visual class names below are specific to this page. `ps-4` (logical
 // padding-start) replaces the previous physical `pl-4`.
-const TASK_MD_COMPONENTS = createDirectionalMarkdownComponents({
+// Exported (task 17f) purely so this consumer's direction-aware markdown
+// wiring can be verified directly against bidiText.tsx's behavior in tests
+// without mounting the full page (auth/supabase-heavy) -- no runtime change.
+export const TASK_MD_COMPONENTS = createDirectionalMarkdownComponents({
   p: "mb-1 last:mb-0",
   ul: "list-disc ps-4 mt-1 space-y-0.5",
 });

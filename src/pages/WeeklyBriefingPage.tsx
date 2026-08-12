@@ -28,7 +28,10 @@ interface Briefing {
 // visual class names below are specific to this page. `ps-5` (logical
 // padding-start) replaces the previous physical `pl-5`, so bullet
 // indentation mirrors correctly for RTL content.
-const MD_COMPONENTS = createDirectionalMarkdownComponents({
+// Exported (task 17f) purely so this consumer's direction-aware markdown
+// wiring can be verified directly against bidiText.tsx's behavior in tests
+// without mounting the full page (auth/supabase-heavy) -- no runtime change.
+export const MD_COMPONENTS = createDirectionalMarkdownComponents({
   p: 'mb-2 last:mb-0 text-sm leading-relaxed text-foreground/85',
   ul: 'list-disc ps-5 mt-2 space-y-1',
   li: 'text-sm leading-relaxed text-foreground/85',

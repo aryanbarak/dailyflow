@@ -19,7 +19,13 @@ import { ChatHeaderControls } from "./ChatHeaderControls";
 // other page; the hamburger icon moved here accordingly.
 // "Conversations" -- task 17c D4: icon changed from the hamburger to
 // History, since the hamburger now means "more" (app navigation), not
-// "conversations."
+// "conversations." Task 17f, B1: the PO decided to remove the persistent
+// desktop Conversations panel entirely -- desktop now matches mobile, the
+// conversation list lives ONLY in the drawer this button opens. Moved next
+// to "New Chat" (was `lg:hidden`, left of the title) and now visible at
+// EVERY width -- "one pattern, one code path, no desktop-only variant," so
+// there is no longer a separate always-visible desktop sidebar to keep in
+// sync with this button's mobile-only visibility.
 // RTL mirroring: this component does NOT set its own `dir` -- it relies on
 // an ANCESTOR (ChatPage's own root) providing a real `dir="rtl"|"ltr"`
 // context, which is also task 17c's E4 fix (see ChatComposer.test.tsx's own
@@ -61,16 +67,6 @@ export function ChatPageHeader({
           >
             <Menu className="h-4 w-4" />
           </Button>
-          <Button
-            type="button"
-            size="icon"
-            variant="ghost"
-            className="h-9 w-9 shrink-0 lg:hidden"
-            onClick={onOpenConversations}
-            aria-label={t("chat_open_conversations")}
-          >
-            <History className="h-4 w-4" />
-          </Button>
           <div className="icon-tile shrink-0">
             <Bot className="w-4 h-4 text-primary" />
           </div>
@@ -78,6 +74,16 @@ export function ChatPageHeader({
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <ChatHeaderControls />
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            className="h-9 w-9 shrink-0"
+            onClick={onOpenConversations}
+            aria-label={t("chat_open_conversations")}
+          >
+            <History className="h-4 w-4" />
+          </Button>
           <Button size="sm" variant="outline" className="gap-1.5" onClick={onStartNewChat}>
             <Plus className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">{t("flow_new_chat")}</span>

@@ -33,7 +33,10 @@ interface Briefing {
 // identically by ChatPage, WeeklyBriefingPage, and TasksPage. Only the
 // visual class names below are specific to this card.
 // =============================================
-const MD_COMPONENTS = createDirectionalMarkdownComponents({
+// Exported (task 17f) purely so this consumer's direction-aware markdown
+// wiring can be verified directly against bidiText.tsx's behavior in tests
+// without mounting the full card (auth/supabase-heavy) -- no runtime change.
+export const MD_COMPONENTS = createDirectionalMarkdownComponents({
   p: 'agent-briefing-card__text',
   ul: 'agent-briefing-card__list',
   li: 'agent-briefing-card__list-item',

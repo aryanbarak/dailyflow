@@ -1,81 +1,126 @@
 import type { ReactNode } from "react";
 
-// SmartFlow bidi utility (task 11e) -- shared by every surface that renders
-// model- or user-generated text that can mix Persian (RTL) and Latin (LTR)
-// content: chat bubbles, the assistant markdown renderer, briefing views,
-// the per-task assistant answer, and personal-memory cards. One utility,
-// used everywhere the bug appeared, rather than a per-page patch.
+// SmartFlow bidi utility (task 11e, generalised by task 17f) -- shared by
+// every surface that renders model- or user-generated text that can mix
+// Persian (RTL) and Latin (LTR) content: chat bubbles, the assistant
+// markdown renderer, briefing views, the per-task assistant answer,
+// personal-memory cards, and conversation titles. One utility, used
+// everywhere the bug appeared, rather than a per-page patch.
 //
-// Root cause this fixes: the Unicode Bidi Algorithm (UAX#9) renders a
-// contiguous run of strong characters embedded in an opposite-direction
-// paragraph in ITS OWN internal order, but it does NOT isolate that run
-// from the surrounding bidi context on its own -- neutral characters
-// immediately OUTSIDE the run (spaces, and especially punctuation) resolve
-// which side they attach to based on nearby STRONG characters, so a bare
-// Latin word like "SmartFlow" embedded in Persian text (or a Persian
-// phrase quoted inside English text) can visually reorder relative to its
-// own surrounding punctuation and neighboring words. `<bdi>` (and its exact
-// CSS equivalent, `unicode-bidi: isolate`) creates a genuine isolation
-// boundary: the run's own internal direction is still auto-detected from
-// its own content, but the surrounding text can no longer be pulled into
-// it or reordered around it. This is applied symmetrically -- a Latin run
-// inside RTL text and a Persian run inside LTR text are both isolated the
-// same way, since the bug is about the OPPOSITE-direction run relative to
-// its context, not about Persian or Latin specifically.
+// Task 17f root cause (verified against task 17e's own rendered-DOM
+// diagnostic before this rewrite -- see the task 17f report): <bdi>
+// isolates a run only up to its LAST strong character, so in single-script
+// text every strong character ends up inside a <bdi> and only neutral
+// marks are left outside it. The HTML `dir="auto"` algorithm explicitly
+// SKIPS <bdi> contents when searching for a first strong character to
+// determine direction -- so once isolation swallows 100% of a block's
+// strong characters, `dir="auto"` finds nothing and falls back to the
+// AMBIENT direction (whatever the page happens to be), not the message's
+// own. The fix is architectural, not a patch: this file previously
+// isolated EVERY run of either script symmetrically, which is exactly what
+// caused pure single-script text (and even the DOMINANT-script portions of
+// mixed text) to be entirely bdi-swallowed. It now isolates ONLY the
+// MINORITY-direction run(s) relative to the block's own dominant direction
+// (resolveMessageBaseDirection below) -- the dominant-script text is left
+// as plain, unwrapped characters, so `dir="auto"` (or an explicit dir=
+// "rtl"/"ltr", see resolveMessageBaseDirection) always has real strong
+// characters to resolve from, directly in the DOM, never hidden in an
+// isolate.
 
-// Each run must start and end on a strong character of its own script --
-// internal spaces and separators (., -, _, /, :, @, +, #, and, for Persian,
-// the ZWNJ used in normal enclitic joining) are allowed so a whole PHRASE
-// ("Rejected fact", "SmartFlow rocks", "به به") isolates as ONE run, not
-// one run per word. The trailing strong-character requirement is load-
-// bearing: it forces the regex engine to backtrack away from ANY trailing
-// space or punctuation, so "SmartFlow." only matches "SmartFlow" and
-// "SmartFlow رو" only matches "SmartFlow" -- that trailing punctuation or
-// space is deliberately left OUTSIDE the isolate, since it belongs to --
-// and must visually attach to -- the surrounding script's direction, not
-// the run's own. This default stays UNCHANGED (see the bidiText.test.tsx
-// "SmartFlow." case) -- ordinary sentence-final punctuation after a bare
-// run is genuinely part of the SURROUNDING sentence, not the run.
-const LATIN_RUN_SOURCE = "[A-Za-zÀ-ÖØ-öø-ÿ0-9](?:[A-Za-zÀ-ÖØ-öø-ÿ0-9 ._\\-/:@+#]*[A-Za-zÀ-ÖØ-öø-ÿ0-9])?";
-const PERSIAN_RUN_SOURCE = "[\\u0600-\\u06FF](?:[\\u0600-\\u06FF \\u200c._\\-/:@+#]*[\\u0600-\\u06FF])?";
+// Each run must start and end on a strong LETTER of its own script --
+// internal spaces, digits, and separators (0-9, ., -, _, /, :, @, +, #,
+// and, for Persian, the ZWNJ used in normal enclitic joining) are allowed
+// so a whole PHRASE ("Node.js", "AI/ML", "به به") isolates as ONE run, not
+// one run per word. Digits are deliberately excluded from the START/END
+// boundary class (though still allowed internally): a bare digit sequence
+// ("2", "24/7") has no strong bidi type of its own (UAX#9) and must not be
+// treated as a "run" needing isolation on its own -- this is what makes a
+// case like "(2)." (task 17d's protected regression) safe by construction
+// now: "2" alone never matches either run pattern, so nothing wraps it, no
+// matter what punctuation surrounds it. Digits/neutrals/spaces/emoji never
+// make otherwise-single-script text "mixed" (task 17f, R2).
+const LATIN_STRONG = "A-Za-zÀ-ÖØ-öø-ÿ";
+const PERSIAN_STRONG = "\\u0600-\\u06FF";
+const LATIN_RUN_SOURCE = `[${LATIN_STRONG}](?:[${LATIN_STRONG}0-9 ._\\-/:@+#]*[${LATIN_STRONG}])?`;
+const PERSIAN_RUN_SOURCE = `[${PERSIAN_STRONG}](?:[${PERSIAN_STRONG}0-9 \\u200c._\\-/:@+#]*[${PERSIAN_STRONG}])?`;
+const STRONG_LTR_PATTERN = new RegExp(`[${LATIN_STRONG}]`);
+const STRONG_RTL_PATTERN = new RegExp(`[${PERSIAN_STRONG}]`);
+const FIRST_STRONG_PATTERN = new RegExp(`[${PERSIAN_STRONG}${LATIN_STRONG}]`);
 
-// Task 17d, V3: production evidence -- "(Advanced Technical Support):" (a
-// parenthesized Latin PHRASE immediately followed by a colon) placed its
-// colon/paren boundary on the wrong side of the isolate. Deliberately
-// narrow on TWO axes, each protecting a real, already-tested case:
-//  1. The trailing [:.!?] is REQUIRED, not optional -- a parenthesized run
-//     with NO attached trailing mark (the existing "SmartFlow calls this
-//     feature (به به) internally." test below, where ")" is followed by a
-//     space) still isolates only its bare content, parens excluded.
-//  2. The lookahead below requires an internal SPACE -- i.e. this only
-//     fires for a multi-word PHRASE, not a single token. Without this, a
-//     numeric annotation like "Review active tasks (2)." (an existing,
-//     already-tested ChatPage.test.tsx case -- a COUNT in parens, a
-//     genuinely different pattern from a parenthesized label) would
-//     wrongly get pulled into "(2)." as one unit too; single-token
-//     parentheticals keep their pre-existing bare-content-only isolation.
-// Applied symmetrically to a Persian phrase parenthesized inside Latin
-// text too, matching this file's existing "isolate symmetrically, not
-// Latin-only" principle. Listed FIRST in the alternation so it's tried
-// before the bare-run patterns at the "(" position; if it doesn't match
-// (no ")", no attached trailing mark, or single-token content) the engine
-// falls through to the bare-run patterns, unchanged from before this task.
-const PAREN_WRAPPED_RUN_SOURCE = `\\((?=[^)]*\\s)(?:${LATIN_RUN_SOURCE}|${PERSIAN_RUN_SOURCE})\\)[:.!?]`;
+/**
+ * The SAME "first-strong-character" heuristic `dir="auto"` itself uses
+ * (UAX#9 P2/P3), computed directly over a RAW string -- not the post-
+ * isolation DOM. This is necessary wherever a container's own direction
+ * must be guaranteed correct even when its entire visible content might end
+ * up inside a <bdi> (dir="auto"'s native search skips <bdi> content -- see
+ * this file's header comment). Introduced in task 17e for the chat bubble
+ * root; task 17f promotes it into this shared utility so every consumer
+ * (conversation titles included, task 17f B3) can reuse the SAME logic
+ * instead of each re-implementing it.
+ */
+export function resolveMessageBaseDirection(text: string): "rtl" | "ltr" {
+  const match = text.match(FIRST_STRONG_PATTERN);
+  if (!match) return "ltr";
+  return STRONG_RTL_PATTERN.test(match[0]) ? "rtl" : "ltr";
+}
 
-const BIDI_RUN_PATTERN = new RegExp(`${PAREN_WRAPPED_RUN_SOURCE}|${LATIN_RUN_SOURCE}|${PERSIAN_RUN_SOURCE}`, "g");
+// Task 17f, R3: a MINORITY run immediately followed by an attached closing
+// paren and/or a trailing mark from :.!? belongs INSIDE that run's isolate
+// -- generalising task 17d's V3 beyond parenthesized multi-word phrases
+// (that phrase-only, space-required restriction existed ONLY to keep a
+// bare digit like "(2)." from being swallowed whole; now that digits can
+// never match RUN_SOURCE at all -- see above -- that restriction is no
+// longer needed and is dropped). Two alternatives, tried in this order:
+//  1. `(RUN)` + a REQUIRED trailing mark -- unchanged from task 17d's V3:
+//     the closing paren is only pulled INTO the isolate together with an
+//     attached mark. A parenthesized run with nothing attached to its own
+//     closing paren (task 17d's protected "(به به)"/"(Advanced Technical
+//     Support)" cases, no mark follows) does NOT match this alternative,
+//     and falls through to alternative 2 below, which starts matching
+//     one character later (RUN_SOURCE never itself starts on "(") -- so
+//     the parens are correctly left OUTSIDE the isolate, exactly as
+//     before.
+//  2. A bare RUN with an OPTIONAL trailing mark -- the actual task 17f
+//     generalisation: "SmartFlow." / "AI/ML." / "Codex:" now isolate their
+//     attached mark too, whether or not any parens are involved.
+function runWithAttachedMarks(runSource: string): string {
+  return `(?:\\(${runSource}\\)[:.!?]|${runSource}[:.!?]?)`;
+}
+const LATIN_RUN_WITH_MARKS = runWithAttachedMarks(LATIN_RUN_SOURCE);
+const PERSIAN_RUN_WITH_MARKS = runWithAttachedMarks(PERSIAN_RUN_SOURCE);
+const LATIN_MINORITY_PATTERN = new RegExp(LATIN_RUN_WITH_MARKS, "g");
+const PERSIAN_MINORITY_PATTERN = new RegExp(PERSIAN_RUN_WITH_MARKS, "g");
 
 /**
  * Splits a plain string into alternating literal segments and isolated
- * `<bdi>` runs (Latin OR Persian). Returns the original string unchanged
- * (in a one-element array) when no run is found, so callers can always
- * treat the result as a ReactNode array.
+ * `<bdi>` runs, isolating ONLY the minority-direction run(s) relative to
+ * the text's own dominant direction (task 17f, R2/R3). Single-script text
+ * (all strong characters the same direction class -- digits/neutrals never
+ * count) is returned COMPLETELY UNCHANGED, wrapped in no <bdi> at all: this
+ * is the direct fix for the 17e root cause, since a block that is never
+ * fully swallowed by an isolate always has real strong characters left for
+ * `dir="auto"` (or an explicit dir) to resolve from. Returns the original
+ * string unchanged (in a one-element array) whenever there's nothing to
+ * isolate, so callers can always treat the result as a ReactNode array.
  */
 export function isolateBidiRunsInText(text: string, keyPrefix: string): ReactNode[] {
+  const dominant = resolveMessageBaseDirection(text);
+  const minorityIsPersian = dominant === "ltr";
+  const minorityStrongPattern = minorityIsPersian ? STRONG_RTL_PATTERN : STRONG_LTR_PATTERN;
+
+  // R2 fast path: no minority-direction strong character anywhere in this
+  // text at all -- single-script (or no strong character at all), return
+  // unchanged.
+  if (!minorityStrongPattern.test(text)) return [text];
+
+  const minorityPattern = minorityIsPersian ? PERSIAN_MINORITY_PATTERN : LATIN_MINORITY_PATTERN;
+  minorityPattern.lastIndex = 0;
+
   const parts: ReactNode[] = [];
   let lastIndex = 0;
   let runIndex = 0;
 
-  for (const match of text.matchAll(BIDI_RUN_PATTERN)) {
+  for (const match of text.matchAll(minorityPattern)) {
     const start = match.index ?? 0;
     if (start > lastIndex) parts.push(text.slice(lastIndex, start));
     parts.push(<bdi key={`${keyPrefix}-${runIndex}`}>{match[0]}</bdi>);
@@ -113,10 +158,12 @@ export const BIDI_ISOLATE_STYLE = { unicodeBidi: "isolate" } as const;
 export interface DirectionalMarkdownClassNames {
   readonly p?: string;
   readonly ul?: string;
+  readonly ol?: string;
   readonly li?: string;
   readonly strong?: string;
   readonly em?: string;
   readonly code?: string;
+  readonly pre?: string;
   readonly a?: string;
 }
 
@@ -124,10 +171,16 @@ export interface DirectionalMarkdownClassNames {
  * Builds a react-markdown `components` object that is direction-aware:
  * every block gets `dir="auto"` (first-strong heuristic, applied per
  * block, not per page); paragraphs and list items additionally isolate any
- * bare embedded opposite-direction runs in their own text; bold/emphasis/
- * inline code/links are isolated as whole units via CSS
- * `unicode-bidi: isolate`. Callers pass their own existing class names so
- * this only changes direction handling, never visual styling.
+ * embedded MINORITY-direction runs in their own text (task 17f, R3);
+ * bold/emphasis are isolated as whole units via CSS `unicode-bidi:
+ * isolate`; inline code, fenced code blocks, and links are always LTR
+ * (task 17f, R5 -- code/URLs/technical identifiers must never flip with
+ * the surrounding paragraph). Lists use logical `ps-*`/`padding-inline-
+ * start` classes (task 17f, R6) so markers and indentation mirror
+ * correctly under RTL, including nested lists (a nested `<ul>`/`<ol>` goes
+ * through this SAME component recursively). Callers pass their own
+ * existing class names so this only changes direction handling, never
+ * visual styling (task 17f, R8).
  */
 export function createDirectionalMarkdownComponents(classNames: DirectionalMarkdownClassNames = {}) {
   return {
@@ -143,6 +196,13 @@ export function createDirectionalMarkdownComponents(classNames: DirectionalMarkd
         <ul dir="auto" className={classNames.ul}>
           {children}
         </ul>
+      );
+    },
+    ol({ children }: Readonly<{ children?: ReactNode }>) {
+      return (
+        <ol dir="auto" className={classNames.ol}>
+          {children}
+        </ol>
       );
     },
     li({ children }: Readonly<{ children?: ReactNode }>) {
@@ -167,12 +227,24 @@ export function createDirectionalMarkdownComponents(classNames: DirectionalMarkd
       );
     },
     code({ children }: Readonly<{ children?: ReactNode }>) {
-      // Code content (identifiers, URLs, snippets) is treated as LTR
-      // unconditionally, isolated from the surrounding paragraph either way.
+      // Task 17f, R5: inline code (identifiers, snippets) is always LTR,
+      // isolated from the surrounding paragraph either way.
       return (
         <code dir="ltr" style={BIDI_ISOLATE_STYLE} className={classNames.code}>
           {children}
         </code>
+      );
+    },
+    pre({ children }: Readonly<{ children?: ReactNode }>) {
+      // Task 17f, R5: a FENCED code block is its own block-level node (not
+      // inside a <p>), so it needs its own explicit LTR treatment --
+      // otherwise it would inherit whatever ambient direction the message
+      // happens to have, which is wrong for a shell command/snippet
+      // regardless of the surrounding Persian prose.
+      return (
+        <pre dir="ltr" style={BIDI_ISOLATE_STYLE} className={classNames.pre}>
+          {children}
+        </pre>
       );
     },
     a({ children, href }: Readonly<{ children?: ReactNode; href?: string }>) {

@@ -81,7 +81,11 @@ export function ConversationsDrawer({
             />
           </div>
         </SheetHeader>
-        <div className="flex-1 overflow-y-auto p-3">
+        {/* Task 17f, C1a: overscroll-contain -- this drawer scrolls
+            independently over the chat page underneath; without this, a
+            scrolled-to-top pull gesture here could chain into the page's
+            own scroll/pull-to-refresh handling. */}
+        <div className="flex-1 overflow-y-auto overscroll-contain p-3">
           {filteredSessions.length === 0 && sessions.length > 0 ? (
             <p className="text-xs text-muted-foreground" dir="auto">
               {isolateEmbeddedBidiRuns(t("chat_no_conversations_match"))}

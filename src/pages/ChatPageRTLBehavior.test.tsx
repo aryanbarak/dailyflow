@@ -27,28 +27,24 @@ vi.mock("@/integrations/supabase/client", () => ({
 
 import { AssistantContent, ChatBubble } from "./ChatPage";
 
-describe("E2: Persian assistant text with trailing punctuation (task 17c)", () => {
-  it("isolates the Persian run in its own <bdi>, leaving trailing punctuation OUTSIDE it in DOM order (11e's own design -- punctuation attaches to the surrounding paragraph, not the run)", () => {
+describe("E2: Persian assistant text with trailing punctuation (task 17c; superseded by task 17f's bidiText.tsx rewrite)", () => {
+  // Task 17f: "سلام! بررسی: کار انجام نشده است." is single-script Persian
+  // (task 17f, R2 -- digits/neutrals don't count as a second script), so
+  // it now renders COMPLETELY UNCHANGED -- no <bdi> at all. This ISN'T a
+  // weaker guarantee than the old "isolate the run, leave punctuation
+  // outside" design; it's the actual root-cause fix task 17e's own
+  // diagnostic called for: a paragraph that is never partially swallowed
+  // by an isolate always has real strong characters directly in the DOM
+  // for its own dir="auto" to resolve from, so the terminal marks can
+  // never end up "outside the isolate at the wrong edge" in the first
+  // place -- there is no isolate for them to be outside OF.
+  it("renders single-script Persian text with terminal punctuation completely unwrapped -- no <bdi> needed, dir=\"auto\" resolves directly from the real Persian characters in the DOM", () => {
     const { container } = render(<AssistantContent content="سلام! بررسی: کار انجام نشده است." />);
     const paragraph = container.querySelector("p")!;
     expect(paragraph).toHaveAttribute("dir", "auto");
-
-    const bdiElements = Array.from(paragraph.querySelectorAll("bdi"));
-    expect(bdiElements.length).toBeGreaterThan(0);
-    // Every isolated run holds a real chunk of Persian text -- the
-    // BEHAVIORAL claim under test is that the run boundary excludes the
-    // trailing punctuation, i.e. no <bdi> text content ends in "!"/":"/"."
-    for (const bdi of bdiElements) {
-      expect(bdi.textContent?.trim().endsWith("!")).toBe(false);
-      expect(bdi.textContent?.trim().endsWith(":")).toBe(false);
-      expect(bdi.textContent?.trim().endsWith(".")).toBe(false);
-    }
-    // And the punctuation genuinely exists in the paragraph's rendered
-    // text, just outside any <bdi> -- proving it wasn't dropped, only
-    // correctly left unisolated.
-    expect(paragraph.textContent).toContain("سلام!");
-    expect(paragraph.textContent).toContain("بررسی:");
-    expect(paragraph.textContent).toContain("نشده است.");
+    expect(paragraph.querySelectorAll("bdi").length).toBe(0);
+    expect(paragraph.textContent).toBe("سلام! بررسی: کار انجام نشده است.");
+    expect(paragraph.innerHTML).toBe("سلام! بررسی: کار انجام نشده است.");
   });
 
   // NOTE: a getComputedStyle(paragraph).direction assertion was deliberately
@@ -108,34 +104,41 @@ describe("E3: Persian user bubble alignment (task 17c; direction resolution rewo
     expect(container.innerHTML).not.toMatch(/text-align:\s*left/);
   });
 
-  it("the Persian run is isolated (<bdi>) inside the user bubble too, same as assistant messages", () => {
-    const { container } = render(<ChatBubble role="user" content="امروز چطوری؟" />);
-    expect(container.querySelector("bdi")).not.toBeNull();
+  // Task 17f: "امروز چطوری؟" is single-script Persian, so it renders
+  // unwrapped (R2) -- same as the assistant path in E2 above. A MIXED
+  // user-bubble message still isolates its minority run, unaffected.
+  it("single-script Persian user-bubble text renders unwrapped (no <bdi>); a mixed user-bubble message still isolates its minority run", () => {
+    const { container: pure } = render(<ChatBubble role="user" content="امروز چطوری؟" />);
+    expect(pure.querySelector("bdi")).toBeNull();
+
+    const { container: mixed } = render(<ChatBubble role="user" content="امروز با Codex کار می‌کنم." />);
+    const bdi = mixed.querySelector("bdi");
+    expect(bdi).not.toBeNull();
+    expect(bdi?.textContent).toBe("Codex");
   });
 });
 
-// Task 17e, W1. Device evidence (post-17d build, app UI language
+// Task 17e, W1 (bidi ARCHITECTURE superseded by task 17f's rewrite of
+// bidiText.tsx, see that file's own header comment; this regression guard
+// itself still stands). Device evidence (post-17d build, app UI language
 // non-Persian, conversation Persian): PURE-Persian bubbles ("!سلام",
 // ":برایتان لیست می‌کنم") showed terminal punctuation at the wrong visual
-// end -- no Latin tokens involved, so not the 11e mixed-run class 17d's V3
-// already covers. Root cause (see resolveMessageBaseDirection's own
-// comment in ChatPage.tsx): a pure single-language message has ALL of its
-// strong characters captured by isolateEmbeddedBidiRuns's <bdi> run(s),
-// since a run only ever ends on a strong character of its own script --
-// leaving nothing but neutral terminal punctuation OUTSIDE any <bdi>.
+// end. Root cause: a pure single-language message had ALL of its strong
+// characters captured by isolateEmbeddedBidiRuns's <bdi> run(s), leaving
+// nothing but neutral terminal punctuation OUTSIDE any <bdi> --
 // dir="auto"'s own browser-native detection explicitly skips <bdi>
-// content, so it finds no strong character to resolve from and falls back
+// content, so it found no strong character to resolve from and fell back
 // to the ambient/inherited direction -- which, with nothing between the
 // bubble and ChatPage's own root to interrupt it, was the page root's
 // dir={isRTL ? 'rtl' : 'ltr'} (ChatPage.tsx), driven by the APP UI
-// LANGUAGE the user picked in Settings, not by what they actually typed or
-// what the assistant actually replied with. Fixed by computing the
-// bubble's own dir explicitly from the message's raw content
-// (resolveMessageBaseDirection), so it can never again be decided by
-// anything outside the message itself. These four combinations are the
-// exhaustive matrix of {app UI language} x {message language} the device
-// evidence's own hypothesis named.
-describe("W1 (task 17e): message direction resolves from the message's own content, independent of the app-language page root", () => {
+// LANGUAGE, not by what was actually typed. Task 17f fixes this at BOTH
+// layers: resolveMessageBaseDirection still gives the bubble container an
+// explicit, content-derived dir (never "auto"), AND bidiText.tsx no longer
+// isolates single-script text into a <bdi> at all -- so there is no longer
+// even an isolate for the terminal mark to be "outside" of. These four
+// combinations are the exhaustive matrix of {app UI language} x {message
+// language} the original device evidence's own hypothesis named.
+describe("W1 (task 17e/17f): message direction resolves from the message's own content, independent of the app-language page root", () => {
   const renderInAppRoot = (appDir: "rtl" | "ltr", content: string) =>
     render(
       <div dir={appDir}>
@@ -149,37 +152,36 @@ describe("W1 (task 17e): message direction resolves from the message's own conte
   // container -- the ancestor wrapper legitimately carries the OTHER dir
   // value (it stands in for the real app root), so asserting "no element
   // anywhere has dir=X" would wrongly fail on that ancestor itself.
-  it("FA-app / FA-msg: a Persian app root with a Persian message resolves the bubble to rtl, with the terminal mark immediately outside the isolate", () => {
+  it("FA-app / FA-msg: a Persian app root with a Persian message resolves the bubble to rtl; single-script text renders unwrapped (no <bdi>), the terminal marks sit as plain text in the correct logical position", () => {
     const { container } = renderInAppRoot("rtl", "سلام! برایتان لیست می‌کنم:");
     const bubble = container.querySelector(".rounded-xl")!;
     expect(bubble).toHaveAttribute("dir", "rtl");
-    // Terminal punctuation sits directly adjacent to its own run's closing
-    // </bdi>, in DOM order -- structural proof of correct placement,
-    // independent of any pixel-level rendering jsdom cannot perform.
-    expect(bubble.innerHTML).toMatch(/<\/bdi>!/);
-    expect(bubble.innerHTML).toMatch(/<\/bdi>:/);
+    expect(bubble.querySelector("bdi")).toBeNull();
+    expect(bubble.textContent).toContain("سلام! برایتان لیست می‌کنم:");
   });
 
   it("EN-app / FA-msg (the reported broken combo): an English app root with a Persian message STILL resolves the bubble to rtl -- the app's own UI-language root must not leak in", () => {
     const { container } = renderInAppRoot("ltr", "سلام! برایتان لیست می‌کنم:");
     const bubble = container.querySelector(".rounded-xl")!;
     expect(bubble).toHaveAttribute("dir", "rtl");
-    expect(bubble.innerHTML).toMatch(/<\/bdi>!/);
-    expect(bubble.innerHTML).toMatch(/<\/bdi>:/);
+    expect(bubble.querySelector("bdi")).toBeNull();
+    expect(bubble.textContent).toContain("سلام! برایتان لیست می‌کنم:");
   });
 
   it("FA-app / EN-msg: a Persian app root with an English message resolves the bubble to ltr, not the app root's rtl", () => {
     const { container } = renderInAppRoot("rtl", "Let me write it.");
     const bubble = container.querySelector(".rounded-xl")!;
     expect(bubble).toHaveAttribute("dir", "ltr");
-    expect(bubble.innerHTML).toMatch(/<\/bdi>\./);
+    expect(bubble.querySelector("bdi")).toBeNull();
+    expect(bubble.textContent).toContain("Let me write it.");
   });
 
   it("EN-app / EN-msg: an English app root with an English message resolves the bubble to ltr", () => {
     const { container } = renderInAppRoot("ltr", "Let me write it.");
     const bubble = container.querySelector(".rounded-xl")!;
     expect(bubble).toHaveAttribute("dir", "ltr");
-    expect(bubble.innerHTML).toMatch(/<\/bdi>\./);
+    expect(bubble.querySelector("bdi")).toBeNull();
+    expect(bubble.textContent).toContain("Let me write it.");
   });
 });
 

@@ -19,10 +19,24 @@ describe("ConversationsList", () => {
     expect(screen.getByText(/no conversations yet/i)).toBeInTheDocument();
   });
 
-  it("renders one entry per session, each with dir=auto for correct bidi rendering (task 11e)", () => {
+  // Task 17f, B3: dir is now an EXPLICIT rtl/ltr computed per-item from
+  // the title's own content (resolveMessageBaseDirection), not a bare
+  // dir="auto" -- a bare dir="auto" suffered the same task-17e-class leak
+  // as chat bubbles for a pure single-language title. Each title's dir
+  // matches ITS OWN first-strong character, independent of the others.
+  it("renders one entry per session, each with an EXPLICIT per-item dir derived from that title's own content (task 17f, B3)", () => {
     render(<ConversationsList sessions={sessions} activeSessionId={null} onSelect={vi.fn()} onDelete={vi.fn()} />);
-    const titleParagraphs = document.querySelectorAll('p[dir="auto"]');
-    expect(titleParagraphs.length).toBe(2);
+    expect(document.querySelector('p[dir="ltr"]')?.textContent).toBe("Study plan for IHK");
+    expect(document.querySelector('p[dir="rtl"]')?.textContent).toBe("برنامه هفتگی");
+    expect(document.querySelectorAll("p[dir]").length).toBe(2);
+  });
+
+  it("truncates using a logical text-start alignment, never a hardcoded text-left (task 17f, B3 -- text-left was defeating truncate's own per-direction ellipsis placement)", () => {
+    const { container } = render(
+      <ConversationsList sessions={sessions} activeSessionId={null} onSelect={vi.fn()} onDelete={vi.fn()} />,
+    );
+    expect(container.innerHTML).not.toMatch(/\btext-left\b/);
+    expect(container.querySelectorAll(".text-start").length).toBe(2);
   });
 
   it("clicking a session calls onSelect with its id", async () => {

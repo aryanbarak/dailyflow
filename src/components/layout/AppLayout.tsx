@@ -11,6 +11,7 @@ import { LaunchExperience } from "@/components/LaunchExperience";
 import { LaunchProvider, useLaunch } from "@/contexts/LaunchContext";
 import { SmartflowPointerFollower } from "@/components/smartflow";
 import { cn } from "@/lib/utils";
+import { resolveShellHeightStyle, useVisualViewportInsets } from "@/features/chat/useVisualViewportInsets";
 
 // Task 17c, PO decisions D3/D4: on the mobile Flow AI page ONLY, the
 // bottom nav is removed (chat takes the full height; navigation moves into
@@ -26,6 +27,16 @@ function AppLayoutInner() {
   const location = useLocation();
   const hideMobileChrome = PAGES_WITHOUT_MOBILE_CHROME.has(location.pathname);
   useAlarms();
+  // Task 17f, C2: production evidence -- after a fresh mount in the
+  // Android PWA STANDALONE context, `100dvh` mis-measured this shell (the
+  // chat composer sat below the visible viewport). Scoped to the chat page
+  // ONLY (`hideMobileChrome`, the same flag PAGES_WITHOUT_MOBILE_CHROME
+  // already uses to special-case this page) -- every other page's shell
+  // height is untouched, `h-[100dvh]` alone, exactly as task 17a shipped
+  // it; see resolveShellHeightStyle's own comment for why the JS
+  // measurement is authoritative over dvh whenever it's available.
+  const { viewportHeightPx } = useVisualViewportInsets();
+  const mobileShellHeight = hideMobileChrome ? resolveShellHeightStyle(viewportHeightPx) : undefined;
 
   const appShellStyle = {
     opacity: shouldShowAppShell ? 1 : 0,
@@ -68,13 +79,20 @@ function AppLayoutInner() {
             chosen + why" for the full writeup. min-h-screen was a static
             100vh floor that never shrank, so a fixed-at-the-bottom
             composer could end up rendered behind the keyboard. */}
-        <div className="lg:hidden flex flex-col h-[100dvh]">
+        <div className="lg:hidden flex flex-col h-[100dvh]" style={mobileShellHeight ? { height: mobileShellHeight } : undefined}>
           {!hideMobileChrome && (
             <div className="flex justify-end px-4 pt-3 pb-1 shrink-0">
               <GlobalSearch />
             </div>
           )}
-          <main className={cn("flex-1 overflow-auto", !hideMobileChrome && "pb-20")}>
+          {/* Task 17f, C1a: overscroll-contain -- this is the scrolling
+              ancestor for every mobile page's own content, including the
+              chat page's message region; without this, a boundary
+              overscroll here could still chain into the browser's native
+              pull-to-refresh even with the chat's OWN inner scroll region
+              contained (see ChatPage.tsx and index.css's html/body for the
+              other scroll-chain stops). */}
+          <main className={cn("flex-1 overflow-auto overscroll-contain", !hideMobileChrome && "pb-20")}>
             <Outlet />
           </main>
           {!hideMobileChrome && <MobileNav />}
