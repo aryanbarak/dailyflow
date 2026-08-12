@@ -19,6 +19,7 @@ import {
   getAmbiguousOfferText,
   isAutoExecutableReadOnlyProposal,
   liveTaskReasoningContext,
+  looksLikeExplicitActionRequest,
   proposalMessage,
   proposalsToStates,
   proposalToState,
@@ -785,15 +786,21 @@ describe("ChatPage LLM reasoning UX boundary", () => {
     expect(english).toContain('dir="ltr"'); // starts with Latin "Review"
     expect(german).toContain('dir="ltr"'); // starts with Latin "Heute"
     expect(farsi).toContain('dir="rtl"'); // starts with Persian "امروز"
-    for (const html of [mixed, english, german, farsi]) {
-      // Never MORE than one explicit dir -- exactly the bubble container,
-      // nothing else on this render path gets a hardcoded rtl/ltr.
-      expect(html.match(/dir="(?:rtl|ltr)"/g)?.length).toBe(1);
-    }
-
-    // Every markdown block (bidiText.tsx) still gets its own dir="auto" --
-    // one per \n\n-separated paragraph in `mixed`.
-    expect(mixed.match(/dir="auto"/g)?.length).toBe(3);
+    // Task 20, Part B: every markdown block (p/ul/ol/li) now ALSO gets its
+    // own EXPLICIT rtl/ltr (bidiText.tsx's createDirectionalMarkdownComponents
+    // -- was a bare dir="auto") instead of relying on the browser's native
+    // dir="auto" search, which is unreliable once isolated inline content is
+    // involved (see that file's own comment). So the bubble root's dir is no
+    // longer the ONLY explicit dir on this render path -- each paragraph
+    // contributes its own, correctly resolved independently per paragraph.
+    // `mixed` has 3 paragraphs (rtl, ltr, ltr) + the bubble root (rtl) = 4;
+    // each single-paragraph case has its own p + the bubble root = 2.
+    expect(mixed.match(/dir="(?:rtl|ltr)"/g)?.length).toBe(4);
+    expect(english.match(/dir="(?:rtl|ltr)"/g)?.length).toBe(2);
+    expect(german.match(/dir="(?:rtl|ltr)"/g)?.length).toBe(2);
+    expect(farsi.match(/dir="(?:rtl|ltr)"/g)?.length).toBe(2);
+    // No bare dir="auto" remains anywhere on this render path any more.
+    expect(mixed).not.toContain('dir="auto"');
 
     // Task 17f rewrite of bidiText.tsx (R2/R3): isolation now targets ONLY
     // the MINORITY-direction run relative to each paragraph's own dominant
@@ -807,8 +814,8 @@ describe("ChatPage LLM reasoning UX boundary", () => {
     // (English/German respectively -- a lone digit has no strong bidi type
     // of its own, R2), so NEITHER paragraph has anything to isolate at all.
     expect(mixed).toContain("این نتیجه برای <bdi>Review active tasks</bdi> است.");
-    expect(mixed).toContain('<p dir="auto" class="mb-2 last:mb-0">Review active tasks (2).</p>');
-    expect(mixed).toContain('<p dir="auto" class="mb-2 last:mb-0">Heute sind 2 Termine frei.</p>');
+    expect(mixed).toContain('<p dir="ltr" class="mb-2 last:mb-0">Review active tasks (2).</p>');
+    expect(mixed).toContain('<p dir="ltr" class="mb-2 last:mb-0">Heute sind 2 Termine frei.</p>');
     expect(mixed.match(/<bdi>/g)?.length).toBe(1);
   });
 
@@ -837,8 +844,14 @@ describe("ChatPage LLM reasoning UX boundary", () => {
       />,
     );
 
+    // Task 20, Part B: the paragraph now resolves an explicit dir="ltr"
+    // (single-script English content) rather than a bare dir="auto" -- see
+    // this file's other task 20 comment above for why. Still never rtl,
+    // which is the actual property this test protects (an English proposal
+    // never gets mirrored into RTL just because the surrounding language is
+    // Persian).
     expect(proposalBubble).not.toContain('dir="rtl"');
-    expect(proposalBubble).toContain('dir="auto"');
+    expect(proposalBubble).toContain('dir="ltr"');
     expect(controls).toContain("Run tasks.list");
     expect(controls).not.toContain('dir="rtl"');
   });
@@ -1097,6 +1110,101 @@ describe("ChatPage LLM reasoning UX boundary", () => {
       expect(outcome.content).not.toBe(UNSUPPORTED_FA_DEAD_END);
       expect(outcome.reasoningStates).toBeNull();
     }
+  });
+
+  // ---------------------------------------------------------------------
+  // Task 20, Part A0 (PO revision of task 11b): an 'unsupported' overlay for
+  // a CLEAR, explicit action request (a real write-shaped verb -- create,
+  // set up, schedule, remind, ...) now gets one short, calm capability
+  // sentence, instead of staying fully silent. The gate is DELIBERATELY
+  // narrower than "intentSignal is explicit" alone: that broader condition
+  // is exactly the shape of task 11b's OWN original bug (see
+  // looksLikeExplicitActionRequest's own comment in ChatPage.tsx), so every
+  // test below also re-proves the historical regression case stays silent.
+  // ---------------------------------------------------------------------
+
+  describe("Task 20, Part A0: honest capability statement for an explicit, unsupported action request", () => {
+    it("looksLikeExplicitActionRequest: matches real write-shaped verbs (EN/DE/FA) -- the task's own motivating example ('set a daily study task and two daily reminders')", () => {
+      expect(looksLikeExplicitActionRequest("Please set a daily study task and two daily reminders.")).toBe(true);
+      expect(looksLikeExplicitActionRequest("Can you schedule a meeting for tomorrow?")).toBe(true);
+      expect(looksLikeExplicitActionRequest("Bitte erstelle eine neue Aufgabe für mich.")).toBe(true);
+      expect(looksLikeExplicitActionRequest("لطفاً یک یادآوری برایم تنظیم کن.")).toBe(true);
+    });
+
+    it("looksLikeExplicitActionRequest: does NOT match the historical 11b regression case or ordinary conversational text -- it is a narrow, purpose-built vocabulary, not a general imperative detector", () => {
+      expect(looksLikeExplicitActionRequest("تصمیم دارم که در هامبورگ برایم کار پیدا کنم")).toBe(false);
+      expect(looksLikeExplicitActionRequest("I've decided to find myself a job in Hamburg.")).toBe(false);
+      expect(looksLikeExplicitActionRequest("Tell me more about the role.")).toBe(false);
+    });
+
+    it("a clear action request ('set a reminder') that resolves to 'unsupported' gets the short capability sentence appended", () => {
+      const t = (key: string) => key;
+      const reply = "That sounds useful for staying on track.";
+      const outcome = resolveChatTurnOutcome(
+        { intentSignal: "explicit", message: "Please set a daily study task and two daily reminders.", responseLanguage: "en", reply, overlayResult: unsupportedResult() },
+        t,
+      );
+      expect(outcome.content).toBe(`${reply}\n\nI can't do that yet — this isn't something Flow AI supports right now.`);
+      expect(outcome.reasoningStates).toBeNull();
+    });
+
+    it("DE/FA: the capability sentence is language-matched, not hardcoded English", () => {
+      const t = (key: string) => key;
+      const deOutcome = resolveChatTurnOutcome(
+        { intentSignal: "explicit", message: "Bitte erstelle eine neue Aufgabe.", responseLanguage: "de", reply: "Klingt gut.", overlayResult: unsupportedResult() },
+        t,
+      );
+      expect(deOutcome.content).toContain("Das kann ich noch nicht");
+
+      const faOutcome = resolveChatTurnOutcome(
+        { intentSignal: "explicit", message: "لطفاً یک یادآوری تنظیم کن.", responseLanguage: "fa", reply: "به نظر مفید می‌رسد.", overlayResult: unsupportedResult() },
+        t,
+      );
+      expect(faOutcome.content).toContain("هنوز نمی‌توانم این کار را انجام دهم");
+    });
+
+    it("REGRESSION GUARD: the exact task 11b historical bug case stays SILENT -- no capability sentence, even though intentSignal is 'explicit' and the overlay is 'unsupported', because looksLikeExplicitActionRequest correctly excludes it", () => {
+      const t = (key: string) => key;
+      const reply = "به نظر می‌رسه دنبال فرصت شغلی در هامبورگ هستی -- عالیه!";
+      const outcome = resolveChatTurnOutcome(
+        { intentSignal: "explicit", message: "تصمیم دارم که در هامبورگ برایم کار پیدا کنم", responseLanguage: "fa", reply, overlayResult: unsupportedResult() },
+        t,
+      );
+      expect(outcome.content).toBe(reply);
+    });
+
+    it("an 'unsupported' overlay for a NON-action-shaped explicit message (no write verb) stays silent, same as before task 20", () => {
+      const t = (key: string) => key;
+      const reply = "Tell me more about the role.";
+      const outcome = resolveChatTurnOutcome(
+        { intentSignal: "explicit", message: "please apply for this job for me", responseLanguage: "en", reply, overlayResult: unsupportedResult() },
+        t,
+      );
+      // "apply" is not in the explicit-action verb vocabulary -- matches
+      // test (f) above, which already asserts this message stays silent.
+      expect(outcome.content).toBe(reply);
+    });
+
+    it("a genuine ask_clarification (not 'unsupported') never gets the capability sentence, even for an action-shaped message -- A0 is scoped to 'unsupported' only", () => {
+      const t = (key: string) => key;
+      const reply = "Sure, tell me more.";
+      const clarification = parseFailureClarificationResult();
+      const outcome = resolveChatTurnOutcome(
+        { intentSignal: "explicit", message: "please create a task for this", responseLanguage: "en", reply, overlayResult: clarification },
+        t,
+      );
+      expect(outcome.content).toBe(reply);
+    });
+
+    it("an action-shaped message with intentSignal 'ambiguous' (overlay never even runs) is unaffected -- A0 only applies when the overlay actually resolved to 'unsupported'", () => {
+      const t = (key: string) => key;
+      const reply = "Not sure I follow -- what would you like me to do?";
+      const outcome = resolveChatTurnOutcome(
+        { intentSignal: "ambiguous", message: "create something for me maybe", responseLanguage: "en", reply, overlayResult: null },
+        t,
+      );
+      expect(outcome.content).toBe(reply);
+    });
   });
 
   // ---------------------------------------------------------------------

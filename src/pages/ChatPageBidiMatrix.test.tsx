@@ -89,16 +89,31 @@ describe("task 17f bidi matrix -- Persian ending in '.' (single-script, terminal
   }
 });
 
-describe("task 17f bidi matrix -- Persian ending in ':' after a bold phrase (single-script bold renders unwrapped inside its own CSS-isolated <strong>)", () => {
+// Task 20, Part B CORRECTION: this suite's ORIGINAL assertion (the colon
+// sits BARE, "not inside any isolate", directly after </strong>) was task
+// 17f's own untested assumption -- and it was WRONG. Production evidence
+// (task 20) showed exactly this shape ("**Task**: (وظیفه)") rendering with
+// the mark on the WRONG side, because a lone neutral character living
+// unisolated at a direction boundary has nothing anchoring its position.
+// The fix (bidiText.tsx's LEADING_ATTACHED_MARK_PATTERN) now isolates that
+// attached mark into its OWN small <bdi>, immediately following the
+// <strong>'s isolate in DOM order -- still "directly after </strong>", just
+// now isolated rather than bare. This test is corrected accordingly; see
+// bidiText.test.tsx's own new "attached mark anchoring" describe block for
+// the isolated unit-level coverage of this exact mechanism.
+describe("task 17f bidi matrix -- Persian ending in ':' after a bold phrase (single-script bold renders unwrapped inside its own CSS-isolated <strong>; the attached colon now anchors via its own isolate, task 20 correction)", () => {
   for (const appDir of APP_ROOTS) {
-    it(`[app=${appDir}] the colon sits directly after </strong>, in DOM order, not inside any isolate`, () => {
+    it(`[app=${appDir}] the colon sits directly after </strong> in DOM order, now inside its OWN small isolate (task 20 fix) rather than bare`, () => {
       const { container } = renderBubble(appDir, "**خلاصه**: امروز کارها تمام شد.");
       const bubble = container.querySelector(".rounded-xl")!;
       const paragraph = bubble.querySelector("p")!;
       const strong = paragraph.querySelector("strong")!;
       expect(strong.textContent).toBe("خلاصه");
       expect(strong.querySelector("bdi")).toBeNull(); // single-script bold text, R2 applies inside strong too
-      expect(paragraph.innerHTML).toMatch(/<\/strong>: امروز کارها تمام شد\./);
+      // The attached colon is the <strong>'s very next sibling, isolated in
+      // its own <bdi> (task 20) -- DOM order unchanged, isolation added.
+      expect(paragraph.innerHTML).toMatch(/<\/strong><bdi>:<\/bdi> امروز کارها تمام شد\./);
+      expect(paragraph.textContent).toBe("خلاصه: امروز کارها تمام شد.");
     });
   }
 });
@@ -114,9 +129,9 @@ describe('task 17f bidi matrix -- "AI/ML." (R3: attached trailing mark generalis
   }
 });
 
-describe("task 17f bidi matrix -- RTL bullet list, including a nested list (R6: logical padding-inline-start, every level gets dir=auto)", () => {
+describe("task 17f bidi matrix -- RTL bullet list, including a nested list (R6: logical padding-inline-start, every level gets an explicit direction)", () => {
   for (const appDir of APP_ROOTS) {
-    it(`[app=${appDir}] top-level and nested <ul> both use ps-4 (never pl-4/pr-4), both dir=auto`, () => {
+    it(`[app=${appDir}] top-level and nested <ul> both use ps-4 (never pl-4/pr-4), both resolve dir="rtl" explicitly (task 20, Part B -- was dir="auto")`, () => {
       const { container } = renderBubble(
         appDir,
         "- تسک اول\n  - زیرتسک الف\n  - زیرتسک ب\n- تسک دوم",
@@ -125,7 +140,7 @@ describe("task 17f bidi matrix -- RTL bullet list, including a nested list (R6: 
       const lists = bubble.querySelectorAll("ul");
       expect(lists.length).toBe(2); // top-level + one nested
       for (const ul of Array.from(lists)) {
-        expect(ul).toHaveAttribute("dir", "auto");
+        expect(ul).toHaveAttribute("dir", "rtl");
         expect(ul.className).toMatch(/\bps-4\b/);
         expect(ul.className).not.toMatch(/\bpl-4\b|\bpr-4\b/);
       }
@@ -199,6 +214,96 @@ describe('task 17f bidi matrix -- "(2)." regression (task 17d\'s protected numer
       const bubble = container.querySelector(".rounded-xl")!;
       expect(bubble.querySelector("bdi")).toBeNull();
       expect(bubble.textContent).toContain("بررسی کارها (2).");
+    });
+  }
+});
+
+// ===========================================================================
+// Task 20, Part B: bidi at inline boundaries -- production evidence:
+// "Task :(وظیفه)" rendered instead of "(وظیفه) Task:", same for
+// "Reminder :(یادآور)", plus a list-marker and a "[...]" bracket case. Every
+// case below is run under BOTH an EN app root AND an FA app root (the same
+// PO-usage-reality matrix requirement as the rest of this file).
+// ===========================================================================
+
+describe("task 20 bidi matrix -- bold Latin label + attached colon + adjacent Persian parenthetical (the exact production evidence shape)", () => {
+  for (const appDir of APP_ROOTS) {
+    it(`[app=${appDir}] the colon anchors immediately after </strong> in its own isolate, and the Persian parenthetical stays a separate, correctly-placed unit`, () => {
+      const { container } = renderBubble(appDir, "**Task**: (وظیفه) را انجام بده.");
+      const bubble = container.querySelector(".rounded-xl")!;
+      const paragraph = bubble.querySelector("p")!;
+      const strong = paragraph.querySelector("strong")!;
+      expect(strong.textContent).toBe("Task");
+      // The attached colon is the <strong>'s very next DOM sibling, in its
+      // own isolate -- never floating bare at the direction boundary.
+      expect(paragraph.innerHTML).toMatch(/<\/strong><bdi>:<\/bdi> /);
+      // Full text content survives round-trip untouched regardless of
+      // isolation structure.
+      expect(paragraph.textContent).toBe("Task: (وظیفه) را انجام بده.");
+    });
+
+    it(`[app=${appDir}] "Reminder" -- the second production-evidence label, same shape`, () => {
+      const { container } = renderBubble(appDir, "**Reminder**: (یادآور) را هم تنظیم کن.");
+      const bubble = container.querySelector(".rounded-xl")!;
+      const paragraph = bubble.querySelector("p")!;
+      expect(paragraph.innerHTML).toMatch(/<\/strong><bdi>:<\/bdi> /);
+      expect(paragraph.textContent).toBe("Reminder: (یادآور) را هم تنظیم کن.");
+    });
+  }
+});
+
+describe("task 20 bidi matrix -- bold Persian label + attached mark + adjacent Latin word", () => {
+  for (const appDir of APP_ROOTS) {
+    it(`[app=${appDir}] the attached mark anchors to the bold Persian run, the Latin word isolates as its own minority run`, () => {
+      const { container } = renderBubble(appDir, "**وظیفه**: Task را انجام بده.");
+      const bubble = container.querySelector(".rounded-xl")!;
+      const paragraph = bubble.querySelector("p")!;
+      const strong = paragraph.querySelector("strong")!;
+      expect(strong.textContent).toBe("وظیفه");
+      expect(paragraph.innerHTML).toMatch(/<\/strong><bdi>:<\/bdi> <bdi>Task<\/bdi> /);
+      expect(paragraph.textContent).toBe("وظیفه: Task را انجام بده.");
+    });
+  }
+});
+
+describe("task 20 bidi matrix -- RTL list item starting with a bold run", () => {
+  for (const appDir of APP_ROOTS) {
+    it(`[app=${appDir}] the <li> resolves an explicit rtl direction even though its content BEGINS with an isolated bold run -- native dir="auto" would have found nothing to resolve from here`, () => {
+      const { container } = renderBubble(appDir, "- **پروژه من**: در حال انجام است.\n- تسک دوم");
+      const bubble = container.querySelector(".rounded-xl")!;
+      const items = bubble.querySelectorAll("li");
+      expect(items.length).toBe(2);
+      const [first] = Array.from(items);
+      expect(first).toHaveAttribute("dir", "rtl");
+      expect(first.querySelector("strong")?.textContent).toBe("پروژه من");
+      expect(first.innerHTML).toMatch(/<\/strong><bdi>:<\/bdi> /);
+    });
+
+    it(`[app=${appDir}] a list item that is ENTIRELY a bold Persian run (nothing else at all) still resolves rtl via the degenerate-case fallback`, () => {
+      const { container } = renderBubble(appDir, "- **پروژه من**\n- تسک دوم");
+      const bubble = container.querySelector(".rounded-xl")!;
+      const [first] = Array.from(bubble.querySelectorAll("li"));
+      expect(first).toHaveAttribute("dir", "rtl");
+    });
+  }
+});
+
+describe('task 20 bidi matrix -- bracketed Persian phrase "[...]" mid-sentence (production evidence: "تاریخ سررسید: [3 روز از امروز]")', () => {
+  for (const appDir of APP_ROOTS) {
+    it(`[app=${appDir}] the bracketed Persian run isolates as its own unit inside dominant Latin text`, () => {
+      const { container } = renderBubble(appDir, "Due date: [سه روز از امروز] is the deadline.");
+      const bubble = container.querySelector(".rounded-xl")!;
+      const paragraph = bubble.querySelector("p")!;
+      expect(paragraph.querySelector("bdi")?.textContent).toBe("سه روز از امروز");
+      expect(paragraph.textContent).toBe("Due date: [سه روز از امروز] is the deadline.");
+    });
+
+    it(`[app=${appDir}] a bracketed Latin phrase isolates as its own unit inside dominant Persian text (symmetric)`, () => {
+      const { container } = renderBubble(appDir, "تاریخ سررسید: [Due Soon] است.");
+      const bubble = container.querySelector(".rounded-xl")!;
+      const paragraph = bubble.querySelector("p")!;
+      expect(paragraph.querySelector("bdi")?.textContent).toBe("Due Soon");
+      expect(paragraph.textContent).toBe("تاریخ سررسید: [Due Soon] است.");
     });
   }
 });

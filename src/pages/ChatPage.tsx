@@ -520,6 +520,52 @@ export function getAmbiguousOfferText(hint: AmbiguousOfferHint, language: Suppor
   return AMBIGUOUS_OFFER_TEXT[hint][language]
 }
 
+// Task 20, Part A0 (PO revision of task 11b): 'unsupported' is silenced by
+// default (see resolveChatTurnOutcome below) because task 11b's own root
+// cause was exactly this shape -- a message misclassified 'explicit' by a
+// keyword collision (bare Persian "کار" in a personal statement about job
+// hunting) reaching 'unsupported' and becoming a nag on ordinary
+// conversation. That risk has NOT gone away; classifyMessageIntentSignal's
+// 'explicit' bucket still catches that same historical case today. So this
+// is a DELIBERATELY narrower, separate gate from plain 'explicit': a small,
+// explicit vocabulary of verbs for the WRITE-shaped requests a user would
+// actually phrase when asking Flow AI to create/set/schedule something
+// (the task's own motivating example: "set a daily study task and two daily
+// reminders") -- never a general imperative-mood detector, same philosophy
+// as IMPERATIVE_CLAUSE_PATTERN_* above and intentValidator.ts's own
+// requestLooksUnsupported, but purpose-built here rather than reusing
+// either: hasImperativeClause's list (show/check/list/complete/mark/
+// create/add/update) serves a DIFFERENT job (demoting self-statements) and
+// is missing set/schedule/remind entirely; requestLooksUnsupported lives in
+// intentValidator.ts and changing its vocabulary would alter reasoning-
+// pipeline classification itself, out of this task's scope (no
+// write-tool/approval/execution changes). This list exists ONLY to gate
+// whether the reply gets one extra sentence.
+const EXPLICIT_ACTION_VERB_PATTERN_EN =
+  /\b(create|set up|set|schedule|add|remind|remove|delete|update|cancel|book|reserve)\b/i
+const EXPLICIT_ACTION_VERB_PATTERN_DE =
+  /\b(erstelle|erstellen|richte ein|einrichten|setze|plane|planen|f[üu]ge hinzu|hinzuf[üu]gen|erinnere|erinnern|entferne|l[öo]sche|l[öo]schen|aktualisiere|aktualisieren|storniere|buche|reserviere)\b/i
+const EXPLICIT_ACTION_VERB_PATTERN_FA =
+  /(بساز|ایجاد\s*کن|تنظیم\s*کن|برنامه[‌\s-]?ریزی\s*کن|اضافه\s*کن|یادآوری\s*کن|حذف\s*کن|پاک\s*کن|به[‌\s-]?روزرسانی\s*کن|لغو\s*کن|رزرو\s*کن)/
+
+export function looksLikeExplicitActionRequest(message: string): boolean {
+  return (
+    EXPLICIT_ACTION_VERB_PATTERN_EN.test(message) ||
+    EXPLICIT_ACTION_VERB_PATTERN_DE.test(message) ||
+    EXPLICIT_ACTION_VERB_PATTERN_FA.test(message)
+  )
+}
+
+// Short, calm, non-naggy -- states the gap plainly without apologizing at
+// length or inviting a back-and-forth. Deliberately does not name specific
+// missing tools (e.g. "reminders") -- the capability list changes over
+// time; this stays evergreen.
+const UNSUPPORTED_CAPABILITY_TEXT: Record<SupportedAiResponseLanguage, string> = {
+  en: "I can't do that yet — this isn't something Flow AI supports right now.",
+  de: 'Das kann ich noch nicht — das unterstützt Flow AI aktuell noch nicht.',
+  fa: 'هنوز نمی‌توانم این کار را انجام دهم — Flow AI فعلاً این قابلیت را ندارد.',
+}
+
 // Task 11b (silence the overlay): exhaustive over every AgentIntentType the
 // reasoning path can validate to (intentValidator.ts's supportedIntentTypes).
 // A `never` check on the default branch makes adding a new intent type
@@ -847,24 +893,37 @@ export interface ChatTurnOutcome {
   readonly reasoningStates: ReasoningProposalState[] | null
 }
 
-// Task 11b (silence the overlay): the ONE place that decides how a resolved
-// conversational reply and a resolved (possibly null, possibly failed)
-// overlay result combine into what the user actually sees. Extracted as a
-// pure function -- independent of fetch/Supabase/React state -- so the
-// decision logic is directly testable without rendering the full ChatPage
-// component, mirroring how classifyMessageIntentSignal/getAmbiguousOfferHint
-// are already tested as pure functions in this same file.
+// Task 11b (silence the overlay), revised by task 20's Part A0: the ONE
+// place that decides how a resolved conversational reply and a resolved
+// (possibly null, possibly failed) overlay result combine into what the
+// user actually sees. Extracted as a pure function -- independent of
+// fetch/Supabase/React state -- so the decision logic is directly testable
+// without rendering the full ChatPage component, mirroring how
+// classifyMessageIntentSignal/getAmbiguousOfferHint are already tested as
+// pure functions in this same file.
 //
-// Exactly two outcomes can add anything to what the user sees:
+// Exactly THREE outcomes can add anything to what the user sees:
 //   (a) a supported, actionable proposal -> the intent panel (unchanged UI)
 //   (b) the task-9 ambiguous trailing offer -> one extra sentence
-// Everything else -- unsupported, a genuine ask_clarification, low
-// confidence, conflicting domain evidence, a mixed request, an unparseable
-// LLM response, or the overlay promise having failed/thrown/timed out --
-// surfaces NOTHING: no panel, no trailing note, no clarificationQuestion
-// text. The conversational reply the default lane already produced is the
-// whole story for all of those; see hasSupportedActionableOverlay above for
-// the exhaustive type-level definition of "actionable."
+//   (c) task 20, A0: an 'unsupported' overlay for a message that ALSO looks
+//       like a genuine, explicit write-shaped action request
+//       (looksLikeExplicitActionRequest) -> one short, calm capability
+//       statement. This is DELIBERATELY narrower than "intentSignal is
+//       explicit and overlay is unsupported" -- that broader condition is
+//       exactly task 11b's own original bug shape (a conversational
+//       self-statement misclassified 'explicit' by a keyword collision,
+//       reaching 'unsupported', becoming a nag) and would reproduce it
+//       verbatim; requiring the extra verb-vocabulary match keeps that case
+//       silent while still surfacing an honest answer for a real request
+//       like "set a daily study task and two daily reminders."
+// Everything else -- unsupported for a non-action-shaped message, a genuine
+// ask_clarification, low confidence, conflicting domain evidence, a mixed
+// request, an unparseable LLM response, or the overlay promise having
+// failed/thrown/timed out -- surfaces NOTHING: no panel, no trailing note,
+// no clarificationQuestion text. The conversational reply the default lane
+// already produced is the whole story for all of those; see
+// hasSupportedActionableOverlay above for the exhaustive type-level
+// definition of "actionable."
 export function resolveChatTurnOutcome(input: ChatTurnOverlayInput, t: Translate): ChatTurnOutcome {
   const overlayResult = input.overlayResult
   const hasGenuineOverlay = overlayResult !== null && hasSupportedActionableOverlay(overlayResult)
@@ -877,7 +936,16 @@ export function resolveChatTurnOutcome(input: ChatTurnOverlayInput, t: Translate
   }
 
   const offerHint = input.intentSignal === 'ambiguous' ? getAmbiguousOfferHint(input.message) : null
-  const trailingNote = offerHint ? getAmbiguousOfferText(offerHint, input.responseLanguage) : null
+  const ambiguousTrailingNote = offerHint ? getAmbiguousOfferText(offerHint, input.responseLanguage) : null
+
+  const isExplicitUnsupportedActionRequest =
+    input.intentSignal === 'explicit' &&
+    overlayResult !== null &&
+    overlayResult.proposal.type === 'unsupported' &&
+    looksLikeExplicitActionRequest(input.message)
+  const capabilityTrailingNote = isExplicitUnsupportedActionRequest ? UNSUPPORTED_CAPABILITY_TEXT[input.responseLanguage] : null
+
+  const trailingNote = ambiguousTrailingNote ?? capabilityTrailingNote
 
   return {
     content: trailingNote ? `${input.reply}\n\n${trailingNote}` : input.reply,

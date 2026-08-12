@@ -93,9 +93,9 @@ describe("ChatBubble compact mode", () => {
     expect(html).toContain("text-[13px]");
   });
 
-  it("compact mode does not remove the dir=auto bidi handling (task 11e unaffected)", () => {
+  it("compact mode does not remove the bidi direction handling (task 11e unaffected) -- resolves an explicit dir=\"ltr\" for this single-script English content (task 20, Part B: p now computes an explicit dir instead of a bare dir=\"auto\")", () => {
     const html = renderToString(<ChatBubble role="assistant" content="Hello" compact />);
-    expect(html).toContain('dir="auto"');
+    expect(html).toContain('dir="ltr"');
   });
 });
 

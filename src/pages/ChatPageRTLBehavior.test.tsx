@@ -38,10 +38,10 @@ describe("E2: Persian assistant text with trailing punctuation (task 17c; supers
   // for its own dir="auto" to resolve from, so the terminal marks can
   // never end up "outside the isolate at the wrong edge" in the first
   // place -- there is no isolate for them to be outside OF.
-  it("renders single-script Persian text with terminal punctuation completely unwrapped -- no <bdi> needed, dir=\"auto\" resolves directly from the real Persian characters in the DOM", () => {
+  it("renders single-script Persian text with terminal punctuation completely unwrapped -- no <bdi> needed, an explicit dir=\"rtl\" (task 20, Part B -- was dir=\"auto\") resolves directly from the real Persian characters in the DOM", () => {
     const { container } = render(<AssistantContent content="سلام! بررسی: کار انجام نشده است." />);
     const paragraph = container.querySelector("p")!;
-    expect(paragraph).toHaveAttribute("dir", "auto");
+    expect(paragraph).toHaveAttribute("dir", "rtl");
     expect(paragraph.querySelectorAll("bdi").length).toBe(0);
     expect(paragraph.textContent).toBe("سلام! بررسی: کار انجام نشده است.");
     expect(paragraph.innerHTML).toBe("سلام! بررسی: کار انجام نشده است.");

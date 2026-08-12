@@ -14,6 +14,7 @@ import { handleContextDerivationRequest } from './context-derivation-endpoint'
 import { handlePersonalMemoryExtractionRequest } from './personal-memory-extraction-endpoint'
 import { handleDocumentMemoryExtractionRequest } from './document-memory-extraction-endpoint'
 import { buildAttachmentTextPart, resolveChatAttachment } from './chat-attachment-context'
+import { checkForFalseCompletionClaim } from './completion-claim-guard'
 
 // ADR-0010 Product Owner Resolution Q4: always-on background extraction
 // into user_context is DISABLED by this decision (SUPERSEDE per Q3 --
@@ -748,7 +749,18 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
     const system = buildChatSystemPrompt(language, confirmedMemory)
     const fullHistory: ChatMessage[] = [...history, { role: 'user', content: modelFacingMessage }]
 
-    const reply = await callGeminiChat(system, fullHistory, env, {}, attachmentImage)
+    const rawReply = await callGeminiChat(system, fullHistory, env, {}, attachmentImage)
+
+    // Task 20, Part A2: deterministic post-check -- see
+    // completion-claim-guard.ts for the full rationale. Applied BEFORE
+    // persistence so the stored history and the returned reply never
+    // diverge (no drift between what the user sees now and what a later
+    // turn's history reload would show).
+    const claimCheck = checkForFalseCompletionClaim(rawReply, language)
+    if (claimCheck.flagged) {
+      console.log(`[Chat] false completion claim intercepted: userId=${userId} sessionId=${sessionId} kind=${claimCheck.matchedKind} matched="${claimCheck.matchedText}"`)
+    }
+    const reply = claimCheck.text
 
     // Persist both after a successful Gemini call so no orphaned turns are saved on error
     await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'user', content: message })

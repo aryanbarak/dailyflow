@@ -31,7 +31,11 @@ describe("AgentBriefingCard's MD_COMPONENTS renders correctly with the rewritten
         {"امروز با Codex روی این کار پیش رفتی."}
       </ReactMarkdown>,
     );
-    expect(html).toContain('<p dir="auto" class="agent-briefing-card__text">');
+    // Task 20, Part B: p/ul/li resolve an EXPLICIT rtl/ltr now instead of
+    // native dir="auto" -- see bidiText.tsx's own comment for why. "امروز"
+    // is the first (non-isolated) strong character, so this resolves "rtl",
+    // the same answer a working native dir="auto" search would also give.
+    expect(html).toContain('<p dir="rtl" class="agent-briefing-card__text">');
     expect(html).toContain("<bdi>Codex</bdi>");
     expect(html.match(/<bdi>/g)?.length).toBe(1);
   });
@@ -40,8 +44,8 @@ describe("AgentBriefingCard's MD_COMPONENTS renders correctly with the rewritten
     const html = renderToString(
       <ReactMarkdown components={AGENT_BRIEFING_MD_COMPONENTS}>{"- تسک اول\n- تسک دوم"}</ReactMarkdown>,
     );
-    expect(html).toContain('<ul dir="auto" class="agent-briefing-card__list">');
-    expect(html.match(/<li dir="auto" class="agent-briefing-card__list-item">/g)?.length).toBe(2);
+    expect(html).toContain('<ul dir="rtl" class="agent-briefing-card__list">');
+    expect(html.match(/<li dir="rtl" class="agent-briefing-card__list-item">/g)?.length).toBe(2);
   });
 });
 

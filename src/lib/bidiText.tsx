@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { ReactElement, ReactNode } from "react";
 
 // SmartFlow bidi utility (task 11e, generalised by task 17f) -- shared by
 // every surface that renders model- or user-generated text that can mix
@@ -70,26 +70,45 @@ export function resolveMessageBaseDirection(text: string): "rtl" | "ltr" {
 // (that phrase-only, space-required restriction existed ONLY to keep a
 // bare digit like "(2)." from being swallowed whole; now that digits can
 // never match RUN_SOURCE at all -- see above -- that restriction is no
-// longer needed and is dropped). Two alternatives, tried in this order:
+// longer needed and is dropped). Three alternatives, tried in this order:
 //  1. `(RUN)` + a REQUIRED trailing mark -- unchanged from task 17d's V3:
 //     the closing paren is only pulled INTO the isolate together with an
 //     attached mark. A parenthesized run with nothing attached to its own
 //     closing paren (task 17d's protected "(به به)"/"(Advanced Technical
 //     Support)" cases, no mark follows) does NOT match this alternative,
-//     and falls through to alternative 2 below, which starts matching
+//     and falls through to alternative 3 below, which starts matching
 //     one character later (RUN_SOURCE never itself starts on "(") -- so
 //     the parens are correctly left OUTSIDE the isolate, exactly as
 //     before.
-//  2. A bare RUN with an OPTIONAL trailing mark -- the actual task 17f
+//  2. Task 20, Part B: `[RUN]` + a REQUIRED trailing mark -- the exact
+//     same shape as alternative 1, generalised to square brackets (the
+//     production evidence's "تاریخ سررسید: [3 روز از امروز]" bracket-
+//     boundary instability). Deliberately symmetric with round parens,
+//     including the SAME "no mark -> stays excluded, falls through to the
+//     bare run" behaviour -- a leading digit immediately inside the
+//     brackets (the "3" above) is not itself a strong character so it can
+//     never be part of RUN_SOURCE either way; only the run itself
+//     isolates. See the task 20 report for this documented, accepted
+//     scope boundary.
+//  3. A bare RUN with an OPTIONAL trailing mark -- the task 17f
 //     generalisation: "SmartFlow." / "AI/ML." / "Codex:" now isolate their
-//     attached mark too, whether or not any parens are involved.
+//     attached mark too, whether or not any brackets are involved.
 function runWithAttachedMarks(runSource: string): string {
-  return `(?:\\(${runSource}\\)[:.!?]|${runSource}[:.!?]?)`;
+  return `(?:\\(${runSource}\\)[:.!?]|\\[${runSource}\\][:.!?]|${runSource}[:.!?]?)`;
 }
 const LATIN_RUN_WITH_MARKS = runWithAttachedMarks(LATIN_RUN_SOURCE);
 const PERSIAN_RUN_WITH_MARKS = runWithAttachedMarks(PERSIAN_RUN_SOURCE);
 const LATIN_MINORITY_PATTERN = new RegExp(LATIN_RUN_WITH_MARKS, "g");
 const PERSIAN_MINORITY_PATTERN = new RegExp(PERSIAN_RUN_WITH_MARKS, "g");
+
+// Task 20, Part B: the mirror-image case -- a neutral mark (colon, period,
+// etc.) attached OUTSIDE and immediately AFTER a preceding INLINE ELEMENT
+// (<strong>/<em>/<a>, already its own isolated React node from markdown,
+// e.g. "**Task**: (وظیفه)") has nothing of its own to anchor to: it is not
+// part of any string that could isolate it via the RUN patterns above,
+// since it lives in a SEPARATE sibling text node. See
+// isolateEmbeddedBidiRuns's own use of this below.
+const LEADING_ATTACHED_MARK_PATTERN = /^[:.!?]+/;
 
 /**
  * Splits a plain string into alternating literal segments and isolated
@@ -102,9 +121,23 @@ const PERSIAN_MINORITY_PATTERN = new RegExp(PERSIAN_RUN_WITH_MARKS, "g");
  * `dir="auto"` (or an explicit dir) to resolve from. Returns the original
  * string unchanged (in a one-element array) whenever there's nothing to
  * isolate, so callers can always treat the result as a ReactNode array.
+ *
+ * `dominantOverride` (task 20, Part B): when this string is only a FRAGMENT
+ * of a larger logical block -- e.g. one text-node sibling of a preceding
+ * `<strong>` element, as react-markdown produces for "**Task**: (وظیفه)" --
+ * computing the dominant direction from THIS FRAGMENT ALONE is wrong: a
+ * trailing fragment like ": (وظیفه)" has no Latin characters in it at all,
+ * so it would resolve its OWN dominant as Persian even though the block's
+ * REAL dominant (established by "Task" in the preceding element) is Latin.
+ * Callers spanning multiple children (isolateEmbeddedBidiRuns) compute ONE
+ * shared dominant from the block's full extracted text and pass it through
+ * here for every fragment, so a mid-block text node isolates consistently
+ * with its neighbours instead of contradicting them. Omitted (single-string
+ * callers, e.g. a bare chat bubble body) falls back to computing it locally
+ * from the string itself -- unchanged default behaviour.
  */
-export function isolateBidiRunsInText(text: string, keyPrefix: string): ReactNode[] {
-  const dominant = resolveMessageBaseDirection(text);
+export function isolateBidiRunsInText(text: string, keyPrefix: string, dominantOverride?: "rtl" | "ltr"): ReactNode[] {
+  const dominant = dominantOverride ?? resolveMessageBaseDirection(text);
   const minorityIsPersian = dominant === "ltr";
   const minorityStrongPattern = minorityIsPersian ? STRONG_RTL_PATTERN : STRONG_LTR_PATTERN;
 
@@ -133,18 +166,116 @@ export function isolateBidiRunsInText(text: string, keyPrefix: string): ReactNod
 }
 
 /**
+ * Recursively reads the plain-text content of a React node, INCLUDING
+ * text inside nested elements (a `<strong>`/`<em>`/`<a>` from markdown) --
+ * unlike isolateEmbeddedBidiRuns itself, which deliberately leaves element
+ * children untouched for RENDERING, this is used only as the FALLBACK half
+ * of computeBlockDirection below (task 20, Part B).
+ */
+function extractPlainText(node: ReactNode): string {
+  if (typeof node === "string") return node;
+  if (typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(extractPlainText).join("");
+  if (node !== null && typeof node === "object" && "props" in node) {
+    return extractPlainText((node as ReactElement<{ children?: ReactNode }>).props.children);
+  }
+  return "";
+}
+
+/**
+ * Reads ONLY the text that is NOT inside a nested element -- an element
+ * child (e.g. a `<strong>` from markdown, already isolated via its own
+ * component override) is treated as opaque and contributes nothing. This
+ * deliberately MIRRORS what a real browser's native `dir="auto"` search
+ * already does (this file's own header comment: it "explicitly SKIPS <bdi>
+ * contents", and the same isolate semantics apply to any unicode-bidi:
+ * isolate element) -- used as the PRIMARY signal in computeBlockDirection
+ * below, so a block like "**SmartFlow** به شما کمک می‌کند" still resolves
+ * RTL from "به" the same way native dir="auto" already correctly does,
+ * instead of being thrown off by reading INTO the isolated "SmartFlow".
+ */
+function extractNonIsolatedText(node: ReactNode): string {
+  if (typeof node === "string") return node;
+  if (typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(extractNonIsolatedText).join("");
+  return "";
+}
+
+/**
+ * The direction for a markdown block's own `dir` attribute (task 20, Part
+ * B) -- see p/ul/ol/li's own comment in createDirectionalMarkdownComponents
+ * for why this replaced a bare `dir="auto"`. Two-tier, matching native
+ * dir="auto" behavior for the common case while adding a safety net for the
+ * one case native dir="auto" cannot handle at all:
+ *   1. PRIMARY: resolve from only the NON-isolated text (extractNonIsolatedText)
+ *      -- identical to what the browser's own dir="auto" search already
+ *      does when it works correctly, so a block with real non-isolated
+ *      dominant-script text elsewhere (the common case for every reported
+ *      production example) is completely unaffected by this change.
+ *   2. FALLBACK: only when there is NO strong character anywhere outside
+ *      an isolated element (the degenerate case -- a block that IS, or
+ *      begins and ends with, nothing but an isolated run, e.g. a list item
+ *      that is just "**پروژه من**" alone) -- read INTO the isolated
+ *      content too (extractPlainText), rather than silently defaulting to
+ *      ltr the way native dir="auto" would.
+ */
+function computeBlockDirection(node: ReactNode): "rtl" | "ltr" {
+  const nonIsolated = extractNonIsolatedText(node);
+  if (FIRST_STRONG_PATTERN.test(nonIsolated)) return resolveMessageBaseDirection(nonIsolated);
+  return resolveMessageBaseDirection(extractPlainText(node));
+}
+
+/**
  * Applies `isolateBidiRunsInText` to every string child of a React children
  * value (a single string, or the array react-markdown passes for a
  * paragraph/list-item with multiple text/element children). Non-string
  * children (already-rendered elements, e.g. a nested `<strong>`) pass
  * through unchanged -- those get their own isolation independently, from
  * their own component override, so nothing is ever wrapped twice.
+ *
+ * Task 20, Part B (bidi at inline boundaries): two fixes layered on top of
+ * the task 17f behaviour above, both needed for "**Task**: (وظیفه)"-shaped
+ * content (a bold run followed by an attached mark and/or a parenthesized
+ * phrase in the OPPOSITE script):
+ *   1. ONE shared dominant direction is computed from the FULL block's
+ *      extracted text (every child, including inside elements), not
+ *      recomputed independently per string fragment -- see
+ *      isolateBidiRunsInText's own dominantOverride comment for why a
+ *      trailing fragment computed in isolation gets the wrong answer.
+ *   2. A string child that immediately follows a non-string (element)
+ *      sibling and starts with an attached mark (":", ".", "!", "?") has
+ *      that mark split off into its OWN small isolate, rendered as the
+ *      very next sibling of the preceding element. A lone neutral
+ *      character living unisolated in the ambient (block) direction is
+ *      exactly what let it drift to the wrong visual side in the
+ *      production evidence ("Task :(وظیفه)" instead of "(وظیفه) Task:");
+ *      isolating it fixes its position the same way isolating a whole run
+ *      already does elsewhere in this file, without touching the
+ *      preceding element (already isolated by its own component override)
+ *      at all.
  */
 export function isolateEmbeddedBidiRuns(children: ReactNode): ReactNode {
   const list = Array.isArray(children) ? children : [children];
-  return list.flatMap((child, index) =>
-    typeof child === "string" ? isolateBidiRunsInText(child, `bidi-${index}`) : [child],
-  );
+  const dominant = resolveMessageBaseDirection(extractPlainText(list));
+
+  return list.flatMap((child, index) => {
+    if (typeof child !== "string") return [child];
+
+    const previousChild = index > 0 ? list[index - 1] : undefined;
+    const previousWasElement = previousChild !== undefined && typeof previousChild !== "string";
+
+    if (previousWasElement) {
+      const leadingMarkMatch = child.match(LEADING_ATTACHED_MARK_PATTERN);
+      if (leadingMarkMatch) {
+        const mark = leadingMarkMatch[0];
+        const rest = child.slice(mark.length);
+        const markNode = <bdi key={`bidi-anchor-${index}`}>{mark}</bdi>;
+        return rest.length > 0 ? [markNode, ...isolateBidiRunsInText(rest, `bidi-${index}`, dominant)] : [markNode];
+      }
+    }
+
+    return isolateBidiRunsInText(child, `bidi-${index}`, dominant);
+  });
 }
 
 // CSS unicode-bidi: isolate is the preferred mechanism (task 11e's own
@@ -169,9 +300,12 @@ export interface DirectionalMarkdownClassNames {
 
 /**
  * Builds a react-markdown `components` object that is direction-aware:
- * every block gets `dir="auto"` (first-strong heuristic, applied per
- * block, not per page); paragraphs and list items additionally isolate any
- * embedded MINORITY-direction runs in their own text (task 17f, R3);
+ * every block gets an EXPLICIT direction (first-strong heuristic via
+ * resolveMessageBaseDirection + extractPlainText, applied per block, not
+ * per page -- task 20, Part B; see p/ul/ol/li's own comment below for why
+ * this replaced native `dir="auto"`); paragraphs and list items
+ * additionally isolate any embedded MINORITY-direction runs in their own
+ * text (task 17f, R3);
  * bold/emphasis are isolated as whole units via CSS `unicode-bidi:
  * isolate`; inline code, fenced code blocks, and links are always LTR
  * (task 17f, R5 -- code/URLs/technical identifiers must never flip with
@@ -184,30 +318,46 @@ export interface DirectionalMarkdownClassNames {
  */
 export function createDirectionalMarkdownComponents(classNames: DirectionalMarkdownClassNames = {}) {
   return {
+    // Task 20, Part B: p/ul/ol/li use an EXPLICIT direction computed from
+    // their own extracted plain text (resolveMessageBaseDirection +
+    // extractPlainText), not native `dir="auto"`. This is the SAME fix
+    // ChatPage.tsx's ChatBubble root already applies at the message level
+    // (`dir={resolveMessageBaseDirection(content)}`, task 17e) -- extended
+    // here to the block-level markdown overrides, the one place in this
+    // file that was still relying on the browser's own dir="auto" search.
+    // That native search explicitly SKIPS isolated content (this file's own
+    // header comment), so a block that BEGINS with (or entirely consists
+    // of) an isolated inline run -- e.g. a list item "**پروژه من**" with a
+    // bold Persian label and nothing else -- would have nothing left for
+    // dir="auto" to find and silently fall back to the wrong direction.
+    // extractPlainText reads through isolation, so this never has that
+    // blind spot; for a plain-text-only block (no isolated children at
+    // all) it resolves to exactly the same answer dir="auto" already gave,
+    // so this is a strict robustness improvement, not a behavior tradeoff.
     p({ children }: Readonly<{ children?: ReactNode }>) {
       return (
-        <p dir="auto" className={classNames.p}>
+        <p dir={computeBlockDirection(children)} className={classNames.p}>
           {isolateEmbeddedBidiRuns(children)}
         </p>
       );
     },
     ul({ children }: Readonly<{ children?: ReactNode }>) {
       return (
-        <ul dir="auto" className={classNames.ul}>
+        <ul dir={computeBlockDirection(children)} className={classNames.ul}>
           {children}
         </ul>
       );
     },
     ol({ children }: Readonly<{ children?: ReactNode }>) {
       return (
-        <ol dir="auto" className={classNames.ol}>
+        <ol dir={computeBlockDirection(children)} className={classNames.ol}>
           {children}
         </ol>
       );
     },
     li({ children }: Readonly<{ children?: ReactNode }>) {
       return (
-        <li dir="auto" className={classNames.li}>
+        <li dir={computeBlockDirection(children)} className={classNames.li}>
           {isolateEmbeddedBidiRuns(children)}
         </li>
       );

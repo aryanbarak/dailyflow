@@ -178,17 +178,113 @@ describe("isolateBidiRunsInText / isolateEmbeddedBidiRuns", () => {
   });
 });
 
+// Task 20, Part B: bidi at inline boundaries. Root cause -- a neutral mark
+// (colon/period/etc.) attached OUTSIDE a preceding inline element
+// (<strong>/<em>/<a>, itself already isolated by markdown) lives in a
+// SEPARATE sibling text node with nothing anchoring it, AND that trailing
+// text node's own dominant direction was previously computed in ISOLATION
+// from the rest of the block, giving the wrong answer for a fragment like
+// ": (وظیفه)" that has no Latin characters of its own at all. Unit-level
+// coverage of isolateEmbeddedBidiRuns's array-based mechanics directly
+// (see ChatPageBidiMatrix.test.tsx and bidiTextConsumers.test.tsx for the
+// full EN-root/FA-root integration matrix through real consumers).
+describe("isolateEmbeddedBidiRuns -- attached-mark anchoring at inline-element boundaries (task 20, Part B)", () => {
+  it("a leading colon on a string child immediately following an element isolates into its own <bdi>, anchored right after that element", () => {
+    const html = renderToString(
+      <p dir="auto">{isolateEmbeddedBidiRuns([<strong key="s">Task</strong>, ": (وظیفه) را انجام بده."])}</p>,
+    );
+    // Bare <strong> here (this test calls isolateEmbeddedBidiRuns directly
+    // with a plain React element fixture, not through createDirectional-
+    // MarkdownComponents's own strong() override -- same convention the
+    // existing "does not wrap children that are already elements" test
+    // above already uses) -- the anchor <bdi> is what's under test.
+    expect(html).toContain("<strong>Task</strong><bdi>:</bdi> ");
+    // The Persian parenthetical, now correctly evaluated against the
+    // BLOCK's shared dominant (ltr, from "Task") rather than its own
+    // fragment-local dominant, isolates as its own run too.
+    expect(html).toContain("<bdi>وظیفه</bdi>");
+    const rendered = html.replace(/<[^>]+>/g, "");
+    expect(rendered).toBe("Task: (وظیفه) را انجام بده.");
+  });
+
+  it("a string child with NO leading attached mark, following an element, is unaffected -- no spurious anchor <bdi> is introduced", () => {
+    const html = renderToString(
+      <p dir="auto">{isolateEmbeddedBidiRuns([<strong key="s">Task</strong>, " تمام شد."])}</p>,
+    );
+    expect(html).toBe('<p dir="auto"><strong>Task</strong> <bdi>تمام شد.</bdi></p>');
+  });
+
+  it("a leading attached mark on the FIRST child (no preceding element at all) is NOT split off -- the anchoring rule only applies right after an element sibling", () => {
+    const html = renderToString(<p dir="auto">{isolateEmbeddedBidiRuns(": شروع می‌کنیم")}</p>);
+    expect(html).not.toContain("<bdi>:</bdi>");
+  });
+
+  it("the SAME shared dominant direction is used for every fragment of a multi-child block, not recomputed independently per fragment", () => {
+    // Without a shared dominant, ": (وظیفه)" alone would compute its OWN
+    // dominant as Persian (its only strong script) and never isolate
+    // "وظیفه" as a minority run at all -- this proves the block-wide
+    // computation actually drives the fragment's own isolation decision.
+    const html = renderToString(
+      <p dir="auto">{isolateEmbeddedBidiRuns([<strong key="s">Task</strong>, ": (وظیفه)"])}</p>,
+    );
+    expect(html).toContain("<bdi>وظیفه</bdi>");
+  });
+
+  it("multiple element siblings each still isolate independently via their own component, with attached marks anchored to the correct one", () => {
+    const html = renderToString(
+      <p dir="auto">
+        {isolateEmbeddedBidiRuns([<strong key="a">Task</strong>, ": (وظیفه) و ", <strong key="b">Reminder</strong>, ": (یادآور)."])}
+      </p>,
+    );
+    expect(html).toContain("<strong>Task</strong><bdi>:</bdi> ");
+    expect(html).toContain("<strong>Reminder</strong><bdi>:</bdi> ");
+  });
+});
+
+describe("square-bracket phrase isolation (task 20, Part B -- generalises the existing round-paren rule)", () => {
+  it("a bracketed Persian phrase inside dominant Latin text isolates as its own unit, brackets included only when a trailing mark is attached", () => {
+    const html = renderToString(<p dir="auto">{isolateEmbeddedBidiRuns("Due: [سه روز] from today.")}</p>);
+    expect(html).toContain("<bdi>سه روز</bdi>");
+    expect(html).not.toContain("<bdi>[سه روز]</bdi>");
+  });
+
+  it("a bracketed phrase with an attached trailing mark isolates AS ONE UNIT including the brackets -- symmetric with the round-paren rule", () => {
+    const html = renderToString(<p dir="auto">{isolateEmbeddedBidiRuns("این [Advanced Technical Support]: مهم است.")}</p>);
+    expect(html).toContain("<bdi>[Advanced Technical Support]:</bdi>");
+  });
+
+  it("a bracketed Latin phrase inside dominant Persian text isolates symmetrically", () => {
+    const html = renderToString(<p dir="auto">{isolateEmbeddedBidiRuns("تاریخ: [Due Soon] است.")}</p>);
+    expect(html).toContain("<bdi>Due Soon</bdi>");
+  });
+
+  it("brackets containing ONLY a digit (no strong character) are never treated as a run -- mirrors the '(2).' protected exception", () => {
+    const html = renderToString(<p dir="auto">{isolateEmbeddedBidiRuns("Review active tasks [2].")}</p>);
+    expect(html).toBe('<p dir="auto">Review active tasks [2].</p>');
+  });
+});
+
 describe("createDirectionalMarkdownComponents", () => {
   const components = createDirectionalMarkdownComponents({ p: "p-class", ul: "ul-class", li: "li-class" });
 
-  it("FA markdown with bold + a bulleted list: dir=\"auto\" is applied per block, list markers/indentation are direction-aware (no hardcoded left/right), and the bold Latin run (single-script content) renders unwrapped inside its own CSS-isolated <strong> -- task 17f, R2 applies inside strong/em too, since isolateEmbeddedBidiRuns is the same shared function", () => {
+  it("FA markdown with bold + a bulleted list: an EXPLICIT direction (task 20, Part B -- was dir=\"auto\") is applied per block, list markers/indentation are direction-aware (no hardcoded left/right), and the bold Latin run (single-script content) renders unwrapped inside its own CSS-isolated <strong> -- task 17f, R2 applies inside strong/em too, since isolateEmbeddedBidiRuns is the same shared function", () => {
     const md = "**SmartFlow** به شما کمک می‌کند:\n\n- تسک اول\n- تسک دوم";
     const html = renderToString(<ReactMarkdown components={components}>{md}</ReactMarkdown>);
 
-    expect(html).toContain('<p dir="auto" class="p-class">');
-    expect(html).toContain('<ul dir="auto" class="ul-class">');
-    expect(html).toContain('<li dir="auto" class="li-class">');
-    expect(html.match(/<li dir="auto"/g)?.length).toBe(2);
+    // Task 20, Part B: p/ul/li now compute an EXPLICIT rtl/ltr instead of
+    // native dir="auto" (see bidiText.tsx's own comment on
+    // createDirectionalMarkdownComponents for why) -- this block correctly
+    // resolves "rtl" from "به" (the first NON-isolated strong character;
+    // "SmartFlow" is skipped because it's already isolated inside its own
+    // <strong>), exactly what a working native dir="auto" search would also
+    // have found. This assertion changed from the literal string "auto" to
+    // the actual resolved value; the underlying correctness (RTL block,
+    // bold Latin run isolated as its own unit) is unchanged and still
+    // verified below.
+    expect(html).toContain('<p dir="rtl" class="p-class">');
+    expect(html).toContain('<ul dir="rtl" class="ul-class">');
+    expect(html).toContain('<li dir="rtl" class="li-class">');
+    expect(html.match(/<li dir="rtl"/g)?.length).toBe(2);
     // Bold is isolated as ONE unit via CSS on the <strong> itself; its
     // single-script ("SmartFlow") content is no longer ALSO wrapped in an
     // inner <bdi> -- the outer <strong dir="auto" unicode-bidi:isolate> is
@@ -225,13 +321,13 @@ describe("createDirectionalMarkdownComponents", () => {
   // Task 17f, R6: nested lists must inherit the SAME direction-aware
   // treatment as the top level -- react-markdown routes a nested <ul>
   // through this same `ul` component recursively.
-  it("R6: a nested bullet list inside a Persian top-level list gets its own dir=\"auto\" and logical padding-inline-start at every level", () => {
+  it("R6: a nested bullet list inside a Persian top-level list gets its own EXPLICIT rtl direction (task 20, Part B -- was dir=\"auto\") and logical padding-inline-start at every level", () => {
     const componentsWithPadding = createDirectionalMarkdownComponents({ ul: "ps-4", li: "li-class" });
     const md = "- تسک اول\n  - زیرتسک الف\n  - زیرتسک ب\n- تسک دوم";
     const html = renderToString(<ReactMarkdown components={componentsWithPadding}>{md}</ReactMarkdown>);
-    // Top-level ul + one nested ul, both dir="auto" and using the SAME
-    // logical ps-4 class (never a hardcoded pl-4/pr-4).
-    expect(html.match(/<ul dir="auto" class="ps-4">/g)?.length).toBe(2);
+    // Top-level ul + one nested ul, both resolve "rtl" (Persian content)
+    // and use the SAME logical ps-4 class (never a hardcoded pl-4/pr-4).
+    expect(html.match(/<ul dir="rtl" class="ps-4">/g)?.length).toBe(2);
     expect(html).not.toMatch(/\bpl-4\b|\bpr-4\b/);
     expect(html).toContain("زیرتسک الف");
     expect(html).toContain("زیرتسک ب");
