@@ -1,6 +1,7 @@
 import { renderToString } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
+  computeMajorityDirection,
   createDirectionalMarkdownComponents,
   isolateBidiRunsInText,
   isolateEmbeddedBidiRuns,
@@ -331,5 +332,92 @@ describe("createDirectionalMarkdownComponents", () => {
     expect(html).not.toMatch(/\bpl-4\b|\bpr-4\b/);
     expect(html).toContain("زیرتسک الف");
     expect(html).toContain("زیرتسک ب");
+  });
+});
+
+// ===========================================================================
+// Task 20b, W1: computeMajorityDirection -- the unified, word-count-based
+// majority rule that replaced the two DIFFERENT (and sometimes
+// contradictory) dominant-direction heuristics task 20 shipped with a
+// block's own `dir` and a nested inline element's internal minority-run
+// isolation. See the function's own doc comment for the two simpler
+// measures (raw character count, then run count) that were tried and
+// rejected during this task, each caught by re-running the existing suite.
+// ===========================================================================
+describe("computeMajorityDirection (task 20b, W1)", () => {
+  it("a Persian sentence using a short Latin object stays rtl even though the Latin phrase has MORE CHARACTERS -- the exact regression a raw character-count majority caused (task 11e/17e's own test)", () => {
+    expect(computeMajorityDirection("این نتیجه برای Review active tasks است.")).toBe("rtl");
+  });
+
+  it('"Task: (وظیفه) را انجام بده." (the W1 production evidence, embedded in its realistic surrounding sentence) resolves rtl -- four Persian words outweigh one Latin word', () => {
+    expect(computeMajorityDirection("Task: (وظیفه) را انجام بده.")).toBe("rtl");
+  });
+
+  it('"SmartFlow به شما کمک می‌کند:" resolves rtl -- a single Latin run count is fooled into a tie against a WORD-MERGED Persian run (the run-count measure\'s own regression, since "به شما کمک می‌کند" is one contiguous run but four real words)', () => {
+    expect(computeMajorityDirection("SmartFlow به شما کمک می‌کند:")).toBe("rtl");
+  });
+
+  it('a one-word-vs-one-word TIE ("Task: (وظیفه)" alone, no surrounding sentence) falls back to first-strong and stays ltr -- preserves today\'s behavior for the genuinely ambiguous case rather than flipping on a coin-flip word count', () => {
+    expect(computeMajorityDirection("Task: (وظیفه)")).toBe("ltr");
+  });
+
+  it("a clearly Latin-dominant sentence with a short Persian gloss stays ltr", () => {
+    expect(computeMajorityDirection("SmartFlow supports Persian (فارسی) too.")).toBe("ltr");
+  });
+
+  it("pure single-script text in either direction is unaffected", () => {
+    expect(computeMajorityDirection("امروز خوب پیش رفت.")).toBe("rtl");
+    expect(computeMajorityDirection("Everything looks good today.")).toBe("ltr");
+  });
+
+  it("no strong character at all defaults to ltr, matching resolveMessageBaseDirection's own no-match default", () => {
+    expect(computeMajorityDirection("123 456 :)")).toBe("ltr");
+  });
+});
+
+// ===========================================================================
+// Task 20b, W2: mixed-script bracket/paren groups isolate as ONE atomic
+// unit (delimiters + content + an attached trailing mark), generalising
+// the existing single-script-only alternatives. Exercised here directly at
+// the isolateEmbeddedBidiRuns/markdown level (the ChatPageBidiMatrix suite
+// covers the full ChatBubble-rendered production-evidence shapes).
+// ===========================================================================
+describe("mixed-script bracket/paren group isolation (task 20b, W2)", () => {
+  it('a square-bracket group whose content mixes Persian and Latin isolates as ONE unit, with the embedded Latin word isolated AGAIN inside it', () => {
+    const html = renderToString(
+      <p dir="auto">{isolateEmbeddedBidiRuns("[لطفاً در Task ثبت کنم.] متشکرم.")}</p>,
+    );
+    // renderToString inserts <!-- --> comment separators between adjacent
+    // sibling text nodes (a hydration-safety artifact, not app markup) --
+    // stripped before matching, same as the surrounding tests' use of
+    // `.replace(/<[^>]+>/g, "")` elsewhere in this file for text-content
+    // comparisons.
+    const stripped = html.replace(/<!--\s*-->/g, "");
+    expect(stripped).toContain("<bdi>[لطفاً در <bdi>Task</bdi> ثبت کنم.]</bdi>");
+  });
+
+  it("a round-paren group whose content mixes scripts, with an attached trailing period, isolates as one unit including the period", () => {
+    const html = renderToString(
+      <p dir="auto">{isolateEmbeddedBidiRuns("یکی از این دو را نصب کن: (Anaconda یا VS Code).")}</p>,
+    );
+    const stripped = html.replace(/<!--\s*-->/g, "");
+    expect(stripped).toContain("<bdi>(Anaconda <bdi>یا</bdi> VS Code).</bdi>");
+  });
+
+  it("a bracket group whose content is SINGLE-script (no mixing) is left to the existing per-run alternatives, unchanged -- this pass does not fire", () => {
+    const html = renderToString(
+      <p dir="auto">{isolateEmbeddedBidiRuns("[تاریخ سررسید سه روز دیگر است.] توجه کنید.")}</p>,
+    );
+    expect(html).not.toMatch(/<bdi>\[/);
+    expect(html).toContain("[تاریخ سررسید سه روز دیگر است.]");
+  });
+
+  it('task 17d\'s "(2)." exception still holds inside a mixed-content sentence -- a bare digit is never part of a run, mixed-bracket or otherwise', () => {
+    const html = renderToString(
+      <p dir="auto">{isolateEmbeddedBidiRuns("Review active tasks (2) در لیست Task دیده می‌شود.")}</p>,
+    );
+    // "(2)" itself never isolates (no strong character inside it at all);
+    // only the two actual word runs do.
+    expect(html).not.toMatch(/<bdi>\(2\)/);
   });
 });

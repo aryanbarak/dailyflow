@@ -307,3 +307,128 @@ describe('task 20 bidi matrix -- bracketed Persian phrase "[...]" mid-sentence (
     });
   }
 });
+
+// ===========================================================================
+// Task 20b: bidi regression at inline boundaries -- three PRODUCTION-EVIDENCE
+// shapes that survived task 20's own fix. Diagnosed via a rendered-DOM
+// diagnostic (not the width-dependence the PO's first report suggested --
+// the PO's own correction confirmed these are structural, not width-
+// dependent, so this file's existing "renderToString"-style DOM assertions,
+// same convention as every other case in this matrix, are sufficient) plus
+// a real UAX9 bidi-algorithm simulation (bidi-js) used only to VALIDATE the
+// design during development -- not a project dependency, not referenced by
+// any committed test.
+// ===========================================================================
+
+describe('task 20b bidi matrix, W1 -- "Task: (وظیفه)" (the exact production evidence string, both alone and embedded in a Persian line)', () => {
+  for (const appDir of APP_ROOTS) {
+    it(`[app=${appDir}] the exact literal string alone: "Task" and "(وظیفه)" are a one-word-each TIE, so this stays ltr (first-strong tie-break, unchanged from task 20) -- the colon stays anchored inside "Task:" either way`, () => {
+      const { container } = renderBubble(appDir, "**Task: (وظیفه)**");
+      const bubble = container.querySelector(".rounded-xl")!;
+      const paragraph = bubble.querySelector("p")!;
+      expect(paragraph).toHaveAttribute("dir", "ltr");
+      expect(paragraph.textContent).toBe("Task: (وظیفه)");
+    });
+
+    it(`[app=${appDir}] embedded in a Persian line (the realistic production shape -- a Persian sentence using "Task: (وظیفه)" as its object): the block resolves rtl (Persian has more words), and the colon stays anchored immediately after "Task" as ONE isolated unit -- this is the actual W1 regression fix`, () => {
+      const { container } = renderBubble(appDir, "**Task: (وظیفه)** را انجام بده.");
+      const bubble = container.querySelector(".rounded-xl")!;
+      const paragraph = bubble.querySelector("p")!;
+      expect(paragraph).toHaveAttribute("dir", "rtl");
+      const strong = paragraph.querySelector("strong")!;
+      // The colon is pulled INTO the same isolate as "Task" (they are one
+      // unbroken run within the strong's own text, unlike the task-20
+      // shape where the colon sits OUTSIDE a separate <strong>) -- and the
+      // Persian parenthetical, now correctly recognised as part of the
+      // block's DOMINANT script, is left plain/unwrapped beside it.
+      expect(strong.innerHTML).toBe("<bdi>Task:</bdi> (وظیفه)");
+      expect(paragraph.textContent).toBe("Task: (وظیفه) را انجام بده.");
+    });
+
+    it(`[app=${appDir}] "Reminder: (یادآور)" -- the second production-evidence label, same embedded shape`, () => {
+      const { container } = renderBubble(appDir, "**Reminder: (یادآور)** را هم تنظیم کن.");
+      const bubble = container.querySelector(".rounded-xl")!;
+      const paragraph = bubble.querySelector("p")!;
+      expect(paragraph).toHaveAttribute("dir", "rtl");
+      expect(paragraph.querySelector("strong")!.innerHTML).toBe("<bdi>Reminder:</bdi> (یادآور)");
+      expect(paragraph.textContent).toBe("Reminder: (یادآور) را هم تنظیم کن.");
+    });
+
+    it(`[app=${appDir}] the task-20 shape ("**Task**: (وظیفه) را انجام بده.", colon OUTSIDE the bold run) still resolves rtl and still anchors the colon -- this task did not regress it`, () => {
+      const { container } = renderBubble(appDir, "**Task**: (وظیفه) را انجام بده.");
+      const bubble = container.querySelector(".rounded-xl")!;
+      const paragraph = bubble.querySelector("p")!;
+      expect(paragraph).toHaveAttribute("dir", "rtl");
+      expect(paragraph.innerHTML).toMatch(/<\/strong><bdi>:<\/bdi> /);
+      expect(paragraph.textContent).toBe("Task: (وظیفه) را انجام بده.");
+    });
+  }
+});
+
+describe("task 20b bidi matrix, W2 -- bracket/paren pairs enclosing MIXED-script content isolate as ONE atomic unit (delimiters + content + attached trailing mark)", () => {
+  for (const appDir of APP_ROOTS) {
+    it(`[app=${appDir}] bracketed Persian phrase CONTAINING a Latin token (production evidence: "[... تا در Task ثبت کنم.]") -- the whole group isolates together, and "Task" isolates AGAIN inside it`, () => {
+      const { container } = renderBubble(
+        appDir,
+        "[لطفاً زمان دقیق نوبت دکتر را بفرمایید تا در Task ثبت کنم.]",
+      );
+      const bubble = container.querySelector(".rounded-xl")!;
+      const paragraph = bubble.querySelector("p")!;
+      const outerBdi = paragraph.querySelector(":scope > bdi")!;
+      expect(outerBdi.textContent?.startsWith("[")).toBe(true);
+      expect(outerBdi.textContent?.endsWith("]")).toBe(true);
+      expect(outerBdi.querySelector("bdi")?.textContent).toBe("Task");
+      expect(paragraph.textContent).toBe("[لطفاً زمان دقیق نوبت دکتر را بفرمایید تا در Task ثبت کنم.]");
+    });
+
+    it(`[app=${appDir}] bracketed Persian phrase with NO Latin token stays fully plain (single-script content -- the existing 17d/17f behaviour for a delimiter group is untouched)`, () => {
+      const { container } = renderBubble(
+        appDir,
+        "[تاریخ سررسید که 3 روز از روزی که آن را ساختیم، بود.]",
+      );
+      const bubble = container.querySelector(".rounded-xl")!;
+      const paragraph = bubble.querySelector("p")!;
+      expect(paragraph.querySelector("bdi")).toBeNull();
+      expect(paragraph.textContent).toBe("[تاریخ سررسید که 3 روز از روزی که آن را ساختیم، بود.]");
+    });
+
+    it(`[app=${appDir}] "(Anaconda یا VS Code)." -- a Latin-dominant paren group with an embedded Persian word AND an attached trailing period, all isolated as one unit`, () => {
+      const { container } = renderBubble(appDir, "یکی از این دو را نصب کن: (Anaconda یا VS Code).");
+      const bubble = container.querySelector(".rounded-xl")!;
+      const paragraph = bubble.querySelector("p")!;
+      const outerBdi = paragraph.querySelector(":scope > bdi")!;
+      expect(outerBdi.textContent).toBe("(Anaconda یا VS Code).");
+      expect(outerBdi.querySelector("bdi")?.textContent).toBe("یا");
+      expect(paragraph.textContent).toBe("یکی از این دو را نصب کن: (Anaconda یا VS Code).");
+    });
+  }
+});
+
+describe("task 20b bidi matrix, W3 -- list marker/bullet follows the LIST's own shared direction, even when one item's own text is pure single-script in the opposite direction", () => {
+  for (const appDir of APP_ROOTS) {
+    it(`[app=${appDir}] a pure-Latin item inside an otherwise-Persian list keeps its <li> at the LIST's rtl direction (marker consistency), while its own text is isolated as one correctly-ordered run`, () => {
+      const { container } = renderBubble(appDir, "- دکتر کلاین\n- Dr Klein Termin\n- تماس با مطب");
+      const bubble = container.querySelector(".rounded-xl")!;
+      const list = bubble.querySelector("ul")!;
+      expect(list).toHaveAttribute("dir", "rtl");
+      const items = Array.from(list.querySelectorAll("li"));
+      expect(items).toHaveLength(3);
+      // Every item's OWN <li> box shares the list's direction -- this is
+      // the actual W3 fix: marker placement is governed by dir on the
+      // element itself, and this no longer varies per item.
+      for (const item of items) expect(item).toHaveAttribute("dir", "rtl");
+      expect(items[1].innerHTML).toBe("<bdi>Dr Klein Termin</bdi>");
+      expect(items[1].textContent).toBe("Dr Klein Termin");
+    });
+
+    it(`[app=${appDir}] symmetric case: a pure-Persian item inside an otherwise-Latin list keeps its <li> at the LIST's ltr direction`, () => {
+      const { container } = renderBubble(appDir, "- Call the clinic\n- تماس با مطب\n- Confirm the time");
+      const bubble = container.querySelector(".rounded-xl")!;
+      const list = bubble.querySelector("ul")!;
+      expect(list).toHaveAttribute("dir", "ltr");
+      const items = Array.from(list.querySelectorAll("li"));
+      for (const item of items) expect(item).toHaveAttribute("dir", "ltr");
+      expect(items[1].innerHTML).toBe("<bdi>تماس با مطب</bdi>");
+    });
+  }
+});

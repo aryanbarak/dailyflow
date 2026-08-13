@@ -1,4 +1,4 @@
-import type { ReactElement, ReactNode } from "react";
+import { createContext, useContext, type ReactElement, type ReactNode } from "react";
 
 // SmartFlow bidi utility (task 11e, generalised by task 17f) -- shared by
 // every surface that renders model- or user-generated text that can mix
@@ -45,6 +45,8 @@ const LATIN_RUN_SOURCE = `[${LATIN_STRONG}](?:[${LATIN_STRONG}0-9 ._\\-/:@+#]*[$
 const PERSIAN_RUN_SOURCE = `[${PERSIAN_STRONG}](?:[${PERSIAN_STRONG}0-9 \\u200c._\\-/:@+#]*[${PERSIAN_STRONG}])?`;
 const STRONG_LTR_PATTERN = new RegExp(`[${LATIN_STRONG}]`);
 const STRONG_RTL_PATTERN = new RegExp(`[${PERSIAN_STRONG}]`);
+const LATIN_RUN_PATTERN_GLOBAL = new RegExp(LATIN_RUN_SOURCE, "g");
+const PERSIAN_RUN_PATTERN_GLOBAL = new RegExp(PERSIAN_RUN_SOURCE, "g");
 const FIRST_STRONG_PATTERN = new RegExp(`[${PERSIAN_STRONG}${LATIN_STRONG}]`);
 
 /**
@@ -62,6 +64,71 @@ export function resolveMessageBaseDirection(text: string): "rtl" | "ltr" {
   const match = text.match(FIRST_STRONG_PATTERN);
   if (!match) return "ltr";
   return STRONG_RTL_PATTERN.test(match[0]) ? "rtl" : "ltr";
+}
+
+/**
+ * Task 20b, W1: a MAJORITY direction, with resolveMessageBaseDirection's
+ * own first-strong heuristic used only as a tie-break. Counts WORDS of each
+ * script across the WHOLE given text and picks whichever script has more.
+ *
+ * Two simpler measures were tried first and both failed a real case,
+ * caught by re-running this file's existing test suite after each attempt
+ * (not just the new production-evidence cases):
+ *   - Raw CHARACTER count: Persian is written without short vowels, so it
+ *     is often more character-dense per word than English. A clearly
+ *     Persian-dominant sentence like "این نتیجه برای Review active tasks
+ *     است." (four Persian words carrying the sentence; "Review active
+ *     tasks" is only the quoted OBJECT) has MORE Latin characters than
+ *     Persian ones purely from average word length, and a character
+ *     majority wrongly flipped it to ltr -- an existing, previously
+ *     passing task 11e/17e test caught this immediately.
+ *   - RUN count (this file's own LATIN_RUN_SOURCE/PERSIAN_RUN_SOURCE
+ *     matches, where a same-script PHRASE with no script interruption
+ *     counts as one run): closer, but "**SmartFlow** به شما کمک می‌کند:"
+ *     is ONE Latin run ("SmartFlow") against ONE Persian run ("به شما کمک
+ *     می‌کند", four words merged into a single run since nothing
+ *     interrupts them) -- a tie that fell back to first-strong and wrongly
+ *     picked ltr, when the sentence is obviously Persian-dominant (four
+ *     words to one). Run count only reflects how many times the SCRIPT
+ *     switches, not how much text is actually in each language.
+ * Actual WORD count (splitting each matched run on internal whitespace)
+ * gets every case checked so far right, including both regressions above
+ * and the production evidence, because it is not skewed by either
+ * character density or by how many separate same-script clusters happen to
+ * exist.
+ *
+ * WHY first-strong alone is not enough here (task 20b's own root-cause
+ * finding, verified against a real rendered-DOM diagnostic): a block whose
+ * TRUE majority is Persian can still start with a short Latin label --
+ * "Task: (وظیفه) را انجام بده." starts with "Task", but the sentence is
+ * overwhelmingly Persian. Both of this file's PRE-20b heuristics
+ * (`resolveMessageBaseDirection`'s pure first-strong, and the block-level
+ * "skip isolated content" heuristic this replaces below) pick LTR here
+ * purely because a Latin run happens to sit first/non-isolated -- and that
+ * wrong dominant then propagates into which run gets isolated as
+ * "minority", producing exactly the production bug (a mark or bracket
+ * anchored to the wrong side). Majority-of-words gets this right because it
+ * looks at the block as a whole rather than only its leading edge. Ties
+ * (e.g. a short label plus an equally short gloss, "Task: (وظیفه)" alone --
+ * one word each) fall back to first-strong, preserving today's behavior for
+ * the genuinely ambiguous case.
+ *
+ * This is intentionally a SEPARATE function from resolveMessageBaseDirection
+ * (which still drives the ChatBubble root's own dir, task 17e -- untouched
+ * by this task) -- see computeBlockDirection's own comment for where this
+ * is actually used: markdown BLOCK-level direction and the shared dominant
+ * propagated into nested inline elements, never the message-root heuristic.
+ */
+function countWordsInRuns(runs: string[]): number {
+  return runs.reduce((total, run) => total + run.trim().split(/\s+/).filter(Boolean).length, 0);
+}
+
+export function computeMajorityDirection(text: string): "rtl" | "ltr" {
+  const latinWords = countWordsInRuns(text.match(LATIN_RUN_PATTERN_GLOBAL) ?? []);
+  const persianWords = countWordsInRuns(text.match(PERSIAN_RUN_PATTERN_GLOBAL) ?? []);
+  if (persianWords > latinWords) return "rtl";
+  if (latinWords > persianWords) return "ltr";
+  return resolveMessageBaseDirection(text);
 }
 
 // Task 17f, R3: a MINORITY run immediately followed by an attached closing
@@ -110,6 +177,81 @@ const PERSIAN_MINORITY_PATTERN = new RegExp(PERSIAN_RUN_WITH_MARKS, "g");
 // isolateEmbeddedBidiRuns's own use of this below.
 const LEADING_ATTACHED_MARK_PATTERN = /^[:.!?]+/;
 
+// Task 20b, W2: a bracket/paren PAIR whose CONTENT itself mixes both
+// scripts -- e.g. "[لطفاً ... تا در Task ثبت کنم.]" (a Persian sentence
+// containing one Latin word) or "(Anaconda یا VS Code)." (a Latin phrase
+// containing one Persian word). The existing per-run alternatives above
+// (runWithAttachedMarks) only ever isolate a SINGLE-SCRIPT run; they cannot
+// match a bracket pair whose content mixes scripts at all, so today such a
+// group's delimiters stay bare/plain while only the embedded minority WORD
+// gets its own isolate, leaving the delimiters unanchored to either side of
+// their own content. This pre-pass isolates the WHOLE group (delimiters +
+// content + an attached trailing mark, e.g. the period in "(Anaconda یا VS
+// Code).") as ONE atomic unit -- generalising 17f/20's own "delimiters +
+// attached mark belong together" principle from single-script runs to
+// mixed-script ones -- with the group's OWN interior recursively run back
+// through this same function (isolateBidiRunsInText), using a dominant
+// computed from JUST that interior (computeMajorityDirection), so an
+// embedded minority word inside the group still gets its own nested
+// isolate exactly as it would outside a bracket pair.
+//
+// Deliberately excludes NESTED brackets of the same kind (no "(a (b) c)"
+// support) -- matching the existing single-script alternatives' own scope,
+// not a new limitation. A bracket pair whose content is single-script (or
+// has no strong characters at all) is intentionally left OUT of this pass
+// (isMixedScript returns false) and falls through unchanged to the
+// existing per-run alternatives below, preserving 17d's "(به به)"/
+// "(Advanced Technical Support)" behaviour and 17d's "(2)." exception
+// exactly as before.
+const BRACKET_GROUP_PATTERN = /\(([^()]*)\)([:.!?]?)|\[([^[\]]*)\]([:.!?]?)/g;
+
+function isMixedScript(content: string): boolean {
+  return STRONG_LTR_PATTERN.test(content) && STRONG_RTL_PATTERN.test(content);
+}
+
+interface MixedBracketGroup {
+  readonly bracketType: "round" | "square";
+  readonly inner: string;
+  readonly trailingMark: string;
+}
+
+type BracketSplitSegment = { readonly type: "text"; readonly value: string } | ({ readonly type: "group" } & MixedBracketGroup);
+
+function splitMixedBracketGroups(text: string): BracketSplitSegment[] {
+  const segments: BracketSplitSegment[] = [];
+  let lastIndex = 0;
+  BRACKET_GROUP_PATTERN.lastIndex = 0;
+
+  for (const match of text.matchAll(BRACKET_GROUP_PATTERN)) {
+    const isRound = match[1] !== undefined;
+    const inner = isRound ? match[1] : (match[3] as string);
+    if (!isMixedScript(inner)) continue;
+
+    const trailingMark = (isRound ? match[2] : match[4]) ?? "";
+    const start = match.index ?? 0;
+    if (start > lastIndex) segments.push({ type: "text", value: text.slice(lastIndex, start) });
+    segments.push({ type: "group", bracketType: isRound ? "round" : "square", inner, trailingMark });
+    lastIndex = start + match[0].length;
+  }
+
+  if (segments.length === 0) return [{ type: "text", value: text }];
+  if (lastIndex < text.length) segments.push({ type: "text", value: text.slice(lastIndex) });
+  return segments;
+}
+
+function renderMixedBracketGroup(group: MixedBracketGroup, keyPrefix: string, index: number): ReactNode {
+  const localDominant = computeMajorityDirection(group.inner);
+  const [open, close] = group.bracketType === "round" ? ["(", ")"] : ["[", "]"];
+  return (
+    <bdi key={`${keyPrefix}-bracket-${index}`}>
+      {open}
+      {isolateBidiRunsInText(group.inner, `${keyPrefix}-bracket-${index}-inner`, localDominant)}
+      {close}
+      {group.trailingMark}
+    </bdi>
+  );
+}
+
 /**
  * Splits a plain string into alternating literal segments and isolated
  * `<bdi>` runs, isolating ONLY the minority-direction run(s) relative to
@@ -137,13 +279,39 @@ const LEADING_ATTACHED_MARK_PATTERN = /^[:.!?]+/;
  * from the string itself -- unchanged default behaviour.
  */
 export function isolateBidiRunsInText(text: string, keyPrefix: string, dominantOverride?: "rtl" | "ltr"): ReactNode[] {
+  // Task 20b, W2: pull out any mixed-script bracket/paren groups FIRST, as
+  // atomic units, and recurse into the remaining plain-text segments with
+  // the existing single-script logic below. See splitMixedBracketGroups's
+  // own comment. When there are no mixed-script groups at all (the common
+  // case), this returns the text back unchanged as a single segment and
+  // falls straight through to the unmodified logic below -- 17f's R2
+  // single-script short-circuit is untouched for that path.
+  const bracketSegments = splitMixedBracketGroups(text);
+  if (bracketSegments.length > 1 || bracketSegments[0].type === "group") {
+    return bracketSegments.flatMap((segment, index) =>
+      segment.type === "group"
+        ? [renderMixedBracketGroup(segment, keyPrefix, index)]
+        : isolateBidiRunsInText(segment.value, `${keyPrefix}-t${index}`, dominantOverride),
+    );
+  }
+
   const dominant = dominantOverride ?? resolveMessageBaseDirection(text);
   const minorityIsPersian = dominant === "ltr";
   const minorityStrongPattern = minorityIsPersian ? STRONG_RTL_PATTERN : STRONG_LTR_PATTERN;
 
-  // R2 fast path: no minority-direction strong character anywhere in this
-  // text at all -- single-script (or no strong character at all), return
-  // unchanged.
+  // R2 fast path (task 17f, unchanged by task 20b): no minority-direction
+  // strong character (relative to `dominant`) anywhere in this text at all
+  // -- single-script relative to the applicable dominant, or no strong
+  // character at all -- return unchanged. Task 20b, W1 note: `dominant` can
+  // now be an externally-propagated block dominant (see
+  // BlockDominantDirectionContext) rather than always computed locally from
+  // this exact text -- callers that would otherwise cause a REDUNDANT
+  // isolation this way (a `<strong>`/`<em>`/`<a>` element whose own content
+  // is genuinely single-script, already fully protected by that element's
+  // own CSS isolate boundary) are responsible for not passing an
+  // externally-mismatched override in the first place -- see strong/em/a's
+  // own comments in createDirectionalMarkdownComponents for how that's
+  // decided (only when the element's own content is itself mixed-script).
   if (!minorityStrongPattern.test(text)) return [text];
 
   const minorityPattern = minorityIsPersian ? PERSIAN_MINORITY_PATTERN : LATIN_MINORITY_PATTERN;
@@ -183,46 +351,83 @@ function extractPlainText(node: ReactNode): string {
 }
 
 /**
- * Reads ONLY the text that is NOT inside a nested element -- an element
- * child (e.g. a `<strong>` from markdown, already isolated via its own
- * component override) is treated as opaque and contributes nothing. This
- * deliberately MIRRORS what a real browser's native `dir="auto"` search
- * already does (this file's own header comment: it "explicitly SKIPS <bdi>
- * contents", and the same isolate semantics apply to any unicode-bidi:
- * isolate element) -- used as the PRIMARY signal in computeBlockDirection
- * below, so a block like "**SmartFlow** به شما کمک می‌کند" still resolves
- * RTL from "به" the same way native dir="auto" already correctly does,
- * instead of being thrown off by reading INTO the isolated "SmartFlow".
+ * The direction for a markdown block's own `dir` attribute (task 20, Part
+ * B; redesigned task 20b, W1) -- see p/ul/ol/li's own comment in
+ * createDirectionalMarkdownComponents for why this replaced a bare
+ * `dir="auto"`.
+ *
+ * Task 20b root-cause finding: this originally used a two-tier "skip
+ * isolated content, read through only as a fallback" strategy (mirroring
+ * native `dir="auto"`'s own isolate-skipping search). That fixed the
+ * degenerate case (a block that's nothing but an isolated bold run) but
+ * introduced a NEW contradiction: `isolateEmbeddedBidiRuns` (below)
+ * computed its OWN separate dominant via a plain read-through first-strong
+ * scan, so the two could disagree whenever a block's non-isolated text
+ * happened to start with the block's MINORITY script -- e.g. "**وظیفه**:
+ * Task را انجام بده." (a Persian sentence with an English word in the
+ * middle) resolved this block's own `<p>` to ltr (the non-isolated scan
+ * hits "Task" before any non-isolated Persian character, since "وظیفه" is
+ * hidden inside the bold isolate), while the sentence is overwhelmingly
+ * Persian -- confirmed via a rendered-DOM diagnostic before this fix, and
+ * exactly the same failure class as the W1 production evidence ("Task:
+ * (وظیفه)" embedded in a Persian line). Using ONE majority-based function
+ * (computeMajorityDirection) for both the block's own dir AND the dominant
+ * threaded into nested inline elements (see BlockDominantDirectionContext
+ * below) removes the possibility of the two disagreeing at all -- there is
+ * only one computation now, not two.
  */
-function extractNonIsolatedText(node: ReactNode): string {
-  if (typeof node === "string") return node;
-  if (typeof node === "number") return String(node);
-  if (Array.isArray(node)) return node.map(extractNonIsolatedText).join("");
-  return "";
+function computeBlockDirection(node: ReactNode): "rtl" | "ltr" {
+  return computeMajorityDirection(extractPlainText(node));
 }
 
 /**
- * The direction for a markdown block's own `dir` attribute (task 20, Part
- * B) -- see p/ul/ol/li's own comment in createDirectionalMarkdownComponents
- * for why this replaced a bare `dir="auto"`. Two-tier, matching native
- * dir="auto" behavior for the common case while adding a safety net for the
- * one case native dir="auto" cannot handle at all:
- *   1. PRIMARY: resolve from only the NON-isolated text (extractNonIsolatedText)
- *      -- identical to what the browser's own dir="auto" search already
- *      does when it works correctly, so a block with real non-isolated
- *      dominant-script text elsewhere (the common case for every reported
- *      production example) is completely unaffected by this change.
- *   2. FALLBACK: only when there is NO strong character anywhere outside
- *      an isolated element (the degenerate case -- a block that IS, or
- *      begins and ends with, nothing but an isolated run, e.g. a list item
- *      that is just "**پروژه من**" alone) -- read INTO the isolated
- *      content too (extractPlainText), rather than silently defaulting to
- *      ltr the way native dir="auto" would.
+ * Task 20b, W1: carries a block's own resolved direction (computed once, by
+ * `p`/`ul`/`ol`/`li` via computeBlockDirection) DOWN to nested inline
+ * elements (`strong`/`em`/`a`) so they use the SAME dominant for their own
+ * internal minority-run isolation, instead of each independently
+ * recomputing it from only their own local text.
+ *
+ * WHY this needs React Context rather than a plain function argument:
+ * react-markdown builds `<strong>`/`<em>`/`<a>` as unevaluated ReactElement
+ * descriptors (`{type: strongComponent, props: {children: "..."}}`) that
+ * are only actually RENDERED (i.e. the component function is only called)
+ * once React reconciles them as children of the already-rendered `<p>`/
+ * `<li>` -- by which point `p`'s/`li`'s own render function has already
+ * returned. There is no direct call-time handoff possible; Context is the
+ * standard mechanism for a value determined by an ancestor to reach a
+ * descendant component that hasn't rendered yet.
+ *
+ * A `null` value means "no enclosing block computed one" (defensive only --
+ * every real markdown render path always has a `p`/`li`/`ul`/`ol` ancestor);
+ * consumers fall back to their own local computation in that case.
  */
-function computeBlockDirection(node: ReactNode): "rtl" | "ltr" {
-  const nonIsolated = extractNonIsolatedText(node);
-  if (FIRST_STRONG_PATTERN.test(nonIsolated)) return resolveMessageBaseDirection(nonIsolated);
-  return resolveMessageBaseDirection(extractPlainText(node));
+const BlockDominantDirectionContext = createContext<"rtl" | "ltr" | null>(null);
+
+/**
+ * Decides whether a `<strong>`/`<em>`/`<a>` element should use the block's
+ * propagated dominant (task 20b, W1) for its OWN internal minority-run
+ * isolation, or fall back to computing one locally from just its own text
+ * (task 17f/20's original behaviour).
+ *
+ * ONLY when the element's own content genuinely mixes both scripts (e.g.
+ * "Task: (وظیفه)" -- the W1 production shape): the block's dominant is
+ * needed here so the mixed content resolves the same way it would as plain
+ * paragraph text, instead of the element picking its own contradictory
+ * local direction (this task's own root-cause finding).
+ *
+ * When the element's own content is single-script (e.g. "SmartFlow"), it
+ * is intentionally left to fall back to LOCAL computation instead: that
+ * content is already fully protected by the element's own CSS
+ * `unicode-bidi: isolate` boundary, so there is nothing for a block-level
+ * dominant to usefully change -- passing it anyway would make R2's
+ * single-script fast path evaluate against the WRONG (externally supplied)
+ * dominant and wrap the element's entire content in a redundant, pointless
+ * inner `<bdi>` -- caught as a real regression (via a rendered-DOM
+ * diagnostic) against an existing task 17f test during this task.
+ */
+function resolveInlineElementDominant(children: ReactNode, blockDominant: "rtl" | "ltr" | null): "rtl" | "ltr" | undefined {
+  if (blockDominant === null) return undefined;
+  return isMixedScript(extractPlainText(children)) ? blockDominant : undefined;
 }
 
 /**
@@ -253,10 +458,25 @@ function computeBlockDirection(node: ReactNode): "rtl" | "ltr" {
  *      already does elsewhere in this file, without touching the
  *      preceding element (already isolated by its own component override)
  *      at all.
+ *
+ * `dominantOverride` (task 20b, W1): when this call is for a child of a
+ * markdown block (`p`/`li`) or inline element (`strong`/`em`/`a`) that
+ * already computed its OWN shared dominant (computeBlockDirection, threaded
+ * down via BlockDominantDirectionContext), that value is passed in here so
+ * this function's per-string minority-run splitting agrees with it, rather
+ * than each nested element recomputing its own local (and potentially
+ * contradictory) dominant -- see BlockDominantDirectionContext's own
+ * comment for why this mismatch was the actual W1 root cause. Omitted
+ * (every DIRECT caller outside the markdown block components -- the
+ * ChatBubble compact-mode body, conversation titles, attached-file names,
+ * personal-memory cards) falls back to the ORIGINAL task 17f/20 behaviour
+ * (resolveMessageBaseDirection over this call's own text) completely
+ * unchanged -- this task's fix scope is the markdown block/inline-element
+ * boundary, not those simpler single-call sites.
  */
-export function isolateEmbeddedBidiRuns(children: ReactNode): ReactNode {
+export function isolateEmbeddedBidiRuns(children: ReactNode, dominantOverride?: "rtl" | "ltr"): ReactNode {
   const list = Array.isArray(children) ? children : [children];
-  const dominant = resolveMessageBaseDirection(extractPlainText(list));
+  const dominant = dominantOverride ?? resolveMessageBaseDirection(extractPlainText(list));
 
   return list.flatMap((child, index) => {
     if (typeof child !== "string") return [child];
@@ -318,61 +538,84 @@ export interface DirectionalMarkdownClassNames {
  */
 export function createDirectionalMarkdownComponents(classNames: DirectionalMarkdownClassNames = {}) {
   return {
-    // Task 20, Part B: p/ul/ol/li use an EXPLICIT direction computed from
-    // their own extracted plain text (resolveMessageBaseDirection +
-    // extractPlainText), not native `dir="auto"`. This is the SAME fix
+    // Task 20, Part B / redesigned task 20b, W1: p/ul/ol/li use an EXPLICIT
+    // direction (computeBlockDirection -- majority-of-strong-characters,
+    // see its own comment), not native `dir="auto"`. This is the SAME fix
     // ChatPage.tsx's ChatBubble root already applies at the message level
     // (`dir={resolveMessageBaseDirection(content)}`, task 17e) -- extended
     // here to the block-level markdown overrides, the one place in this
-    // file that was still relying on the browser's own dir="auto" search.
-    // That native search explicitly SKIPS isolated content (this file's own
-    // header comment), so a block that BEGINS with (or entirely consists
-    // of) an isolated inline run -- e.g. a list item "**پروژه من**" with a
-    // bold Persian label and nothing else -- would have nothing left for
-    // dir="auto" to find and silently fall back to the wrong direction.
-    // extractPlainText reads through isolation, so this never has that
-    // blind spot; for a plain-text-only block (no isolated children at
-    // all) it resolves to exactly the same answer dir="auto" already gave,
-    // so this is a strict robustness improvement, not a behavior tradeoff.
+    // file that was still relying on the browser's own dir="auto" search
+    // (or, until task 20b, a weaker heuristic prone to the same class of
+    // bug -- see computeBlockDirection's own comment for the root cause).
+    // The SAME resolved value is threaded down to nested strong/em/a via
+    // BlockDominantDirectionContext, so a bold/emphasis/link run's own
+    // internal minority-isolation never contradicts its enclosing block.
     p({ children }: Readonly<{ children?: ReactNode }>) {
+      const dominant = computeBlockDirection(children);
       return (
-        <p dir={computeBlockDirection(children)} className={classNames.p}>
-          {isolateEmbeddedBidiRuns(children)}
+        <p dir={dominant} className={classNames.p}>
+          <BlockDominantDirectionContext.Provider value={dominant}>
+            {isolateEmbeddedBidiRuns(children, dominant)}
+          </BlockDominantDirectionContext.Provider>
         </p>
       );
     },
+    // Task 20b, W3: the list's own SHARED dominant (computed from every
+    // item's combined text, not per item) is what `li` uses for its own
+    // `dir` below -- this is what keeps every item's BULLET/MARKER on the
+    // same side regardless of that one item's own script, since marker
+    // placement follows the element's `dir`, not its content. Each item's
+    // own TEXT still gets correctly isolated/reordered via
+    // isolateEmbeddedBidiRuns's minority-run logic (an all-Latin item in an
+    // RTL list becomes one isolated LTR run, same mechanism as any other
+    // minority run in this file) -- only the ITEM BOX's own direction (and
+    // therefore its marker) is now list-wide rather than per-item.
     ul({ children }: Readonly<{ children?: ReactNode }>) {
+      const dominant = computeBlockDirection(children);
       return (
-        <ul dir={computeBlockDirection(children)} className={classNames.ul}>
-          {children}
+        <ul dir={dominant} className={classNames.ul}>
+          <BlockDominantDirectionContext.Provider value={dominant}>{children}</BlockDominantDirectionContext.Provider>
         </ul>
       );
     },
     ol({ children }: Readonly<{ children?: ReactNode }>) {
+      const dominant = computeBlockDirection(children);
       return (
-        <ol dir={computeBlockDirection(children)} className={classNames.ol}>
-          {children}
+        <ol dir={dominant} className={classNames.ol}>
+          <BlockDominantDirectionContext.Provider value={dominant}>{children}</BlockDominantDirectionContext.Provider>
         </ol>
       );
     },
     li({ children }: Readonly<{ children?: ReactNode }>) {
+      // These are react-markdown component overrides (plain functions used
+      // AS components by react-markdown's renderer), not hooks called
+      // conditionally; every call here is a genuine top-level component
+      // render, satisfying the Rules of Hooks despite the lint rule's
+      // static heuristic not recognising this lowercase-named call shape.
+      // eslint-disable-next-line react-hooks/rules-of-hooks
+      const listDominant = useContext(BlockDominantDirectionContext);
+      const dominant = listDominant ?? computeBlockDirection(children);
       return (
-        <li dir={computeBlockDirection(children)} className={classNames.li}>
-          {isolateEmbeddedBidiRuns(children)}
+        <li dir={dominant} className={classNames.li}>
+          {isolateEmbeddedBidiRuns(children, dominant)}
         </li>
       );
     },
     strong({ children }: Readonly<{ children?: ReactNode }>) {
+      // eslint-disable-next-line react-hooks/rules-of-hooks -- see li's own note above.
+      const blockDominant = useContext(BlockDominantDirectionContext);
       return (
         <strong dir="auto" style={BIDI_ISOLATE_STYLE} className={classNames.strong}>
-          {isolateEmbeddedBidiRuns(children)}
+          {isolateEmbeddedBidiRuns(children, resolveInlineElementDominant(children, blockDominant))}
         </strong>
       );
     },
     em({ children }: Readonly<{ children?: ReactNode }>) {
+      // eslint-disable-next-line react-hooks/rules-of-hooks -- see li's own note above.
+      const blockDominant = useContext(BlockDominantDirectionContext);
       return (
         <em dir="auto" style={BIDI_ISOLATE_STYLE} className={classNames.em}>
-          {isolateEmbeddedBidiRuns(children)}
+          {isolateEmbeddedBidiRuns(children, resolveInlineElementDominant(children, blockDominant))}
         </em>
       );
     },
@@ -398,9 +641,11 @@ export function createDirectionalMarkdownComponents(classNames: DirectionalMarkd
       );
     },
     a({ children, href }: Readonly<{ children?: ReactNode; href?: string }>) {
+      // eslint-disable-next-line react-hooks/rules-of-hooks -- see li's own note above.
+      const blockDominant = useContext(BlockDominantDirectionContext);
       return (
         <a dir="auto" style={BIDI_ISOLATE_STYLE} className={classNames.a} href={href} target="_blank" rel="noreferrer">
-          {isolateEmbeddedBidiRuns(children)}
+          {isolateEmbeddedBidiRuns(children, resolveInlineElementDominant(children, blockDominant))}
         </a>
       );
     },
