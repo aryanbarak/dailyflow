@@ -68,6 +68,28 @@ describe("intentValidator", () => {
     expect(validate(proposal({ type: "inspect_workspace", requestedDomain: "workspace", toolId: "workspace.get_context" }), "Summarize my workspace.").toolId).toBe("workspace.get_context");
   });
 
+  it("overwrites a model-supplied task due date with deterministic parsing from the user message", () => {
+    const result = validateAgentIntentProposal({
+      rawProposal: proposal({
+        type: "create_task",
+        requestedDomain: "tasks",
+        toolId: "tasks.create",
+        requiresApproval: true,
+        target: {
+          title: "\u0646\u0648\u0628\u062a \u062f\u06a9\u062a\u0631",
+          dueDate: "2026-07-17",
+        },
+      }),
+      userMessage: "\u06cc\u06a9 \u062a\u0633\u06a9 \u0628\u0631\u0627\u06cc \u0641\u0631\u062f\u0627 \u0628\u0633\u0627\u0632 \u06a9\u0647 \u0646\u0648\u0628\u062a \u062f\u06a9\u062a\u0631 \u062f\u0627\u0631\u0645",
+      safeContext: context,
+      language: "fa",
+      now: new Date("2026-08-13T18:06:00.000Z"),
+    });
+
+    expect(result.proposal.type).toBe("create_task");
+    expect(result.proposal.target?.dueDate).toBe("2026-08-14");
+  });
+
   it("rejects unknown intent and invented tool id", () => {
     expect(validate(proposal({ type: "inspect_secret" }), "Hello there").proposal.type).toBe("unsupported");
     expect(validate(proposal({ toolId: "finance.pay" })).proposal.type).toBe("unsupported");

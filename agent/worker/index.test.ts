@@ -69,7 +69,7 @@ function installFetchMock(
   confirmedMemoryRows: Array<{ kind: string; content: unknown; created_at: string }> = [],
   attachment: AttachmentFixture | null = null,
   chatReplyText = 'Hello from Gemini',
-  flowWriteMode: 'auto' | 'ask' | 'off' | null = null,
+  flowWriteMode: 'auto' | 'ask' | 'off' | 'error' | null = null,
   undoStore: UndoStore = new Map(),
 ): FetchLog {
   const log: FetchLog = {
@@ -95,6 +95,9 @@ function installFetchMock(
       return new Response(JSON.stringify(confirmedMemoryRows), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
     if (url.startsWith(`${SUPABASE_URL}/rest/v1/flow_write_permissions`)) {
+      if (flowWriteMode === 'error') {
+        return new Response(JSON.stringify({ message: 'missing table' }), { status: 404, headers: { 'Content-Type': 'application/json' } })
+      }
       return new Response(JSON.stringify(flowWriteMode ? [{ mode: flowWriteMode }] : []), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
     if (url.startsWith(`${SUPABASE_URL}/rest/v1/flow_write_undo_records`) && method === 'POST') {
@@ -751,6 +754,37 @@ describe('ADR-0012 server-side task write policy', () => {
     expect(body.reply).toContain('switched off')
     expect(log.taskWrites.length).toBe(0)
     expect(log.geminiCalls.length).toBe(0)
+  })
+
+  it('resolved ask returns the server policy and leaves execution to the approval flow', async () => {
+    const log = installFetchMock([], null, 'Write action requires explicit approval.', 'ask')
+    const response = await worker.fetch(chatRequest({
+      message: 'Create task "Review invoices" for tomorrow',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { reply?: string; writePolicy?: { mode?: string } }
+
+    expect(response.status).toBe(200)
+    expect(body.writePolicy?.mode).toBe('ask')
+    expect(body.reply).toBe('Write action requires explicit approval.')
+    expect(log.taskWrites.length).toBe(0)
+    expect(log.geminiCalls.length).toBe(1)
+  })
+
+  it('policy read failure fails closed to ask and does not execute a write', async () => {
+    const log = installFetchMock([], null, 'Write action requires explicit approval.', 'error')
+    const response = await worker.fetch(chatRequest({
+      message: 'Create task "Review invoices" for tomorrow',
+      timeZone: 'Europe/Berlin',
+      writePolicy: { domain: 'tasks', action: 'create', mode: 'auto' },
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { reply?: string; writePolicy?: { mode?: string } }
+
+    expect(response.status).toBe(200)
+    expect(body.writePolicy?.mode).toBe('ask')
+    expect(body.reply).toBe('Write action requires explicit approval.')
+    expect(log.taskWrites.length).toBe(0)
+    expect(log.geminiCalls.length).toBe(1)
   })
 
   it('undo for auto-created tasks deletes the created task within the undo window', async () => {

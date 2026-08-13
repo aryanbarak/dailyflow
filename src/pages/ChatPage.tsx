@@ -740,9 +740,9 @@ function stepForReasoning(result: AgentReasoningResult, t: Translate): Workspace
     description: proposal.type === 'complete_task'
       ? t('agent_intent_complete_description', { title: proposal.target?.taskTitleHint ?? t('agent_intent_selected_task') })
       : proposal.type === 'create_task'
-        ? `Create task: ${proposal.target?.title ?? ''}`
+        ? t('agent_intent_create_description', { title: proposal.target?.title ?? '' })
         : proposal.type === 'update_task'
-          ? `Update task: ${proposal.target?.taskTitleHint ?? proposal.target?.taskReference ?? ''}`
+          ? t('agent_intent_task_update_description', { title: proposal.target?.taskTitleHint ?? proposal.target?.taskReference ?? '' })
           : proposal.type === 'write_github_issue_comment'
             ? t('agent_intent_comment_description', { targetId: githubIssueTargetId ?? '' })
             : proposal.type === 'write_github_issue_update'
@@ -829,13 +829,13 @@ function approvalForReasoningStep(
       toolMode: tool?.mode,
       status: 'pending',
       requiresApproval: true,
-      approvalReason: 'Create this task after review.',
+      approvalReason: t('agent_intent_create_approval_reason'),
       riskLevel: 'medium',
       reversible: true,
       externalEffect: true,
       dataDomains: ['tasks'],
       approvalScope: 'single_step',
-      previewText: [`Title: ${target.title}`, target.dueDate ? `Due: ${target.dueDate}` : null, target.notes ? `Notes: ${target.notes}` : null]
+      previewText: [`${t('agent_intent_preview_title')}: ${target.title}`, target.dueDate ? `${t('agent_intent_preview_due')}: ${target.dueDate}` : null, target.notes ? `${t('agent_intent_preview_notes')}: ${target.notes}` : null]
         .filter(Boolean)
         .join('\n'),
     }
@@ -854,16 +854,16 @@ function approvalForReasoningStep(
       toolMode: tool?.mode,
       status: 'pending',
       requiresApproval: true,
-      approvalReason: 'Update this task after review.',
+      approvalReason: t('agent_intent_task_update_approval_reason'),
       riskLevel: 'medium',
       reversible: true,
       externalEffect: true,
       dataDomains: ['tasks'],
       approvalScope: 'single_step',
       previewText: [
-        target?.title ? `Title: ${target.title}` : null,
-        target?.dueDate !== undefined ? `Due: ${target.dueDate ?? 'none'}` : null,
-        target?.notes ? `Notes: ${target.notes}` : null,
+        target?.title ? `${t('agent_intent_preview_title')}: ${target.title}` : null,
+        target?.dueDate !== undefined ? `${t('agent_intent_preview_due')}: ${target.dueDate ?? t('agent_intent_preview_none')}` : null,
+        target?.notes ? `${t('agent_intent_preview_notes')}: ${target.notes}` : null,
       ].filter(Boolean).join('\n'),
     }
   }
@@ -968,6 +968,8 @@ export interface ChatTurnOverlayInput {
   // function's own job is purely the DECISION of what to show, given an
   // outcome that already exists.
   readonly overlayResult: AgentReasoningResult | null
+  readonly serverWritePolicyMode?: 'auto' | 'ask' | 'off'
+  readonly serverWriteExecution?: string
 }
 
 export interface ChatTurnOutcome {
@@ -1008,7 +1010,8 @@ export interface ChatTurnOutcome {
 // definition of "actionable."
 export function resolveChatTurnOutcome(input: ChatTurnOverlayInput, t: Translate): ChatTurnOutcome {
   const overlayResult = input.overlayResult
-  const hasGenuineOverlay = overlayResult !== null && hasSupportedActionableOverlay(overlayResult)
+  const serverTerminalWrite = input.serverWritePolicyMode === 'auto' || input.serverWritePolicyMode === 'off' || Boolean(input.serverWriteExecution)
+  const hasGenuineOverlay = !serverTerminalWrite && overlayResult !== null && hasSupportedActionableOverlay(overlayResult)
 
   if (!hasGenuineOverlay && overlayResult !== null) {
     console.debug('[ChatPage] overlay suppressed (task 11b): not a supported, actionable proposal', {
@@ -1759,7 +1762,7 @@ export default function ChatPage() {
       // with an early `return` in the explicit branch) was the actual
       // production bug: a message misclassified 'explicit' by a keyword
       // collision never reached this call at all.
-      const chatCallPromise = (async (): Promise<{ reply: string }> => {
+      const chatCallPromise = (async (): Promise<{ reply: string; writePolicy?: { mode?: 'auto' | 'ask' | 'off' }; writeExecution?: string }> => {
         const res = await fetch(`${workerUrl}/chat`, {
           method: 'POST',
           headers: {
@@ -1771,13 +1774,14 @@ export default function ChatPage() {
             session_id: sessionId,
             responseLanguage,
             responseLanguageInstruction,
+            timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
             // Task 19: turn-scoped -- only ever the document attached to
             // THIS specific turn, never a stale reference from an earlier one.
             documentId: sentDocument?.id ?? null,
           }),
         })
         if (!res.ok) throw new Error(`Worker responded ${res.status}`)
-        return (await res.json()) as { reply: string }
+        return (await res.json()) as { reply: string; writePolicy?: { mode?: 'auto' | 'ask' | 'off' }; writeExecution?: string }
       })()
 
       // Task 11 fix: the OVERLAY LANE. Action interpretation runs
@@ -1827,7 +1831,7 @@ export default function ChatPage() {
         })
       }
 
-      const [{ reply }, overlayResult] = await Promise.all([chatCallPromise, overlayPromise])
+      const [{ reply, writePolicy, writeExecution }, overlayResult] = await Promise.all([chatCallPromise, overlayPromise])
 
       // Task 11d (auto-execute read-only tools): a supported, actionable,
       // non-write, non-disambiguated read proposal whose resolved tool is
@@ -1910,7 +1914,7 @@ export default function ChatPage() {
       // inputs and apply the decision.
       const outcome = autoReadContent !== null
         ? { content: autoReadContent, reasoningStates: null }
-        : resolveChatTurnOutcome({ intentSignal, message: text, responseLanguage, reply, overlayResult }, t)
+        : resolveChatTurnOutcome({ intentSignal, message: text, responseLanguage, reply, overlayResult, serverWritePolicyMode: writePolicy?.mode, serverWriteExecution: writeExecution }, t)
       setReasoningProposal(outcome.reasoningStates)
 
       setMessages(prev => [

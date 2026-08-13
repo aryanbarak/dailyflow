@@ -729,6 +729,7 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
       return json({ reply }, 200, origin)
     }
 
+    let pendingWritePolicy: { domain: 'tasks'; action: 'create' | 'update'; mode: 'ask' } | undefined
     const taskWriteIntent = parseTaskWriteIntent(message, new Date(), timeZone)
     if (taskWriteIntent) {
       const action = taskWriteIntent.kind === 'create_task' ? 'create' : 'update'
@@ -751,6 +752,7 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
           return json({ reply: execution.reply, writePolicy: { domain: 'tasks', action, mode }, writeExecution: execution.status }, 200, origin)
         }
       }
+      pendingWritePolicy = { domain: 'tasks', action, mode: 'ask' }
     }
 
     // Last 20 messages from this session, oldest first
@@ -831,7 +833,7 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
       )
     }
 
-    return json({ reply }, 200, origin)
+    return json(pendingWritePolicy ? { reply, writePolicy: pendingWritePolicy } : { reply }, 200, origin)
   } catch (err) {
     console.error('[Chat] Error:', err)
     return json({ error: 'Failed to generate reply' }, 500, origin)

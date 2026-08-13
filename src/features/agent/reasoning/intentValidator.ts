@@ -8,6 +8,7 @@ import {
   type AgentReasoningSafeContext,
   type AgentReasoningValidationResult,
 } from "./reasoningTypes";
+import { parseDeterministicDueDate } from "./deterministicDates";
 
 export const supportedIntentTypes: AgentIntentType[] = [
   "inspect_tasks",
@@ -515,6 +516,7 @@ export function validateAgentIntentProposal(input: {
   now?: Date;
 }): AgentReasoningValidationResult {
   const now = input.now ?? new Date();
+  const deterministicDueDate = parseDeterministicDueDate(input.userMessage, now, "Europe/Berlin");
   if (!isRecord(input.rawProposal)) {
     return createSafeProposal("ask_clarification", {
       userMessage: input.userMessage,
@@ -696,6 +698,18 @@ export function validateAgentIntentProposal(input: {
   const target = type === "complete_task"
     ? deriveTaskCompletionTarget(input.safeContext, normalizeTarget(input.rawProposal.target), input.userMessage)
     : normalizeTarget(input.rawProposal.target);
+  if ((type === "create_task" || type === "update_task") && target && deterministicDueDate.value !== undefined) {
+    target.dueDate = deterministicDueDate.value;
+  }
+  if ((type === "create_task" || type === "update_task") && deterministicDueDate.clarificationNeeded) {
+    return createSafeProposal("ask_clarification", {
+      userMessage: input.userMessage,
+      language: input.language,
+      now,
+      question: textFor(input.language, "clarify"),
+      reason: "Exact due date is required before preparing a task write.",
+    });
+  }
   if (type === "complete_task") {
     const match = findTaskTarget(input.safeContext, target);
     if (match.status !== "matched" || !match.task.id) {

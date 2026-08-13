@@ -1207,6 +1207,69 @@ describe("ChatPage LLM reasoning UX boundary", () => {
       );
       expect(outcome.content).toBe(reply);
     });
+
+    it("server-resolved auto write suppresses a stale client approval overlay", () => {
+      const t = (key: string) => key;
+      const overlay = reasoningResult("create_task", "tasks.create");
+      overlay.proposal.target = { title: "Doctor appointment", dueDate: "2026-08-14" };
+      overlay.proposal.requiresApproval = true;
+      const outcome = resolveChatTurnOutcome(
+        {
+          intentSignal: "explicit",
+          message: "create a task for tomorrow",
+          responseLanguage: "en",
+          reply: "Task created: Doctor appointment",
+          overlayResult: overlay,
+          serverWritePolicyMode: "auto",
+          serverWriteExecution: "executed",
+        },
+        t,
+      );
+
+      expect(outcome.content).toBe("Task created: Doctor appointment");
+      expect(outcome.reasoningStates).toBeNull();
+    });
+
+    it("server-resolved ask keeps the explicit approval overlay", () => {
+      const t = (key: string) => key;
+      const overlay = reasoningResult("create_task", "tasks.create");
+      overlay.proposal.target = { title: "Doctor appointment", dueDate: "2026-08-14" };
+      overlay.proposal.requiresApproval = true;
+      const outcome = resolveChatTurnOutcome(
+        {
+          intentSignal: "explicit",
+          message: "create a task for tomorrow",
+          responseLanguage: "en",
+          reply: "Write action requires explicit approval.",
+          overlayResult: overlay,
+          serverWritePolicyMode: "ask",
+        },
+        t,
+      );
+
+      expect(outcome.reasoningStates?.[0]?.approval?.toolId).toBe("tasks.create");
+    });
+
+    it("server-resolved off suppresses a stale client approval overlay", () => {
+      const t = (key: string) => key;
+      const overlay = reasoningResult("create_task", "tasks.create");
+      overlay.proposal.target = { title: "Doctor appointment", dueDate: "2026-08-14" };
+      overlay.proposal.requiresApproval = true;
+      const outcome = resolveChatTurnOutcome(
+        {
+          intentSignal: "explicit",
+          message: "create a task for tomorrow",
+          responseLanguage: "en",
+          reply: "Task creation is switched off in your settings.",
+          overlayResult: overlay,
+          serverWritePolicyMode: "off",
+        },
+        t,
+      );
+
+      expect(outcome.content).toBe("Task creation is switched off in your settings.");
+      expect(outcome.reasoningStates).toBeNull();
+    });
   });
 
   // ---------------------------------------------------------------------
