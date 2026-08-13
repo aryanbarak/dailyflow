@@ -83,8 +83,13 @@ export function ConversationsDrawer({
         </SheetHeader>
         {/* Task 17f, C1a: overscroll-contain -- this drawer scrolls
             independently over the chat page underneath; without this, a
-            scrolled-to-top pull gesture here could chain into the page's
-            own scroll/pull-to-refresh handling. */}
+            scrolled-to-top pull gesture here could chain into whatever
+            sits behind it. KEPT by task 20c (which removed the equivalent
+            containment from html/body and ChatPage's own root to restore
+            the browser's native pull-to-refresh gesture there): this list
+            is a genuinely scrolled element with its own independent
+            reading-scroll-chaining reason to stay contained, same as
+            ChatPage's own messages region -- see that task's report. */}
         <div className="flex-1 overflow-y-auto overscroll-contain p-3">
           {filteredSessions.length === 0 && sessions.length > 0 ? (
             <p className="text-xs text-muted-foreground" dir="auto">

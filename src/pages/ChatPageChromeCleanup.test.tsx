@@ -162,7 +162,7 @@ describe("Y5 (task 17g): exactly one scroll container owns the chat message list
     expect(chatPageSource).toMatch(/overflow-y-auto overscroll-contain px-3/);
   });
 
-  it("ChatPage's own root still doesn't scroll itself (overflow-hidden) -- it delegates entirely to the one inner region", () => {
-    expect(chatPageSource).toMatch(/overflow-hidden overscroll-contain bg-background/);
+  it("ChatPage's own root still doesn't scroll itself (overflow-hidden) -- it delegates entirely to the one inner region (task 20c: overscroll-contain removed from this root -- it was never the scrolled element Y5's own fix cares about here; that was 17f, C1a's unrelated gesture-suppression concern, see ChatPagePwaScroll.test.tsx)", () => {
+    expect(chatPageSource).toMatch(/overflow-hidden bg-background/);
   });
 });

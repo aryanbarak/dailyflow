@@ -2102,11 +2102,22 @@ export default function ChatPage() {
   }, [deleteSession, activeSessionId, startNewChat])
 
   return (
+    // Task 20c: `overscroll-contain` REMOVED from this root (it was task
+    // 17f, C1a's outermost chat-tree link in the pull-to-refresh
+    // suppression chain, alongside index.css's html/body -- both removed
+    // together, since either one left in place would still block the
+    // chain reaching the browser). This div is a plain non-scrolling flex
+    // layout wrapper (`overflow-hidden`, kept for its own separate reason
+    // -- task 17g, Y5's double-scrollbar fix), never itself the scrolled
+    // element, so it never served the "prevent scroll-chaining while
+    // reading" purpose the messages region and ConversationsDrawer still
+    // need -- see this task's report for the full container-by-container
+    // decision.
     <div
       dir={isRTL ? 'rtl' : 'ltr'}
       data-chat-theme={theme}
       data-chat-density={density}
-      className="flex h-full flex-col overflow-hidden overscroll-contain bg-background text-foreground lg:sticky lg:top-0 lg:h-screen"
+      className="flex h-full flex-col overflow-hidden bg-background text-foreground lg:sticky lg:top-0 lg:h-screen"
     >
       {/* Header -- task 17c, PO decision D4, final single-row layout:
           [More menu] [Conversations] -- "Flow AI" -- [theme/density] [New].
@@ -2151,12 +2162,17 @@ export default function ChatPage() {
               inside it, the composer below is a non-scrolling flex sibling
               that is therefore always visible without any sticky/fixed
               positioning trick. handleMessagesScroll feeds the smart
-              auto-scroll decision (chatScrollDecision.ts). Task 17f, C1a:
-              `overscroll-contain` stops a scrolled-to-top pull/rubber-band
-              gesture here from chaining up into the browser's native
-              pull-to-refresh (which was reloading the whole PWA -- see
-              this page's root and index.css's html/body for the other
-              scroll-chain stops). */}
+              auto-scroll decision (chatScrollDecision.ts). `overscroll-
+              contain` here is KEPT by task 20c (unlike the page root and
+              index.css's html/body, both un-contained by that task to
+              restore the browser's native pull-to-refresh gesture): this
+              is a genuinely scrollED element with its own independent
+              reason to stay contained -- reaching the top/bottom of
+              message history while reading must not chain into rubber-
+              banding whatever sits behind it (the page root, which no
+              longer stops that chain itself). That reading-scroll-chaining
+              concern is separate from, and survives, 20c's gesture
+              restoration. */}
           <div
             ref={messagesScrollRef}
             onScroll={handleMessagesScroll}

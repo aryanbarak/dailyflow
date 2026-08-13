@@ -119,12 +119,21 @@ function AppLayoutInner() {
             </div>
           )}
           {/* Task 17f, C1a: overscroll-contain -- this is the scrolling
-              ancestor for every mobile page's own content, including the
-              chat page's message region; without this, a boundary
-              overscroll here could still chain into the browser's native
-              pull-to-refresh even with the chat's OWN inner scroll region
-              contained (see ChatPage.tsx and index.css's html/body for the
-              other scroll-chain stops). */}
+              ancestor for every mobile page's OTHER content (Settings,
+              Documents, etc. -- pages that don't self-manage their own
+              scroll region the way chat does). Task 20c deliberately
+              leaves this UNTOUCHED, even though it removed the equivalent
+              containment from html/body and ChatPage's own root to restore
+              the chat's pull-to-refresh gesture: this <main> is NOT "the
+              chat page root" (it's the shared shell for every route) and,
+              for the chat page specifically, it is functionally INERT
+              here anyway -- chat's own mobile root is sized to exactly
+              fill it (C2's resolveShellHeightStyle, whose entire point is
+              "composer visible with no scrolling"), so this <main> never
+              actually overflows/scrolls while displaying chat and never
+              becomes the chain link 20c needed to remove. It keeps
+              suppressing pull-to-refresh on every OTHER page, which task
+              20c was never asked to change. */}
           <main className={cn("flex-1 overflow-auto overscroll-contain", !hideMobileChrome && "pb-20")}>
             <Outlet />
           </main>

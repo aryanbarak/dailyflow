@@ -278,21 +278,20 @@
     background: #07060E;
   }
 
-  /* Task 17f, C1a: pull-to-refresh inside the chat (Android PWA standalone)
-     triggered a full browser reload -- the native rubber-band/pull-to-
-     refresh gesture chains up from a scrolled-to-top inner container all
-     the way to the document root by default. `overscroll-behavior:
-     contain` on html/body stops that chain at the PAGE level; the chat's
-     own scroll containers (ChatPage.tsx's messages region, AppLayout's
-     mobile shell, ConversationsDrawer's list) each also get their own
-     `overscroll-contain` so the chain is stopped at EVERY level, not just
-     the outermost one -- see this task's report for the full list. Safe
-     globally: `contain` only stops the OVERSCROLL chain past a boundary,
-     it never blocks ordinary scrolling within a container. */
-  html,
-  body {
-    overscroll-behavior: contain;
-  }
+  /* Task 17f, C1a added an overscroll-containment rule here (html/body) to
+     stop the browser's native pull-to-refresh gesture chaining up from the
+     chat's scroll containers to the document root -- at the time, a reload
+     landed on a brand-new EMPTY chat (see C1b). Task 20c REMOVES it: C1b's
+     activeSessionResolver now persists and restores the active session on
+     mount, so the reload the gesture triggers is no longer destructive, and
+     the PO wants the native gesture back. This was the OUTERMOST link in
+     17f's chain -- removing it here is necessary but not sufficient on its
+     own; see ChatPage.tsx's own root (also un-contained by this task) and
+     this task's report for the full container-by-container decision,
+     including which containers KEEP that same containment for an
+     unrelated, still-valid reason (preventing scroll-chaining while
+     reading a scrolled
+     list, not gesture suppression). */
 
   body {
     @apply text-foreground font-sans antialiased;

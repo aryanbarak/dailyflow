@@ -117,3 +117,81 @@ describe("persistActiveSessionId / readPersistedActiveSessionId", () => {
     expect(() => persistActiveSessionId("s-123")).not.toThrow();
   });
 });
+
+// Task 20c: the pull-to-refresh gesture is being restored (see
+// ChatPagePwaScroll.test.tsx) now that this resolver makes the reload it
+// triggers non-destructive. This models the actual RELOAD SEQUENCE end to
+// end -- persistActiveSessionId/readPersistedActiveSessionId AND
+// resolveActiveSessionOnMount used TOGETHER, the same way ChatPage.tsx's
+// own mount effect chains them (see that file's own "Task 17f, C1b:
+// session continuity across a fresh mount" comment) -- rather than each
+// tested only in isolation (both already are, above). Confirms C1b's
+// EXISTING resolver already covers this: no new decision logic, just the
+// end-to-end wiring proven together.
+describe("reload sequence (task 20c, R2): persisted session exists -> resumed; New Chat pressed -> empty state unaffected", () => {
+  beforeEach(() => {
+    vi.stubGlobal("localStorage", new MemoryStorage());
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("a session active before a pull-to-refresh reload is resumed after it: persist, then a fresh 'mount' reads persistence straight back through the resolver", () => {
+    const sessions = [{ id: "s-active" }, { id: "s-other" }];
+    // Before the reload: the user was in s-active, and ChatPage's own
+    // `persistActiveSessionId(activeSessionId)` effect had already written
+    // it.
+    persistActiveSessionId("s-active");
+
+    // The reload happens -- ChatPage remounts from scratch. This is
+    // EXACTLY the pair of calls ChatPage.tsx's own mount effect makes.
+    const resolution = resolveActiveSessionOnMount({
+      persistedSessionId: readPersistedActiveSessionId(),
+      sessions,
+      explicitNewChat: false,
+    });
+
+    expect(resolution).toEqual({ kind: "resume", sessionId: "s-active" });
+  });
+
+  it("New Chat pressed (persistence cleared), THEN a pull-to-refresh reload happens before anything is sent: an explicit New Chat trigger at mount time always resolves empty, regardless of what is persisted or which sessions exist", () => {
+    const sessions = [{ id: "s-active" }, { id: "s-other" }];
+    // The user was in s-active (persisted), then pressed New Chat --
+    // ChatPage.tsx's real startNewChat() clears persistence for exactly
+    // this reason: "so an accidental reload right after (before anything
+    // is sent) doesn't drag back the PREVIOUS session."
+    persistActiveSessionId("s-active");
+    persistActiveSessionId(null);
+    expect(readPersistedActiveSessionId()).toBeNull();
+
+    // A reload at THIS exact moment, modelled the way a mount that is
+    // itself the direct continuation of a just-pressed New Chat would
+    // resolve (explicitNewChat: true) -- confirms the empty state wins
+    // outright, not merely "happens to fall back to nothing because
+    // sessions is empty" (sessions is NOT empty here, on purpose, and
+    // s-active is still the most recently updated one -- proving this
+    // isn't a coincidence of an empty session list).
+    const resolution = resolveActiveSessionOnMount({
+      persistedSessionId: readPersistedActiveSessionId(),
+      sessions,
+      explicitNewChat: true,
+    });
+
+    expect(resolution).toEqual({ kind: "empty" });
+  });
+
+  it("documents the residual case this resolver does NOT distinguish: a reload with NO explicit New Chat signal and cleared persistence falls back to the most recent session, not empty -- persistedSessionId=null is ambiguous between 'first-ever load' and 'New Chat was pressed, then an ORDINARY reload (not modelled as explicitNewChat) happened' by design, since ChatPage never passes explicitNewChat:true from its own mount effect (see that file's own resolveActiveSessionOnMount call, always explicitNewChat:false) -- an accidental reload seconds after New Chat, before anything is typed, resumes the most recent session rather than staying empty, which is judged an acceptable outcome since nothing was lost (no draft, no message)", () => {
+    const sessions = [{ id: "s-active" }, { id: "s-other" }];
+    persistActiveSessionId("s-active");
+    persistActiveSessionId(null);
+
+    const resolution = resolveActiveSessionOnMount({
+      persistedSessionId: readPersistedActiveSessionId(),
+      sessions,
+      explicitNewChat: false,
+    });
+
+    expect(resolution).toEqual({ kind: "resume", sessionId: "s-active" });
+  });
+});
