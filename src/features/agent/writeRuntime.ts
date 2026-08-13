@@ -42,6 +42,8 @@ import type {
 export const WRITE_RUNTIME_VERSION = "write-runtime-v1" as const;
 export const SUPPORTED_WRITE_TOOL_IDS = Object.freeze([
   "tasks.complete",
+  "tasks.create",
+  "tasks.update",
   "github.issues.comment",
   "github.issues.update",
   "github.files.update",
@@ -68,6 +70,9 @@ export type WriteRuntimeStatus =
 // AgentIntentTarget -- the execution layer shouldn't depend on the reasoning
 // layer's types, only on the specific fields a write handler actually needs.
 export interface WriteRuntimeProposalTarget {
+  title?: string;
+  notes?: string;
+  dueDate?: string | null;
   repo?: string;
   issueNumber?: number;
   commentBody?: string;
@@ -179,6 +184,10 @@ function expectedCapabilityForToolId(toolId: SupportedWriteToolId): AgentToolCap
   switch (toolId) {
     case "tasks.complete":
       return "complete";
+    case "tasks.create":
+      return "create";
+    case "tasks.update":
+      return "update";
     case "github.issues.comment":
       return "create";
     case "github.issues.update":
@@ -196,6 +205,10 @@ function expectedStepShapeForToolId(
   switch (toolId) {
     case "tasks.complete":
       return { actionType: "complete", domain: "tasks" };
+    case "tasks.create":
+      return { actionType: "create", domain: "tasks" };
+    case "tasks.update":
+      return { actionType: "update", domain: "tasks" };
     case "github.issues.comment":
       return { actionType: "create", domain: "github" };
     case "github.issues.update":
@@ -341,6 +354,8 @@ function safeSummaryFor(
     if (toolId === "github.issues.comment") return "Comment added.";
     if (toolId === "github.issues.update") return "Issue updated.";
     if (toolId === "github.files.update") return "File updated.";
+    if (toolId === "tasks.create") return "Task created.";
+    if (toolId === "tasks.update") return "Task updated.";
     return alreadyCompleted
       ? "Task was already complete."
       : "Task was marked complete.";
@@ -504,6 +519,12 @@ function validateResolvedTool(
 
 function writeTargetIsValid(request: WriteRuntimeRequest, toolId: SupportedWriteToolId) {
   const expected = expectedStepShapeForToolId(toolId);
+  if (toolId === "tasks.create") {
+    return request.step?.actionType === expected.actionType &&
+      request.step.domain === expected.domain &&
+      typeof request.target?.title === "string" &&
+      request.target.title.trim().length > 0;
+  }
   return request.step?.actionType === expected.actionType &&
     request.step.domain === expected.domain &&
     typeof request.step.targetId === "string" &&
@@ -530,6 +551,25 @@ function buildHandlerInput(
   }
 
   const target = request.target;
+  if (toolId === "tasks.create") {
+    return {
+      userId: runtimeActorId,
+      title: target?.title,
+      notes: target?.notes,
+      dueDate: target?.dueDate ?? null,
+    };
+  }
+
+  if (toolId === "tasks.update") {
+    return {
+      userId: runtimeActorId,
+      taskId: request.step?.targetId?.trim(),
+      ...(target?.title !== undefined ? { title: target.title } : {}),
+      ...(target?.notes !== undefined ? { notes: target.notes } : {}),
+      ...(target?.dueDate !== undefined ? { dueDate: target.dueDate } : {}),
+    };
+  }
+
   if (toolId === "github.issues.comment") {
     return {
       repo: target?.repo,

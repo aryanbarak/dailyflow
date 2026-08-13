@@ -17,6 +17,8 @@ export const SUPPORTED_INTENT_VALUES = [
   'inspect_github_pull_requests',
   'inspect_github_workflow_runs',
   'complete_task',
+  'create_task',
+  'update_task',
   'write_github_issue_comment',
   'write_github_issue_update',
   'ask_clarification',
@@ -40,6 +42,7 @@ const PROPOSAL_FIELDS = new Set([
 ])
 const TARGET_FIELDS = new Set([
   'taskId', 'taskReference', 'taskTitleHint',
+  'title', 'notes', 'dueDate',
   // EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
   'repo', 'issueNumber', 'commentBody', 'updateTitle', 'updateBody', 'updateLabels',
 ])
@@ -347,6 +350,9 @@ function normalizeProposal(raw: unknown, responseLanguage: ReasoningRequest['res
       taskId: boundedString(rawTarget.taskId, 128),
       taskReference: boundedString(rawTarget.taskReference),
       taskTitleHint: boundedString(rawTarget.taskTitleHint),
+      title: boundedString(rawTarget.title),
+      notes: boundedString(rawTarget.notes, 2000),
+      dueDate: boundedString(rawTarget.dueDate, 32),
       // EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
       repo: boundedString(rawTarget.repo, 200),
       issueNumber: boundedPositiveInteger(rawTarget.issueNumber),
@@ -474,6 +480,9 @@ export function buildReasoningResponseSchema() {
           taskId: { type: 'STRING' },
           taskReference: { type: 'STRING' },
           taskTitleHint: { type: 'STRING' },
+          title: { type: 'STRING' },
+          notes: { type: 'STRING' },
+          dueDate: { type: 'STRING' },
           // EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
           repo: { type: 'STRING' },
           issueNumber: { type: 'INTEGER' },

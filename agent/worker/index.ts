@@ -15,6 +15,7 @@ import { handlePersonalMemoryExtractionRequest } from './personal-memory-extract
 import { handleDocumentMemoryExtractionRequest } from './document-memory-extraction-endpoint'
 import { buildAttachmentTextPart, resolveChatAttachment } from './chat-attachment-context'
 import { checkForFalseCompletionClaim } from './completion-claim-guard'
+import { executeAutoTaskWrite, parseTaskWriteIntent, resolveServerFlowWriteMode, undoAutoTaskWrite } from './flow-write-policy'
 
 // ADR-0010 Product Owner Resolution Q4: always-on background extraction
 // into user_context is DISABLED by this decision (SUPERSEDE per Q3 --
@@ -657,6 +658,7 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
   let mode: 'reasoning' | 'chat'
   let responseLanguage: ReasoningResponseLanguage
   let documentId: string | null
+  let timeZone: string
   try {
     const body = await request.json() as {
       message?: unknown
@@ -664,6 +666,8 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
       mode?: unknown
       responseLanguage?: unknown
       documentId?: unknown
+      timeZone?: unknown
+      undoId?: unknown
     }
     const parsed = typeof body.message === 'string' ? body.message.trim() : ''
     if (parsed === '') {
@@ -683,6 +687,12 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
     // document uses (documentsService.ts) -- resolved below, turn-scoped
     // (see the comment at its use site for exactly what that means).
     documentId = typeof body.documentId === 'string' && body.documentId.trim() !== '' ? body.documentId.trim() : null
+    timeZone = typeof body.timeZone === 'string' && body.timeZone.trim() !== '' ? body.timeZone.trim() : 'UTC'
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone }).format(new Date())
+    } catch {
+      timeZone = 'UTC'
+    }
   } catch {
     return json({ error: 'Invalid JSON body' }, 400, origin)
   }
@@ -708,6 +718,40 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
       fetchUserLanguage(userId, env),
       fetchConfirmedPersonalMemory(userId, env),
     ])
+
+    const undoMatch = message.match(/\bundo:([0-9a-f-]{36})\b/i)
+    if (undoMatch) {
+      const undoId = `undo:${undoMatch[1]}`
+      const undone = await undoAutoTaskWrite(env, userId, undoId, new Date())
+      const reply = undone ? 'Undo complete.' : 'I could not undo that action. The undo window may have expired.'
+      await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'user', content: message })
+      await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: reply })
+      return json({ reply }, 200, origin)
+    }
+
+    const taskWriteIntent = parseTaskWriteIntent(message, new Date(), timeZone)
+    if (taskWriteIntent) {
+      const action = taskWriteIntent.kind === 'create_task' ? 'create' : 'update'
+      const mode = await resolveServerFlowWriteMode(env, userId, 'tasks', action)
+      if (mode === 'off') {
+        const reply = language === 'de'
+          ? 'Diese Flow-AI-Aktion ist in deinen Einstellungen ausgeschaltet.'
+          : language === 'fa'
+            ? 'این اقدام Flow AI در تنظیمات شما خاموش است.'
+            : 'This Flow AI action is switched off in your settings.'
+        await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'user', content: message })
+        await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: reply })
+        return json({ reply, writePolicy: { domain: 'tasks', action, mode } }, 200, origin)
+      }
+      if (mode === 'auto') {
+        const execution = await executeAutoTaskWrite({ env, userId, language, intent: taskWriteIntent, now: new Date() })
+        if (execution.status === 'executed' || execution.status === 'clarify' || execution.status === 'failed') {
+          await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'user', content: message })
+          await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: execution.reply })
+          return json({ reply: execution.reply, writePolicy: { domain: 'tasks', action, mode }, writeExecution: execution.status }, 200, origin)
+        }
+      }
+    }
 
     // Last 20 messages from this session, oldest first
     const historyRows = await supabaseGet<Array<{ role: string; content: string }>>(

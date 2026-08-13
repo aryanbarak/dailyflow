@@ -45,7 +45,11 @@ interface FetchLog {
   personalMemoryReads: number
   documentReads: number
   storageReads: number
+  taskWrites: Array<{ method: string; body?: Record<string, unknown> }>
+  undoWrites: Array<{ method: string; body?: Record<string, unknown> }>
 }
+
+type UndoStore = Map<string, Record<string, unknown>>
 
 // Task 19 (Attach file in Flow AI): an optional fixture describing the
 // `documents` row an attachment test's documentId resolves to, and what
@@ -65,9 +69,12 @@ function installFetchMock(
   confirmedMemoryRows: Array<{ kind: string; content: unknown; created_at: string }> = [],
   attachment: AttachmentFixture | null = null,
   chatReplyText = 'Hello from Gemini',
+  flowWriteMode: 'auto' | 'ask' | 'off' | null = null,
+  undoStore: UndoStore = new Map(),
 ): FetchLog {
   const log: FetchLog = {
     geminiCalls: [], chatMessageWrites: [], sessionPatches: 0, personalMemoryReads: 0, documentReads: 0, storageReads: 0,
+    taskWrites: [], undoWrites: [],
   }
 
   const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -86,6 +93,38 @@ function installFetchMock(
     if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_records`)) {
       log.personalMemoryReads += 1
       return new Response(JSON.stringify(confirmedMemoryRows), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    if (url.startsWith(`${SUPABASE_URL}/rest/v1/flow_write_permissions`)) {
+      return new Response(JSON.stringify(flowWriteMode ? [{ mode: flowWriteMode }] : []), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    if (url.startsWith(`${SUPABASE_URL}/rest/v1/flow_write_undo_records`) && method === 'POST') {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+      log.undoWrites.push({ method, body })
+      undoStore.set(String(body.id), { ...body, consumed_at: null })
+      return new Response(null, { status: 201 })
+    }
+    if (url.startsWith(`${SUPABASE_URL}/rest/v1/flow_write_undo_records`) && method === 'GET') {
+      const parsed = new URL(url)
+      const id = parsed.searchParams.get('id')?.replace(/^eq\./, '')
+      const row = id ? undoStore.get(id) : undefined
+      return new Response(JSON.stringify(row && row.consumed_at === null ? [row] : []), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    if (url.startsWith(`${SUPABASE_URL}/rest/v1/flow_write_undo_records`) && method === 'PATCH') {
+      const parsed = new URL(url)
+      const id = parsed.searchParams.get('id')?.replace(/^eq\./, '')
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+      log.undoWrites.push({ method, body })
+      if (id && undoStore.has(id)) undoStore.set(id, { ...undoStore.get(id), ...body })
+      return new Response(null, { status: 204 })
+    }
+    if (url.startsWith(`${SUPABASE_URL}/rest/v1/tasks`) && method === 'GET') {
+      return new Response(JSON.stringify([{ id: 'task-1', user_id: 'user-1', title: 'Tax task', notes: null, due_date: null, completed: false, created_at: '2026-08-13T00:00:00.000Z', updated_at: '2026-08-13T00:00:00.000Z' }]), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    if (url.startsWith(`${SUPABASE_URL}/rest/v1/tasks`) && (method === 'POST' || method === 'PATCH' || method === 'DELETE')) {
+      const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : undefined
+      log.taskWrites.push({ method, body })
+      const row = { id: 'task-created-1', user_id: 'user-1', title: String(body?.title ?? 'Tax task'), notes: body?.notes ?? null, due_date: body?.due_date ?? null, completed: body?.completed ?? false, created_at: '2026-08-13T00:00:00.000Z', updated_at: '2026-08-13T00:01:00.000Z' }
+      return new Response(JSON.stringify([row]), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
     if (url.startsWith(`${SUPABASE_URL}/rest/v1/documents`) && method === 'GET') {
       log.documentReads += 1
@@ -209,6 +248,8 @@ describe('handleChat mode routing', () => {
       'inspect_github_pull_requests',
       'inspect_github_workflow_runs',
       'complete_task',
+      'create_task',
+      'update_task',
       'write_github_issue_comment',
       'write_github_issue_update',
       'ask_clarification',
@@ -634,7 +675,7 @@ describe('task 20, Part A2: /chat applies the deterministic completion-claim gua
   })
 
   it('a normal reply with no completion claim passes through UNCHANGED', async () => {
-    const log = installFetchMock([], null, "Here's what I'd set up for you -- want me to prepare it for approval?")
+    const log = installFetchMock([], null, "Here's what I'd set up for you -- want me to prepare it for approval?", 'ask')
     const ctx = fakeExecutionContext()
     const env = testEnv()
 
@@ -652,6 +693,7 @@ describe('task 20, Part A2: /chat applies the deterministic completion-claim gua
       [{ kind: 'preference', content: { summary: 'x' }, created_at: '2026-01-01T00:00:00.000Z' }],
       null,
       'Deine Aufgabe wurde erfolgreich erstellt.',
+      'ask',
     )
     // user_settings still returns [] in this mock -- language defaults to
     // 'en' regardless of confirmedMemoryRows, so this specific fixture
@@ -671,5 +713,89 @@ describe('task 20, Part A2: /chat applies the deterministic completion-claim gua
     // assertion: the guard is language-SPECIFIC, not a universal detector.
     expect(body.reply).toBe('Deine Aufgabe wurde erfolgreich erstellt.')
     void log
+  })
+})
+
+describe('ADR-0012 server-side task write policy', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('executes task create server-side when service-role policy resolves to auto', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto')
+    const response = await worker.fetch(chatRequest({
+      message: 'Create task "Review invoices" for tomorrow',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { reply?: string; writeExecution?: string }
+
+    expect(response.status).toBe(200)
+    expect(body.writeExecution).toBe('executed')
+    expect(body.reply).toContain('✓ Task created: Review invoices')
+    expect(body.reply).toContain('2026-08-14')
+    expect(log.taskWrites.some(write => write.method === 'POST')).toBe(true)
+    expect(log.geminiCalls.length).toBe(0)
+  })
+
+  it('tampered client policy cannot execute when the server policy is off', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'off')
+    const response = await worker.fetch(chatRequest({
+      message: 'Create task "Review invoices" for tomorrow',
+      timeZone: 'Europe/Berlin',
+      writePolicy: { domain: 'tasks', action: 'create', mode: 'auto' },
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { reply?: string; writePolicy?: { mode?: string } }
+
+    expect(response.status).toBe(200)
+    expect(body.writePolicy?.mode).toBe('off')
+    expect(body.reply).toContain('switched off')
+    expect(log.taskWrites.length).toBe(0)
+    expect(log.geminiCalls.length).toBe(0)
+  })
+
+  it('undo for auto-created tasks deletes the created task within the undo window', async () => {
+    const undoStore: UndoStore = new Map()
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto', undoStore)
+    const createResponse = await worker.fetch(chatRequest({
+      message: 'Create task "Review invoices" for tomorrow',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const createBody = await createResponse.json() as { reply?: string }
+    const undoId = createBody.reply?.match(/Undo: (undo:[0-9a-f-]+)/)?.[1]
+
+    expect(undoId).toBeTruthy()
+    expect(log.undoWrites.some(write => write.method === 'POST')).toBe(true)
+    vi.unstubAllGlobals()
+    const coldLog = installFetchMock([], null, 'Gemini should not be called', 'auto', undoStore)
+    const undoResponse = await worker.fetch(chatRequest({ message: undoId }), testEnv(), fakeExecutionContext())
+    const undoBody = await undoResponse.json() as { reply?: string }
+
+    expect(undoBody.reply).toBe('Undo complete.')
+    expect(coldLog.undoWrites.some(write => write.method === 'PATCH')).toBe(true)
+    expect(coldLog.taskWrites.some(write => write.method === 'DELETE')).toBe(true)
+  })
+
+  it('undo for auto-updated tasks restores the previous field values within the undo window', async () => {
+    const undoStore: UndoStore = new Map()
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto', undoStore)
+    const updateResponse = await worker.fetch(chatRequest({
+      message: 'Update task "Tax task" to tomorrow',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const updateBody = await updateResponse.json() as { reply?: string }
+    const undoId = updateBody.reply?.match(/Undo: (undo:[0-9a-f-]+)/)?.[1]
+
+    expect(undoId).toBeTruthy()
+    expect(log.taskWrites.some(write => write.method === 'PATCH' && write.body?.due_date === '2026-08-14')).toBe(true)
+    expect(log.undoWrites.some(write => write.method === 'POST')).toBe(true)
+
+    vi.unstubAllGlobals()
+    const coldLog = installFetchMock([], null, 'Gemini should not be called', 'auto', undoStore)
+    const undoResponse = await worker.fetch(chatRequest({ message: undoId }), testEnv(), fakeExecutionContext())
+    const undoBody = await undoResponse.json() as { reply?: string }
+
+    expect(undoBody.reply).toBe('Undo complete.')
+    expect(coldLog.undoWrites.some(write => write.method === 'PATCH')).toBe(true)
+    expect(coldLog.taskWrites.some(write => write.method === 'PATCH' && write.body?.due_date === null)).toBe(true)
   })
 })

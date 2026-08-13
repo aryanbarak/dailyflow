@@ -102,7 +102,7 @@ describe("approvalInteraction", () => {
       stepId: "step-1",
       toolId: "tasks.create",
       toolName: "Create task",
-      toolDescription: "Future contract for creating a task after explicit approval.",
+      toolDescription: "Create a task after policy evaluation and approval or user pre-authorization.",
       toolCapability: "create",
       toolMode: "write",
       status: "approved",

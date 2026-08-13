@@ -102,6 +102,33 @@ export type Database = {
           },
         ]
       }
+      flow_write_permissions: {
+        Row: {
+          action: string
+          created_at: string
+          domain: string
+          mode: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          action: string
+          created_at?: string
+          domain: string
+          mode: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          action?: string
+          created_at?: string
+          domain?: string
+          mode?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       alarms: {
         Row: {
           created_at: string | null

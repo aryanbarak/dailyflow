@@ -42,6 +42,12 @@ import { browserPersonalMemoryRecordService } from '@/features/personal-memory/p
 import { triggerPersonalMemoryExtraction } from '@/features/personal-memory/personalMemoryExtractionTriggerClient';
 import { resolveDocumentChunkSources } from '@/features/documents/documentChunkSourceResolver';
 import { GitHubIntegrationCard } from '@/features/integrations/github/GitHubIntegrationCard';
+import {
+  listBrowserFlowWritePermissions,
+  upsertBrowserFlowWritePermission,
+  type FlowWritePermissionMode,
+  type FlowWritePermissionRow,
+} from '@/features/agent/flowWritePermissions';
 import { useT, type TranslationKey } from '@/i18n';
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -417,6 +423,43 @@ function AppearanceTab() {
   // (now free-form) LearnAIMode field.
   const isSuggestedDefaultTopic = (LEARN_AI_SUGGESTED_TOPICS as readonly string[]).includes(aiDefaults.mode);
   const [customDefaultTopicDraft, setCustomDefaultTopicDraft] = useState(isSuggestedDefaultTopic ? '' : aiDefaults.mode);
+  const [writePermissions, setWritePermissions] = useState<FlowWritePermissionRow[]>([]);
+  const [writePermissionsLoading, setWritePermissionsLoading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      setWritePermissionsLoading(true);
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        if (!cancelled) setWritePermissionsLoading(false);
+        return;
+      }
+      try {
+        const rows = await listBrowserFlowWritePermissions(user.id);
+        if (!cancelled) setWritePermissions(rows);
+      } catch {
+        if (!cancelled) toast.error('Unable to load Flow AI permissions');
+      } finally {
+        if (!cancelled) setWritePermissionsLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  async function setWritePermission(row: FlowWritePermissionRow, mode: FlowWritePermissionMode) {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+    setWritePermissions(previous => previous.map(item =>
+      item.domain === row.domain && item.action === row.action ? { ...item, mode, isUserSet: true } : item,
+    ));
+    try {
+      await upsertBrowserFlowWritePermission(user.id, row.domain, row.action, mode);
+      toast.success('Flow AI permission saved');
+    } catch {
+      toast.error('Unable to save Flow AI permission');
+    }
+  }
 
   const themes = [
     { id: 'dark',   label: 'Dark',   icon: Moon    },
@@ -621,6 +664,40 @@ function AppearanceTab() {
           >
             Save AI defaults
           </button>
+        </div>
+      </SectionCard>
+
+      <SectionCard title="Flow AI permissions">
+        <div className="py-2 space-y-1">
+          {writePermissionsLoading && (
+            <p className="py-3 text-xs text-muted-foreground">Loading permissions...</p>
+          )}
+          {writePermissions.map(row => (
+            <div key={`${row.domain}:${row.action}`} className="flex items-center justify-between gap-3 py-3.5 border-b border-border last:border-0">
+              <div className="min-w-0">
+                <p className="text-sm font-medium">{row.domain}.{row.action}</p>
+                <p className="text-xs text-muted-foreground">
+                  {row.isUserSet ? 'User-set' : `Default: ${row.mode}`}
+                </p>
+              </div>
+              <div className="flex gap-1 rounded-lg border border-border p-1">
+                {(['auto', 'ask', 'off'] as const).map(mode => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => void setWritePermission(row, mode)}
+                    className="px-2.5 py-1 rounded-md text-xs font-medium transition-colors"
+                    style={{
+                      background: row.mode === mode ? 'hsl(var(--primary) / 0.16)' : 'transparent',
+                      color: row.mode === mode ? 'hsl(var(--primary))' : undefined,
+                    }}
+                  >
+                    {mode}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
       </SectionCard>
 

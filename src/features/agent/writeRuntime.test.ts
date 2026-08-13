@@ -697,8 +697,6 @@ describe("writeRuntime", () => {
   });
 
   it.each([
-    "tasks.create",
-    "tasks.update",
     "calendar.create_event",
     "calendar.update_event",
     "documents.delete",

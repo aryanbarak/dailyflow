@@ -19,6 +19,8 @@ export type AgentIntentType =
   | "inspect_github_pull_requests"
   | "inspect_github_workflow_runs"
   | "complete_task"
+  | "create_task"
+  | "update_task"
   | "write_github_issue_comment"
   | "write_github_issue_update"
   | "ask_clarification"
@@ -36,6 +38,9 @@ export interface AgentIntentTarget {
   taskId?: string;
   taskReference?: string;
   taskTitleHint?: string;
+  title?: string;
+  notes?: string;
+  dueDate?: string | null;
   // EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
   // Unlike task fields above, these are never fuzzy-matched against safe
   // context: repo/issueNumber/body must come from an explicit, well-formed
@@ -111,7 +116,7 @@ export type AgentLlmReasoningCaller = (
 
 export interface AgentReasoningValidationResult {
   proposal: AgentIntentProposal;
-  toolId?: "tasks.list" | "calendar.list_today" | "learning.get_progress" | "workspace.get_context" | "github.repositories.list" | "github.issues.list" | "github.epics.list" | "github.pulls.list" | "github.workflow_runs.list" | "tasks.complete" | "github.issues.comment" | "github.issues.update";
+  toolId?: "tasks.list" | "calendar.list_today" | "learning.get_progress" | "workspace.get_context" | "github.repositories.list" | "github.issues.list" | "github.epics.list" | "github.pulls.list" | "github.workflow_runs.list" | "tasks.complete" | "tasks.create" | "tasks.update" | "github.issues.comment" | "github.issues.update";
   validationReasons: string[];
 }
 

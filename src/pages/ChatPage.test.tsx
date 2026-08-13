@@ -1063,7 +1063,9 @@ describe("ChatPage LLM reasoning UX boundary", () => {
       t,
     );
     expect(outcome.content).toBe(reply);
-    expect(outcome.reasoningStates).toEqual(proposalsToStates(supported, t));
+    expect(outcome.reasoningStates).toHaveLength(1);
+    expect(outcome.reasoningStates?.[0].result.proposal.type).toBe("inspect_tasks");
+    expect(outcome.reasoningStates?.[0].resolution?.toolId).toBe("tasks.list");
   });
 
   it("(d) ambiguous message still gets a reply plus the existing trailing offer (task 9's pattern, unchanged) -- overlay is never attempted for 'ambiguous' at all", () => {

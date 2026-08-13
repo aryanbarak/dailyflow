@@ -357,12 +357,16 @@ describe("intentValidator", () => {
     expect(result.proposal.requiresTool).toBe(false);
   });
 
-  it("rejects unsupported create, update, and delete requests", () => {
-    expect(validate(proposal({ type: "inspect_tasks" }), "Create a task").proposal.type).toBe("unsupported");
-    expect(validate(proposal({ type: "inspect_tasks" }), "Update the task").proposal.type).toBe("unsupported");
+  it("supports task create/update but still rejects unsupported delete and non-task writes", () => {
+    expect(validate(proposal({ type: "create_task", requestedDomain: "tasks", toolId: "tasks.create", target: { title: "Review invoices" } }), "Create a task").proposal.type).toBe("create_task");
+    expect(validateWithContext(proposal({ type: "update_task", requestedDomain: "tasks", toolId: "tasks.update", target: { taskReference: "Tax", dueDate: "2026-08-14" } }), "Update the Tax task", {
+      tasks: [{ id: "task-1", title: "Tax", completed: false }],
+      events: [],
+      learningProgress: null,
+    }).proposal.type).toBe("update_task");
     expect(validate(proposal({ type: "inspect_tasks" }), "Delete this task").proposal.type).toBe("unsupported");
     expect(validate(proposal({ type: "inspect_calendar", requestedDomain: "calendar", toolId: "calendar.list_today" }), "Verschiebe meinen Termin auf 15 Uhr.").proposal.type).toBe("unsupported");
-    expect(validate(proposal({ type: "inspect_tasks" }), "برای فردا یک وظیفه بساز.").proposal.type).toBe("unsupported");
+    expect(validate(proposal({ type: "inspect_tasks" }), "برای فردا یک وظیفه بساز.").proposal.type).toBe("ask_clarification");
   });
 
   it("rejects mixed read and completion requests instead of partially executing", () => {

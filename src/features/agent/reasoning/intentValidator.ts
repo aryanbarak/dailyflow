@@ -20,6 +20,8 @@ export const supportedIntentTypes: AgentIntentType[] = [
   "inspect_github_pull_requests",
   "inspect_github_workflow_runs",
   "complete_task",
+  "create_task",
+  "update_task",
   "write_github_issue_comment",
   "write_github_issue_update",
   "ask_clarification",
@@ -36,6 +38,8 @@ export const supportedIntentTypes: AgentIntentType[] = [
 // final requiresApproval assignment.
 const CONFIRMED_WRITE_INTENT_TYPES = new Set<AgentIntentType>([
   "complete_task",
+  "create_task",
+  "update_task",
   "write_github_issue_comment",
   "write_github_issue_update",
 ]);
@@ -61,6 +65,8 @@ const intentToolMap = {
   inspect_github_pull_requests: "github.pulls.list",
   inspect_github_workflow_runs: "github.workflow_runs.list",
   complete_task: "tasks.complete",
+  create_task: "tasks.create",
+  update_task: "tasks.update",
   write_github_issue_comment: "github.issues.comment",
   write_github_issue_update: "github.issues.update",
 } as const;
@@ -78,6 +84,8 @@ const domainByIntent: Partial<Record<AgentIntentType, AgentIntentDomain>> = {
   inspect_github_pull_requests: "github",
   inspect_github_workflow_runs: "github",
   complete_task: "tasks",
+  create_task: "tasks",
+  update_task: "tasks",
   write_github_issue_comment: "github",
   write_github_issue_update: "github",
 };
@@ -196,6 +204,9 @@ function normalizeTarget(value: unknown) {
     taskId: safeString(value.taskId) || undefined,
     taskReference: safeString(value.taskReference) || undefined,
     taskTitleHint: safeString(value.taskTitleHint) || undefined,
+    title: safeBoundedText(value.title, 200),
+    notes: safeBoundedText(value.notes, 2000),
+    dueDate: value.dueDate === null ? null : safeBoundedText(value.dueDate, 32),
     repo: safeRepoIdentifier(value.repo),
     issueNumber: safePositiveInteger(value.issueNumber),
     commentBody: safeBoundedText(value.commentBody, 10_000),
@@ -257,6 +268,16 @@ function requestLooksLikeTaskCompletion(message: string) {
     return true;
   }
   return /\b(complete|finish|mark .* done|mark .* complete|done|erledige|abschliessen|abschließen|markiere|کامل کن|تمام کن|انجام‌شده)\b/i.test(message);
+}
+
+function requestLooksLikeTaskCreate(message: string) {
+  return /\b(create|add|set up|erstelle|hinzuf[üu]gen)\b.{0,40}\b(task|todo|aufgabe)\b/i.test(message) ||
+    /(\u0648\u0638\u06cc\u0641\u0647|\u06a9\u0627\u0631).{0,40}(\u0628\u0633\u0627\u0632|\u0627\u06cc\u062c\u0627\u062f\s+\u06a9\u0646|\u0627\u0636\u0627\u0641\u0647\s+\u06a9\u0646)/i.test(message);
+}
+
+function requestLooksLikeTaskUpdate(message: string) {
+  return /\b(update|edit|change|move|reschedule|aktualisiere|bearbeite|verschiebe)\b.{0,50}\b(task|todo|aufgabe)\b/i.test(message) ||
+    /(\u0648\u0638\u06cc\u0641\u0647|\u06a9\u0627\u0631).{0,50}(\u0628\u0647[\u200c\s-]?\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06cc\s+\u06a9\u0646|\u0648\u06cc\u0631\u0627\u06cc\u0634\s+\u06a9\u0646|\u062a\u063a\u06cc\u06cc\u0631\s+\u0628\u062f\u0647)/i.test(message);
 }
 
 // EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
@@ -379,7 +400,7 @@ const GITHUB_WORKFLOW_RUNS_EVIDENCE_PATTERNS = [
 // domain uniformly: add a tool's evidence patterns here and it's covered,
 // no new disambiguation function needed. A message matching more than one
 // tool in the same domain is genuinely ambiguous, not a signal to guess.
-type ReadToolIntentType = Exclude<AgentIntentType, "complete_task" | "write_github_issue_comment" | "write_github_issue_update" | "ask_clarification" | "unsupported">;
+type ReadToolIntentType = Exclude<AgentIntentType, "complete_task" | "create_task" | "update_task" | "write_github_issue_comment" | "write_github_issue_update" | "ask_clarification" | "unsupported">;
 
 const TOOL_EVIDENCE_PATTERNS: Partial<Record<ReadToolIntentType, RegExp[]>> = {
   inspect_github_repositories: GITHUB_REPOSITORIES_EVIDENCE_PATTERNS,
@@ -517,6 +538,8 @@ export function validateAgentIntentProposal(input: {
   const initialTypeSupported = supportedIntentTypes.includes(initialType);
   const domainEvidence = getStrongReadDomainEvidence(input.userMessage);
   const completionRequested = requestLooksLikeTaskCompletion(input.userMessage);
+  const taskCreateRequested = requestLooksLikeTaskCreate(input.userMessage);
+  const taskUpdateRequested = requestLooksLikeTaskUpdate(input.userMessage);
   // EPIC-07 (Write Light): same rescue shape as complete_task above it --
   // detected from the message independently of whatever the LLM proposed,
   // and only ever assigned when the message isn't also mixed with a read
@@ -524,7 +547,9 @@ export function validateAgentIntentProposal(input: {
   // (a message naming both is genuinely ambiguous, not a guess to make).
   const commentRequested = requestLooksLikeGithubIssueComment(input.userMessage);
   const issueUpdateRequested = requestLooksLikeGithubIssueUpdate(input.userMessage);
-  const conflictingWriteRequest = commentRequested && issueUpdateRequested;
+  const writeRequestCount = [commentRequested, issueUpdateRequested, taskCreateRequested, taskUpdateRequested, completionRequested]
+    .filter(Boolean).length;
+  const conflictingWriteRequest = writeRequestCount > 1;
   const mixedReadWriteRequest = requestLooksMixed(input.userMessage, "inspect_tasks");
   // An unrecognized type is treated the same as a total parse failure (fallbackRawProposal
   // also starts from "ask_clarification"): fall through to deterministic evidence-based
@@ -535,6 +560,16 @@ export function validateAgentIntentProposal(input: {
     !mixedReadWriteRequest &&
     (normalizationSourceType === "ask_clarification" || normalizationSourceType === "inspect_tasks" || normalizationSourceType === "complete_task")
     ? "complete_task"
+    : taskCreateRequested &&
+      !conflictingWriteRequest &&
+      !mixedReadWriteRequest &&
+      (normalizationSourceType === "ask_clarification" || normalizationSourceType === "inspect_tasks" || normalizationSourceType === "create_task")
+      ? "create_task"
+      : taskUpdateRequested &&
+        !conflictingWriteRequest &&
+        !mixedReadWriteRequest &&
+        (normalizationSourceType === "ask_clarification" || normalizationSourceType === "inspect_tasks" || normalizationSourceType === "update_task")
+        ? "update_task"
     : commentRequested &&
       !conflictingWriteRequest &&
       !mixedReadWriteRequest &&
@@ -672,6 +707,40 @@ export function validateAgentIntentProposal(input: {
         reason: match.status === "ambiguous"
           ? "Multiple matching tasks require clarification."
           : "Exact task target is required before approval.",
+      });
+    }
+    target!.taskId = match.task.id;
+    target!.taskTitleHint = match.task.title;
+  }
+  if (type === "create_task" && !target?.title) {
+    return createSafeProposal("ask_clarification", {
+      userMessage: input.userMessage,
+      language: input.language,
+      now,
+      question: textFor(input.language, "clarify"),
+      reason: "Task title is required before creating a task.",
+    });
+  }
+  if (type === "update_task") {
+    const match = findTaskTarget(input.safeContext, target);
+    if (match.status !== "matched" || !match.task.id) {
+      return createSafeProposal("ask_clarification", {
+        userMessage: input.userMessage,
+        language: input.language,
+        now,
+        question: textFor(input.language, "clarify"),
+        reason: match.status === "ambiguous"
+          ? "Multiple matching tasks require clarification."
+          : "Exact task target is required before updating a task.",
+      });
+    }
+    if (!target?.title && !target?.notes && target?.dueDate === undefined) {
+      return createSafeProposal("ask_clarification", {
+        userMessage: input.userMessage,
+        language: input.language,
+        now,
+        question: textFor(input.language, "clarify"),
+        reason: "At least one task update field is required.",
       });
     }
     target!.taskId = match.task.id;

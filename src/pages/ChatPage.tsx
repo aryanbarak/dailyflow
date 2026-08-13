@@ -239,6 +239,8 @@ const readIntentAction: Record<string, WorkspacePlanActionType> = {
 // generalizing what used to be a tasks.complete-only check.
 const WRITE_PROPOSAL_TYPES = new Set<AgentReasoningResult['proposal']['type']>([
   'complete_task',
+  'create_task',
+  'update_task',
   'write_github_issue_comment',
   'write_github_issue_update',
 ])
@@ -606,6 +608,8 @@ function isSupportedActionableProposalType(type: AgentReasoningResult['proposal'
     case 'inspect_github_pull_requests':
     case 'inspect_github_workflow_runs':
     case 'complete_task':
+    case 'create_task':
+    case 'update_task':
     case 'write_github_issue_comment':
     case 'write_github_issue_update':
       return true
@@ -652,6 +656,10 @@ function intentTitleKey(type: AgentReasoningResult['proposal']['type']): Transla
       return 'agent_intent_title_inspect_github_workflow_runs'
     case 'complete_task':
       return 'agent_intent_title_complete_task'
+    case 'create_task':
+      return 'agent_intent_title_create_task' as TranslationKey
+    case 'update_task':
+      return 'agent_intent_title_update_task' as TranslationKey
     case 'write_github_issue_comment':
       return 'agent_intent_title_write_github_issue_comment'
     case 'write_github_issue_update':
@@ -709,15 +717,21 @@ function stepForReasoning(result: AgentReasoningResult, t: Translate): Workspace
         : 'tasks'
   const actionType = proposal.type === 'complete_task'
     ? 'complete'
-    : proposal.type === 'write_github_issue_comment'
+    : proposal.type === 'create_task'
       ? 'create'
-      : proposal.type === 'write_github_issue_update'
+      : proposal.type === 'update_task'
         ? 'update'
-        : readIntentAction[proposal.type] ?? 'inspect'
+        : proposal.type === 'write_github_issue_comment'
+          ? 'create'
+          : proposal.type === 'write_github_issue_update'
+            ? 'update'
+            : readIntentAction[proposal.type] ?? 'inspect'
   const githubIssueTargetId = isGithubIssueWrite && proposal.target?.repo && proposal.target?.issueNumber
     ? `${proposal.target.repo}#${proposal.target.issueNumber}`
     : undefined
-  const targetId = proposal.type === 'complete_task' ? proposal.target?.taskId : githubIssueTargetId
+  const targetId = proposal.type === 'complete_task' || proposal.type === 'update_task'
+    ? proposal.target?.taskId
+    : githubIssueTargetId
 
   return {
     id: `reasoning-step:${proposal.id}`,
@@ -725,11 +739,15 @@ function stepForReasoning(result: AgentReasoningResult, t: Translate): Workspace
     title: intentTitle(proposal.type, t),
     description: proposal.type === 'complete_task'
       ? t('agent_intent_complete_description', { title: proposal.target?.taskTitleHint ?? t('agent_intent_selected_task') })
-      : proposal.type === 'write_github_issue_comment'
-        ? t('agent_intent_comment_description', { targetId: githubIssueTargetId ?? '' })
-        : proposal.type === 'write_github_issue_update'
-          ? t('agent_intent_update_description', { targetId: githubIssueTargetId ?? '' })
-          : t('agent_intent_read_description', { toolId: proposal.toolId }),
+      : proposal.type === 'create_task'
+        ? `Create task: ${proposal.target?.title ?? ''}`
+        : proposal.type === 'update_task'
+          ? `Update task: ${proposal.target?.taskTitleHint ?? proposal.target?.taskReference ?? ''}`
+          : proposal.type === 'write_github_issue_comment'
+            ? t('agent_intent_comment_description', { targetId: githubIssueTargetId ?? '' })
+            : proposal.type === 'write_github_issue_update'
+              ? t('agent_intent_update_description', { targetId: githubIssueTargetId ?? '' })
+              : t('agent_intent_read_description', { toolId: proposal.toolId }),
     domain: domain as WorkspacePlanStep['domain'],
     estimatedMinutes: 5,
     status: 'proposed',
@@ -795,6 +813,58 @@ function approvalForReasoningStep(
       externalEffect: true,
       dataDomains: ['tasks'],
       approvalScope: 'single_step',
+    }
+  }
+
+  if (proposal.type === 'create_task') {
+    const target = proposal.target
+    if (resolution.toolId !== 'tasks.create' || !target?.title) return null
+    return {
+      stepId: step.id,
+      targetId: step.id,
+      toolId: 'tasks.create',
+      toolName: tool?.name,
+      toolDescription: tool?.description,
+      toolCapability: tool?.capability,
+      toolMode: tool?.mode,
+      status: 'pending',
+      requiresApproval: true,
+      approvalReason: 'Create this task after review.',
+      riskLevel: 'medium',
+      reversible: true,
+      externalEffect: true,
+      dataDomains: ['tasks'],
+      approvalScope: 'single_step',
+      previewText: [`Title: ${target.title}`, target.dueDate ? `Due: ${target.dueDate}` : null, target.notes ? `Notes: ${target.notes}` : null]
+        .filter(Boolean)
+        .join('\n'),
+    }
+  }
+
+  if (proposal.type === 'update_task') {
+    const target = proposal.target
+    if (resolution.toolId !== 'tasks.update' || !step.targetId) return null
+    return {
+      stepId: step.id,
+      targetId: step.targetId,
+      toolId: 'tasks.update',
+      toolName: tool?.name,
+      toolDescription: tool?.description,
+      toolCapability: tool?.capability,
+      toolMode: tool?.mode,
+      status: 'pending',
+      requiresApproval: true,
+      approvalReason: 'Update this task after review.',
+      riskLevel: 'medium',
+      reversible: true,
+      externalEffect: true,
+      dataDomains: ['tasks'],
+      approvalScope: 'single_step',
+      previewText: [
+        target?.title ? `Title: ${target.title}` : null,
+        target?.dueDate !== undefined ? `Due: ${target.dueDate ?? 'none'}` : null,
+        target?.notes ? `Notes: ${target.notes}` : null,
+      ].filter(Boolean).join('\n'),
     }
   }
 

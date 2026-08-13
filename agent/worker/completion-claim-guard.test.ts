@@ -3,6 +3,19 @@ import { checkForFalseCompletionClaim } from './completion-claim-guard'
 
 describe('checkForFalseCompletionClaim (task 20, Part A2)', () => {
   describe('completion claims -- the production evidence pattern', () => {
+    it('allows a completion claim only when the caller supplies verified write-executed evidence for this turn', () => {
+      const result = checkForFalseCompletionClaim('Task has been successfully created.', 'en', {
+        verifiedWriteExecutedInTurn: true,
+      })
+      expect(result.flagged).toBe(false)
+      expect(result.text).toBe('Task has been successfully created.')
+    })
+
+    it('still strips the same completion claim when no write executed in this turn', () => {
+      const result = checkForFalseCompletionClaim('Task has been successfully created.', 'en')
+      expect(result.flagged).toBe(true)
+      expect(result.text).not.toContain('successfully created')
+    })
     it('FA: the exact production evidence sentence is flagged and replaced', () => {
       const reply = 'این Task و Reminder با موفقیت تنظیم شدند.'
       const result = checkForFalseCompletionClaim(reply, 'fa')

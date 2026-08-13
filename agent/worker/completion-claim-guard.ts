@@ -160,7 +160,12 @@ export interface CompletionClaimCheckResult {
  * of a mangled partial edit, matching this codebase's existing
  * fail-closed/bias-conservative posture (task 18's sensitivity validator).
  */
-export function checkForFalseCompletionClaim(reply: string, language: Language): CompletionClaimCheckResult {
+export function checkForFalseCompletionClaim(
+  reply: string,
+  language: Language,
+  options: { verifiedWriteExecutedInTurn?: boolean } = {},
+): CompletionClaimCheckResult {
+  if (options.verifiedWriteExecutedInTurn) return { flagged: false, text: reply }
   const completionMatch = findUnattributedMatch(reply, COMPLETION_CLAIM_PATTERNS[language], language)
   if (completionMatch) {
     return { flagged: true, text: NEUTRAL_REPLACEMENT[language], matchedKind: 'completion_claim', matchedText: completionMatch[0] }

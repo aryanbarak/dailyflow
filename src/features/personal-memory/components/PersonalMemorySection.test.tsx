@@ -174,7 +174,7 @@ describe("PersonalMemorySection -- document provenance source line (task 16)", (
 
     await waitFor(() => expect(container.querySelector(SOURCE_LINE_SELECTOR)).not.toBeNull());
     const sourceParagraph = container.querySelector(SOURCE_LINE_SELECTOR);
-    expect(sourceParagraph?.innerHTML).toContain("<bdi>SmartFlow.pdf</bdi>");
+    expect(sourceParagraph?.innerHTML).toContain("<bdi>SmartFlow.pdf — Experience (via AI transcription</bdi>)");
     expect(sourceParagraph?.textContent).toBe("رزومه SmartFlow.pdf — Experience (via AI transcription)");
   });
 

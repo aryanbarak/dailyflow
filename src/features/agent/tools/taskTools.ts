@@ -34,7 +34,7 @@ export const taskTools: AgentToolDefinition[] = [
   {
     id: "tasks.create",
     name: "Create task",
-    description: "Future contract for creating a task after explicit approval.",
+    description: "Create a task after policy evaluation and approval or user pre-authorization.",
     domain: "tasks",
     capability: "create",
     mode: "write",
@@ -56,6 +56,12 @@ export const taskTools: AgentToolDefinition[] = [
         required: false,
         description: "Optional due date.",
       },
+      {
+        name: "notes",
+        type: "string",
+        required: false,
+        description: "Optional task notes.",
+      },
     ],
     outputSchema: {
       type: "object",
@@ -64,20 +70,20 @@ export const taskTools: AgentToolDefinition[] = [
     },
     enabled: true,
     version: "1.0.0",
-    tags: ["future", "tasks", "write"],
+    tags: ["tasks", "write"],
     examples: [
       {
         title: "Create a task",
         input: { title: "Review invoices" },
-        expectedOutcome: "Creates a task only after explicit approval in a future executor.",
+        expectedOutcome: "Creates a task only after write policy allows execution.",
       },
     ],
-    constraints: ["Contract only.", "No handler is registered.", "Requires explicit user approval."],
+    constraints: ["Requires write policy authorization.", "Auto mode is allowed only while the operation remains undoable."],
   },
   {
     id: "tasks.update",
     name: "Update task",
-    description: "Future contract for updating task metadata after explicit approval.",
+    description: "Update task metadata after policy evaluation and approval or user pre-authorization.",
     domain: "tasks",
     capability: "update",
     mode: "write",
@@ -107,15 +113,15 @@ export const taskTools: AgentToolDefinition[] = [
     },
     enabled: true,
     version: "1.0.0",
-    tags: ["future", "tasks", "write"],
+    tags: ["tasks", "write"],
     examples: [
       {
         title: "Update due date",
         input: { taskId: "task-1", fields: { dueDate: "2026-07-12" } },
-        expectedOutcome: "Updates the task only after explicit approval in a future executor.",
+        expectedOutcome: "Updates the task only after write policy allows execution.",
       },
     ],
-    constraints: ["Contract only.", "No handler is registered.", "Requires explicit user approval."],
+    constraints: ["Requires write policy authorization.", "Auto mode is allowed only while the operation remains undoable."],
   },
   {
     id: "tasks.complete",
