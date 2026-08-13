@@ -99,6 +99,11 @@ interface ChatMsg {
   role: 'user' | 'assistant'
   content: string
   language?: SupportedAiResponseLanguage
+  undo?: {
+    id: string
+    label: string
+    expiresAt: string
+  }
 }
 
 // Task 17b: `accent` is the Flow AI semantic accent slug
@@ -1372,11 +1377,13 @@ export function AssistantContent({ content }: Readonly<{ content: string }>) {
 // ambient direction normally, with no independent auto-detection of their
 // own to go wrong.
 
-export function ChatBubble({ role, content, language, compact = false }: Readonly<{
+export function ChatBubble({ role, content, language, compact = false, undo, onUndo }: Readonly<{
   role: 'user' | 'assistant'
   content: string
   language?: SupportedAiResponseLanguage
   compact?: boolean
+  undo?: ChatMsg['undo']
+  onUndo?: (undoId: string) => void
 }>) {
   return (
     // Task 17g, Y2: the assistant avatar (icon-tile + Bot) that used to sit
@@ -1430,6 +1437,13 @@ export function ChatBubble({ role, content, language, compact = false }: Readonl
         {role === 'assistant'
           ? <AssistantContent content={content} />
           : <span className="whitespace-pre-wrap">{isolateEmbeddedBidiRuns(content)}</span>}
+        {role === 'assistant' && undo && (
+          <div className="mt-3">
+            <Button type="button" size="sm" variant="outline" onClick={() => onUndo?.(undo.id)}>
+              {undo.label}
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -1762,7 +1776,7 @@ export default function ChatPage() {
       // with an early `return` in the explicit branch) was the actual
       // production bug: a message misclassified 'explicit' by a keyword
       // collision never reached this call at all.
-      const chatCallPromise = (async (): Promise<{ reply: string; writePolicy?: { mode?: 'auto' | 'ask' | 'off' }; writeExecution?: string }> => {
+      const chatCallPromise = (async (): Promise<{ reply: string; writePolicy?: { mode?: 'auto' | 'ask' | 'off' }; writeExecution?: string; undo?: ChatMsg['undo'] }> => {
         const res = await fetch(`${workerUrl}/chat`, {
           method: 'POST',
           headers: {
@@ -1781,7 +1795,7 @@ export default function ChatPage() {
           }),
         })
         if (!res.ok) throw new Error(`Worker responded ${res.status}`)
-        return (await res.json()) as { reply: string; writePolicy?: { mode?: 'auto' | 'ask' | 'off' }; writeExecution?: string }
+        return (await res.json()) as { reply: string; writePolicy?: { mode?: 'auto' | 'ask' | 'off' }; writeExecution?: string; undo?: ChatMsg['undo'] }
       })()
 
       // Task 11 fix: the OVERLAY LANE. Action interpretation runs
@@ -1831,7 +1845,7 @@ export default function ChatPage() {
         })
       }
 
-      const [{ reply, writePolicy, writeExecution }, overlayResult] = await Promise.all([chatCallPromise, overlayPromise])
+      const [{ reply, writePolicy, writeExecution, undo }, overlayResult] = await Promise.all([chatCallPromise, overlayPromise])
 
       // Task 11d (auto-execute read-only tools): a supported, actionable,
       // non-write, non-disambiguated read proposal whose resolved tool is
@@ -1920,7 +1934,7 @@ export default function ChatPage() {
       setMessages(prev => [
         ...prev,
         { id: `u-${Date.now()}`, role: 'user', content: text },
-        { id: `a-${Date.now() + 1}`, role: 'assistant', content: outcome.content, language: responseLanguage },
+        { id: `a-${Date.now() + 1}`, role: 'assistant', content: outcome.content, language: responseLanguage, undo },
       ])
 
       // Task 19: the composer's attachment is turn-scoped -- always cleared
@@ -1976,6 +1990,41 @@ export default function ChatPage() {
       },
     ])
   }, [interfaceLanguage])
+
+  const handleUndo = useCallback(async (undoId: string) => {
+    if (!activeSessionId || sending) return
+    setSending(true)
+    setSendError(null)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (session === null) throw new Error('No session')
+      const res = await fetch(`${workerUrl}/chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          message: 'Undo',
+          undoId,
+          session_id: activeSessionId,
+          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        }),
+      })
+      if (!res.ok) throw new Error(`Worker responded ${res.status}`)
+      const { reply } = await res.json() as { reply: string }
+      setMessages(prev => [
+        ...prev.map(message => message.undo?.id === undoId ? { ...message, undo: undefined } : message),
+        { id: `u-${Date.now()}`, role: 'user', content: 'Undo' },
+        { id: `a-${Date.now() + 1}`, role: 'assistant', content: reply, language: getStoredAiResponseLanguage() === 'auto' ? undefined : getStoredAiResponseLanguage() },
+      ])
+      void refreshSessions()
+    } catch {
+      setSendError(t('chat_error_send'))
+    } finally {
+      setSending(false)
+    }
+  }, [activeSessionId, sending, workerUrl, refreshSessions, t])
 
   const handleRunReasoningProposal = useCallback(async (index: number) => {
     const current = reasoningProposal?.[index]
@@ -2300,7 +2349,7 @@ export default function ChatPage() {
             )}
 
             {messages.map(msg => (
-              <ChatBubble key={msg.id} role={msg.role} content={msg.content} language={msg.language} compact={compact} />
+              <ChatBubble key={msg.id} role={msg.role} content={msg.content} language={msg.language} compact={compact} undo={msg.undo} onUndo={handleUndo} />
             ))}
 
             {sending && <TypingIndicator label={t('chat_typing')} />}

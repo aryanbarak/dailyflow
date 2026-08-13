@@ -819,6 +819,27 @@ describe("ChatPage LLM reasoning UX boundary", () => {
     expect(mixed.match(/<bdi>/g)?.length).toBe(1);
   });
 
+  it("renders auto-write undo as a button affordance without exposing the raw UUID", () => {
+    const html = renderToString(
+      <ChatBubble
+        role="assistant"
+        language="fa"
+        content={"✓ Task created: \u0646\u0648\u0628\u062a \u062f\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc — due 2026-08-14 — time mentioned 11:00"}
+        undo={{
+          id: "undo:ac446855-d72a-4aed-a985-5da9ebbd3cd5",
+          label: "\u0628\u0631\u06af\u0631\u062f\u0627\u0646\u062f\u0646",
+          expiresAt: "2026-08-13T18:16:00.000Z",
+        }}
+        onUndo={() => undefined}
+      />,
+    );
+
+    expect(html).toContain("\u0628\u0631\u06af\u0631\u062f\u0627\u0646\u062f\u0646");
+    expect(html).toContain("\u0646\u0648\u0628\u062a");
+    expect(html).not.toContain("ac446855-d72a-4aed-a985-5da9ebbd3cd5");
+    expect(html).not.toContain("undo:");
+  });
+
   it("isolates an English proposal inside Persian flow without mirroring proposal controls", () => {
     const proposalBubble = renderToString(
       <ChatBubble

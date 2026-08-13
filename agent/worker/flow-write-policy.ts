@@ -1,4 +1,4 @@
-import type { Env, Language } from './types'
+﻿import type { Env, Language } from './types'
 import { supabaseGet } from './context-builder'
 
 export type FlowWriteMode = 'auto' | 'ask' | 'off'
@@ -10,6 +10,7 @@ export interface ParsedTaskWriteIntent {
   taskReference?: string
   notes?: string
   dueDate?: string | null
+  timeOfDay?: string
   dateClarificationNeeded?: boolean
 }
 
@@ -178,10 +179,69 @@ function normalizeDigits(value: string) {
     .replace(/[\u0660-\u0669]/g, ch => String(ch.charCodeAt(0) - 0x0660))
 }
 
+function boundText(value: string, max: number) {
+  const normalized = value.replace(/\s+/g, ' ').trim()
+  return normalized.length > max ? `${normalized.slice(0, max - 3).trim()}...` : normalized
+}
+
+export function parseDeterministicTimeOfDay(message: string): string | undefined {
+  const text = normalizeDigits(message.toLowerCase())
+  const persian = text.match(/\u0633\u0627\u0639\u062a\s+([01]?[0-9]|2[0-3])(?::([0-5][0-9]))?\s*(\u0635\u0628\u062d|\u0639\u0635\u0631|\u0628\u0639\u062f\s+\u0627\u0632\s+\u0638\u0647\u0631|\u0634\u0628)?/)
+  const latin = text.match(/\b(?:at|um)\s+([01]?[0-9]|2[0-3])(?::([0-5][0-9]))?\s*(am|pm|uhr)?\b/)
+  const compact = text.match(/\b([01]?[0-9]|2[0-3]):([0-5][0-9])\b/)
+  const match = persian ?? latin ?? compact
+  if (!match) return undefined
+  let hour = Number(match[1])
+  const minute = Number(match[2] ?? '0')
+  const suffix = match[3]
+  if ((suffix === 'pm' || suffix === '\u0639\u0635\u0631' || suffix === '\u0628\u0639\u062f \u0627\u0632 \u0638\u0647\u0631' || suffix === '\u0634\u0628') && hour < 12) hour += 12
+  if ((suffix === 'am' || suffix === '\u0635\u0628\u062d') && hour === 12) hour = 0
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
+}
+
+function removeDateAndTimePhrases(value: string) {
+  return normalizeDigits(value)
+    .replace(/\b(?:for|due|on|at)\b\s*(?:today|tomorrow|day after tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|[0-9]{4}[-/.][0-9]{1,2}[-/.][0-9]{1,2})?/gi, ' ')
+    .replace(/\b(?:at|um)\s+[0-9]{1,2}(?::[0-9]{2})?\s*(?:am|pm|uhr)?\b/gi, ' ')
+    .replace(/\b[0-9]{1,2}(?::[0-9]{2})?\s*(?:am|pm|uhr)\b/gi, ' ')
+    .replace(/\b(?:heute|morgen|Ã¼bermorgen|uebermorgen|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag|um)\b\s*(?:[0-9]{1,2}(?::[0-9]{2})?\s*(?:uhr)?)?/gi, ' ')
+    .replace(/\b(?:in\s+[0-9]{1,2}\s+days?|in\s+[0-9]{1,2}\s+tagen?)\b/gi, ' ')
+    .replace(/\u0628\u0631\u0627\u06cc\s+(?:\u0627\u0645\u0631\u0648\u0632|\u0641\u0631\u062f\u0627|\u067e\u0633(?:\u200c|\s)?\u0641\u0631\u062f\u0627|\u062c\u0645\u0639\u0647|\u0634\u0646\u0628\u0647|\u06cc\u06a9\u0634\u0646\u0628\u0647|\u062f\u0648\u0634\u0646\u0628\u0647|\u0633\u0647[\u200c\s-]?\u0634\u0646\u0628\u0647|\u0686\u0647\u0627\u0631\u0634\u0646\u0628\u0647|\u067e\u0646\u062c\u0634\u0646\u0628\u0647|[0-9]{4}[-/.][0-9]{1,2}[-/.][0-9]{1,2})/g, ' ')
+    .replace(/\u0627\u0644\u0628\u062a\u0647\s+\u0633\u0627\u0639\u062a\s+[0-9]{1,2}(?::[0-9]{2})?\s*(?:\u0635\u0628\u062d|\u0639\u0635\u0631|\u0628\u0639\u062f\s+\u0627\u0632\s+\u0638\u0647\u0631|\u0634\u0628)?/g, ' ')
+    .replace(/\u0633\u0627\u0639\u062a\s+[0-9]{1,2}(?::[0-9]{2})?\s*(?:\u0635\u0628\u062d|\u0639\u0635\u0631|\u0628\u0639\u062f\s+\u0627\u0632\s+\u0638\u0647\u0631|\u0634\u0628)?/g, ' ')
+}
+
+function extractTaskTitle(message: string) {
+  const normalized = normalizeDigits(message)
+  const quoted = message.match(/["'Â«â€œ](.+?)["'Â»â€]/)?.[1]?.trim()
+  if (quoted) return boundText(quoted, 80)
+
+  const persianSubject = normalized.match(/\u06a9\u0647\s+(.+?)\s+(?:\u062f\u0627\u0631\u0645|\u062f\u0627\u0631\u06cc|\u062f\u0627\u0631\u062f|\u0628\u0627\u0634\u0647)(?:[.ØŒ,]|$)/)
+  if (persianSubject?.[1]) return boundText(removeDateAndTimePhrases(persianSubject[1]), 80)
+
+  const englishSubject = normalized.match(/\b(?:that|because)\s+i\s+(?:have|need to|need)\s+(.+?)(?:[.,]|$)/i)
+  if (englishSubject?.[1]) return boundText(removeDateAndTimePhrases(englishSubject[1]), 80)
+
+  const germanSubject = normalized.match(/\b(?:dass|weil)\s+ich\s+(.+?)\s+(?:habe|machen muss|muss)(?:[.,]|$)/i)
+  if (germanSubject?.[1]) return boundText(removeDateAndTimePhrases(germanSubject[1]), 80)
+
+  return boundText(removeDateAndTimePhrases(
+    normalized
+      .replace(/\b(create|add|set up|task|todo|erstelle|aufgabe|hinzuf[Ã¼u]gen)\b/gi, ' ')
+      .replace(/(?:\u06cc\u06a9|\u06a9|ÛŒÙ‡)?\s*(?:\u062a\u0633\u06a9|\u0648\u0638\u06cc\u0641\u0647|\u06a9\u0627\u0631).{0,12}?(?:\u0628\u0633\u0627\u0632|\u0627\u06cc\u062c\u0627\u062f\s+\u06a9\u0646|\u0627\u0636\u0627\u0641\u0647\s+\u06a9\u0646)/g, ' '),
+  ), 80)
+}
+
+function createTaskNotes(message: string, timeOfDay?: string) {
+  const lines = [`Original request: ${message}`]
+  if (timeOfDay) lines.push(`Time mentioned: ${timeOfDay}`)
+  return lines.join('\n')
+}
+
 export function parseDeterministicDueDate(message: string, now: Date, timeZone: string): { value?: string | null; clarificationNeeded: boolean } {
   const text = normalizeDigits(message.toLowerCase())
   if (/\b(no due date|without due date|kein(?:e[nr]?)? termin)\b|\u0628\u062f\u0648\u0646\s+(?:\u0645\u0648\u0639\u062f|\u062a\u0627\u0631\u06cc\u062e)/i.test(text)) return { value: null, clarificationNeeded: false }
-  if (text.includes('day after tomorrow') || text.includes('übermorgen') || text.includes('uebermorgen') || /\u067e\u0633(?:\u200c|\s)?\u0641\u0631\u062f\u0627/.test(text)) {
+  if (text.includes('day after tomorrow') || text.includes('Ã¼bermorgen') || text.includes('übermorgen') || text.includes('uebermorgen') || /\u067e\u0633(?:\u200c|\s)?\u0641\u0631\u062f\u0627/.test(text)) {
     return { value: dateKey(addDays(now, 2), timeZone), clarificationNeeded: false }
   }
   if (/\b(today|heute)\b|\u0627\u0645\u0631\u0648\u0632/.test(text)) return { value: dateKey(now, timeZone), clarificationNeeded: false }
@@ -191,17 +251,17 @@ export function parseDeterministicDueDate(message: string, now: Date, timeZone: 
     const raw = cleanInDays[1] ?? cleanInDays[2] ?? cleanInDays[3]
     return { value: dateKey(addDays(now, Number(raw)), timeZone), clarificationNeeded: false }
   }
-  if (/\b(no due date|without due date|kein(?:e[nr]?)? termin|بدون (?:موعد|تاریخ))\b/i.test(message)) return { value: null, clarificationNeeded: false }
-  if (text.includes('day after tomorrow') || text.includes('übermorgen') || text.includes('uebermorgen') || /پس(?:‌|\s)?فردا/.test(text)) {
+  if (/\b(no due date|without due date|kein(?:e[nr]?)? termin|Ø¨Ø¯ÙˆÙ† (?:Ù…ÙˆØ¹Ø¯|ØªØ§Ø±ÛŒØ®))\b/i.test(message)) return { value: null, clarificationNeeded: false }
+  if (text.includes('day after tomorrow') || text.includes('Ã¼bermorgen') || text.includes('übermorgen') || text.includes('uebermorgen') || /Ù¾Ø³(?:â€Œ|\s)?ÙØ±Ø¯Ø§/.test(text)) {
     return { value: dateKey(addDays(now, 2), timeZone), clarificationNeeded: false }
   }
-  if (/\b(today|heute)\b|امروز/.test(text)) return { value: dateKey(now, timeZone), clarificationNeeded: false }
-  if (/\b(tomorrow|morgen)\b|فردا/.test(text)) return { value: dateKey(addDays(now, 1), timeZone), clarificationNeeded: false }
+  if (/\b(today|heute)\b|Ø§Ù…Ø±ÙˆØ²/.test(text)) return { value: dateKey(now, timeZone), clarificationNeeded: false }
+  if (/\b(tomorrow|morgen)\b|ÙØ±Ø¯Ø§/.test(text)) return { value: dateKey(addDays(now, 1), timeZone), clarificationNeeded: false }
 
-  const inDays = text.match(/\bin\s+([1-9][0-9]?)\s+days?\b|\bin\s+([1-9][0-9]?)\s+tagen?\b|(?:تا|در)\s+([۰-۹0-9]{1,2})\s+روز/)
+  const inDays = text.match(/\bin\s+([1-9][0-9]?)\s+days?\b|\bin\s+([1-9][0-9]?)\s+tagen?\b|(?:ØªØ§|Ø¯Ø±)\s+([Û°-Û¹0-9]{1,2})\s+Ø±ÙˆØ²/)
   if (inDays) {
     const raw = inDays[1] ?? inDays[2] ?? inDays[3]
-    const normalized = raw.replace(/[۰-۹]/g, ch => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(ch)))
+    const normalized = raw.replace(/[Û°-Û¹]/g, ch => String('Û°Û±Û²Û³Û´ÛµÛ¶Û·Û¸Û¹'.indexOf(ch)))
     return { value: dateKey(addDays(now, Number(normalized)), timeZone), clarificationNeeded: false }
   }
 
@@ -217,31 +277,34 @@ export function parseDeterministicDueDate(message: string, now: Date, timeZone: 
     return { value: dateKey(addDays(now, delta), timeZone), clarificationNeeded: false }
   }
 
-  if (/\b(due|deadline|fällig)\b|\u0645\u0648\u0639\u062f|\u062a\u0627\u0631\u06cc\u062e/i.test(text)) return { clarificationNeeded: true }
-  if (/\b(due|deadline|fällig|موعد|تاریخ)\b/i.test(message)) return { clarificationNeeded: true }
+  if (/\b(due|deadline|fÃ¤llig)\b|\u0645\u0648\u0639\u062f|\u062a\u0627\u0631\u06cc\u062e/i.test(text)) return { clarificationNeeded: true }
+  if (/\b(due|deadline|fÃ¤llig|Ù…ÙˆØ¹Ø¯|ØªØ§Ø±ÛŒØ®)\b/i.test(message)) return { clarificationNeeded: true }
   return { clarificationNeeded: false }
 }
 
 export function parseTaskWriteIntent(message: string, now: Date, timeZone: string): ParsedTaskWriteIntent | null {
-  const create = /\b(create|add|set up|erstelle|hinzuf[üu]gen)\b.{0,50}\b(task|todo|aufgabe)\b/i.test(message) ||
-    /(?:یک|يه|یه)?\s*(?:تسک|وظیفه|کار).{0,50}(?:بساز|ایجاد کن|اضافه کن)/i.test(message)
+  const create = /\b(create|add|set up|erstelle|hinzuf[Ã¼u]gen)\b.{0,50}\b(task|todo|aufgabe)\b/i.test(message) ||
+    /(?:ÛŒÚ©|ÙŠÙ‡|ÛŒÙ‡)?\s*(?:ØªØ³Ú©|ÙˆØ¸ÛŒÙÙ‡|Ú©Ø§Ø±).{0,50}(?:Ø¨Ø³Ø§Ø²|Ø§ÛŒØ¬Ø§Ø¯ Ú©Ù†|Ø§Ø¶Ø§ÙÙ‡ Ú©Ù†)/i.test(message)
+  const cleanPersianCreate = /(?:\u06cc\u06a9|\u06a9|\u06cc\u0647)?\s*(?:\u062a\u0633\u06a9|\u0648\u0638\u06cc\u0641\u0647|\u06a9\u0627\u0631).{0,50}(?:\u0628\u0633\u0627\u0632|\u0627\u06cc\u062c\u0627\u062f\s+\u06a9\u0646|\u0627\u0636\u0627\u0641\u0647\s+\u06a9\u0646)/i.test(message)
   const update = /\b(update|edit|change|reschedule|aktualisiere|bearbeite|verschiebe)\b.{0,60}\b(task|todo|aufgabe)\b/i.test(message)
-  if (!create && !update) return null
+  if (!create && !cleanPersianCreate && !update) return null
 
   const date = parseDeterministicDueDate(message, now, timeZone)
-  const quoted = message.match(/["'«“](.+?)["'»”]/)?.[1]?.trim()
-  if (create) {
-    const title = quoted ?? message.replace(/\b(create|add|set up|task|todo|for|due|tomorrow|today|in \d+ days?)\b/gi, '').trim().slice(0, 160)
-    return { kind: 'create_task', title: title || undefined, dueDate: date.value, dateClarificationNeeded: date.clarificationNeeded }
+  const timeOfDay = parseDeterministicTimeOfDay(message)
+  const quoted = message.match(/["'Â«â€œ](.+?)["'Â»â€]/)?.[1]?.trim()
+  if (create || cleanPersianCreate) {
+    const title = extractTaskTitle(message)
+    return { kind: 'create_task', title: title || undefined, notes: createTaskNotes(message, timeOfDay), dueDate: date.value, timeOfDay, dateClarificationNeeded: date.clarificationNeeded }
   }
-  return { kind: 'update_task', taskReference: quoted, dueDate: date.value, dateClarificationNeeded: date.clarificationNeeded }
+  return { kind: 'update_task', taskReference: quoted, dueDate: date.value, timeOfDay, dateClarificationNeeded: date.clarificationNeeded }
 }
 
-function confirmation(language: Language, kind: 'create_task' | 'update_task', title: string, dueDate: string | null | undefined, undoId: string) {
+function confirmation(language: Language, kind: 'create_task' | 'update_task', title: string, dueDate: string | null | undefined, timeOfDay?: string) {
   const due = dueDate ? ` — due ${dueDate}` : ''
-  if (language === 'de') return `✓ Aufgabe ${kind === 'create_task' ? 'erstellt' : 'aktualisiert'}: ${title}${due} [Undo: ${undoId}]`
-  if (language === 'fa') return `✓ وظیفه ${kind === 'create_task' ? 'ایجاد شد' : 'به‌روزرسانی شد'}: ${title}${due} [Undo: ${undoId}]`
-  return `✓ Task ${kind === 'create_task' ? 'created' : 'updated'}: ${title}${due} [Undo: ${undoId}]`
+  const time = timeOfDay ? ` — time mentioned ${timeOfDay}` : ''
+  if (language === 'de') return `✓ Aufgabe ${kind === 'create_task' ? 'erstellt' : 'aktualisiert'}: ${title}${due}${time}`
+  if (language === 'fa') return `✓ وظیفه ${kind === 'create_task' ? 'ایجاد شد' : 'به‌روزرسانی شد'}: ${title}${due}${time}`
+  return `✓ Task ${kind === 'create_task' ? 'created' : 'updated'}: ${title}${due}${time}`
 }
 
 export async function executeAutoTaskWrite(input: {
@@ -250,7 +313,7 @@ export async function executeAutoTaskWrite(input: {
   language: Language
   intent: ParsedTaskWriteIntent
   now: Date
-}): Promise<{ status: 'executed'; reply: string } | { status: 'clarify'; reply: string } | { status: 'failed'; reply: string } | { status: 'not_found' }> {
+}): Promise<{ status: 'executed'; reply: string; undoId: string; undoExpiresAt: string } | { status: 'clarify'; reply: string } | { status: 'failed'; reply: string } | { status: 'not_found' }> {
   const { env, userId, intent, language, now } = input
   if (intent.dateClarificationNeeded) return { status: 'clarify', reply: 'Which exact due date should I use?' }
   if (intent.kind === 'create_task') {
@@ -265,8 +328,9 @@ export async function executeAutoTaskWrite(input: {
     const task = rows[0]
     if (!task?.id) return { status: 'failed', reply: 'I could not verify that the task was created.' }
     const undoId = `undo:${crypto.randomUUID()}`
-    await persistUndoRecord(env, { kind: 'create_task', userId, taskId: task.id, expiresAt: undoExpiresAt(now) }, undoId)
-    return { status: 'executed', reply: confirmation(language, 'create_task', task.title, task.due_date, undoId) }
+    const expiresAt = undoExpiresAt(now)
+    await persistUndoRecord(env, { kind: 'create_task', userId, taskId: task.id, expiresAt }, undoId)
+    return { status: 'executed', reply: confirmation(language, 'create_task', task.title, task.due_date, intent.timeOfDay), undoId, undoExpiresAt: expiresAt }
   }
 
   const tasks = await supabaseGet<TaskRow[]>(env, `tasks?user_id=eq.${esc(userId)}&completed=eq.false&select=id,user_id,title,notes,due_date,completed,created_at,updated_at`)
@@ -280,8 +344,9 @@ export async function executeAutoTaskWrite(input: {
   const updated = rows[0]
   if (!updated?.id) return { status: 'failed', reply: 'I could not verify that the task was updated.' }
   const undoId = `undo:${crypto.randomUUID()}`
-  await persistUndoRecord(env, { kind: 'update_task', userId, taskId: before.id, previous: { title: before.title, notes: before.notes, due_date: before.due_date, completed: before.completed }, expiresAt: undoExpiresAt(now) }, undoId)
-  return { status: 'executed', reply: confirmation(language, 'update_task', updated.title, updated.due_date, undoId) }
+  const expiresAt = undoExpiresAt(now)
+  await persistUndoRecord(env, { kind: 'update_task', userId, taskId: before.id, previous: { title: before.title, notes: before.notes, due_date: before.due_date, completed: before.completed }, expiresAt }, undoId)
+  return { status: 'executed', reply: confirmation(language, 'update_task', updated.title, updated.due_date, intent.timeOfDay), undoId, undoExpiresAt: expiresAt }
 }
 
 export async function undoAutoTaskWrite(env: Env, userId: string, undoId: string, now: Date): Promise<boolean> {

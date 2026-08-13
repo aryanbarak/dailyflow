@@ -659,6 +659,7 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
   let responseLanguage: ReasoningResponseLanguage
   let documentId: string | null
   let timeZone: string
+  let undoIdFromBody: string | null
   try {
     const body = await request.json() as {
       message?: unknown
@@ -688,6 +689,7 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
     // (see the comment at its use site for exactly what that means).
     documentId = typeof body.documentId === 'string' && body.documentId.trim() !== '' ? body.documentId.trim() : null
     timeZone = typeof body.timeZone === 'string' && body.timeZone.trim() !== '' ? body.timeZone.trim() : 'UTC'
+    undoIdFromBody = typeof body.undoId === 'string' && /^undo:[0-9a-f-]{36}$/i.test(body.undoId.trim()) ? body.undoId.trim() : null
     try {
       new Intl.DateTimeFormat('en-US', { timeZone }).format(new Date())
     } catch {
@@ -720,11 +722,11 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
     ])
 
     const undoMatch = message.match(/\bundo:([0-9a-f-]{36})\b/i)
-    if (undoMatch) {
-      const undoId = `undo:${undoMatch[1]}`
+    if (undoIdFromBody || undoMatch) {
+      const undoId = undoIdFromBody ?? `undo:${undoMatch![1]}`
       const undone = await undoAutoTaskWrite(env, userId, undoId, new Date())
       const reply = undone ? 'Undo complete.' : 'I could not undo that action. The undo window may have expired.'
-      await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'user', content: message })
+      await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'user', content: undoIdFromBody ? 'Undo' : message })
       await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: reply })
       return json({ reply }, 200, origin)
     }
@@ -749,7 +751,10 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
         if (execution.status === 'executed' || execution.status === 'clarify' || execution.status === 'failed') {
           await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'user', content: message })
           await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: execution.reply })
-          return json({ reply: execution.reply, writePolicy: { domain: 'tasks', action, mode }, writeExecution: execution.status }, 200, origin)
+          const undo = execution.status === 'executed'
+            ? { id: execution.undoId, label: language === 'de' ? 'Rückgängig' : language === 'fa' ? 'برگرداندن' : 'Undo', expiresAt: execution.undoExpiresAt }
+            : undefined
+          return json({ reply: execution.reply, writePolicy: { domain: 'tasks', action, mode }, writeExecution: execution.status, undo }, 200, origin)
         }
       }
       pendingWritePolicy = { domain: 'tasks', action, mode: 'ask' }

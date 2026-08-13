@@ -730,14 +730,33 @@ describe('ADR-0012 server-side task write policy', () => {
       message: 'Create task "Review invoices" for tomorrow',
       timeZone: 'Europe/Berlin',
     }), testEnv(), fakeExecutionContext())
-    const body = await response.json() as { reply?: string; writeExecution?: string }
+    const body = await response.json() as { reply?: string; writeExecution?: string; undo?: { id?: string; label?: string } }
 
     expect(response.status).toBe(200)
     expect(body.writeExecution).toBe('executed')
     expect(body.reply).toContain('✓ Task created: Review invoices')
     expect(body.reply).toContain('2026-08-14')
+    expect(body.reply).not.toMatch(/undo:[0-9a-f-]{36}/i)
+    expect(body.undo?.id).toMatch(/^undo:[0-9a-f-]{36}$/)
+    expect(body.undo?.label).toBe('Undo')
     expect(log.taskWrites.some(write => write.method === 'POST')).toBe(true)
     expect(log.geminiCalls.length).toBe(0)
+  })
+
+  it('creates a distilled Persian task title and preserves time-of-day in notes because tasks have no time column', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto')
+    const response = await worker.fetch(chatRequest({
+      message: '\u06a9 \u062a\u0633\u06a9 \u0628\u0631\u0627\u06cc \u0641\u0631\u062f\u0627 \u0628\u0633\u0627\u0632 \u06a9\u0647 \u0646\u0648\u0628\u062a \u062f\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc \u062f\u0627\u0631\u0645. \u0627\u0644\u0628\u062a\u0647 \u0633\u0627\u0639\u062a \u06f1\u06f1 \u0635\u0628\u062d',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { reply?: string; undo?: { id?: string } }
+
+    expect(response.status).toBe(200)
+    expect(log.taskWrites[0]?.body?.title).toBe('\u0646\u0648\u0628\u062a \u062f\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc')
+    expect(log.taskWrites[0]?.body?.notes).toContain('Time mentioned: 11:00')
+    expect(body.reply).toContain('time mentioned 11:00')
+    expect(body.reply).not.toMatch(/undo:[0-9a-f-]{36}/i)
+    expect(body.undo?.id).toMatch(/^undo:[0-9a-f-]{36}$/)
   })
 
   it('tampered client policy cannot execute when the server policy is off', async () => {
@@ -794,14 +813,15 @@ describe('ADR-0012 server-side task write policy', () => {
       message: 'Create task "Review invoices" for tomorrow',
       timeZone: 'Europe/Berlin',
     }), testEnv(), fakeExecutionContext())
-    const createBody = await createResponse.json() as { reply?: string }
-    const undoId = createBody.reply?.match(/Undo: (undo:[0-9a-f-]+)/)?.[1]
+    const createBody = await createResponse.json() as { reply?: string; undo?: { id?: string } }
+    const undoId = createBody.undo?.id
 
     expect(undoId).toBeTruthy()
+    expect(createBody.reply).not.toMatch(/undo:[0-9a-f-]{36}/i)
     expect(log.undoWrites.some(write => write.method === 'POST')).toBe(true)
     vi.unstubAllGlobals()
     const coldLog = installFetchMock([], null, 'Gemini should not be called', 'auto', undoStore)
-    const undoResponse = await worker.fetch(chatRequest({ message: undoId }), testEnv(), fakeExecutionContext())
+    const undoResponse = await worker.fetch(chatRequest({ message: 'Undo', undoId }), testEnv(), fakeExecutionContext())
     const undoBody = await undoResponse.json() as { reply?: string }
 
     expect(undoBody.reply).toBe('Undo complete.')
@@ -816,16 +836,17 @@ describe('ADR-0012 server-side task write policy', () => {
       message: 'Update task "Tax task" to tomorrow',
       timeZone: 'Europe/Berlin',
     }), testEnv(), fakeExecutionContext())
-    const updateBody = await updateResponse.json() as { reply?: string }
-    const undoId = updateBody.reply?.match(/Undo: (undo:[0-9a-f-]+)/)?.[1]
+    const updateBody = await updateResponse.json() as { reply?: string; undo?: { id?: string } }
+    const undoId = updateBody.undo?.id
 
     expect(undoId).toBeTruthy()
+    expect(updateBody.reply).not.toMatch(/undo:[0-9a-f-]{36}/i)
     expect(log.taskWrites.some(write => write.method === 'PATCH' && write.body?.due_date === '2026-08-14')).toBe(true)
     expect(log.undoWrites.some(write => write.method === 'POST')).toBe(true)
 
     vi.unstubAllGlobals()
     const coldLog = installFetchMock([], null, 'Gemini should not be called', 'auto', undoStore)
-    const undoResponse = await worker.fetch(chatRequest({ message: undoId }), testEnv(), fakeExecutionContext())
+    const undoResponse = await worker.fetch(chatRequest({ message: 'Undo', undoId }), testEnv(), fakeExecutionContext())
     const undoBody = await undoResponse.json() as { reply?: string }
 
     expect(undoBody.reply).toBe('Undo complete.')
