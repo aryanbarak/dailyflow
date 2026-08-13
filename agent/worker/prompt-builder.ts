@@ -181,6 +181,71 @@ Richtig: "So würde ich es einrichten: eine tägliche Lernaufgabe und zwei tägl
 درست: «این چیزی است که تنظیم می‌کردم: یک تسک روزانه مطالعه و دو یادآور روزانه. می‌خواهی آماده‌اش کنم تا تو تاییدش کنی؟» / «خودم نمی‌توانم این را ایجاد کنم — می‌توانم توصیفش کنم، اما پیش از ایجاد واقعی باید تو تاییدش کنی.»`,
 }
 
+const CHAT_MARKDOWN_CONTRACT_EXAMPLES = [
+  'Preferred heading plus child list:',
+  '### API Development',
+  '',
+  '* Build APIs for ML/DL models with Flask/FastAPI or Node.js',
+  '* Connect to AI services',
+  '',
+  'Preferred named-item list:',
+  '* **LinkedIn**',
+  '  Useful for professional networking and job discovery.',
+  '',
+  '* **XING**',
+  '  Strong presence in German-speaking markets.',
+  '',
+  'Do not produce pseudo-heading list items such as:',
+  '* **API Development:**',
+  '* **Containerization:**',
+].join('\n')
+
+function buildChatMarkdownContract(language: Language): string {
+  const intro: Record<Language, string> = {
+    en: 'Formatting contract for normal Flow AI chat replies:',
+    de: 'Formatvertrag für normale Flow-AI-Chatantworten:',
+    fa: 'قرارداد قالب‌بندی برای پاسخ‌های عادی چت Flow AI:',
+  }
+
+  const rules: Record<Language, string[]> = {
+    en: [
+      'Use normal conversational prose for simple answers; do not force headings or lists when they are not useful.',
+      'When an answer has multiple logical sections, use real Markdown headings: "## Major section" and "### Subsection".',
+      'Use unordered lists for sibling options, tools, websites, recommendations, requirements, examples, or pros/cons.',
+      'Do not concatenate multiple named items into one long paragraph. Give each named item its own list item.',
+      'Keep list-item labels concise. Bold can emphasize a label inside a list item, but must not replace heading structure.',
+      'Use nested lists only for genuine parent-child relationships. Avoid excessive heading depth and do not create headings for every sentence.',
+      'For long answers, use short paragraphs and one conceptual unit per paragraph or list item.',
+      'Use ordered lists only for actual sequences or priorities. Use code blocks only for code, commands, configuration, or structured technical text.',
+      'Do not insert manual Unicode bidi-control characters; the Flow AI Markdown renderer handles directionality.',
+    ],
+    de: [
+      'Nutze für einfache Antworten normale Gesprächsprosa; erzwinge keine Überschriften oder Listen, wenn sie nicht hilfreich sind.',
+      'Wenn eine Antwort mehrere logische Abschnitte hat, nutze echte Markdown-Überschriften: "## Hauptabschnitt" und "### Unterabschnitt".',
+      'Nutze ungeordnete Listen für gleichrangige Optionen, Tools, Websites, Empfehlungen, Anforderungen, Beispiele oder Pro/Contra-Punkte.',
+      'Fasse mehrere benannte Elemente nicht in einem langen Absatz zusammen. Gib jedem benannten Element einen eigenen Listenpunkt.',
+      'Halte Listenpunkt-Labels knapp. Fettschrift darf ein Label in einem Listenpunkt hervorheben, aber keine Überschriftenstruktur ersetzen.',
+      'Nutze verschachtelte Listen nur für echte Eltern-Kind-Beziehungen. Vermeide zu tiefe Überschriften und erstelle nicht für jeden Satz eine Überschrift.',
+      'Nutze bei langen Antworten kurze Absätze und genau eine gedankliche Einheit pro Absatz oder Listenpunkt.',
+      'Nutze geordnete Listen nur für echte Abfolgen oder Prioritäten. Nutze Codeblöcke nur für Code, Befehle, Konfiguration oder strukturierte technische Texte.',
+      'Füge keine manuellen Unicode-Bidi-Steuerzeichen ein; der Flow-AI-Markdown-Renderer behandelt die Richtung.',
+    ],
+    fa: [
+      'برای پاسخ‌های ساده از نثر محاوره‌ای عادی استفاده کن؛ وقتی مفید نیست، عنوان یا لیست را تحمیل نکن.',
+      'وقتی پاسخ چند بخش منطقی دارد، از عنوان‌های واقعی Markdown استفاده کن: "## بخش اصلی" و "### زیربخش".',
+      'برای گزینه‌ها، ابزارها، وب‌سایت‌ها، پیشنهادها، نیازمندی‌ها، مثال‌ها یا مزایا/معایب هم‌سطح از لیست بدون شماره استفاده کن.',
+      'چند مورد نام‌دار را در یک پاراگراف بلند به هم نچسبان. هر مورد نام‌دار باید یک آیتم جداگانه در لیست باشد.',
+      'برچسب آیتم‌های لیست را کوتاه نگه دار. متن ضخیم می‌تواند برچسب داخل یک آیتم را برجسته کند، اما جایگزین ساختار عنوان نیست.',
+      'لیست تودرتو را فقط برای رابطه واقعی والد-فرزند استفاده کن. از عمق زیاد عنوان‌ها پرهیز کن و برای هر جمله عنوان نساز.',
+      'برای پاسخ‌های بلند، پاراگراف‌های کوتاه بنویس و در هر پاراگراف یا آیتم فقط یک واحد مفهومی قرار بده.',
+      'لیست شماره‌دار را فقط برای توالی یا اولویت واقعی استفاده کن. بلوک کد را فقط برای کد، دستور، پیکربندی یا متن فنی ساختاریافته استفاده کن.',
+      'کاراکترهای کنترل جهت Unicode را دستی وارد نکن؛ renderer Markdown در Flow AI جهت متن را مدیریت می‌کند.',
+    ],
+  }
+
+  return [intro[language], ...rules[language].map((rule) => `- ${rule}`), '', CHAT_MARKDOWN_CONTRACT_EXAMPLES].join('\n')
+}
+
 const CHAT_PERSONA: Record<Language, string> = {
   en: `LANGUAGE REQUIREMENT: You MUST reply entirely in English.
 
@@ -188,7 +253,7 @@ ${CHAT_IDENTITY.en}
 
 Help with questions, tasks, advice, and planning. Be concise unless depth is clearly needed. Draw on the user's memory below to personalise every response.
 
-Formatting: use normal conversational prose for short answers. When a structured answer is useful, use semantic Markdown headings and lists: "## Major section", "### Subsection", then "- child item". Do not use bold-only list items as section headings, for example avoid "- **API Development:**" unless it is genuinely one item in a list.`,
+${buildChatMarkdownContract('en')}`,
 
   de: `SPRACHANFORDERUNG: Du MUSST ausschließlich auf Deutsch antworten.
 
@@ -196,7 +261,7 @@ ${CHAT_IDENTITY.de}
 
 Hilf bei Fragen, Aufgaben, Ratschlägen und Planung. Sei prägnant, es sei denn, Tiefe ist klar erforderlich. Nutze das Gedächtnis des Nutzers unten, um jede Antwort zu personalisieren.
 
-Formatierung: Nutze für kurze Antworten normale Gesprächsprosa. Wenn eine strukturierte Antwort sinnvoll ist, nutze semantische Markdown-Überschriften und Listen: "## Hauptabschnitt", "### Unterabschnitt", dann "- Unterpunkt". Verwende keine nur fett formatierten Listenpunkte als Abschnittsüberschriften, zum Beispiel nicht "- **API Development:**", außer es ist wirklich ein einzelner Listenpunkt.`,
+${buildChatMarkdownContract('de')}`,
 
   fa: `الزام زبانی: تمام پاسخ‌ها را باید به فارسی بنویسی.
 
@@ -204,7 +269,7 @@ ${CHAT_IDENTITY.fa}
 
 در سوالات، وظایف، مشاوره و برنامه‌ریزی کمک کن. مختصر باش مگر اینکه عمق واضحاً لازم باشد. از حافظه کاربر زیر برای شخصی‌سازی هر پاسخ استفاده کن.
 
-قالب‌بندی: برای پاسخ‌های کوتاه از نثر محاوره‌ای عادی استفاده کن. وقتی جواب ساختاریافته لازم است، از عنوان‌ها و لیست‌های Markdown با معنای درست استفاده کن: "## بخش اصلی"، "### زیربخش"، سپس "- مورد". از موارد لیستی که فقط ضخیم شده‌اند به عنوان تیتر استفاده نکن، مثل "- **API Development:**"، مگر اینکه واقعاً یک مورد لیست باشد.`,
+${buildChatMarkdownContract('fa')}`,
 }
 
 export function buildChatSystemPrompt(language: Language, confirmedMemory: ConfirmedPersonalMemoryRecord[]): string {

@@ -85,4 +85,94 @@ describe('buildChatSystemPrompt', () => {
       expect(prompt).toContain('never tell the user to open SmartFlow')
     }
   })
+
+  it('includes the same semantic Markdown contract in English, German, and Persian chat prompts', () => {
+    const cases: Array<{ language: Language; phrases: string[] }> = [
+      {
+        language: 'en',
+        phrases: [
+          'Formatting contract for normal Flow AI chat replies:',
+          'Use normal conversational prose for simple answers',
+          'use real Markdown headings',
+          'Do not concatenate multiple named items into one long paragraph',
+        ],
+      },
+      {
+        language: 'de',
+        phrases: [
+          'Formatvertrag für normale Flow-AI-Chatantworten:',
+          'Nutze für einfache Antworten normale Gesprächsprosa',
+          'nutze echte Markdown-Überschriften',
+          'Fasse mehrere benannte Elemente nicht in einem langen Absatz zusammen',
+        ],
+      },
+      {
+        language: 'fa',
+        phrases: [
+          'قرارداد قالب‌بندی برای پاسخ‌های عادی چت Flow AI:',
+          'برای پاسخ‌های ساده از نثر محاوره‌ای عادی استفاده کن',
+          'از عنوان‌های واقعی Markdown استفاده کن',
+          'چند مورد نام‌دار را در یک پاراگراف بلند به هم نچسبان',
+        ],
+      },
+    ]
+
+    for (const { language, phrases } of cases) {
+      const prompt = buildChatSystemPrompt(language, [])
+      for (const phrase of phrases) {
+        expect(prompt, `${language} prompt missing: "${phrase}"`).toContain(phrase)
+      }
+    }
+  })
+
+  it('requires real headings for multi-section answers and gives a heading plus child-list example', () => {
+    const prompt = buildChatSystemPrompt('en', [])
+
+    expect(prompt).toContain('When an answer has multiple logical sections, use real Markdown headings')
+    expect(prompt).toContain('## Major section')
+    expect(prompt).toContain('### Subsection')
+    expect(prompt).toContain('Preferred heading plus child list:')
+    expect(prompt).toContain('### API Development')
+    expect(prompt).toContain('* Build APIs for ML/DL models with Flask/FastAPI or Node.js')
+  })
+
+  it('does not recommend bold-list pseudo-headings for section titles', () => {
+    const prompt = buildChatSystemPrompt('en', [])
+
+    expect(prompt).toContain('Do not produce pseudo-heading list items such as:')
+    expect(prompt).toContain('* **API Development:**')
+    expect(prompt).toContain('* **Containerization:**')
+    expect(prompt).not.toContain('Use bold-only list items as section headings')
+    expect(prompt).not.toContain('Prefer "- **API Development:**"')
+  })
+
+  it('requires sibling named items to be split into separate list items', () => {
+    const prompt = buildChatSystemPrompt('en', [])
+
+    expect(prompt).toContain('Give each named item its own list item')
+    expect(prompt).toContain('Preferred named-item list:')
+    expect(prompt).toContain('* **LinkedIn**')
+    expect(prompt).toContain('* **XING**')
+    expect(prompt).toContain('Useful for professional networking and job discovery.')
+  })
+
+  it('preserves simple conversational answers instead of forcing headings everywhere', () => {
+    const prompt = buildChatSystemPrompt('en', [])
+
+    expect(prompt).toContain('Use normal conversational prose for simple answers')
+    expect(prompt).toContain('do not force headings or lists when they are not useful')
+    expect(prompt).toContain('do not create headings for every sentence')
+    expect(prompt).not.toContain('Always use Markdown headings')
+  })
+
+  it('does not ask the model to insert manual bidi control characters', () => {
+    const bidiControls = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/
+
+    for (const language of ['en', 'de', 'fa'] as const) {
+      const prompt = buildChatSystemPrompt(language, [])
+      expect(prompt).toContain('Unicode')
+      expect(prompt).toContain('Flow AI')
+      expect(prompt).not.toMatch(bidiControls)
+    }
+  })
 })
