@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { defaultFlowWriteMode, parseDeterministicDueDate, parseDeterministicTimeOfDay, parseTaskWriteIntent } from './flow-write-policy'
+import { assembleTaskWriteIntent, defaultFlowWriteMode, parseDeterministicDueDate, parseDeterministicTimeOfDay, parseTaskWriteIntent } from './flow-write-policy'
 
 const NOW = new Date('2026-08-13T10:00:00.000Z')
 const TZ = 'Europe/Berlin'
@@ -69,6 +69,48 @@ describe('flow write policy and deterministic dates', () => {
     ['\u0633\u0627\u0639\u062a \u06f3 \u0639\u0635\u0631', '15:00'],
   ])('parses time of day %s', (phrase, expected) => {
     expect(parseDeterministicTimeOfDay(phrase)).toBe(expected)
+  })
+
+  it('keeps a command-only mixed Persian task request under-specified instead of inventing a title', () => {
+    expect(parseTaskWriteIntent('\u06cc\u06a9 task \u0628\u0631\u0627\u06cc \u0641\u0631\u062f\u0627 \u0628\u0633\u0627\u0632\u060c \u0633\u0627\u0639\u062a \u06f1\u06f6:\u06f0\u06f0', NOW, TZ)).toMatchObject({
+      kind: 'create_task',
+      title: undefined,
+      dueDate: '2026-08-14',
+      timeOfDay: '16:00',
+    })
+  })
+
+  it('assembles a pending write across a Persian title-correction turn', () => {
+    const intent = assembleTaskWriteIntent(
+      '\u0646\u0627\u0645 \u062a\u0633\u06a9 \u0631\u0627 \u062a\u0631\u0645\u06cc\u0646 \u062f\u0627\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc \u0628\u06af\u0630\u0627\u0631 \u0648 \u0628\u0642\u06cc\u0647 \u062f\u0631\u0633\u062a \u0627\u0633\u062a',
+      [{ role: 'user', content: '\u06cc\u06a9 task \u0628\u0631\u0627\u06cc \u0641\u0631\u062f\u0627 \u0628\u0633\u0627\u0632\u060c \u0633\u0627\u0639\u062a \u06f1\u06f6:\u06f0\u06f0' }],
+      NOW,
+      TZ,
+    )
+    expect(intent).toMatchObject({
+      kind: 'create_task',
+      title: '\u062a\u0631\u0645\u06cc\u0646 \u062f\u0627\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc',
+      dueDate: '2026-08-14',
+      timeOfDay: '16:00',
+    })
+  })
+
+  it('executes an affirmative continuation against the last complete pending write and discards subject changes', () => {
+    const history = [{ role: 'user', content: '\u06cc\u06a9 \u062a\u0633\u06a9 \u0628\u0631\u0627\u06cc \u0641\u0631\u062f\u0627 \u0628\u0633\u0627\u0632 \u06a9\u0647 \u0646\u0648\u0628\u062a \u062f\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc \u062f\u0627\u0631\u0645. \u0627\u0644\u0628\u062a\u0647 \u0633\u0627\u0639\u062a \u06f1\u06f1 \u0635\u0628\u062d' }]
+    expect(assembleTaskWriteIntent('\u0628\u0644\u06cc \u0628\u0633\u0627\u0632', history, NOW, TZ)).toMatchObject({
+      title: '\u0646\u0648\u0628\u062a \u062f\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc',
+      dueDate: '2026-08-14',
+      timeOfDay: '11:00',
+    })
+    expect(assembleTaskWriteIntent('\u067e\u06cc\u0634\u0631\u0641\u062a \u06cc\u0627\u062f\u06af\u06cc\u0631\u06cc \u0645\u0646 \u0631\u0627 \u0646\u0634\u0627\u0646 \u0628\u062f\u0647', history, NOW, TZ)).toBeNull()
+  })
+
+  it('does not reassemble an already-executed task after a server confirmation', () => {
+    const history = [
+      { role: 'user', content: '\u06cc\u06a9 \u062a\u0633\u06a9 \u0628\u0631\u0627\u06cc \u0641\u0631\u062f\u0627 \u0628\u0633\u0627\u0632 \u06a9\u0647 \u0646\u0648\u0628\u062a \u062f\u06a9\u062a\u0631 \u062f\u0627\u0631\u0645' },
+      { role: 'assistant', content: '\u2713 Task created: \u0646\u0648\u0628\u062a \u062f\u06a9\u062a\u0631 \u2014 due 2026-08-14' },
+    ]
+    expect(assembleTaskWriteIntent('\u0628\u0644\u06cc \u0628\u0633\u0627\u0632', history, NOW, TZ)).toBeNull()
   })
 
   it('defaults reversible task create/update to auto and unknown actions to ask', () => {

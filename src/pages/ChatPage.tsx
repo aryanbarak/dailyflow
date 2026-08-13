@@ -43,6 +43,7 @@ import { ConversationsDrawer } from '@/features/chat/components/ConversationsDra
 import { JumpToLatestPill } from '@/features/chat/components/JumpToLatestPill'
 import { useChatDisplayPreferences } from '@/features/chat/chatDisplayPreferencesStore'
 import { shouldAutoScrollOnNewContent } from '@/features/chat/chatScrollDecision'
+import { shouldAutoRunReadOnlyOverlay } from '@/features/chat/autoReadOverlayGate'
 import { isChatEmptyState } from '@/features/chat/emptyStateVisibility'
 import { timeAgo } from '@/features/chat/timeAgo'
 import { useAppearance } from '@/features/settings/appearanceStore'
@@ -1029,6 +1030,8 @@ export function resolveChatTurnOutcome(input: ChatTurnOverlayInput, t: Translate
   const ambiguousTrailingNote = offerHint ? getAmbiguousOfferText(offerHint, input.responseLanguage) : null
 
   const isExplicitUnsupportedActionRequest =
+    !serverTerminalWrite &&
+    !input.serverWritePolicyMode &&
     input.intentSignal === 'explicit' &&
     overlayResult !== null &&
     overlayResult.proposal.type === 'unsupported' &&
@@ -1858,7 +1861,11 @@ export default function ChatPage() {
       // below. A read whose tool didn't resolve, or a genuine
       // disambiguation, also falls through unchanged (fail-closed).
       let autoReadContent: string | null = null
-      if (overlayResult && isAutoExecutableReadOnlyProposal(overlayResult)) {
+      if (shouldAutoRunReadOnlyOverlay({
+        hasAutoExecutableReadOnlyOverlay: Boolean(overlayResult && isAutoExecutableReadOnlyProposal(overlayResult)),
+        writePolicy,
+        writeExecution,
+      })) {
         const overlayState = proposalToState(overlayResult, t)
         if (
           overlayState.step &&
@@ -2013,10 +2020,12 @@ export default function ChatPage() {
       })
       if (!res.ok) throw new Error(`Worker responded ${res.status}`)
       const { reply } = await res.json() as { reply: string }
+      const storedResponseLanguage = getStoredAiResponseLanguage()
+      const assistantLanguage = storedResponseLanguage === 'auto' ? undefined : storedResponseLanguage
       setMessages(prev => [
         ...prev.map(message => message.undo?.id === undoId ? { ...message, undo: undefined } : message),
         { id: `u-${Date.now()}`, role: 'user', content: 'Undo' },
-        { id: `a-${Date.now() + 1}`, role: 'assistant', content: reply, language: getStoredAiResponseLanguage() === 'auto' ? undefined : getStoredAiResponseLanguage() },
+        { id: `a-${Date.now() + 1}`, role: 'assistant', content: reply, language: assistantLanguage },
       ])
       void refreshSessions()
     } catch {

@@ -15,7 +15,7 @@ import { handlePersonalMemoryExtractionRequest } from './personal-memory-extract
 import { handleDocumentMemoryExtractionRequest } from './document-memory-extraction-endpoint'
 import { buildAttachmentTextPart, resolveChatAttachment } from './chat-attachment-context'
 import { checkForFalseCompletionClaim } from './completion-claim-guard'
-import { executeAutoTaskWrite, parseTaskWriteIntent, resolveServerFlowWriteMode, undoAutoTaskWrite } from './flow-write-policy'
+import { assembleTaskWriteIntent, executeAutoTaskWrite, resolveServerFlowWriteMode, undoAutoTaskWrite } from './flow-write-policy'
 
 // ADR-0010 Product Owner Resolution Q4: always-on background extraction
 // into user_context is DISABLED by this decision (SUPERSEDE per Q3 --
@@ -731,8 +731,20 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
       return json({ reply }, 200, origin)
     }
 
+    // Last 20 messages from this session, oldest first. Loaded before
+    // write-policy handling so bounded multi-turn task writes can be
+    // assembled without asking the model to hold authority over execution.
+    const historyRows = await supabaseGet<Array<{ role: string; content: string }>>(
+      env,
+      `agent_chat_messages?select=role,content&user_id=eq.${userId}&session_id=eq.${sessionId}&order=created_at.desc&limit=20`
+    )
+    const history: ChatMessage[] = historyRows
+      .filter(r => r.role === 'user' || r.role === 'assistant')
+      .map(r => ({ role: r.role as ChatMessage['role'], content: r.content }))
+      .reverse()
+
     let pendingWritePolicy: { domain: 'tasks'; action: 'create' | 'update'; mode: 'ask' } | undefined
-    const taskWriteIntent = parseTaskWriteIntent(message, new Date(), timeZone)
+    const taskWriteIntent = assembleTaskWriteIntent(message, history, new Date(), timeZone)
     if (taskWriteIntent) {
       const action = taskWriteIntent.kind === 'create_task' ? 'create' : 'update'
       const mode = await resolveServerFlowWriteMode(env, userId, 'tasks', action)
@@ -759,16 +771,6 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
       }
       pendingWritePolicy = { domain: 'tasks', action, mode: 'ask' }
     }
-
-    // Last 20 messages from this session, oldest first
-    const historyRows = await supabaseGet<Array<{ role: string; content: string }>>(
-      env,
-      `agent_chat_messages?select=role,content&user_id=eq.${userId}&session_id=eq.${sessionId}&order=created_at.desc&limit=20`
-    )
-    const history: ChatMessage[] = historyRows
-      .filter(r => r.role === 'user' || r.role === 'assistant')
-      .map(r => ({ role: r.role as ChatMessage['role'], content: r.content }))
-      .reverse()
 
     // Task 19: resolve the optional attachment for THIS turn only. Nothing
     // resolved here is persisted (the ORIGINAL, unaugmented `message` is

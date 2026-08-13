@@ -86,9 +86,9 @@ export const tasksUpdateHandler: AgentWriteToolHandler<TasksUpdateHandlerOutput>
         data: Object.freeze({ taskId, title: updated.title, dueDate: updated.dueDate ?? null, verified: true }),
         auditMetadata: { taskId, verified: true, resultShape: "object", redacted: true },
         compensation: {
-          operation: "restore_task_fields",
           taskId,
-          previous: { title: before.title, notes: before.notes, dueDate: before.dueDate ?? null, completed: before.completed },
+          previousCompleted: before.completed,
+          previousCompletedAt: before.completedAt ?? null,
         },
       };
     } catch {

@@ -71,7 +71,9 @@ function installFetchMock(
   chatReplyText = 'Hello from Gemini',
   flowWriteMode: 'auto' | 'ask' | 'off' | 'error' | null = null,
   undoStore: UndoStore = new Map(),
+  chatHistoryRows: Array<{ role: string; content: string }> = [],
 ): FetchLog {
+  const chatRows = [...chatHistoryRows]
   const log: FetchLog = {
     geminiCalls: [], chatMessageWrites: [], sessionPatches: 0, personalMemoryReads: 0, documentReads: 0, storageReads: 0,
     taskWrites: [], undoWrites: [],
@@ -140,10 +142,12 @@ function installFetchMock(
       return new Response(bytes, { status: 200 })
     }
     if (url.startsWith(`${SUPABASE_URL}/rest/v1/agent_chat_messages`) && method === 'GET') {
-      return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      return new Response(JSON.stringify([...chatRows].reverse()), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
     if (url.startsWith(`${SUPABASE_URL}/rest/v1/agent_chat_messages`) && method === 'POST') {
-      log.chatMessageWrites.push(JSON.parse(String(init?.body)))
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+      log.chatMessageWrites.push(body)
+      chatRows.push({ role: String(body.role), content: String(body.content) })
       return new Response(null, { status: 201 })
     }
     if (url.startsWith(`${SUPABASE_URL}/rest/v1/chat_sessions`) && method === 'PATCH') {
@@ -804,6 +808,66 @@ describe('ADR-0012 server-side task write policy', () => {
     expect(body.reply).toBe('Write action requires explicit approval.')
     expect(log.taskWrites.length).toBe(0)
     expect(log.geminiCalls.length).toBe(1)
+  })
+
+  it('assembles the production Persian multi-turn write transcript and creates exactly one task instead of looping', async () => {
+    const log = installFetchMock([], null, 'Conversation fallback only after execution.', 'auto')
+    const env = testEnv()
+
+    const turn1 = await worker.fetch(chatRequest({
+      message: '\u06cc\u06a9 task \u0628\u0631\u0627\u06cc \u0641\u0631\u062f\u0627 \u0628\u0633\u0627\u0632\u060c \u0633\u0627\u0639\u062a \u06f1\u06f6:\u06f0\u06f0',
+      timeZone: 'Europe/Berlin',
+    }), env, fakeExecutionContext())
+    const body1 = await turn1.json() as { reply?: string; writeExecution?: string }
+
+    expect(body1.writeExecution).toBe('clarify')
+    expect(body1.reply).toBe('What should the task be called?')
+    expect(log.taskWrites.length).toBe(0)
+    expect(log.geminiCalls.length).toBe(0)
+
+    const turn2 = await worker.fetch(chatRequest({
+      message: '\u0646\u0627\u0645 \u062a\u0633\u06a9 \u0631\u0627 \u062a\u0631\u0645\u06cc\u0646 \u062f\u0627\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc \u0628\u06af\u0630\u0627\u0631 \u0648 \u0628\u0642\u06cc\u0647 \u062f\u0631\u0633\u062a \u0627\u0633\u062a',
+      timeZone: 'Europe/Berlin',
+    }), env, fakeExecutionContext())
+    const body2 = await turn2.json() as { reply?: string; writeExecution?: string }
+
+    expect(body2.writeExecution).toBe('executed')
+    expect(log.taskWrites.filter(write => write.method === 'POST')).toHaveLength(1)
+    expect(log.taskWrites[0]?.body?.title).toBe('\u062a\u0631\u0645\u06cc\u0646 \u062f\u0627\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc')
+    expect(log.taskWrites[0]?.body?.due_date).toBe('2026-08-14')
+    expect(log.taskWrites[0]?.body?.notes).toContain('Time mentioned: 16:00')
+
+    const turn3 = await worker.fetch(chatRequest({
+      message: '\u0628\u0644\u06cc \u0628\u0633\u0627\u0632',
+      timeZone: 'Europe/Berlin',
+    }), env, fakeExecutionContext())
+    const body3 = await turn3.json() as { reply?: string; writeExecution?: string }
+    const turn4 = await worker.fetch(chatRequest({
+      message: '\u0628\u0644\u06cc \u062a\u0627\u06cc\u06cc\u062f \u0645\u06cc \u06a9\u0646\u0645',
+      timeZone: 'Europe/Berlin',
+    }), env, fakeExecutionContext())
+    const body4 = await turn4.json() as { reply?: string; writeExecution?: string }
+
+    expect(body3.writeExecution).toBeUndefined()
+    expect(body4.writeExecution).toBeUndefined()
+    expect(`${body2.reply}\n${body3.reply}\n${body4.reply}`).not.toContain('Flow AI')
+    expect(`${body2.reply}\n${body3.reply}\n${body4.reply}`).not.toContain('does not have this capability')
+    expect(log.taskWrites.filter(write => write.method === 'POST')).toHaveLength(1)
+  })
+
+  it('an affirmative after a complete pending task spec executes on the server', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [
+      { role: 'user', content: '\u06cc\u06a9 \u062a\u0633\u06a9 \u0628\u0631\u0627\u06cc \u0641\u0631\u062f\u0627 \u0628\u0633\u0627\u0632 \u06a9\u0647 \u0646\u0648\u0628\u062a \u062f\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc \u062f\u0627\u0631\u0645. \u0627\u0644\u0628\u062a\u0647 \u0633\u0627\u0639\u062a \u06f1\u06f1 \u0635\u0628\u062d' },
+    ])
+    const response = await worker.fetch(chatRequest({
+      message: '\u0628\u0644\u06cc \u0628\u0633\u0627\u0632',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { writeExecution?: string }
+
+    expect(body.writeExecution).toBe('executed')
+    expect(log.taskWrites[0]?.body?.title).toBe('\u0646\u0648\u0628\u062a \u062f\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc')
+    expect(log.geminiCalls.length).toBe(0)
   })
 
   it('undo for auto-created tasks deletes the created task within the undo window', async () => {

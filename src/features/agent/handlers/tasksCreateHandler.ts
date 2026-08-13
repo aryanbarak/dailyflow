@@ -77,7 +77,7 @@ export const tasksCreateHandler: AgentWriteToolHandler<TasksCreateHandlerOutput>
         success: true,
         data: Object.freeze({ taskId: created.id, title: created.title, dueDate: created.dueDate ?? null, verified: true }),
         auditMetadata: { taskId: created.id, verified: true, resultShape: "object", redacted: true },
-        compensation: { operation: "delete_task", taskId: created.id },
+        compensation: { taskId: created.id, previousCompleted: false, previousCompletedAt: null },
       };
     } catch {
       return failure("failed", "TASK_CREATE_FAILED", "Unable to create task.");

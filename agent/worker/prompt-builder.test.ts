@@ -165,6 +165,23 @@ describe('buildChatSystemPrompt', () => {
     expect(prompt).not.toContain('Always use Markdown headings')
   })
 
+  it('keeps supported task-write approval/execution authority in the server policy layer', () => {
+    for (const language of ['en', 'de', 'fa'] as const) {
+      const prompt = buildChatSystemPrompt(language, [])
+      if (language === 'fa') {
+        expect(prompt).toContain('سمت سرور')
+        expect(prompt).toContain('سیاست')
+      } else {
+        expect(prompt).toContain('server')
+        expect(prompt).toContain(language === 'de' ? 'Schreibrichtlinie' : 'policy')
+      }
+      expect(prompt).toContain('Flow AI')
+      expect(prompt).not.toContain('Want me to prepare this so you can approve it?')
+      expect(prompt).not.toContain('Soll ich das vorbereiten, damit du es freigeben kannst?')
+      expect(prompt).not.toContain('می‌خواهی آماده‌اش کنم تا تو تاییدش کنی؟')
+    }
+  })
+
   it('does not ask the model to insert manual bidi control characters', () => {
     const bidiControls = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/
 

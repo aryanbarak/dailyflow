@@ -30,6 +30,7 @@ import {
   runtimeSummaryMessage,
   shouldUseReasoningForMessage,
 } from "./ChatPage";
+import { shouldAutoRunReadOnlyOverlay } from "@/features/chat/autoReadOverlayGate";
 import { getStrongReadDomainEvidence, getToolById, isAutoExecutableReadOnlyToolId } from "@/features/agent";
 import type {
   AgentReasoningResult,
@@ -1357,6 +1358,17 @@ describe("ChatPage LLM reasoning UX boundary", () => {
     expect(isAutoExecutableReadOnlyToolId("github.issues.comment")).toBe(false);
     expect(isAutoExecutableReadOnlyToolId("github.issues.update")).toBe(false);
     expect(isAutoExecutableReadOnlyToolId("tasks.list")).toBe(true);
+  });
+
+  it("task 21-fix5: read-only overlays do not auto-run when the server resolved a write turn", () => {
+    const overlayResult = reasoningResult("inspect_learning", "learning.get_progress");
+    const hasAutoExecutableReadOnlyOverlay = isAutoExecutableReadOnlyProposal(overlayResult);
+    expect(shouldAutoRunReadOnlyOverlay({ hasAutoExecutableReadOnlyOverlay })).toBe(true);
+    expect(shouldAutoRunReadOnlyOverlay({ hasAutoExecutableReadOnlyOverlay, writePolicy: { mode: "auto" } })).toBe(false);
+    expect(shouldAutoRunReadOnlyOverlay({ hasAutoExecutableReadOnlyOverlay, writePolicy: { mode: "ask" } })).toBe(false);
+    expect(shouldAutoRunReadOnlyOverlay({ hasAutoExecutableReadOnlyOverlay, writePolicy: { mode: "off" } })).toBe(false);
+    expect(shouldAutoRunReadOnlyOverlay({ hasAutoExecutableReadOnlyOverlay, writeExecution: "executed" })).toBe(false);
+    expect(shouldAutoRunReadOnlyOverlay({ hasAutoExecutableReadOnlyOverlay, writeExecution: "clarify" })).toBe(false);
   });
 
   it("task 11d: a successful auto-read produces ONE reply combining the conversational text with the real data (via the existing resultMessage/composeAssistantResponse presenter chain) plus a domain provenance marker -- no panel (caller sets reasoningStates null unconditionally for this branch)", () => {

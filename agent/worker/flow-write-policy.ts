@@ -14,6 +14,11 @@ export interface ParsedTaskWriteIntent {
   dateClarificationNeeded?: boolean
 }
 
+export interface RecentChatTurn {
+  role: string
+  content: string
+}
+
 interface TaskRow {
   id: string
   user_id: string
@@ -225,11 +230,14 @@ function extractTaskTitle(message: string) {
   const germanSubject = normalized.match(/\b(?:dass|weil)\s+ich\s+(.+?)\s+(?:habe|machen muss|muss)(?:[.,]|$)/i)
   if (germanSubject?.[1]) return boundText(removeDateAndTimePhrases(germanSubject[1]), 80)
 
-  return boundText(removeDateAndTimePhrases(
+  const fallback = removeDateAndTimePhrases(
     normalized
       .replace(/\b(create|add|set up|task|todo|erstelle|aufgabe|hinzuf[Ã¼u]gen)\b/gi, ' ')
-      .replace(/(?:\u06cc\u06a9|\u06a9|ÛŒÙ‡)?\s*(?:\u062a\u0633\u06a9|\u0648\u0638\u06cc\u0641\u0647|\u06a9\u0627\u0631).{0,12}?(?:\u0628\u0633\u0627\u0632|\u0627\u06cc\u062c\u0627\u062f\s+\u06a9\u0646|\u0627\u0636\u0627\u0641\u0647\s+\u06a9\u0646)/g, ' '),
-  ), 80)
+      .replace(/(?:\u06cc\u06a9|\u06a9|ÛŒÙ‡)?\s*(?:\u062a\u0633\u06a9|\u0648\u0638\u06cc\u0641\u0647|\u06a9\u0627\u0631).{0,12}?(?:\u0628\u0633\u0627\u0632|\u0627\u06cc\u062c\u0627\u062f\s+\u06a9\u0646|\u0627\u0636\u0627\u0641\u0647\s+\u06a9\u0646)/g, ' ')
+      .replace(/\b(?:\u06cc\u06a9|\u06a9)\b|\u0628\u0633\u0627\u0632|\u0627\u06cc\u062c\u0627\u062f\s+\u06a9\u0646|\u0627\u0636\u0627\u0641\u0647\s+\u06a9\u0646|[،,.]/g, ' '),
+  )
+  const cleanFallback = fallback.replace(/\s+/g, ' ').trim()
+  return cleanFallback.length >= 3 ? boundText(cleanFallback, 80) : undefined
 }
 
 function createTaskNotes(message: string, timeOfDay?: string) {
@@ -286,13 +294,14 @@ export function parseTaskWriteIntent(message: string, now: Date, timeZone: strin
   const create = /\b(create|add|set up|erstelle|hinzuf[Ã¼u]gen)\b.{0,50}\b(task|todo|aufgabe)\b/i.test(message) ||
     /(?:ÛŒÚ©|ÙŠÙ‡|ÛŒÙ‡)?\s*(?:ØªØ³Ú©|ÙˆØ¸ÛŒÙÙ‡|Ú©Ø§Ø±).{0,50}(?:Ø¨Ø³Ø§Ø²|Ø§ÛŒØ¬Ø§Ø¯ Ú©Ù†|Ø§Ø¶Ø§ÙÙ‡ Ú©Ù†)/i.test(message)
   const cleanPersianCreate = /(?:\u06cc\u06a9|\u06a9|\u06cc\u0647)?\s*(?:\u062a\u0633\u06a9|\u0648\u0638\u06cc\u0641\u0647|\u06a9\u0627\u0631).{0,50}(?:\u0628\u0633\u0627\u0632|\u0627\u06cc\u062c\u0627\u062f\s+\u06a9\u0646|\u0627\u0636\u0627\u0641\u0647\s+\u06a9\u0646)/i.test(message)
+  const cleanMixedPersianCreate = /(?:\u06cc\u06a9|\u06a9|\u06cc\u0647)?\s*(?:task|todo).{0,50}(?:\u0628\u0633\u0627\u0632|\u0627\u06cc\u062c\u0627\u062f\s+\u06a9\u0646|\u0627\u0636\u0627\u0641\u0647\s+\u06a9\u0646)/i.test(message)
   const update = /\b(update|edit|change|reschedule|aktualisiere|bearbeite|verschiebe)\b.{0,60}\b(task|todo|aufgabe)\b/i.test(message)
-  if (!create && !cleanPersianCreate && !update) return null
+  if (!create && !cleanPersianCreate && !cleanMixedPersianCreate && !update) return null
 
   const date = parseDeterministicDueDate(message, now, timeZone)
   const timeOfDay = parseDeterministicTimeOfDay(message)
   const quoted = message.match(/["'Â«â€œ](.+?)["'Â»â€]/)?.[1]?.trim()
-  if (create || cleanPersianCreate) {
+  if (create || cleanPersianCreate || cleanMixedPersianCreate) {
     const title = extractTaskTitle(message)
     return { kind: 'create_task', title: title || undefined, notes: createTaskNotes(message, timeOfDay), dueDate: date.value, timeOfDay, dateClarificationNeeded: date.clarificationNeeded }
   }
@@ -305,6 +314,66 @@ function confirmation(language: Language, kind: 'create_task' | 'update_task', t
   if (language === 'de') return `✓ Aufgabe ${kind === 'create_task' ? 'erstellt' : 'aktualisiert'}: ${title}${due}${time}`
   if (language === 'fa') return `✓ وظیفه ${kind === 'create_task' ? 'ایجاد شد' : 'به‌روزرسانی شد'}: ${title}${due}${time}`
   return `✓ Task ${kind === 'create_task' ? 'created' : 'updated'}: ${title}${due}${time}`
+}
+
+function isAffirmativeWriteContinuation(message: string) {
+  const text = normalizeDigits(message.toLowerCase())
+  return /\b(yes|yeah|yep|do it|create it|confirm|confirmed|please do|go ahead)\b/i.test(text) ||
+    /\b(ja|mach|erstellen|bestatige|bestätige)\b/i.test(text) ||
+    /\u0628\u0644\u06cc|\u0628\u0644\u0647|\u0622\u0631\u0647|\u062a\u0627\u06cc\u06cc\u062f|\u062a\u0623\u06cc\u06cc\u062f|\u0628\u0633\u0627\u0632/.test(text)
+}
+
+function looksLikeSubjectChange(message: string) {
+  const text = normalizeDigits(message.toLowerCase())
+  return /\b(show|list|what|summarize|calendar|learning|progress|github|finance|weather)\b/i.test(text) ||
+    /\b(zeige|liste|kalender|lernen|fortschritt|finanzen)\b/i.test(text) ||
+    /\u067e\u06cc\u0634\u0631\u0641\u062a|\u06cc\u0627\u062f\u06af\u06cc\u0631\u06cc|\u062a\u0642\u0648\u06cc\u0645|\u0645\u0627\u0644\u06cc|\u0644\u06cc\u0633\u062a|\u0646\u0634\u0627\u0646/.test(text)
+}
+
+function parseTitleCorrection(message: string) {
+  const normalized = normalizeDigits(message)
+  const persian = normalized.match(/(?:\u0646\u0627\u0645\s+(?:\u062a\u0633\u06a9|\u0648\u0638\u06cc\u0641\u0647|task)\s+\u0631\u0627|\u0627\u0633\u0645\s+(?:\u062a\u0633\u06a9|\u0648\u0638\u06cc\u0641\u0647|task)\s+\u0631\u0627)\s+(.+?)\s+(?:\u0628\u06af\u0630\u0627\u0631|\u0628\u0630\u0627\u0631|باشد|\u0628\u0627\u0634\u062f|کن|\u06a9\u0646)(?:\s|[.،,]|$)/)
+  if (persian?.[1]) return boundText(removeDateAndTimePhrases(persian[1]), 80)
+  const english = normalized.match(/\b(?:name|title)\s+(?:the\s+)?(?:task|todo)\s+(.+?)(?:\s+and\b|[.,]|$)/i)
+  if (english?.[1]) return boundText(removeDateAndTimePhrases(english[1]), 80)
+  const german = normalized.match(/\b(?:nenne|titel)\s+(?:die\s+)?aufgabe\s+(.+?)(?:\s+und\b|[.,]|$)/i)
+  if (german?.[1]) return boundText(removeDateAndTimePhrases(german[1]), 80)
+  return undefined
+}
+
+function mergeTaskIntent(base: ParsedTaskWriteIntent, message: string, now: Date, timeZone: string): ParsedTaskWriteIntent {
+  const correctionTitle = parseTitleCorrection(message)
+  const direct = parseTaskWriteIntent(message, now, timeZone)
+  const timeOfDay = parseDeterministicTimeOfDay(message) ?? direct?.timeOfDay ?? base.timeOfDay
+  const dueDate = direct?.dueDate !== undefined ? direct.dueDate : base.dueDate
+  return {
+    ...base,
+    title: correctionTitle ?? direct?.title ?? base.title,
+    notes: createTaskNotes(`${base.notes ?? ''}\n${message}`.trim(), timeOfDay),
+    dueDate,
+    timeOfDay,
+    dateClarificationNeeded: direct?.dateClarificationNeeded ?? base.dateClarificationNeeded,
+  }
+}
+
+export function assembleTaskWriteIntent(message: string, recentTurns: RecentChatTurn[], now: Date, timeZone: string): ParsedTaskWriteIntent | null {
+  const direct = parseTaskWriteIntent(message, now, timeZone)
+  if (direct) return direct
+  if (looksLikeSubjectChange(message)) return null
+  if (!isAffirmativeWriteContinuation(message) && !parseTitleCorrection(message)) return null
+  if (recentTurns.slice(-4).some(turn => turn.role === 'assistant' && /✓ .*(Task created|Task updated|Aufgabe .*erstellt|Aufgabe .*aktualisiert|\u0648\u0638\u06cc\u0641\u0647 .*(?:\u0627\u06cc\u062c\u0627\u062f \u0634\u062f|\u0628\u0647\u200c\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06cc \u0634\u062f))/.test(turn.content))) {
+    return null
+  }
+
+  const recentUserMessages = recentTurns
+    .filter(turn => turn.role === 'user')
+    .map(turn => turn.content)
+    .slice(-6)
+    .reverse()
+  const previous = recentUserMessages
+    .map(content => parseTaskWriteIntent(content, now, timeZone))
+    .find((intent): intent is ParsedTaskWriteIntent => Boolean(intent && intent.kind === 'create_task'))
+  return previous ? mergeTaskIntent(previous, message, now, timeZone) : null
 }
 
 export async function executeAutoTaskWrite(input: {
