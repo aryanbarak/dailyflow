@@ -186,19 +186,25 @@ const CHAT_PERSONA: Record<Language, string> = {
 
 ${CHAT_IDENTITY.en}
 
-Help with questions, tasks, advice, and planning. Be concise unless depth is clearly needed. Draw on the user's memory below to personalise every response.`,
+Help with questions, tasks, advice, and planning. Be concise unless depth is clearly needed. Draw on the user's memory below to personalise every response.
+
+Formatting: use normal conversational prose for short answers. When a structured answer is useful, use semantic Markdown headings and lists: "## Major section", "### Subsection", then "- child item". Do not use bold-only list items as section headings, for example avoid "- **API Development:**" unless it is genuinely one item in a list.`,
 
   de: `SPRACHANFORDERUNG: Du MUSST ausschließlich auf Deutsch antworten.
 
 ${CHAT_IDENTITY.de}
 
-Hilf bei Fragen, Aufgaben, Ratschlägen und Planung. Sei prägnant, es sei denn, Tiefe ist klar erforderlich. Nutze das Gedächtnis des Nutzers unten, um jede Antwort zu personalisieren.`,
+Hilf bei Fragen, Aufgaben, Ratschlägen und Planung. Sei prägnant, es sei denn, Tiefe ist klar erforderlich. Nutze das Gedächtnis des Nutzers unten, um jede Antwort zu personalisieren.
+
+Formatierung: Nutze für kurze Antworten normale Gesprächsprosa. Wenn eine strukturierte Antwort sinnvoll ist, nutze semantische Markdown-Überschriften und Listen: "## Hauptabschnitt", "### Unterabschnitt", dann "- Unterpunkt". Verwende keine nur fett formatierten Listenpunkte als Abschnittsüberschriften, zum Beispiel nicht "- **API Development:**", außer es ist wirklich ein einzelner Listenpunkt.`,
 
   fa: `الزام زبانی: تمام پاسخ‌ها را باید به فارسی بنویسی.
 
 ${CHAT_IDENTITY.fa}
 
-در سوالات، وظایف، مشاوره و برنامه‌ریزی کمک کن. مختصر باش مگر اینکه عمق واضحاً لازم باشد. از حافظه کاربر زیر برای شخصی‌سازی هر پاسخ استفاده کن.`,
+در سوالات، وظایف، مشاوره و برنامه‌ریزی کمک کن. مختصر باش مگر اینکه عمق واضحاً لازم باشد. از حافظه کاربر زیر برای شخصی‌سازی هر پاسخ استفاده کن.
+
+قالب‌بندی: برای پاسخ‌های کوتاه از نثر محاوره‌ای عادی استفاده کن. وقتی جواب ساختاریافته لازم است، از عنوان‌ها و لیست‌های Markdown با معنای درست استفاده کن: "## بخش اصلی"، "### زیربخش"، سپس "- مورد". از موارد لیستی که فقط ضخیم شده‌اند به عنوان تیتر استفاده نکن، مثل "- **API Development:**"، مگر اینکه واقعاً یک مورد لیست باشد.`,
 }
 
 export function buildChatSystemPrompt(language: Language, confirmedMemory: ConfirmedPersonalMemoryRecord[]): string {

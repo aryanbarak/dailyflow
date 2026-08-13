@@ -268,6 +268,67 @@ describe("square-bracket phrase isolation (task 20, Part B -- generalises the ex
 describe("createDirectionalMarkdownComponents", () => {
   const components = createDirectionalMarkdownComponents({ p: "p-class", ul: "ul-class", li: "li-class" });
 
+  it("renders semantic headings separately from list items, with no bullet on the heading", () => {
+    const componentsWithHeadings = createDirectionalMarkdownComponents({
+      h3: "heading-class",
+      ul: "ul-class",
+      li: "li-class",
+    });
+    const md = "### معماری و استقرار هوش مصنوعی (Deployment – MLOps & AI Architecture)\n\n- مورد اول\n  - زیرمورد";
+    const html = renderToString(<ReactMarkdown components={componentsWithHeadings}>{md}</ReactMarkdown>);
+
+    expect(html).toContain('<h3 dir="rtl" class="heading-class">');
+    expect(html).toMatch(/<\/h3>\s*<ul/);
+    expect(html).not.toMatch(/<li[^>]*>.*معماری و استقرار هوش مصنوعی/);
+    expect(html.match(/<ul dir="rtl" class="ul-class">/g)?.length).toBe(2);
+  });
+
+  it("keeps common LTR technical phrases isolated inside Persian prose", () => {
+    const md = [
+      "برای API از Flask/FastAPI یا Node.js استفاده کنید.",
+      "پلتفرم‌های ابری: AWS (SageMaker), Google Cloud (Vertex AI), Azure",
+      "این الگو برای RAG و MLOps در نسخه 2 مناسب است.",
+    ].join("\n\n");
+    const html = renderToString(<ReactMarkdown components={components}>{md}</ReactMarkdown>);
+
+    expect(html).toContain("<bdi>API</bdi>");
+    expect(html).toContain("<bdi>Flask/FastAPI</bdi>");
+    expect(html).toContain("<bdi>Node.js</bdi>");
+    expect(html).toContain("<bdi>AWS (SageMaker), Google Cloud (Vertex AI), Azure</bdi>");
+    expect(html).toContain("<bdi>RAG</bdi>");
+    expect(html).toContain("<bdi>MLOps</bdi>");
+  });
+
+  it("covers blockquote, ordered list, bold text inside a list item, inline code, code block, and links", () => {
+    const componentsFull = createDirectionalMarkdownComponents({
+      blockquote: "quote-class",
+      ol: "ol-class",
+      li: "li-class",
+      code: "code-class",
+      pre: "pre-class",
+      a: "link-class",
+    });
+    const md = [
+      "> نکته: برای `npm run build` آماده باش.",
+      "",
+      "1. **متن مهم** داخل مورد لیست",
+      "2. لینک https://example.com و [ایمیل](mailto:test@example.com)",
+      "",
+      "```",
+      "npm run build",
+      "```",
+    ].join("\n");
+    const html = renderToString(<ReactMarkdown components={componentsFull}>{md}</ReactMarkdown>);
+
+    expect(html).toContain('<blockquote dir="rtl" class="quote-class">');
+    expect(html).toContain('<ol dir="rtl" class="ol-class">');
+    expect(html).toContain('<li dir="rtl" class="li-class">');
+    expect(html).toMatch(/<strong dir="auto" style="unicode-bidi:\s*isolate"[^>]*>متن مهم<\/strong>/);
+    expect(html).toMatch(/<code dir="ltr" style="unicode-bidi:\s*isolate" class="code-class">npm run build<\/code>/);
+    expect(html).toMatch(/<pre dir="ltr" style="unicode-bidi:\s*isolate" class="pre-class"><code/);
+    expect(html).toMatch(/<a dir="auto" style="unicode-bidi:\s*isolate" class="link-class" href="mailto:test@example.com"/);
+  });
+
   it("FA markdown with bold + a bulleted list: an EXPLICIT direction (task 20, Part B -- was dir=\"auto\") is applied per block, list markers/indentation are direction-aware (no hardcoded left/right), and the bold Latin run (single-script content) renders unwrapped inside its own CSS-isolated <strong> -- task 17f, R2 applies inside strong/em too, since isolateEmbeddedBidiRuns is the same shared function", () => {
     const md = "**SmartFlow** به شما کمک می‌کند:\n\n- تسک اول\n- تسک دوم";
     const html = renderToString(<ReactMarkdown components={components}>{md}</ReactMarkdown>);

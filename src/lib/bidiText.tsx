@@ -41,7 +41,7 @@ import { createContext, useContext, type ReactElement, type ReactNode } from "re
 // make otherwise-single-script text "mixed" (task 17f, R2).
 const LATIN_STRONG = "A-Za-zÀ-ÖØ-öø-ÿ";
 const PERSIAN_STRONG = "\\u0600-\\u06FF";
-const LATIN_RUN_SOURCE = `[${LATIN_STRONG}](?:[${LATIN_STRONG}0-9 ._\\-/:@+#]*[${LATIN_STRONG}])?`;
+const LATIN_RUN_SOURCE = `[${LATIN_STRONG}](?:[${LATIN_STRONG}0-9 ._\\-/:@+#(),&\\u2013\\u2014]*[${LATIN_STRONG}])?`;
 const PERSIAN_RUN_SOURCE = `[${PERSIAN_STRONG}](?:[${PERSIAN_STRONG}0-9 \\u200c._\\-/:@+#]*[${PERSIAN_STRONG}])?`;
 const STRONG_LTR_PATTERN = new RegExp(`[${LATIN_STRONG}]`);
 const STRONG_RTL_PATTERN = new RegExp(`[${PERSIAN_STRONG}]`);
@@ -124,6 +124,7 @@ function countWordsInRuns(runs: string[]): number {
 }
 
 export function computeMajorityDirection(text: string): "rtl" | "ltr" {
+  if (resolveMessageBaseDirection(text) === "rtl") return "rtl";
   const latinWords = countWordsInRuns(text.match(LATIN_RUN_PATTERN_GLOBAL) ?? []);
   const persianWords = countWordsInRuns(text.match(PERSIAN_RUN_PATTERN_GLOBAL) ?? []);
   if (persianWords > latinWords) return "rtl";
@@ -507,10 +508,15 @@ export function isolateEmbeddedBidiRuns(children: ReactNode, dominantOverride?: 
 export const BIDI_ISOLATE_STYLE = { unicodeBidi: "isolate" } as const;
 
 export interface DirectionalMarkdownClassNames {
+  readonly h1?: string;
+  readonly h2?: string;
+  readonly h3?: string;
+  readonly h4?: string;
   readonly p?: string;
   readonly ul?: string;
   readonly ol?: string;
   readonly li?: string;
+  readonly blockquote?: string;
   readonly strong?: string;
   readonly em?: string;
   readonly code?: string;
@@ -537,7 +543,32 @@ export interface DirectionalMarkdownClassNames {
  * visual styling (task 17f, R8).
  */
 export function createDirectionalMarkdownComponents(classNames: DirectionalMarkdownClassNames = {}) {
+  function Heading({ level, children }: Readonly<{ level: 1 | 2 | 3 | 4; children?: ReactNode }>) {
+    const dominant = computeBlockDirection(children);
+    const Tag = `h${level}` as const;
+    const className = classNames[Tag];
+    return (
+      <Tag dir={dominant} className={className}>
+        <BlockDominantDirectionContext.Provider value={dominant}>
+          {isolateEmbeddedBidiRuns(children, dominant)}
+        </BlockDominantDirectionContext.Provider>
+      </Tag>
+    );
+  }
+
   return {
+    h1({ children }: Readonly<{ children?: ReactNode }>) {
+      return <Heading level={1}>{children}</Heading>;
+    },
+    h2({ children }: Readonly<{ children?: ReactNode }>) {
+      return <Heading level={2}>{children}</Heading>;
+    },
+    h3({ children }: Readonly<{ children?: ReactNode }>) {
+      return <Heading level={3}>{children}</Heading>;
+    },
+    h4({ children }: Readonly<{ children?: ReactNode }>) {
+      return <Heading level={4}>{children}</Heading>;
+    },
     // Task 20, Part B / redesigned task 20b, W1: p/ul/ol/li use an EXPLICIT
     // direction (computeBlockDirection -- majority-of-strong-characters,
     // see its own comment), not native `dir="auto"`. This is the SAME fix
@@ -584,6 +615,14 @@ export function createDirectionalMarkdownComponents(classNames: DirectionalMarkd
         <ol dir={dominant} className={classNames.ol}>
           <BlockDominantDirectionContext.Provider value={dominant}>{children}</BlockDominantDirectionContext.Provider>
         </ol>
+      );
+    },
+    blockquote({ children }: Readonly<{ children?: ReactNode }>) {
+      const dominant = computeBlockDirection(children);
+      return (
+        <blockquote dir={dominant} className={classNames.blockquote}>
+          <BlockDominantDirectionContext.Provider value={dominant}>{children}</BlockDominantDirectionContext.Provider>
+        </blockquote>
       );
     },
     li({ children }: Readonly<{ children?: ReactNode }>) {

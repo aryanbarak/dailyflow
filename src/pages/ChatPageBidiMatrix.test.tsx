@@ -150,6 +150,29 @@ describe("task 17f bidi matrix -- RTL bullet list, including a nested list (R6: 
   }
 });
 
+describe("Flow AI Markdown semantics -- headings and nested lists remain visually distinct", () => {
+  for (const appDir of APP_ROOTS) {
+    it(`[app=${appDir}] renders a Persian heading as h3, not as a bullet, and preserves nested list hierarchy`, () => {
+      const { container } = renderBubble(
+        appDir,
+        "### معماری و استقرار هوش مصنوعی (Deployment – MLOps & AI Architecture)\n\n- API Development\n  - برای API از Flask/FastAPI یا Node.js استفاده کنید.\n- پلتفرم‌های ابری: AWS (SageMaker), Google Cloud (Vertex AI), Azure",
+      );
+      const bubble = container.querySelector(".rounded-xl")!;
+      const heading = bubble.querySelector("h3")!;
+      expect(heading).toBeInTheDocument();
+      expect(heading).toHaveAttribute("dir", "rtl");
+      expect(heading.textContent).toBe("معماری و استقرار هوش مصنوعی (Deployment – MLOps & AI Architecture)");
+      expect(bubble.querySelector("li")?.textContent).not.toContain("معماری و استقرار هوش مصنوعی");
+      expect(bubble.querySelectorAll("ul")).toHaveLength(2);
+      const bdiTexts = Array.from(bubble.querySelectorAll("bdi")).map((el) => el.textContent);
+      expect(bdiTexts).toContain("Deployment – MLOps & AI Architecture");
+      expect(bdiTexts).toContain("Flask/FastAPI");
+      expect(bdiTexts).toContain("Node.js");
+      expect(bubble.textContent).toContain("AWS (SageMaker), Google Cloud (Vertex AI), Azure");
+    });
+  }
+});
+
 describe("task 17f bidi matrix -- inline code inside Persian (R5: always LTR)", () => {
   for (const appDir of APP_ROOTS) {
     it(`[app=${appDir}] the <code> element carries dir="ltr" regardless of the surrounding Persian paragraph`, () => {

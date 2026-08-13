@@ -196,8 +196,20 @@ const QUICK_ACTIONS: QuickAction[] = [
 // no new tokens, no layout change (still the same mb-*/space-y-* utilities
 // this file already used, just the next step up).
 const MSG_MD_COMPONENTS = createDirectionalMarkdownComponents({
+  h1: 'mb-3 mt-1 text-base font-semibold leading-snug tracking-normal text-foreground first:mt-0',
+  h2: 'mb-2.5 mt-4 text-[15px] font-semibold leading-snug tracking-normal text-foreground first:mt-0',
+  h3: 'mb-2 mt-3 text-sm font-semibold leading-snug tracking-normal text-foreground first:mt-0',
+  h4: 'mb-1.5 mt-3 text-[13px] font-semibold leading-snug tracking-normal text-foreground first:mt-0',
   p: 'mb-2 last:mb-0',
-  ul: 'mt-1 list-disc space-y-1 ps-4',
+  ul: 'my-2 list-disc space-y-1 ps-4',
+  ol: 'my-2 list-decimal space-y-1 ps-4',
+  li: 'ps-1 leading-relaxed',
+  blockquote: 'my-2 border-inline-start-2 border-border/70 ps-3 text-muted-foreground',
+  strong: 'font-semibold text-foreground',
+  em: 'italic',
+  code: 'rounded bg-background/70 px-1 py-0.5 font-mono text-[0.92em]',
+  pre: 'my-2 overflow-x-auto rounded-md bg-background/80 p-3 text-left font-mono text-xs leading-5',
+  a: 'font-medium text-primary underline underline-offset-2',
 })
 
 type ReasoningRunStatus = 'idle' | 'running' | 'success' | 'failed' | 'approval_required' | 'approved' | 'rejected'
