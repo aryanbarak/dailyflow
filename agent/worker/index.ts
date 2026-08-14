@@ -15,7 +15,7 @@ import { handlePersonalMemoryExtractionRequest } from './personal-memory-extract
 import { handleDocumentMemoryExtractionRequest } from './document-memory-extraction-endpoint'
 import { buildAttachmentTextPart, resolveChatAttachment } from './chat-attachment-context'
 import { checkForFalseCompletionClaim } from './completion-claim-guard'
-import { assembleTaskWriteIntent, executeAutoTaskWrite, resolveServerFlowWriteMode, undoAutoTaskWrite } from './flow-write-policy'
+import { assembleTaskWriteIntent, executeAutoTaskWrite, resolveCreateTaskTitle, resolveServerFlowWriteMode, undoAutoTaskWrite } from './flow-write-policy'
 
 // ADR-0010 Product Owner Resolution Q4: always-on background extraction
 // into user_context is DISABLED by this decision (SUPERSEDE per Q3 --
@@ -759,7 +759,16 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
         return json({ reply, writePolicy: { domain: 'tasks', action, mode } }, 200, origin)
       }
       if (mode === 'auto') {
-        const execution = await executeAutoTaskWrite({ env, userId, language, intent: taskWriteIntent, now: new Date() })
+        // Task 21-fix6: resolve the create_task title through the model
+        // (validated, with pattern-extraction as a last-resort fallback)
+        // right before executing the write -- skipped for an explicit
+        // user title correction (that title is exact user intent) and
+        // when a due-date clarification is about to short-circuit this
+        // write anyway, to avoid a wasted model call.
+        if (taskWriteIntent.kind === 'create_task' && !taskWriteIntent.dateClarificationNeeded && taskWriteIntent.titleSource !== 'correction') {
+          taskWriteIntent.title = await resolveCreateTaskTitle(env, taskWriteIntent, message)
+        }
+        const execution = await executeAutoTaskWrite({ env, userId, language, intent: taskWriteIntent, now: new Date(), timeZone })
         if (execution.status === 'executed' || execution.status === 'clarify' || execution.status === 'failed') {
           await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'user', content: message })
           await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: execution.reply })

@@ -46,6 +46,7 @@ interface FetchLog {
   documentReads: number
   storageReads: number
   taskWrites: Array<{ method: string; body?: Record<string, unknown> }>
+  alarmWrites: Array<{ method: string; body?: Record<string, unknown> }>
   undoWrites: Array<{ method: string; body?: Record<string, unknown> }>
 }
 
@@ -72,11 +73,19 @@ function installFetchMock(
   flowWriteMode: 'auto' | 'ask' | 'off' | 'error' | null = null,
   undoStore: UndoStore = new Map(),
   chatHistoryRows: Array<{ role: string; content: string }> = [],
+  // Task 21-fix6: what the NEW model-based title-extraction call (see
+  // task-title-extraction.ts) returns. null/undefined -> empty string,
+  // i.e. "the model found no subject" -- this is the SAFE default because
+  // it makes resolveCreateTaskTitle fall back to the deterministic pattern
+  // extractor's own (already-validated) title, matching this whole file's
+  // pre-task-21-fix6 expectations without needing every test updated.
+  // Tests that specifically exercise the model path pass a real string.
+  taskTitleResult: string | null = null,
 ): FetchLog {
   const chatRows = [...chatHistoryRows]
   const log: FetchLog = {
     geminiCalls: [], chatMessageWrites: [], sessionPatches: 0, personalMemoryReads: 0, documentReads: 0, storageReads: 0,
-    taskWrites: [], undoWrites: [],
+    taskWrites: [], alarmWrites: [], undoWrites: [],
   }
 
   const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -131,6 +140,11 @@ function installFetchMock(
       const row = { id: 'task-created-1', user_id: 'user-1', title: String(body?.title ?? 'Tax task'), notes: body?.notes ?? null, due_date: body?.due_date ?? null, completed: body?.completed ?? false, created_at: '2026-08-13T00:00:00.000Z', updated_at: '2026-08-13T00:01:00.000Z' }
       return new Response(JSON.stringify([row]), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
+    if (url.startsWith(`${SUPABASE_URL}/rest/v1/alarms`) && method === 'POST') {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+      log.alarmWrites.push({ method, body })
+      return new Response(JSON.stringify([{ id: 'alarm-1', source_id: body.source_id, trigger_at: body.trigger_at }]), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
     if (url.startsWith(`${SUPABASE_URL}/rest/v1/documents`) && method === 'GET') {
       log.documentReads += 1
       const rows = attachment?.document ? [attachment.document] : []
@@ -163,6 +177,15 @@ function installFetchMock(
         // Background memory-extraction call
         return new Response(
           JSON.stringify({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: '[]' }] } }] }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+      if (schema?.type === 'OBJECT' && schema.required?.includes('title') && schema.properties?.title && !schema.properties?.type) {
+        // Task 21-fix6: title-extraction call (task-title-extraction.ts)
+        // -- distinguished from the reasoning schema below by shape: only
+        // this one has a bare `title` property and no `type`/`confidence`.
+        return new Response(
+          JSON.stringify({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify({ title: taskTitleResult ?? '' }) }] } }] }),
           { status: 200, headers: { 'Content-Type': 'application/json' } },
         )
       }
@@ -739,12 +762,16 @@ describe('ADR-0012 server-side task write policy', () => {
     expect(response.status).toBe(200)
     expect(body.writeExecution).toBe('executed')
     expect(body.reply).toContain('✓ Task created: Review invoices')
-    expect(body.reply).toContain('2026-08-14')
+    expect(body.reply).toContain('2026-08-15')
     expect(body.reply).not.toMatch(/undo:[0-9a-f-]{36}/i)
     expect(body.undo?.id).toMatch(/^undo:[0-9a-f-]{36}$/)
     expect(body.undo?.label).toBe('Undo')
     expect(log.taskWrites.some(write => write.method === 'POST')).toBe(true)
-    expect(log.geminiCalls.length).toBe(0)
+    // Task 21-fix6: exactly one call now happens before the write -- the
+    // title-extraction request (schema-enforced, not a conversational
+    // reply, hence "Gemini should not be called" as this fixture's chat
+    // reply text is still meaningful: that text is never what gets used).
+    expect(log.geminiCalls.length).toBe(1)
   })
 
   it('creates a distilled Persian task title and preserves time-of-day in notes because tasks have no time column', async () => {
@@ -761,6 +788,120 @@ describe('ADR-0012 server-side task write policy', () => {
     expect(body.reply).toContain('time mentioned 11:00')
     expect(body.reply).not.toMatch(/undo:[0-9a-f-]{36}/i)
     expect(body.undo?.id).toMatch(/^undo:[0-9a-f-]{36}$/)
+  })
+
+  it('creates a clean Persian title and a task alarm for title-prefix requests with a time of day', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto')
+    const response = await worker.fetch(chatRequest({
+      message: '\u062a\u0631\u0645\u06cc\u0646 \u062f\u0627\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc: \u0628\u0631\u0627\u06cc\u0645 \u06cc\u06a9 \u062a\u0633\u06a9 \u0628\u0631\u0627\u06cc \u0641\u0631\u062f\u0627 \u0628\u0633\u0627\u0632 \u0628\u0647 \u0633\u0627\u0639\u062a \u06f1\u06f3',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { reply?: string; writeExecution?: string }
+
+    expect(response.status).toBe(200)
+    expect(body.writeExecution).toBe('executed')
+    expect(log.taskWrites[0]?.body?.title).toBe('\u062a\u0631\u0645\u06cc\u0646 \u062f\u0627\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc')
+    expect(log.taskWrites[0]?.body?.due_date).toBe('2026-08-15')
+    expect(log.alarmWrites[0]?.body).toMatchObject({
+      source_type: 'task',
+      source_title: '\u062a\u0631\u0645\u06cc\u0646 \u062f\u0627\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc',
+      remind_before_minutes: 0,
+      is_fired: false,
+      is_dismissed: false,
+    })
+    expect(log.alarmWrites[0]?.body?.trigger_at).toBe('2026-08-15T11:00:00.000Z')
+  })
+
+  // Task 21-fix6: title is now a first-class model field, validated (not
+  // derived) before an auto-write. The tests above all rely on the mock's
+  // SAFE DEFAULT (model returns an empty title, so the already-validated
+  // pattern-extracted title is used) -- the tests below exercise the
+  // model's own title actually being used, rejected, and the exact
+  // production-evidence string end to end.
+  describe('task 21-fix6: model-based title resolution', () => {
+    it('uses the model-proposed title (not the pattern-extracted one) when it validates', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'Family doctor appointment')
+      const response = await worker.fetch(chatRequest({
+        message: 'Create a task for tomorrow because I have a family doctor appointment at 11am.',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writeExecution?: string }
+
+      expect(body.writeExecution).toBe('executed')
+      // The pattern extractor alone would have produced "a family doctor
+      // appointment" (see flow-write-policy.test.ts) -- this proves the
+      // MODEL's title is what actually reached the database.
+      expect(log.taskWrites[0]?.body?.title).toBe('Family doctor appointment')
+    })
+
+    it('the exact production-evidence message resolves to the clean subject end to end', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'ترمین داکتر فامیلی')
+      const response = await worker.fetch(chatRequest({
+        message: 'ترمین داکتر فامیلی : برایم یک تسک برای فردا بساز به ساعت ۱۳:۰۰',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writeExecution?: string; reply?: string }
+
+      expect(body.writeExecution).toBe('executed')
+      expect(log.taskWrites[0]?.body?.title).toBe('ترمین داکتر فامیلی')
+      // No leaked command fragments or stray punctuation/digits.
+      expect(log.taskWrites[0]?.body?.title).not.toContain('برایم')
+      expect(log.taskWrites[0]?.body?.title).not.toMatch(/[0-9۰-۹]/)
+    })
+
+    it('rejects a model title that is just the whole raw message and falls back to the validated pattern title (unit-tested overlap-specific case lives in flow-write-policy.test.ts)', async () => {
+      const message = 'Create a task for tomorrow because I have a family doctor appointment at 11am.'
+      const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], message)
+      const response = await worker.fetch(chatRequest({ message, timeZone: 'Europe/Berlin' }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writeExecution?: string }
+
+      expect(body.writeExecution).toBe('executed')
+      expect(log.taskWrites[0]?.body?.title).toBe('a family doctor appointment')
+    })
+
+    it('a German phrasing resolves via the model to a clean short subject', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'Arzttermin')
+      const response = await worker.fetch(chatRequest({
+        message: 'Erstelle eine Aufgabe fuer morgen, dass ich einen Arzttermin um 14:30 Uhr habe.',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writeExecution?: string }
+
+      expect(body.writeExecution).toBe('executed')
+      expect(log.taskWrites[0]?.body?.title).toBe('Arzttermin')
+    })
+
+    it('falls back to a targeted clarify question, never a garbage title, when neither the model nor the pattern extractor finds a subject', async () => {
+      // Same command-only message flow-write-policy.test.ts's own
+      // "keeps a command-only mixed Persian task request under-specified"
+      // test proves extractTaskTitle already returns undefined for --
+      // exercised here end to end with the model ALSO finding nothing.
+      const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], '')
+      const response = await worker.fetch(chatRequest({
+        message: 'یک task برای فردا بساز، ساعت ۱۶:۰۰',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { reply?: string; writeExecution?: string }
+
+      expect(body.writeExecution).toBe('clarify')
+      expect(body.reply).toBe('What should the task be called?')
+      expect(log.taskWrites.length).toBe(0)
+    })
+
+    it('never re-derives an explicit title correction through the model', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [
+        { role: 'user', content: 'یک تسک برای فردا بساز که نوبت دکتر فامیلی دارم' },
+      ], 'A completely different model-guessed title')
+      const response = await worker.fetch(chatRequest({
+        message: 'نام تسک را ترمین داکتر فامیلی بگذار و بقیه درست است',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writeExecution?: string }
+
+      expect(body.writeExecution).toBe('executed')
+      expect(log.taskWrites[0]?.body?.title).toBe('ترمین داکتر فامیلی')
+      expect(log.geminiCalls.length).toBe(0)
+    })
   })
 
   it('tampered client policy cannot execute when the server policy is off', async () => {
@@ -823,7 +964,11 @@ describe('ADR-0012 server-side task write policy', () => {
     expect(body1.writeExecution).toBe('clarify')
     expect(body1.reply).toBe('What should the task be called?')
     expect(log.taskWrites.length).toBe(0)
-    expect(log.geminiCalls.length).toBe(0)
+    // Task 21-fix6: the title-extraction call still happens (there's no
+    // subject to find either way -- the mock's default empty title and
+    // the pattern fallback agree), but no task is written and the reply
+    // stays the same targeted clarify question, not a garbage title.
+    expect(log.geminiCalls.length).toBe(1)
 
     const turn2 = await worker.fetch(chatRequest({
       message: '\u0646\u0627\u0645 \u062a\u0633\u06a9 \u0631\u0627 \u062a\u0631\u0645\u06cc\u0646 \u062f\u0627\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc \u0628\u06af\u0630\u0627\u0631 \u0648 \u0628\u0642\u06cc\u0647 \u062f\u0631\u0633\u062a \u0627\u0633\u062a',
@@ -834,7 +979,7 @@ describe('ADR-0012 server-side task write policy', () => {
     expect(body2.writeExecution).toBe('executed')
     expect(log.taskWrites.filter(write => write.method === 'POST')).toHaveLength(1)
     expect(log.taskWrites[0]?.body?.title).toBe('\u062a\u0631\u0645\u06cc\u0646 \u062f\u0627\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc')
-    expect(log.taskWrites[0]?.body?.due_date).toBe('2026-08-14')
+    expect(log.taskWrites[0]?.body?.due_date).toBe('2026-08-15')
     expect(log.taskWrites[0]?.body?.notes).toContain('Time mentioned: 16:00')
 
     const turn3 = await worker.fetch(chatRequest({
@@ -867,7 +1012,11 @@ describe('ADR-0012 server-side task write policy', () => {
 
     expect(body.writeExecution).toBe('executed')
     expect(log.taskWrites[0]?.body?.title).toBe('\u0646\u0648\u0628\u062a \u062f\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc')
-    expect(log.geminiCalls.length).toBe(0)
+    // Task 21-fix6: this continuation's own title comes from the earlier
+    // turn's base intent, not a fresh correction, so it is NOT exempt from
+    // model resolution -- one title-extraction call happens; the mock's
+    // default empty response falls back to the already-validated title.
+    expect(log.geminiCalls.length).toBe(1)
   })
 
   it('undo for auto-created tasks deletes the created task within the undo window', async () => {
@@ -905,7 +1054,7 @@ describe('ADR-0012 server-side task write policy', () => {
 
     expect(undoId).toBeTruthy()
     expect(updateBody.reply).not.toMatch(/undo:[0-9a-f-]{36}/i)
-    expect(log.taskWrites.some(write => write.method === 'PATCH' && write.body?.due_date === '2026-08-14')).toBe(true)
+    expect(log.taskWrites.some(write => write.method === 'PATCH' && write.body?.due_date === '2026-08-15')).toBe(true)
     expect(log.undoWrites.some(write => write.method === 'POST')).toBe(true)
 
     vi.unstubAllGlobals()

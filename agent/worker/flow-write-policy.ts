@@ -1,5 +1,6 @@
 ﻿import type { Env, Language } from './types'
 import { supabaseGet } from './context-builder'
+import { callGeminiForTaskTitle } from './task-title-extraction'
 
 export type FlowWriteMode = 'auto' | 'ask' | 'off'
 export type FlowWriteAction = 'create' | 'update' | 'delete'
@@ -12,6 +13,11 @@ export interface ParsedTaskWriteIntent {
   dueDate?: string | null
   timeOfDay?: string
   dateClarificationNeeded?: boolean
+  // Task 21-fix6: set only when `title` came from an explicit user
+  // correction ("name the task X" / parseTitleCorrection below), never
+  // from pattern-derived subject extraction. resolveCreateTaskTitle below
+  // must never overwrite an explicit correction with a model guess.
+  titleSource?: 'correction'
 }
 
 export interface RecentChatTurn {
@@ -29,6 +35,12 @@ interface TaskRow {
   completed_at?: string | null
   created_at: string
   updated_at: string
+}
+
+interface AlarmRow {
+  id: string
+  source_id: string
+  trigger_at: string
 }
 
 type UndoEntry =
@@ -189,6 +201,35 @@ function boundText(value: string, max: number) {
   return normalized.length > max ? `${normalized.slice(0, max - 3).trim()}...` : normalized
 }
 
+function zonedDateTimeToUtcIso(dateKeyValue: string, timeOfDay: string, timeZone: string) {
+  const [year, month, day] = dateKeyValue.split('-').map(Number)
+  const [hour, minute] = timeOfDay.split(':').map(Number)
+  const desiredUtcMs = Date.UTC(year, month - 1, day, hour, minute, 0)
+  const guess = new Date(desiredUtcMs)
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(guess).reduce<Record<string, string>>((acc, part) => {
+    if (part.type !== 'literal') acc[part.type] = part.value
+    return acc
+  }, {})
+  const actualAsUtcMs = Date.UTC(
+    Number(parts.year),
+    Number(parts.month) - 1,
+    Number(parts.day),
+    Number(parts.hour),
+    Number(parts.minute),
+    Number(parts.second ?? '0'),
+  )
+  return new Date(desiredUtcMs - (actualAsUtcMs - desiredUtcMs)).toISOString()
+}
+
 export function parseDeterministicTimeOfDay(message: string): string | undefined {
   const text = normalizeDigits(message.toLowerCase())
   const persian = text.match(/\u0633\u0627\u0639\u062a\s+([01]?[0-9]|2[0-3])(?::([0-5][0-9]))?\s*(\u0635\u0628\u062d|\u0639\u0635\u0631|\u0628\u0639\u062f\s+\u0627\u0632\s+\u0638\u0647\u0631|\u0634\u0628)?/)
@@ -216,10 +257,24 @@ function removeDateAndTimePhrases(value: string) {
     .replace(/\u0633\u0627\u0639\u062a\s+[0-9]{1,2}(?::[0-9]{2})?\s*(?:\u0635\u0628\u062d|\u0639\u0635\u0631|\u0628\u0639\u062f\s+\u0627\u0632\s+\u0638\u0647\u0631|\u0634\u0628)?/g, ' ')
 }
 
+// Task 21-fix6: LAST-RESORT FALLBACK ONLY. Title extraction is now the
+// model's job (see task-title-extraction.ts + resolveCreateTaskTitle
+// below) -- this pattern-matching function only runs when the model call
+// fails or its title is rejected by validateCandidateTitle. Every one of
+// these patterns exists because an earlier task added it for one leaked
+// phrasing and the next production message broke it again (colon-prefix,
+// Persian "که...دارم", English "because I have", German "dass ich...
+// habe"). DO NOT add another pattern here for a new phrasing -- fix the
+// model prompt (buildTaskTitleSystemInstruction) or the validation rules
+// instead. This function is kept only as a safety net for when there is
+// no model available at all.
 function extractTaskTitle(message: string) {
   const normalized = normalizeDigits(message)
   const quoted = message.match(/["'Â«â€œ](.+?)["'Â»â€]/)?.[1]?.trim()
   if (quoted) return boundText(quoted, 80)
+
+  const prefixTitle = normalized.match(/^\s*([^:：\n]{3,80})\s*[:：]\s*(?=.{0,80}(?:\b(?:create|add|set up|task|todo)\b|\u0628\u0633\u0627\u0632|\u0627\u06cc\u062c\u0627\u062f\s+\u06a9\u0646|\u0627\u0636\u0627\u0641\u0647\s+\u06a9\u0646))/i)
+  if (prefixTitle?.[1]) return boundText(removeDateAndTimePhrases(prefixTitle[1]), 80)
 
   const persianSubject = normalized.match(/\u06a9\u0647\s+(.+?)\s+(?:\u062f\u0627\u0631\u0645|\u062f\u0627\u0631\u06cc|\u062f\u0627\u0631\u062f|\u0628\u0627\u0634\u0647)(?:[.ØŒ,]|$)/)
   if (persianSubject?.[1]) return boundText(removeDateAndTimePhrases(persianSubject[1]), 80)
@@ -244,6 +299,133 @@ function createTaskNotes(message: string, timeOfDay?: string) {
   const lines = [`Original request: ${message}`]
   if (timeOfDay) lines.push(`Time mentioned: ${timeOfDay}`)
   return lines.join('\n')
+}
+
+// ---------------------------------------------------------------------------
+// Task 21-fix6 -- title validation. The model proposes a title (or the
+// pattern fallback above does, as a last resort); this is the
+// deterministic gate that decides whether to trust it, mirroring how
+// parseDeterministicDueDate/parseDeterministicTimeOfDay already decide
+// dates and times deterministically rather than trusting free text
+// verbatim. Never derives a title itself -- only cleans, bounds, and
+// rejects.
+// ---------------------------------------------------------------------------
+
+const MAX_MODEL_TITLE_LENGTH = 60
+
+/**
+ * Strips stray leading/trailing punctuation and digit fragments -- e.g. a
+ * leftover "؟۰۰" or ": " artifact at the edge of an otherwise-good title.
+ * Exported for direct unit testing.
+ */
+export function cleanTitleEdges(value: string): string {
+  return normalizeDigits(value)
+    .trim()
+    .replace(/^[\s:：\-–—.,،؟?]+/, '')
+    .replace(/[\s:：\-–—.,،؟?]+[0-9]*$/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/**
+ * True when `title` is substantially a restatement of `rawMessage` rather
+ * than a short subject line -- e.g. the model (or a pattern match) handed
+ * back the whole sentence. Word-set based: nearly every word in the title
+ * must come from the raw message (matchRatio) AND the title must cover a
+ * large share of the raw message's own word count (coverageRatio) -- a
+ * short genuine subject ("ترمین داکتر فامیلی") is built entirely from
+ * words in the raw message too, but covers only a small fraction of it.
+ * Exported for direct unit testing.
+ */
+export function isTitleSubstantiallyTheMessage(title: string, rawMessage: string): boolean {
+  const words = (value: string) => normalizeDigits(value.toLowerCase())
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+  const titleWords = words(title)
+  const rawWords = words(rawMessage)
+  if (titleWords.length === 0 || rawWords.length === 0) return false
+  const rawWordSet = new Set(rawWords)
+  const matched = titleWords.filter(word => rawWordSet.has(word)).length
+  const matchRatio = matched / titleWords.length
+  const coverageRatio = titleWords.length / rawWords.length
+  return matchRatio >= 0.9 && coverageRatio >= 0.6
+}
+
+/**
+ * The single gate every candidate title -- model-proposed or pattern-
+ * fallback -- must pass before it can reach the database. Rejects (returns
+ * undefined) when the candidate is empty, too long for a subject line, or
+ * substantially the whole user message; never truncates or rewrites a
+ * candidate into something the model/pattern never actually said.
+ * Exported for direct unit testing.
+ */
+export function validateCandidateTitle(candidate: string | undefined, rawMessage: string, maxLength = MAX_MODEL_TITLE_LENGTH): string | undefined {
+  if (!candidate) return undefined
+  const cleaned = cleanTitleEdges(candidate)
+  if (!cleaned) return undefined
+  if (cleaned.length > maxLength) return undefined
+  if (isTitleSubstantiallyTheMessage(cleaned, rawMessage)) return undefined
+  return cleaned
+}
+
+/**
+ * Pulls the running "Original request: ..." text back out of
+ * createTaskNotes' own output (see above) so a multi-turn continuation
+ * ("yes, create it") still gives the model the actual subject-bearing
+ * message rather than the confirmation itself. Falls back to the raw
+ * current message when notes carries nothing usable.
+ */
+export function extractOriginalRequestText(notes: string | undefined, fallbackMessage: string): string {
+  if (!notes) return fallbackMessage
+  const match = notes.match(/^Original request: ([\s\S]*?)(?:\nTime mentioned:|$)/)
+  const text = match?.[1]?.trim()
+  return text || fallbackMessage
+}
+
+/**
+ * Resolves the title for a create_task auto-write: asks the model for a
+ * short subject line, validates it, and falls back to the deterministic
+ * pattern extractor's own (also-validated) result only if the model call
+ * fails or its title is rejected. Never called for an explicit user title
+ * correction (intent.titleSource === 'correction') -- that title is exact
+ * user intent, not something to re-derive.
+ */
+export async function resolveCreateTaskTitle(
+  env: Env,
+  intent: ParsedTaskWriteIntent,
+  rawMessage: string,
+  callModel: (requestText: string, env: Env) => Promise<string> = callGeminiForTaskTitle,
+): Promise<string | undefined> {
+  const requestText = extractOriginalRequestText(intent.notes, rawMessage)
+  // 80, not the model's 60: extractTaskTitle already bounds (and
+  // gracefully "..."-truncates) its own output to 80 chars -- this is
+  // still a safety net (empty/overlap check), not a re-truncation.
+  const patternFallback = validateCandidateTitle(intent.title, requestText, 80)
+  try {
+    const modelTitle = await callModel(requestText, env)
+    const validated = validateCandidateTitle(modelTitle, requestText)
+    if (validated) return validated
+  } catch (err) {
+    console.error('[TaskTitle] model title extraction failed, falling back to pattern extraction:', (err as Error).message)
+  }
+  return patternFallback
+}
+
+async function createTaskAlarmIfNeeded(env: Env, userId: string, task: TaskRow, timeOfDay: string | undefined, timeZone: string) {
+  if (!task.due_date || !timeOfDay) return undefined
+  const triggerAt = zonedDateTimeToUtcIso(task.due_date, timeOfDay, timeZone)
+  const rows = await supabaseWriteReturning<AlarmRow[]>(env, 'POST', 'alarms?select=id,source_id,trigger_at', {
+    user_id: userId,
+    source_type: 'task',
+    source_id: task.id,
+    source_title: task.title,
+    trigger_at: triggerAt,
+    remind_before_minutes: 0,
+    is_fired: false,
+    is_dismissed: false,
+  })
+  return rows[0]
 }
 
 export function parseDeterministicDueDate(message: string, now: Date, timeZone: string): { value?: string | null; clarificationNeeded: boolean } {
@@ -349,6 +531,7 @@ function mergeTaskIntent(base: ParsedTaskWriteIntent, message: string, now: Date
   return {
     ...base,
     title: correctionTitle ?? direct?.title ?? base.title,
+    titleSource: correctionTitle ? 'correction' : (direct?.title ? undefined : base.titleSource),
     notes: createTaskNotes(`${base.notes ?? ''}\n${message}`.trim(), timeOfDay),
     dueDate,
     timeOfDay,
@@ -382,8 +565,9 @@ export async function executeAutoTaskWrite(input: {
   language: Language
   intent: ParsedTaskWriteIntent
   now: Date
+  timeZone: string
 }): Promise<{ status: 'executed'; reply: string; undoId: string; undoExpiresAt: string } | { status: 'clarify'; reply: string } | { status: 'failed'; reply: string } | { status: 'not_found' }> {
-  const { env, userId, intent, language, now } = input
+  const { env, userId, intent, language, now, timeZone } = input
   if (intent.dateClarificationNeeded) return { status: 'clarify', reply: 'Which exact due date should I use?' }
   if (intent.kind === 'create_task') {
     if (!intent.title) return { status: 'clarify', reply: 'What should the task be called?' }
@@ -396,6 +580,7 @@ export async function executeAutoTaskWrite(input: {
     })
     const task = rows[0]
     if (!task?.id) return { status: 'failed', reply: 'I could not verify that the task was created.' }
+    await createTaskAlarmIfNeeded(env, userId, task, intent.timeOfDay, timeZone)
     const undoId = `undo:${crypto.randomUUID()}`
     const expiresAt = undoExpiresAt(now)
     await persistUndoRecord(env, { kind: 'create_task', userId, taskId: task.id, expiresAt }, undoId)

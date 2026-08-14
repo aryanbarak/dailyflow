@@ -24,6 +24,7 @@
 
 import { buildExtractionSystemInstruction, buildExtractionPrompt, buildExtractionResponseSchema } from '../agent/worker/personal-memory-extraction-endpoint'
 import { buildDerivationSystemInstruction, buildDerivationPrompt, buildDerivationResponseSchema } from '../agent/worker/context-derivation-endpoint'
+import { buildTaskTitleSystemInstruction, buildTaskTitlePrompt, buildTaskTitleResponseSchema } from '../agent/worker/task-title-extraction'
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? ''
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash'
@@ -92,6 +93,21 @@ async function checkDerivationContract(): Promise<ContractResult> {
   }
 }
 
+async function checkTaskTitleContract(): Promise<ContractResult> {
+  const name = 'generateContent + buildTaskTitleResponseSchema (task-title-extraction.ts)'
+  try {
+    const prompt = buildTaskTitlePrompt('Create a task for tomorrow because I have a family doctor appointment at 11am.')
+    const { status, bodyText } = await callGenerateContent(GEMINI_MODEL, buildTaskTitleSystemInstruction(), prompt, buildTaskTitleResponseSchema())
+    if (status !== 200) return { name, pass: false, detail: `httpStatus=${status} body=${bodyText.slice(0, 300)}` }
+    const parsed = JSON.parse(bodyText) as { candidates?: Array<{ finishReason?: string }> }
+    const finishReason = parsed.candidates?.[0]?.finishReason
+    if (finishReason !== 'STOP') return { name, pass: false, detail: `unexpected finishReason=${finishReason}` }
+    return { name, pass: true, detail: 'httpStatus=200 finishReason=STOP' }
+  } catch (error) {
+    return { name, pass: false, detail: (error as Error).message }
+  }
+}
+
 async function checkEmbeddingContract(): Promise<ContractResult> {
   const name = `embedContent on ${EMBEDDING_MODEL} with outputDimensionality=${EMBEDDING_DIMENSIONS}`
   try {
@@ -119,7 +135,7 @@ async function main() {
   console.log(`Provider-contract smoke test -- model=${GEMINI_MODEL} embeddingModel=${EMBEDDING_MODEL}`)
   console.log('(manual run only -- never wired into CI)\n')
 
-  const results = [await checkExtractionContract(), await checkDerivationContract(), await checkEmbeddingContract()]
+  const results = [await checkExtractionContract(), await checkDerivationContract(), await checkTaskTitleContract(), await checkEmbeddingContract()]
 
   for (const result of results) {
     console.log(`${result.pass ? 'PASS' : 'FAIL'} -- ${result.name}`)
