@@ -1,15 +1,23 @@
 import { describe, expect, it } from 'vitest'
 import {
+  assembleCalendarWriteIntent,
   assembleTaskWriteIntent,
   cleanTitleEdges,
   defaultFlowWriteMode,
+  detectContinuationDomain,
+  detectWriteDomainSignal,
   extractOriginalRequestText,
   isTitleSubstantiallyTheMessage,
+  parseCalendarWriteIntent,
   parseDeterministicDueDate,
   parseDeterministicTimeOfDay,
+  parseDeterministicTimeRange,
   parseTaskWriteIntent,
+  resolveCreateEventTitle,
   resolveCreateTaskTitle,
   validateCandidateTitle,
+  zonedDateTimeToUtcIso,
+  type ParsedCalendarWriteIntent,
   type ParsedTaskWriteIntent,
 } from './flow-write-policy'
 import type { Env } from './types'
@@ -267,6 +275,159 @@ describe('task title validation and model resolution (task 21-fix6)', () => {
       const intent = baseIntent({ notes: `Original request: ${message}`, title: undefined })
       const title = await resolveCreateTaskTitle(FAKE_ENV, intent, message, async () => '')
       expect(title).toBeUndefined()
+    })
+  })
+})
+
+// Task 22: calendar write slice + task/event routing. PO decision: tasks
+// stay day-level (no time-of-day column); a request carrying a specific
+// time is calendar business instead. detectWriteDomainSignal is the
+// single deterministic routing decision this whole slice hangs off of.
+describe('task 22: calendar write slice + task/event routing', () => {
+  describe('detectWriteDomainSignal (the routing rule)', () => {
+    it.each([
+      ['EN, task noun + time -> calendar', 'Add a task for next Tuesday at 9', 'calendar'],
+      ['EN, task noun, date only -> task (unchanged)', 'Create a task for tomorrow', 'task'],
+      ['DE, task noun + time -> calendar', 'Erstelle eine Aufgabe fuer morgen um 15 Uhr', 'calendar'],
+      ['DE, task noun, date only -> task (unchanged)', 'Erstelle eine Aufgabe fuer morgen', 'task'],
+      ['FA, task noun + time (Persian digits, 12h) -> calendar', 'یک تسک برای فردا بساز که نوبت دکتر فامیلی دارم. ساعت ۱۳ عصر', 'calendar'],
+      ['FA, task noun, date only -> task (unchanged)', 'یک تسک برای فردا بساز که نوبت دکتر فامیلی دارم', 'task'],
+      ['EN, explicit event noun, no time -> calendar (explicit wording wins)', 'Create an event for tomorrow', 'calendar'],
+      ['FA, explicit calendar noun + time -> calendar', 'یک جلسه برای فردا بساز، ساعت ۱۰', 'calendar'],
+      ['mixed task+calendar nouns -> ambiguous', 'Create a task for the meeting tomorrow', 'ambiguous'],
+      ['no create/update trigger at all -> none', 'What is the weather tomorrow?', 'none'],
+      ['bare date+time phrase with no verb/noun trigger -> none (not a write command)', 'فردا ساعت ۱۳ نوبت دکتر', 'none'],
+    ])('%s', (_label, message, expected) => {
+      expect(detectWriteDomainSignal(message, NOW, TZ)).toBe(expected)
+    })
+
+    it('24h compact time also forces calendar routing', () => {
+      expect(detectWriteDomainSignal('Create a task for tomorrow at 16:00', NOW, TZ)).toBe('calendar')
+    })
+  })
+
+  describe('detectContinuationDomain (multi-turn routing)', () => {
+    it('follows the ORIGINAL triggering message\'s domain, not the continuation reply', () => {
+      const history = [{ role: 'user', content: 'Add a task for next Tuesday at 9' }]
+      expect(detectContinuationDomain(history, NOW, TZ)).toBe('calendar')
+    })
+
+    it('stays task when the original message never carried a time', () => {
+      const history = [{ role: 'user', content: 'Create a task for tomorrow' }]
+      expect(detectContinuationDomain(history, NOW, TZ)).toBe('task')
+    })
+
+    it('returns null when no recent message carries a resolvable domain', () => {
+      const history = [{ role: 'user', content: 'What is the weather tomorrow?' }]
+      expect(detectContinuationDomain(history, NOW, TZ)).toBeNull()
+    })
+  })
+
+  describe('parseDeterministicTimeRange', () => {
+    it('parses a single time with no range', () => {
+      expect(parseDeterministicTimeRange('at 14:00')).toEqual({ start: '14:00' })
+    })
+
+    it('parses "from X to Y" (colon format)', () => {
+      expect(parseDeterministicTimeRange('from 13:00 to 15:00')).toEqual({ start: '13:00', end: '15:00' })
+    })
+
+    it('parses "von X bis Y Uhr"', () => {
+      expect(parseDeterministicTimeRange('von 13:00 bis 15:00 Uhr')).toEqual({ start: '13:00', end: '15:00' })
+    })
+
+    it('parses a bare-hour English range ("to 3pm") -- start time still needs a recognized prefix ("at"/"um"/Persian "ساعت"), same as parseDeterministicTimeOfDay always required', () => {
+      expect(parseDeterministicTimeRange('at 1pm to 3pm')).toEqual({ start: '13:00', end: '15:00' })
+    })
+
+    it('returns no result at all when no time is present', () => {
+      expect(parseDeterministicTimeRange('tomorrow')).toEqual({})
+    })
+  })
+
+  describe('parseCalendarWriteIntent', () => {
+    it('the exact production-evidence message resolves to a create_calendar_event intent with a real start time (not stranded in notes)', () => {
+      const message = 'ترمین داکتر فامیلی : برایم یک تسک برای فردا بساز به ساعت ۱۳:۰۰'
+      expect(parseCalendarWriteIntent(message, NOW, TZ)).toMatchObject({
+        kind: 'create_calendar_event',
+        startDate: '2026-08-14',
+        startTime: '13:00',
+      })
+    })
+
+    it('an EN phrasing with a time resolves to a create_calendar_event intent', () => {
+      const message = 'Create a task for tomorrow because I have a family doctor appointment at 11am.'
+      expect(parseCalendarWriteIntent(message, NOW, TZ)).toMatchObject({
+        kind: 'create_calendar_event',
+        startDate: '2026-08-14',
+        startTime: '11:00',
+      })
+    })
+
+    it('a date-only message (no time) is not calendar business', () => {
+      expect(parseCalendarWriteIntent('Create a task for tomorrow', NOW, TZ)).toBeNull()
+    })
+
+    it('parses an update_calendar_event intent from an explicit event-update phrasing', () => {
+      const message = 'Update the "Team sync" meeting to 15:00'
+      expect(parseCalendarWriteIntent(message, NOW, TZ)).toMatchObject({
+        kind: 'update_calendar_event',
+        eventReference: 'Team sync',
+        startTime: '15:00',
+      })
+    })
+  })
+
+  describe('zonedDateTimeToUtcIso -> calendarService.toInsertRow slice composition (regression test for the timezone resolution)', () => {
+    it('produces the exact date/start_time/end_time strings calendarService.ts would independently produce for the same wall-clock intent', () => {
+      // Mirrors CalendarFormDialog.tsx's buildDateTime(): new Date(y,m,d,h,mi).toISOString()
+      // -- a genuine local-time-to-UTC conversion -- just resolved via an
+      // explicit IANA zone (Europe/Berlin) instead of the browser's implicit
+      // local one. 13:00 CEST (UTC+2) in August -> 11:00 UTC.
+      const startUtcIso = zonedDateTimeToUtcIso('2026-08-14', '13:00', TZ)
+      expect(startUtcIso).toBe('2026-08-14T11:00:00.000Z')
+      // calendarService.ts's toInsertRow: date = slice(0,10), start_time = slice(11,16).
+      expect(startUtcIso.slice(0, 10)).toBe('2026-08-14')
+      expect(startUtcIso.slice(11, 16)).toBe('11:00')
+    })
+  })
+
+  describe('resolveCreateEventTitle', () => {
+    const FAKE_ENV = {
+      SUPABASE_URL: 'https://supa.test', SUPABASE_ANON_KEY: 'anon', SUPABASE_SERVICE_KEY: 'service',
+      GEMINI_API_KEY: 'key', GEMINI_MODEL: 'gemini-2.5-flash', AI: {} as unknown as Env['AI'],
+    } as Env
+
+    it('uses the model title when it validates (same validator as resolveCreateTaskTitle)', async () => {
+      const message = 'Create a task for tomorrow because I have a family doctor appointment at 11am.'
+      const intent: ParsedCalendarWriteIntent = { kind: 'create_calendar_event', notes: `Original request: ${message}` }
+      const title = await resolveCreateEventTitle(FAKE_ENV, intent, message, async () => 'Family doctor appointment')
+      expect(title).toBe('Family doctor appointment')
+    })
+  })
+
+  describe('assembleCalendarWriteIntent (multi-turn pending-intent mechanism, mirrors assembleTaskWriteIntent)', () => {
+    it('assembles a pending calendar write across a title-correction turn', () => {
+      const intent = assembleCalendarWriteIntent(
+        'نام تسک را ترمین داکتر فامیلی بگذار و بقیه درست است',
+        [{ role: 'user', content: 'یک task برای فردا بساز، ساعت ۱۶:۰۰' }],
+        NOW,
+        TZ,
+      )
+      expect(intent).toMatchObject({
+        kind: 'create_calendar_event',
+        title: 'ترمین داکتر فامیلی',
+        startDate: '2026-08-14',
+        startTime: '16:00',
+      })
+    })
+
+    it('does not reassemble an already-executed event after a server confirmation', () => {
+      const history = [
+        { role: 'user', content: 'Add a task for tomorrow at 9am because I have a family doctor appointment' },
+        { role: 'assistant', content: '✓ Event created: family doctor appointment — 2026-08-14 09:00' },
+      ]
+      expect(assembleCalendarWriteIntent('yes create it', history, NOW, TZ)).toBeNull()
     })
   })
 })

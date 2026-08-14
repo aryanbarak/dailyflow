@@ -44,6 +44,8 @@ export const SUPPORTED_WRITE_TOOL_IDS = Object.freeze([
   "tasks.complete",
   "tasks.create",
   "tasks.update",
+  "calendar.create_event",
+  "calendar.update_event",
   "github.issues.comment",
   "github.issues.update",
   "github.files.update",
@@ -73,6 +75,12 @@ export interface WriteRuntimeProposalTarget {
   title?: string;
   notes?: string;
   dueDate?: string | null;
+  // Task 22 (calendar write slice).
+  eventTitle?: string;
+  eventReference?: string;
+  eventId?: string;
+  start?: string;
+  end?: string;
   repo?: string;
   issueNumber?: number;
   commentBody?: string;
@@ -188,6 +196,13 @@ function expectedCapabilityForToolId(toolId: SupportedWriteToolId): AgentToolCap
       return "create";
     case "tasks.update":
       return "update";
+    case "calendar.create_event":
+      // Matches calendarTools.ts's own calendar.create_event.capability
+      // ("schedule", not "create") -- unlike tasks.create, this tool
+      // predates this task's slice and already used that value.
+      return "schedule";
+    case "calendar.update_event":
+      return "update";
     case "github.issues.comment":
       return "create";
     case "github.issues.update":
@@ -209,6 +224,10 @@ function expectedStepShapeForToolId(
       return { actionType: "create", domain: "tasks" };
     case "tasks.update":
       return { actionType: "update", domain: "tasks" };
+    case "calendar.create_event":
+      return { actionType: "create", domain: "calendar" };
+    case "calendar.update_event":
+      return { actionType: "update", domain: "calendar" };
     case "github.issues.comment":
       return { actionType: "create", domain: "github" };
     case "github.issues.update":
@@ -356,6 +375,8 @@ function safeSummaryFor(
     if (toolId === "github.files.update") return "File updated.";
     if (toolId === "tasks.create") return "Task created.";
     if (toolId === "tasks.update") return "Task updated.";
+    if (toolId === "calendar.create_event") return "Event created.";
+    if (toolId === "calendar.update_event") return "Event updated.";
     return alreadyCompleted
       ? "Task was already complete."
       : "Task was marked complete.";
@@ -525,6 +546,14 @@ function writeTargetIsValid(request: WriteRuntimeRequest, toolId: SupportedWrite
       typeof request.target?.title === "string" &&
       request.target.title.trim().length > 0;
   }
+  if (toolId === "calendar.create_event") {
+    return request.step?.actionType === expected.actionType &&
+      request.step.domain === expected.domain &&
+      typeof request.target?.eventTitle === "string" &&
+      request.target.eventTitle.trim().length > 0 &&
+      typeof request.target?.start === "string" &&
+      request.target.start.trim().length > 0;
+  }
   return request.step?.actionType === expected.actionType &&
     request.step.domain === expected.domain &&
     typeof request.step.targetId === "string" &&
@@ -567,6 +596,25 @@ function buildHandlerInput(
       ...(target?.title !== undefined ? { title: target.title } : {}),
       ...(target?.notes !== undefined ? { notes: target.notes } : {}),
       ...(target?.dueDate !== undefined ? { dueDate: target.dueDate } : {}),
+    };
+  }
+
+  if (toolId === "calendar.create_event") {
+    return {
+      userId: runtimeActorId,
+      title: target?.eventTitle,
+      dateTimeStart: target?.start,
+      ...(target?.end !== undefined ? { dateTimeEnd: target.end } : {}),
+    };
+  }
+
+  if (toolId === "calendar.update_event") {
+    return {
+      userId: runtimeActorId,
+      eventId: request.step?.targetId?.trim(),
+      ...(target?.eventTitle !== undefined ? { title: target.eventTitle } : {}),
+      ...(target?.start !== undefined ? { dateTimeStart: target.start } : {}),
+      ...(target?.end !== undefined ? { dateTimeEnd: target.end } : {}),
     };
   }
 

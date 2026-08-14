@@ -46,6 +46,7 @@ interface FetchLog {
   documentReads: number
   storageReads: number
   taskWrites: Array<{ method: string; body?: Record<string, unknown> }>
+  calendarWrites: Array<{ method: string; body?: Record<string, unknown> }>
   alarmWrites: Array<{ method: string; body?: Record<string, unknown> }>
   undoWrites: Array<{ method: string; body?: Record<string, unknown> }>
 }
@@ -81,11 +82,14 @@ function installFetchMock(
   // pre-task-21-fix6 expectations without needing every test updated.
   // Tests that specifically exercise the model path pass a real string.
   taskTitleResult: string | null = null,
+  // Task 22: the user_settings.language row -- null means no row (the
+  // existing default across this whole file, resolving to 'en').
+  userLanguage: 'de' | 'fa' | null = null,
 ): FetchLog {
   const chatRows = [...chatHistoryRows]
   const log: FetchLog = {
     geminiCalls: [], chatMessageWrites: [], sessionPatches: 0, personalMemoryReads: 0, documentReads: 0, storageReads: 0,
-    taskWrites: [], alarmWrites: [], undoWrites: [],
+    taskWrites: [], calendarWrites: [], alarmWrites: [], undoWrites: [],
   }
 
   const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -99,7 +103,7 @@ function installFetchMock(
       })
     }
     if (url.startsWith(`${SUPABASE_URL}/rest/v1/user_settings`)) {
-      return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      return new Response(JSON.stringify(userLanguage ? [{ language: userLanguage }] : []), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
     if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_records`)) {
       log.personalMemoryReads += 1
@@ -138,6 +142,25 @@ function installFetchMock(
       const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : undefined
       log.taskWrites.push({ method, body })
       const row = { id: 'task-created-1', user_id: 'user-1', title: String(body?.title ?? 'Tax task'), notes: body?.notes ?? null, due_date: body?.due_date ?? null, completed: body?.completed ?? false, created_at: '2026-08-13T00:00:00.000Z', updated_at: '2026-08-13T00:01:00.000Z' }
+      return new Response(JSON.stringify([row]), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    if (url.startsWith(`${SUPABASE_URL}/rest/v1/calendar_events`) && method === 'GET') {
+      return new Response(JSON.stringify([{
+        id: 'event-1', user_id: 'user-1', title: 'Team sync', date: '2026-08-13', start_time: '10:00', end_time: '11:00',
+        location: null, description: null, color: null, type: null, all_day: false,
+        created_at: '2026-08-13T00:00:00.000Z', updated_at: '2026-08-13T00:00:00.000Z',
+      }]), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    if (url.startsWith(`${SUPABASE_URL}/rest/v1/calendar_events`) && (method === 'POST' || method === 'PATCH' || method === 'DELETE')) {
+      const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : undefined
+      log.calendarWrites.push({ method, body })
+      const row = {
+        id: 'event-created-1', user_id: 'user-1', title: String(body?.title ?? 'Team sync'),
+        date: body?.date ?? '2026-08-13', start_time: body?.start_time ?? null, end_time: body?.end_time ?? null,
+        location: body?.location ?? null, description: body?.description ?? null, color: body?.color ?? null,
+        type: body?.type ?? null, all_day: body?.all_day ?? false,
+        created_at: '2026-08-13T00:00:00.000Z', updated_at: '2026-08-13T00:01:00.000Z',
+      }
       return new Response(JSON.stringify([row]), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
     if (url.startsWith(`${SUPABASE_URL}/rest/v1/alarms`) && method === 'POST') {
@@ -774,23 +797,32 @@ describe('ADR-0012 server-side task write policy', () => {
     expect(log.geminiCalls.length).toBe(1)
   })
 
-  it('creates a distilled Persian task title and preserves time-of-day in notes because tasks have no time column', async () => {
+  // Task 22: a Persian request naming "task" wording but carrying a
+  // specific time now routes to the calendar instead of stranding the
+  // time in task notes -- this is the actual PO-mandated fix (tasks have
+  // no time-of-day column). The pre-task-22 version of this test asserted
+  // the old workaround (time text-only in notes); that workaround no
+  // longer applies once the request correctly becomes a calendar event.
+  it('routes a Persian time-bearing "task" request to a calendar event instead of stranding the time in notes', async () => {
     const log = installFetchMock([], null, 'Gemini should not be called', 'auto')
     const response = await worker.fetch(chatRequest({
       message: '\u06a9 \u062a\u0633\u06a9 \u0628\u0631\u0627\u06cc \u0641\u0631\u062f\u0627 \u0628\u0633\u0627\u0632 \u06a9\u0647 \u0646\u0648\u0628\u062a \u062f\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc \u062f\u0627\u0631\u0645. \u0627\u0644\u0628\u062a\u0647 \u0633\u0627\u0639\u062a \u06f1\u06f1 \u0635\u0628\u062d',
       timeZone: 'Europe/Berlin',
     }), testEnv(), fakeExecutionContext())
-    const body = await response.json() as { reply?: string; undo?: { id?: string } }
+    const body = await response.json() as { reply?: string; writeExecution?: string; undo?: { id?: string } }
 
     expect(response.status).toBe(200)
-    expect(log.taskWrites[0]?.body?.title).toBe('\u0646\u0648\u0628\u062a \u062f\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc')
-    expect(log.taskWrites[0]?.body?.notes).toContain('Time mentioned: 11:00')
-    expect(body.reply).toContain('time mentioned 11:00')
+    expect(body.writeExecution).toBe('executed')
+    expect(log.taskWrites.length).toBe(0)
+    expect(log.calendarWrites[0]?.body?.title).toBe('\u0646\u0648\u0628\u062a \u062f\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc')
+    expect(log.calendarWrites[0]?.body?.date).toBe('2026-08-15')
+    // 11:00 Europe/Berlin (CEST, UTC+2) in August -> 09:00 UTC.
+    expect(log.calendarWrites[0]?.body?.start_time).toBe('09:00')
     expect(body.reply).not.toMatch(/undo:[0-9a-f-]{36}/i)
     expect(body.undo?.id).toMatch(/^undo:[0-9a-f-]{36}$/)
   })
 
-  it('creates a clean Persian title and a task alarm for title-prefix requests with a time of day', async () => {
+  it('creates a clean Persian title and a calendar event alarm for title-prefix requests with a time of day (task 22 supersedes the task-alarm workaround)', async () => {
     const log = installFetchMock([], null, 'Gemini should not be called', 'auto')
     const response = await worker.fetch(chatRequest({
       message: '\u062a\u0631\u0645\u06cc\u0646 \u062f\u0627\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc: \u0628\u0631\u0627\u06cc\u0645 \u06cc\u06a9 \u062a\u0633\u06a9 \u0628\u0631\u0627\u06cc \u0641\u0631\u062f\u0627 \u0628\u0633\u0627\u0632 \u0628\u0647 \u0633\u0627\u0639\u062a \u06f1\u06f3',
@@ -800,15 +832,17 @@ describe('ADR-0012 server-side task write policy', () => {
 
     expect(response.status).toBe(200)
     expect(body.writeExecution).toBe('executed')
-    expect(log.taskWrites[0]?.body?.title).toBe('\u062a\u0631\u0645\u06cc\u0646 \u062f\u0627\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc')
-    expect(log.taskWrites[0]?.body?.due_date).toBe('2026-08-15')
+    expect(log.taskWrites.length).toBe(0)
+    expect(log.calendarWrites[0]?.body?.title).toBe('\u062a\u0631\u0645\u06cc\u0646 \u062f\u0627\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc')
+    expect(log.calendarWrites[0]?.body?.date).toBe('2026-08-15')
     expect(log.alarmWrites[0]?.body).toMatchObject({
-      source_type: 'task',
+      source_type: 'calendar_event',
       source_title: '\u062a\u0631\u0645\u06cc\u0646 \u062f\u0627\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc',
       remind_before_minutes: 0,
       is_fired: false,
       is_dismissed: false,
     })
+    // 13:00 Europe/Berlin (CEST, UTC+2) in August -> 11:00 UTC.
     expect(log.alarmWrites[0]?.body?.trigger_at).toBe('2026-08-15T11:00:00.000Z')
   })
 
@@ -819,6 +853,11 @@ describe('ADR-0012 server-side task write policy', () => {
   // model's own title actually being used, rejected, and the exact
   // production-evidence string end to end.
   describe('task 21-fix6: model-based title resolution', () => {
+    // Task 22: all four messages below carry a specific time, so they now
+    // route to the calendar (a request with a time cannot be honored as a
+    // date-only task) -- title resolution itself (resolveCreateEventTitle,
+    // same validator as resolveCreateTaskTitle) is unaffected by domain, so
+    // these assert against calendarWrites instead of taskWrites.
     it('uses the model-proposed title (not the pattern-extracted one) when it validates', async () => {
       const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'Family doctor appointment')
       const response = await worker.fetch(chatRequest({
@@ -828,13 +867,18 @@ describe('ADR-0012 server-side task write policy', () => {
       const body = await response.json() as { writeExecution?: string }
 
       expect(body.writeExecution).toBe('executed')
+      expect(log.taskWrites.length).toBe(0)
       // The pattern extractor alone would have produced "a family doctor
       // appointment" (see flow-write-policy.test.ts) -- this proves the
       // MODEL's title is what actually reached the database.
-      expect(log.taskWrites[0]?.body?.title).toBe('Family doctor appointment')
+      expect(log.calendarWrites[0]?.body?.title).toBe('Family doctor appointment')
     })
 
-    it('the exact production-evidence message resolves to the clean subject end to end', async () => {
+    // Task 22: this is the literal production-evidence message from task
+    // 21-fix6's own bug report -- "به ساعت ۱۳:۰۰" is exactly the specific
+    // time the PO decision is about. It now lands as a calendar event
+    // (not a task with the time stranded in notes), which IS the fix.
+    it('the exact production-evidence message now lands as a calendar event, not a task', async () => {
       const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'ترمین داکتر فامیلی')
       const response = await worker.fetch(chatRequest({
         message: 'ترمین داکتر فامیلی : برایم یک تسک برای فردا بساز به ساعت ۱۳:۰۰',
@@ -843,10 +887,13 @@ describe('ADR-0012 server-side task write policy', () => {
       const body = await response.json() as { writeExecution?: string; reply?: string }
 
       expect(body.writeExecution).toBe('executed')
-      expect(log.taskWrites[0]?.body?.title).toBe('ترمین داکتر فامیلی')
+      expect(log.taskWrites.length).toBe(0)
+      expect(log.calendarWrites[0]?.body?.title).toBe('ترمین داکتر فامیلی')
+      expect(log.calendarWrites[0]?.body?.date).toBe('2026-08-15')
+      expect(log.calendarWrites[0]?.body?.start_time).toBe('11:00')
       // No leaked command fragments or stray punctuation/digits.
-      expect(log.taskWrites[0]?.body?.title).not.toContain('برایم')
-      expect(log.taskWrites[0]?.body?.title).not.toMatch(/[0-9۰-۹]/)
+      expect(log.calendarWrites[0]?.body?.title).not.toContain('برایم')
+      expect(log.calendarWrites[0]?.body?.title).not.toMatch(/[0-9۰-۹]/)
     })
 
     it('rejects a model title that is just the whole raw message and falls back to the validated pattern title (unit-tested overlap-specific case lives in flow-write-policy.test.ts)', async () => {
@@ -856,7 +903,7 @@ describe('ADR-0012 server-side task write policy', () => {
       const body = await response.json() as { writeExecution?: string }
 
       expect(body.writeExecution).toBe('executed')
-      expect(log.taskWrites[0]?.body?.title).toBe('a family doctor appointment')
+      expect(log.calendarWrites[0]?.body?.title).toBe('a family doctor appointment')
     })
 
     it('a German phrasing resolves via the model to a clean short subject', async () => {
@@ -868,10 +915,10 @@ describe('ADR-0012 server-side task write policy', () => {
       const body = await response.json() as { writeExecution?: string }
 
       expect(body.writeExecution).toBe('executed')
-      expect(log.taskWrites[0]?.body?.title).toBe('Arzttermin')
+      expect(log.calendarWrites[0]?.body?.title).toBe('Arzttermin')
     })
 
-    it('falls back to a targeted clarify question, never a garbage title, when neither the model nor the pattern extractor finds a subject', async () => {
+    it('falls back to a targeted clarify question, never a garbage title, when neither the model nor the pattern extractor finds a subject (routed to calendar since a time is present)', async () => {
       // Same command-only message flow-write-policy.test.ts's own
       // "keeps a command-only mixed Persian task request under-specified"
       // test proves extractTaskTitle already returns undefined for --
@@ -884,8 +931,9 @@ describe('ADR-0012 server-side task write policy', () => {
       const body = await response.json() as { reply?: string; writeExecution?: string }
 
       expect(body.writeExecution).toBe('clarify')
-      expect(body.reply).toBe('What should the task be called?')
+      expect(body.reply).toBe('What should the event be called?')
       expect(log.taskWrites.length).toBe(0)
+      expect(log.calendarWrites.length).toBe(0)
     })
 
     it('never re-derives an explicit title correction through the model', async () => {
@@ -951,7 +999,14 @@ describe('ADR-0012 server-side task write policy', () => {
     expect(log.geminiCalls.length).toBe(1)
   })
 
-  it('assembles the production Persian multi-turn write transcript and creates exactly one task instead of looping', async () => {
+  // Task 22: the turn1 message carries "\u0633\u0627\u0639\u062a \u06f1\u06f6:\u06f0\u06f0" (a specific time), so
+  // this now assembles as a calendar event, not a task -- renamed from
+  // its pre-task-22 "...creates exactly one task..." title accordingly.
+  // The title-correction turn (turn2) still says "\u0646\u0627\u0645 \u062a\u0633\u06a9 \u0631\u0627..." (names
+  // "the task"), which is fine: parseTitleCorrection matches on that
+  // literal phrase regardless of which domain the request actually
+  // resolved to, exactly like a user would naturally keep saying it.
+  it('assembles the production Persian multi-turn write transcript and creates exactly one calendar event instead of looping', async () => {
     const log = installFetchMock([], null, 'Conversation fallback only after execution.', 'auto')
     const env = testEnv()
 
@@ -962,11 +1017,12 @@ describe('ADR-0012 server-side task write policy', () => {
     const body1 = await turn1.json() as { reply?: string; writeExecution?: string }
 
     expect(body1.writeExecution).toBe('clarify')
-    expect(body1.reply).toBe('What should the task be called?')
+    expect(body1.reply).toBe('What should the event be called?')
     expect(log.taskWrites.length).toBe(0)
+    expect(log.calendarWrites.length).toBe(0)
     // Task 21-fix6: the title-extraction call still happens (there's no
     // subject to find either way -- the mock's default empty title and
-    // the pattern fallback agree), but no task is written and the reply
+    // the pattern fallback agree), but no event is written and the reply
     // stays the same targeted clarify question, not a garbage title.
     expect(log.geminiCalls.length).toBe(1)
 
@@ -977,10 +1033,10 @@ describe('ADR-0012 server-side task write policy', () => {
     const body2 = await turn2.json() as { reply?: string; writeExecution?: string }
 
     expect(body2.writeExecution).toBe('executed')
-    expect(log.taskWrites.filter(write => write.method === 'POST')).toHaveLength(1)
-    expect(log.taskWrites[0]?.body?.title).toBe('\u062a\u0631\u0645\u06cc\u0646 \u062f\u0627\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc')
-    expect(log.taskWrites[0]?.body?.due_date).toBe('2026-08-15')
-    expect(log.taskWrites[0]?.body?.notes).toContain('Time mentioned: 16:00')
+    expect(log.calendarWrites.filter(write => write.method === 'POST')).toHaveLength(1)
+    expect(log.calendarWrites[0]?.body?.title).toBe('\u062a\u0631\u0645\u06cc\u0646 \u062f\u0627\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc')
+    expect(log.calendarWrites[0]?.body?.date).toBe('2026-08-15')
+    expect(log.calendarWrites[0]?.body?.start_time).toBe('14:00')
 
     const turn3 = await worker.fetch(chatRequest({
       message: '\u0628\u0644\u06cc \u0628\u0633\u0627\u0632',
@@ -997,10 +1053,10 @@ describe('ADR-0012 server-side task write policy', () => {
     expect(body4.writeExecution).toBeUndefined()
     expect(`${body2.reply}\n${body3.reply}\n${body4.reply}`).not.toContain('Flow AI')
     expect(`${body2.reply}\n${body3.reply}\n${body4.reply}`).not.toContain('does not have this capability')
-    expect(log.taskWrites.filter(write => write.method === 'POST')).toHaveLength(1)
+    expect(log.calendarWrites.filter(write => write.method === 'POST')).toHaveLength(1)
   })
 
-  it('an affirmative after a complete pending task spec executes on the server', async () => {
+  it('an affirmative after a complete pending calendar event spec executes on the server', async () => {
     const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [
       { role: 'user', content: '\u06cc\u06a9 \u062a\u0633\u06a9 \u0628\u0631\u0627\u06cc \u0641\u0631\u062f\u0627 \u0628\u0633\u0627\u0632 \u06a9\u0647 \u0646\u0648\u0628\u062a \u062f\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc \u062f\u0627\u0631\u0645. \u0627\u0644\u0628\u062a\u0647 \u0633\u0627\u0639\u062a \u06f1\u06f1 \u0635\u0628\u062d' },
     ])
@@ -1011,7 +1067,8 @@ describe('ADR-0012 server-side task write policy', () => {
     const body = await response.json() as { writeExecution?: string }
 
     expect(body.writeExecution).toBe('executed')
-    expect(log.taskWrites[0]?.body?.title).toBe('\u0646\u0648\u0628\u062a \u062f\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc')
+    expect(log.taskWrites.length).toBe(0)
+    expect(log.calendarWrites[0]?.body?.title).toBe('\u0646\u0648\u0628\u062a \u062f\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc')
     // Task 21-fix6: this continuation's own title comes from the earlier
     // turn's base intent, not a fresh correction, so it is NOT exempt from
     // model resolution -- one title-extraction call happens; the mock's
@@ -1065,5 +1122,116 @@ describe('ADR-0012 server-side task write policy', () => {
     expect(undoBody.reply).toBe('Undo complete.')
     expect(coldLog.undoWrites.some(write => write.method === 'PATCH')).toBe(true)
     expect(coldLog.taskWrites.some(write => write.method === 'PATCH' && write.body?.due_date === null)).toBe(true)
+  })
+})
+
+describe('task 22: calendar write policy + routing', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('executes calendar event create server-side when service-role policy resolves to auto', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto')
+    const response = await worker.fetch(chatRequest({
+      message: 'Add a task for next Tuesday at 9 because I have a family doctor appointment',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { reply?: string; writeExecution?: string; writePolicy?: { domain?: string; action?: string; mode?: string }; undo?: { id?: string } }
+
+    expect(response.status).toBe(200)
+    expect(body.writeExecution).toBe('executed')
+    expect(body.writePolicy).toMatchObject({ domain: 'calendar', action: 'create', mode: 'auto' })
+    expect(body.reply).toContain('✓ Event created')
+    expect(log.calendarWrites.some(write => write.method === 'POST')).toBe(true)
+    expect(log.taskWrites.length).toBe(0)
+    expect(body.undo?.id).toMatch(/^undo:[0-9a-f-]{36}$/)
+  })
+
+  it('this Flow AI action is switched off in settings for calendar domain', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'off')
+    const response = await worker.fetch(chatRequest({
+      message: 'Add a task for next Tuesday at 9 because I have a family doctor appointment',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { reply?: string; writePolicy?: { domain?: string; mode?: string } }
+
+    expect(response.status).toBe(200)
+    expect(body.writePolicy).toMatchObject({ domain: 'calendar', mode: 'off' })
+    expect(body.reply).toContain('switched off')
+    expect(log.calendarWrites.length).toBe(0)
+  })
+
+  it('resolved ask for calendar returns the server policy and leaves execution to the approval flow', async () => {
+    const log = installFetchMock([], null, 'Write action requires explicit approval.', 'ask')
+    const response = await worker.fetch(chatRequest({
+      message: 'Add a task for next Tuesday at 9 because I have a family doctor appointment',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { reply?: string; writePolicy?: { domain?: string; mode?: string } }
+
+    expect(response.status).toBe(200)
+    expect(body.writePolicy).toMatchObject({ domain: 'calendar', mode: 'ask' })
+    expect(body.reply).toBe('Write action requires explicit approval.')
+    expect(log.calendarWrites.length).toBe(0)
+  })
+
+  it('tampered client policy cannot execute a calendar write when the server policy is off', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'off')
+    const response = await worker.fetch(chatRequest({
+      message: 'Add a task for next Tuesday at 9 because I have a family doctor appointment',
+      timeZone: 'Europe/Berlin',
+      writePolicy: { domain: 'calendar', action: 'create', mode: 'auto' },
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { reply?: string; writePolicy?: { mode?: string } }
+
+    expect(response.status).toBe(200)
+    expect(body.writePolicy?.mode).toBe('off')
+    expect(body.reply).toContain('switched off')
+    expect(log.calendarWrites.length).toBe(0)
+  })
+
+  // Task 22 routing rule: both a task-noun and a calendar-noun in the same
+  // message is genuinely ambiguous -- ask ONE question, no loop, no write.
+  it.each([
+    ['en', 'Create a task for the meeting tomorrow', null, 'Should I create a calendar event or a task?'],
+    ['de', 'Erstelle eine Aufgabe für das Meeting morgen', 'de', 'Soll ich ein Kalenderereignis oder eine Aufgabe erstellen?'],
+    ['fa', 'یک تسک برای جلسه فردا بساز', 'fa', 'رویداد تقویم بسازم یا تسک؟'],
+  ] as const)('asks one targeted question in %s when task and calendar wording both appear, without executing any write', async (_lang, message, userLanguage, expectedReply) => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], null, userLanguage)
+    const response = await worker.fetch(chatRequest({ message, timeZone: 'Europe/Berlin' }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { reply?: string; writeExecution?: string }
+
+    expect(response.status).toBe(200)
+    expect(body.writeExecution).toBeUndefined()
+    expect(body.reply).toBe(expectedReply)
+    expect(log.taskWrites.length).toBe(0)
+    expect(log.calendarWrites.length).toBe(0)
+    expect(log.geminiCalls.length).toBe(0)
+  })
+
+  it('undo for auto-created calendar events deletes the created event within the undo window, from a cold context', async () => {
+    const undoStore: UndoStore = new Map()
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto', undoStore)
+    const createResponse = await worker.fetch(chatRequest({
+      message: 'Add a task for next Tuesday at 9 because I have a family doctor appointment',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const createBody = await createResponse.json() as { reply?: string; undo?: { id?: string } }
+    const undoId = createBody.undo?.id
+
+    expect(undoId).toBeTruthy()
+    expect(log.undoWrites.some(write => write.method === 'POST')).toBe(true)
+
+    // Cold context: a brand-new fetch mock/log, exactly like a page reload
+    // or a different Worker isolate handling the undo request -- undo
+    // state must be durable in flow_write_undo_records, not in-memory.
+    vi.unstubAllGlobals()
+    const coldLog = installFetchMock([], null, 'Gemini should not be called', 'auto', undoStore)
+    const undoResponse = await worker.fetch(chatRequest({ message: 'Undo', undoId }), testEnv(), fakeExecutionContext())
+    const undoBody = await undoResponse.json() as { reply?: string }
+
+    expect(undoBody.reply).toBe('Undo complete.')
+    expect(coldLog.undoWrites.some(write => write.method === 'PATCH')).toBe(true)
+    expect(coldLog.calendarWrites.some(write => write.method === 'DELETE')).toBe(true)
   })
 })

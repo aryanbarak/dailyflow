@@ -27,6 +27,23 @@ vi.mock("@/features/tasks/tasksService", () => ({
   tasksService: taskServiceMock,
 }));
 
+// Task 22: calendarCreateEventHandler/calendarUpdateEventHandler (reached
+// transitively via writeHandlers.ts) import calendarService.ts, which
+// imports the real Supabase client -- mocked here for the same reason
+// tasksService is mocked above, so this test never touches a real client
+// (and never throws the DEV-mode VITE_SMARTFLOW_SUPABASE_MODE guard).
+const { calendarServiceMock } = vi.hoisted(() => ({
+  calendarServiceMock: {
+    create: vi.fn(),
+    update: vi.fn(),
+    getAll: vi.fn(),
+  },
+}));
+
+vi.mock("@/features/calendar/calendarService", () => ({
+  calendarService: calendarServiceMock,
+}));
+
 import {
   clearExecutionAuditRecords,
   getExecutionAuditRecordsByRequestId,
@@ -697,8 +714,6 @@ describe("writeRuntime", () => {
   });
 
   it.each([
-    "calendar.create_event",
-    "calendar.update_event",
     "documents.delete",
     "finance.create_transaction",
     "messages.send",
@@ -1082,6 +1097,113 @@ describe("writeRuntime", () => {
     expect(result.success).toBe(true);
     expect(result.toolId).toBe("github.issues.comment");
     expect(result.safeSummary).toBe("Comment added.");
+  });
+
+  // Task 22 (calendar write slice). Uses the REAL registered tool
+  // (getToolById) and the REAL calendarCreateEventHandler
+  // (getWriteHandlerByToolId, via the default dependency) -- only
+  // calendarService is mocked -- mirroring the github.issues.comment
+  // regression test above, closing the same class of gap it was written
+  // to catch (capability/shape/handlerInput hardcoded to the wrong tool).
+  it("runs an approved calendar.create_event proposal end-to-end and calls calendarService.create with the exact target fields", async () => {
+    const sourceStep = step({
+      id: "step:calendar-create",
+      title: "Create a calendar event",
+      description: "Create event: Team sync.",
+      domain: "calendar",
+      actionType: "create",
+      targetId: "step:calendar-create",
+    });
+    const sourceResolution = resolution(sourceStep, "calendar.create_event", {
+      requiredInput: ["title", "start", "end"],
+    });
+    const sourceApproval = approval(sourceStep, {
+      toolId: "calendar.create_event",
+      dataDomains: ["calendar"],
+      reversible: true,
+      previewText: "Title: Team sync\nStart: 2026-08-14T09:00:00.000Z",
+    });
+    calendarServiceMock.create.mockResolvedValue({
+      id: "event-1",
+      title: "Team sync",
+      dateTimeStart: "2026-08-14T09:00:00.000Z",
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+    });
+    calendarServiceMock.getAll.mockResolvedValue([
+      { id: "event-1", title: "Team sync", dateTimeStart: "2026-08-14T09:00:00.000Z", createdAt: now.toISOString(), updatedAt: now.toISOString() },
+    ]);
+
+    const result = await runWriteTool(request({
+      requestId: "write:calendar-create",
+      step: sourceStep,
+      toolResolution: sourceResolution,
+      approval: sourceApproval,
+      target: { eventTitle: "Team sync", start: "2026-08-14T09:00:00.000Z" },
+    }), {
+      authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
+      now: () => now,
+    });
+
+    expect(calendarServiceMock.create).toHaveBeenCalledTimes(1);
+    expect(calendarServiceMock.create).toHaveBeenCalledWith({
+      title: "Team sync",
+      dateTimeStart: "2026-08-14T09:00:00.000Z",
+    });
+    expect(result.status).toBe("success");
+    expect(result.success).toBe(true);
+    expect(result.toolId).toBe("calendar.create_event");
+    expect(result.safeSummary).toBe("Event created.");
+  });
+
+  it("runs an approved calendar.update_event proposal end-to-end and calls calendarService.update with the exact target fields", async () => {
+    const sourceStep = step({
+      id: "step:calendar-update",
+      title: "Update a calendar event",
+      description: "Update event: Team sync.",
+      domain: "calendar",
+      actionType: "update",
+      targetId: "event-1",
+    });
+    const sourceResolution = resolution(sourceStep, "calendar.update_event", {
+      requiredInput: ["eventId"],
+    });
+    const sourceApproval = approval(sourceStep, {
+      toolId: "calendar.update_event",
+      dataDomains: ["calendar"],
+      reversible: true,
+      previewText: "Start: 2026-08-14T10:00:00.000Z",
+    });
+    calendarServiceMock.update.mockResolvedValue({
+      id: "event-1",
+      title: "Team sync",
+      dateTimeStart: "2026-08-14T10:00:00.000Z",
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+    });
+    calendarServiceMock.getAll.mockResolvedValue([
+      { id: "event-1", title: "Team sync", dateTimeStart: "2026-08-14T10:00:00.000Z", createdAt: now.toISOString(), updatedAt: now.toISOString() },
+    ]);
+
+    const result = await runWriteTool(request({
+      requestId: "write:calendar-update",
+      step: sourceStep,
+      toolResolution: sourceResolution,
+      approval: sourceApproval,
+      target: { start: "2026-08-14T10:00:00.000Z" },
+    }), {
+      authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
+      now: () => now,
+    });
+
+    expect(calendarServiceMock.update).toHaveBeenCalledTimes(1);
+    expect(calendarServiceMock.update).toHaveBeenCalledWith("event-1", {
+      dateTimeStart: "2026-08-14T10:00:00.000Z",
+    });
+    expect(result.status).toBe("success");
+    expect(result.success).toBe(true);
+    expect(result.toolId).toBe("calendar.update_event");
+    expect(result.safeSummary).toBe("Event updated.");
   });
 
   it("runs an approved github.issues.update proposal end-to-end and calls the client with the exact target fields", async () => {

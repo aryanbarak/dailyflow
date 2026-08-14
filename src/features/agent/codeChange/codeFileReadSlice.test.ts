@@ -14,6 +14,18 @@ vi.mock("@/features/tasks/tasksService", () => ({
   },
 }));
 
+// Task 22: writeHandlers.ts now also pulls in calendarCreateEventHandler.ts/
+// calendarUpdateEventHandler.ts -> the real "@/features/calendar/calendarService",
+// same real-Supabase-client side effect as tasksService above -- mocked for
+// the same reason.
+vi.mock("@/features/calendar/calendarService", () => ({
+  calendarService: {
+    create: vi.fn(),
+    update: vi.fn(),
+    getAll: vi.fn(),
+  },
+}));
+
 import { approveWorkspaceStep } from "../approvalInteraction";
 import { clearExecutionAuditRecords, getExecutionAuditRecordsByRequestId } from "../executionAudit";
 import { getToolById } from "../toolRegistry";

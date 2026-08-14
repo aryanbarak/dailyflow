@@ -39,7 +39,13 @@ const actionCapabilityMap: Record<WorkspacePlanActionType, AgentToolCapability[]
   select: ["inspect", "update"],
   focus: ["inspect", "update"],
   inspect: ["inspect", "search", "analyze", "read"],
-  create: ["create"],
+  // "schedule" added for Task 22 (calendar write slice):
+  // calendar.create_event's own capability is "schedule" (predates this
+  // task; kept as-is rather than renamed to "create" to avoid touching an
+  // existing tool declaration's identity), so a create-actionType step
+  // proposing it needs this policy allow-list widened, same as
+  // writeRuntime.ts's own expectedCapabilityForToolId already was.
+  create: ["create", "schedule"],
   update: ["update"],
   complete: ["complete"],
   delete: ["delete"],

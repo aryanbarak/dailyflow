@@ -372,6 +372,129 @@ describe("intentValidator", () => {
     });
   });
 
+  describe("Task 22 (calendar write slice) write intents", () => {
+    it("resolves create_calendar_event only with an eventTitle and a start time, otherwise asks for clarification", () => {
+      const incomplete = validate(
+        proposal({ type: "create_calendar_event", requestedDomain: "calendar", toolId: "calendar.create_event" }),
+        "Create an event for tomorrow",
+      );
+      expect(incomplete.proposal.type).toBe("ask_clarification");
+
+      const missingStart = validate(
+        proposal({
+          type: "create_calendar_event",
+          requestedDomain: "calendar",
+          toolId: "calendar.create_event",
+          target: { eventTitle: "Team sync" },
+        }),
+        "Create an event for tomorrow",
+      );
+      expect(missingStart.proposal.type).toBe("ask_clarification");
+
+      const complete = validate(
+        proposal({
+          type: "create_calendar_event",
+          requestedDomain: "calendar",
+          toolId: "calendar.create_event",
+          target: { eventTitle: "Team sync", start: "2026-08-14T09:00:00.000Z" },
+        }),
+        "Create an event for tomorrow at 9am called Team sync",
+      );
+      expect(complete.proposal.type).toBe("create_calendar_event");
+      expect(complete.toolId).toBe("calendar.create_event");
+      expect(complete.proposal.requiresApproval).toBe(true);
+      expect(complete.proposal.target).toMatchObject({ eventTitle: "Team sync", start: "2026-08-14T09:00:00.000Z" });
+    });
+
+    it("resolves update_calendar_event against a fuzzy-matched safe-context event, requiring at least one changed field", () => {
+      const noMatch = validateWithContext(
+        proposal({
+          type: "update_calendar_event",
+          requestedDomain: "calendar",
+          toolId: "calendar.update_event",
+          target: { eventReference: "Nonexistent event", start: "2026-08-14T10:00:00.000Z" },
+        }),
+        "Move the Nonexistent event to 10am",
+        context,
+      );
+      expect(noMatch.proposal.type).toBe("ask_clarification");
+
+      const noChange = validateWithContext(
+        proposal({
+          type: "update_calendar_event",
+          requestedDomain: "calendar",
+          toolId: "calendar.update_event",
+          target: { eventReference: "Standup" },
+        }),
+        "Update the Standup event",
+        context,
+      );
+      expect(noChange.proposal.type).toBe("ask_clarification");
+
+      const matched = validateWithContext(
+        proposal({
+          type: "update_calendar_event",
+          requestedDomain: "calendar",
+          toolId: "calendar.update_event",
+          target: { eventReference: "Standup", start: "2026-08-14T10:00:00.000Z" },
+        }),
+        "Move the Standup event to 10am",
+        context,
+      );
+      expect(matched.proposal.type).toBe("update_calendar_event");
+      expect(matched.proposal.target?.eventId).toBe("event-1");
+    });
+
+    it("routes a time-bearing task-worded request to create_calendar_event, not create_task (a time forces calendar), bridging the model's task-shaped title field", () => {
+      // The model proposed create_task (it saw "task" wording) and
+      // populated the task-shaped title/start fields it was told to for
+      // that type; the deterministic time-forces-calendar rule overrides
+      // the type, and the validator bridges title->eventTitle so the
+      // reclassified proposal isn't immediately rejected for a "missing"
+      // title the model actually did provide, just under the other name.
+      // (Deliberately avoids an incidental calendar-ish word like
+      // "appointment"/"meeting" in the message -- getStrongReadDomainEvidence's
+      // own, coarser task-vs-calendar evidence check treats co-occurring
+      // task and calendar words ANYWHERE in the message as conflicting and
+      // asks for clarification before this rule is ever reached; that is a
+      // real, disclosed limitation of this validator's layered
+      // disambiguation, not something this test is trying to cover.)
+      const result = validate(
+        proposal({
+          type: "create_task",
+          requestedDomain: "tasks",
+          toolId: "tasks.create",
+          target: { title: "Call the dentist", start: "2026-08-14T15:00:00.000Z" },
+        }),
+        "Create a task for tomorrow at 3pm to call the dentist",
+      );
+      expect(result.proposal.type).toBe("create_calendar_event");
+      expect(result.proposal.target?.eventTitle).toBe("Call the dentist");
+    });
+
+    it("a date-only task-worded request still resolves to create_task, unchanged", () => {
+      const result = validate(
+        proposal({ type: "create_task", requestedDomain: "tasks", toolId: "tasks.create", target: { title: "Review invoices" } }),
+        "Create a task for tomorrow",
+      );
+      expect(result.proposal.type).toBe("create_task");
+    });
+
+    it("treats a message naming both a task and a calendar concept as ambiguous, never guessing (same loose ask_clarification/unsupported contract the existing mixed-request tests use)", () => {
+      const result = validate(
+        proposal({ type: "ask_clarification" }),
+        "Create a task for the meeting tomorrow",
+      );
+      expect(["ask_clarification", "unsupported"]).toContain(result.proposal.type);
+      expect(result.proposal.type).not.toBe("create_task");
+      expect(result.proposal.type).not.toBe("create_calendar_event");
+    });
+
+    it("still rejects a delete request for a calendar event as unsupported", () => {
+      expect(validate(proposal(), "delete my calendar event please").proposal.type).toBe("unsupported");
+    });
+  });
+
   it("handles malformed or non-object output safely", () => {
     const result = validate(null);
 

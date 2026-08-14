@@ -19,6 +19,11 @@ export const SUPPORTED_INTENT_VALUES = [
   'complete_task',
   'create_task',
   'update_task',
+  // Task 22 (calendar write slice): tasks have no time-of-day field, so a
+  // request naming a calendar concept, or carrying a specific time,
+  // resolves to these instead.
+  'create_calendar_event',
+  'update_calendar_event',
   'write_github_issue_comment',
   'write_github_issue_update',
   'ask_clarification',
@@ -43,6 +48,10 @@ const PROPOSAL_FIELDS = new Set([
 const TARGET_FIELDS = new Set([
   'taskId', 'taskReference', 'taskTitleHint',
   'title', 'notes', 'dueDate',
+  // Task 22 (calendar write slice) -- kept distinct from title/dueDate
+  // above so a task and a calendar-event proposal in the same flat target
+  // object can never be confused about which domain a field belongs to.
+  'eventTitle', 'eventReference', 'eventId', 'start', 'end',
   // EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
   'repo', 'issueNumber', 'commentBody', 'updateTitle', 'updateBody', 'updateLabels',
 ])
@@ -353,6 +362,12 @@ function normalizeProposal(raw: unknown, responseLanguage: ReasoningRequest['res
       title: boundedString(rawTarget.title),
       notes: boundedString(rawTarget.notes, 2000),
       dueDate: boundedString(rawTarget.dueDate, 32),
+      // Task 22 (calendar write slice).
+      eventTitle: boundedString(rawTarget.eventTitle),
+      eventReference: boundedString(rawTarget.eventReference),
+      eventId: boundedString(rawTarget.eventId, 128),
+      start: boundedString(rawTarget.start, 64),
+      end: boundedString(rawTarget.end, 64),
       // EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
       repo: boundedString(rawTarget.repo, 200),
       issueNumber: boundedPositiveInteger(rawTarget.issueNumber),
@@ -483,6 +498,12 @@ export function buildReasoningResponseSchema() {
           title: { type: 'STRING' },
           notes: { type: 'STRING' },
           dueDate: { type: 'STRING' },
+          // Task 22 (calendar write slice).
+          eventTitle: { type: 'STRING' },
+          eventReference: { type: 'STRING' },
+          eventId: { type: 'STRING' },
+          start: { type: 'STRING' },
+          end: { type: 'STRING' },
           // EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
           repo: { type: 'STRING' },
           issueNumber: { type: 'INTEGER' },

@@ -247,6 +247,8 @@ const WRITE_PROPOSAL_TYPES = new Set<AgentReasoningResult['proposal']['type']>([
   'complete_task',
   'create_task',
   'update_task',
+  'create_calendar_event',
+  'update_calendar_event',
   'write_github_issue_comment',
   'write_github_issue_update',
 ])
@@ -616,6 +618,8 @@ function isSupportedActionableProposalType(type: AgentReasoningResult['proposal'
     case 'complete_task':
     case 'create_task':
     case 'update_task':
+    case 'create_calendar_event':
+    case 'update_calendar_event':
     case 'write_github_issue_comment':
     case 'write_github_issue_update':
       return true
@@ -666,6 +670,10 @@ function intentTitleKey(type: AgentReasoningResult['proposal']['type']): Transla
       return 'agent_intent_title_create_task' as TranslationKey
     case 'update_task':
       return 'agent_intent_title_update_task' as TranslationKey
+    case 'create_calendar_event':
+      return 'agent_intent_title_create_calendar_event' as TranslationKey
+    case 'update_calendar_event':
+      return 'agent_intent_title_update_calendar_event' as TranslationKey
     case 'write_github_issue_comment':
       return 'agent_intent_title_write_github_issue_comment'
     case 'write_github_issue_update':
@@ -706,6 +714,7 @@ function stepForReasoning(result: AgentReasoningResult, t: Translate): Workspace
     return null
   }
   const isGithubIssueWrite = proposal.type === 'write_github_issue_comment' || proposal.type === 'write_github_issue_update'
+  const isCalendarWrite = proposal.type === 'create_calendar_event' || proposal.type === 'update_calendar_event'
   const domain =
     proposal.type === 'inspect_github_repositories' ||
     proposal.type === 'inspect_github_issues' ||
@@ -716,16 +725,16 @@ function stepForReasoning(result: AgentReasoningResult, t: Translate): Workspace
       ? 'github'
       : proposal.type === 'inspect_workspace'
       ? 'workspace'
-      : proposal.type === 'inspect_calendar'
+      : proposal.type === 'inspect_calendar' || isCalendarWrite
       ? 'calendar'
       : proposal.type === 'inspect_learning'
         ? 'learning'
         : 'tasks'
   const actionType = proposal.type === 'complete_task'
     ? 'complete'
-    : proposal.type === 'create_task'
+    : proposal.type === 'create_task' || proposal.type === 'create_calendar_event'
       ? 'create'
-      : proposal.type === 'update_task'
+      : proposal.type === 'update_task' || proposal.type === 'update_calendar_event'
         ? 'update'
         : proposal.type === 'write_github_issue_comment'
           ? 'create'
@@ -737,7 +746,9 @@ function stepForReasoning(result: AgentReasoningResult, t: Translate): Workspace
     : undefined
   const targetId = proposal.type === 'complete_task' || proposal.type === 'update_task'
     ? proposal.target?.taskId
-    : githubIssueTargetId
+    : proposal.type === 'update_calendar_event'
+      ? proposal.target?.eventId
+      : githubIssueTargetId
 
   return {
     id: `reasoning-step:${proposal.id}`,
@@ -749,7 +760,11 @@ function stepForReasoning(result: AgentReasoningResult, t: Translate): Workspace
         ? t('agent_intent_create_description', { title: proposal.target?.title ?? '' })
         : proposal.type === 'update_task'
           ? t('agent_intent_task_update_description', { title: proposal.target?.taskTitleHint ?? proposal.target?.taskReference ?? '' })
-          : proposal.type === 'write_github_issue_comment'
+          : proposal.type === 'create_calendar_event'
+            ? t('agent_intent_create_calendar_event_description', { title: proposal.target?.eventTitle ?? '' })
+            : proposal.type === 'update_calendar_event'
+              ? t('agent_intent_calendar_event_update_description', { title: proposal.target?.eventTitle ?? proposal.target?.eventReference ?? '' })
+              : proposal.type === 'write_github_issue_comment'
             ? t('agent_intent_comment_description', { targetId: githubIssueTargetId ?? '' })
             : proposal.type === 'write_github_issue_update'
               ? t('agent_intent_update_description', { targetId: githubIssueTargetId ?? '' })
@@ -870,6 +885,60 @@ function approvalForReasoningStep(
         target?.title ? `${t('agent_intent_preview_title')}: ${target.title}` : null,
         target?.dueDate !== undefined ? `${t('agent_intent_preview_due')}: ${target.dueDate ?? t('agent_intent_preview_none')}` : null,
         target?.notes ? `${t('agent_intent_preview_notes')}: ${target.notes}` : null,
+      ].filter(Boolean).join('\n'),
+    }
+  }
+
+  if (proposal.type === 'create_calendar_event') {
+    const target = proposal.target
+    if (resolution.toolId !== 'calendar.create_event' || !target?.eventTitle || !target?.start) return null
+    return {
+      stepId: step.id,
+      targetId: step.id,
+      toolId: 'calendar.create_event',
+      toolName: tool?.name,
+      toolDescription: tool?.description,
+      toolCapability: tool?.capability,
+      toolMode: tool?.mode,
+      status: 'pending',
+      requiresApproval: true,
+      approvalReason: t('agent_intent_create_calendar_event_approval_reason'),
+      riskLevel: 'medium',
+      reversible: true,
+      externalEffect: true,
+      dataDomains: ['calendar'],
+      approvalScope: 'single_step',
+      previewText: [
+        `${t('agent_intent_preview_title')}: ${target.eventTitle}`,
+        `${t('agent_intent_preview_start')}: ${target.start}`,
+        target.end ? `${t('agent_intent_preview_end')}: ${target.end}` : null,
+      ].filter(Boolean).join('\n'),
+    }
+  }
+
+  if (proposal.type === 'update_calendar_event') {
+    const target = proposal.target
+    if (resolution.toolId !== 'calendar.update_event' || !step.targetId) return null
+    return {
+      stepId: step.id,
+      targetId: step.targetId,
+      toolId: 'calendar.update_event',
+      toolName: tool?.name,
+      toolDescription: tool?.description,
+      toolCapability: tool?.capability,
+      toolMode: tool?.mode,
+      status: 'pending',
+      requiresApproval: true,
+      approvalReason: t('agent_intent_calendar_event_update_approval_reason'),
+      riskLevel: 'medium',
+      reversible: true,
+      externalEffect: true,
+      dataDomains: ['calendar'],
+      approvalScope: 'single_step',
+      previewText: [
+        target?.eventTitle ? `${t('agent_intent_preview_title')}: ${target.eventTitle}` : null,
+        target?.start ? `${t('agent_intent_preview_start')}: ${target.start}` : null,
+        target?.end ? `${t('agent_intent_preview_end')}: ${target.end}` : null,
       ].filter(Boolean).join('\n'),
     }
   }

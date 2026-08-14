@@ -23,6 +23,8 @@ export const supportedIntentTypes: AgentIntentType[] = [
   "complete_task",
   "create_task",
   "update_task",
+  "create_calendar_event",
+  "update_calendar_event",
   "write_github_issue_comment",
   "write_github_issue_update",
   "ask_clarification",
@@ -41,6 +43,8 @@ const CONFIRMED_WRITE_INTENT_TYPES = new Set<AgentIntentType>([
   "complete_task",
   "create_task",
   "update_task",
+  "create_calendar_event",
+  "update_calendar_event",
   "write_github_issue_comment",
   "write_github_issue_update",
 ]);
@@ -68,6 +72,8 @@ const intentToolMap = {
   complete_task: "tasks.complete",
   create_task: "tasks.create",
   update_task: "tasks.update",
+  create_calendar_event: "calendar.create_event",
+  update_calendar_event: "calendar.update_event",
   write_github_issue_comment: "github.issues.comment",
   write_github_issue_update: "github.issues.update",
 } as const;
@@ -87,6 +93,8 @@ const domainByIntent: Partial<Record<AgentIntentType, AgentIntentDomain>> = {
   complete_task: "tasks",
   create_task: "tasks",
   update_task: "tasks",
+  create_calendar_event: "calendar",
+  update_calendar_event: "calendar",
   write_github_issue_comment: "github",
   write_github_issue_update: "github",
 };
@@ -199,6 +207,20 @@ function safeLabelList(value: unknown) {
   return labels.length > 0 ? labels : undefined;
 }
 
+// A well-formed ISO-ish datetime string only -- never re-parsed from free
+// text here (unlike dueDate below, which deterministic-date-overrides for
+// tasks). Task 22's deterministic date/time reuse lives entirely in the
+// Worker's own auto-write path (agent/worker/flow-write-policy.ts); this
+// frontend validator has no equivalent time-of-day parser to reuse without
+// duplicating it, so start/end follow the SAME "well-formed or dropped,
+// never guessed" posture this file already uses for repo/issueNumber/body
+// below -- a known, disclosed scope boundary, not an oversight.
+function safeIsoDateTime(value: unknown) {
+  const raw = safeString(value);
+  if (!raw) return undefined;
+  return Number.isNaN(Date.parse(raw)) ? undefined : raw;
+}
+
 function normalizeTarget(value: unknown) {
   if (!isRecord(value)) return undefined;
   return {
@@ -208,6 +230,11 @@ function normalizeTarget(value: unknown) {
     title: safeBoundedText(value.title, 200),
     notes: safeBoundedText(value.notes, 2000),
     dueDate: value.dueDate === null ? null : safeBoundedText(value.dueDate, 32),
+    eventTitle: safeBoundedText(value.eventTitle, 200),
+    eventReference: safeString(value.eventReference) || undefined,
+    eventId: safeString(value.eventId) || undefined,
+    start: safeIsoDateTime(value.start),
+    end: safeIsoDateTime(value.end),
     repo: safeRepoIdentifier(value.repo),
     issueNumber: safePositiveInteger(value.issueNumber),
     commentBody: safeBoundedText(value.commentBody, 10_000),
@@ -261,6 +288,29 @@ function findTaskTarget(
   return { status: "missing" as const };
 }
 
+function findCalendarEventTarget(
+  context: AgentReasoningSafeContext,
+  target: ReturnType<typeof normalizeTarget>,
+) {
+  const events = context.events;
+  if (!target) return { status: "missing" as const };
+
+  if (target.eventId) {
+    const event = events.find((item) => item.id === target.eventId);
+    return event ? { status: "matched" as const, event } : { status: "missing" as const };
+  }
+
+  const reference = normalizeTitle(target.eventReference ?? "");
+  if (!reference) return { status: "missing" as const };
+  const matches = events.filter((event) => {
+    const title = normalizeTitle(event.title ?? "");
+    return title === reference || title.includes(reference) || reference.includes(title);
+  });
+  if (matches.length === 1) return { status: "matched" as const, event: matches[0] };
+  if (matches.length > 1) return { status: "ambiguous" as const };
+  return { status: "missing" as const };
+}
+
 function requestLooksLikeTaskCompletion(message: string) {
   if (
     /\b(abschlie\u00dfen|erledigt)\b/i.test(message) ||
@@ -279,6 +329,24 @@ function requestLooksLikeTaskCreate(message: string) {
 function requestLooksLikeTaskUpdate(message: string) {
   return /\b(update|edit|change|move|reschedule|aktualisiere|bearbeite|verschiebe)\b.{0,50}\b(task|todo|aufgabe)\b/i.test(message) ||
     /(\u0648\u0638\u06cc\u0641\u0647|\u06a9\u0627\u0631).{0,50}(\u0628\u0647[\u200c\s-]?\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06cc\s+\u06a9\u0646|\u0648\u06cc\u0631\u0627\u06cc\u0634\s+\u06a9\u0646|\u062a\u063a\u06cc\u06cc\u0631\s+\u0628\u062f\u0647)/i.test(message);
+}
+
+// Task 22 (calendar write slice): same two-clause shape as the task
+// versions above, anchored on calendar-flavored nouns instead. Noun-gated
+// (not bare verbs) so "reschedule"/"move"/"verschiebe" -- already claimed
+// by requestLooksLikeTaskUpdate when paired with a task noun -- only match
+// here when paired with a calendar noun instead; a message naming BOTH
+// noun classes matches both functions, which the writeRequestCount/
+// conflictingWriteRequest machinery below already treats as genuinely
+// ambiguous, not a guess to make.
+function requestLooksLikeCalendarCreate(message: string) {
+  return /\b(create|add|set up|schedule|erstelle|hinzuf[\u00fcu]gen)\b.{0,40}\b(event|appointment|meeting|calendar)\b/i.test(message) ||
+    /(\u0631\u0648\u06cc\u062f\u0627\u062f|\u062c\u0644\u0633\u0647|\u0642\u0631\u0627\u0631|\u0645\u0644\u0627\u0642\u0627\u062a).{0,40}(\u0628\u0633\u0627\u0632|\u0627\u06cc\u062c\u0627\u062f\s+\u06a9\u0646|\u0627\u0636\u0627\u0641\u0647\s+\u06a9\u0646)/i.test(message);
+}
+
+function requestLooksLikeCalendarUpdate(message: string) {
+  return /\b(update|edit|change|move|reschedule|aktualisiere|bearbeite|verschiebe)\b.{0,50}\b(event|appointment|meeting|calendar)\b/i.test(message) ||
+    /(\u0631\u0648\u06cc\u062f\u0627\u062f|\u062c\u0644\u0633\u0647|\u0642\u0631\u0627\u0631|\u0645\u0644\u0627\u0642\u0627\u062a).{0,50}(\u0628\u0647[\u200c\s-]?\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06cc\s+\u06a9\u0646|\u0648\u06cc\u0631\u0627\u06cc\u0634\s+\u06a9\u0646|\u062a\u063a\u06cc\u06cc\u0631\s+\u0628\u062f\u0647)/i.test(message);
 }
 
 // EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
@@ -401,7 +469,7 @@ const GITHUB_WORKFLOW_RUNS_EVIDENCE_PATTERNS = [
 // domain uniformly: add a tool's evidence patterns here and it's covered,
 // no new disambiguation function needed. A message matching more than one
 // tool in the same domain is genuinely ambiguous, not a signal to guess.
-type ReadToolIntentType = Exclude<AgentIntentType, "complete_task" | "create_task" | "update_task" | "write_github_issue_comment" | "write_github_issue_update" | "ask_clarification" | "unsupported">;
+type ReadToolIntentType = Exclude<AgentIntentType, "complete_task" | "create_task" | "update_task" | "create_calendar_event" | "update_calendar_event" | "write_github_issue_comment" | "write_github_issue_update" | "ask_clarification" | "unsupported">;
 
 const TOOL_EVIDENCE_PATTERNS: Partial<Record<ReadToolIntentType, RegExp[]>> = {
   inspect_github_repositories: GITHUB_REPOSITORIES_EVIDENCE_PATTERNS,
@@ -549,7 +617,21 @@ export function validateAgentIntentProposal(input: {
   // (a message naming both is genuinely ambiguous, not a guess to make).
   const commentRequested = requestLooksLikeGithubIssueComment(input.userMessage);
   const issueUpdateRequested = requestLooksLikeGithubIssueUpdate(input.userMessage);
-  const writeRequestCount = [commentRequested, issueUpdateRequested, taskCreateRequested, taskUpdateRequested, completionRequested]
+  // Task 22: an EXPLICIT calendar-noun match (event/meeting/appointment/...)
+  // is independent write evidence, counted into writeRequestCount below
+  // exactly like the task/GitHub signals -- so "create a task for the
+  // meeting tomorrow" (task noun + calendar noun) is genuinely ambiguous,
+  // not a guess. A time-of-day WITHOUT an explicit calendar noun is a
+  // separate, weaker signal (tasks have no time-of-day field) -- applied as
+  // a post-step below (timeForcesCalendar), not counted here, so it never
+  // manufactures a false conflict against the task branch it would
+  // otherwise have resolved to.
+  const messageHasTime = /\b([01]?[0-9]|2[0-3]):([0-5][0-9])\b/.test(input.userMessage) ||
+    /\b(?:at|um)\s+([01]?[0-9]|2[0-3])(?::[0-5][0-9])?\s*(?:am|pm|uhr)?\b/i.test(input.userMessage) ||
+    /ساعت\s+[۰-۹0-9]{1,2}/.test(input.userMessage);
+  const calendarCreateRequested = requestLooksLikeCalendarCreate(input.userMessage);
+  const calendarUpdateRequested = requestLooksLikeCalendarUpdate(input.userMessage);
+  const writeRequestCount = [commentRequested, issueUpdateRequested, taskCreateRequested, taskUpdateRequested, completionRequested, calendarCreateRequested, calendarUpdateRequested]
     .filter(Boolean).length;
   const conflictingWriteRequest = writeRequestCount > 1;
   const mixedReadWriteRequest = requestLooksMixed(input.userMessage, "inspect_tasks");
@@ -558,10 +640,20 @@ export function validateAgentIntentProposal(input: {
   // normalization instead of rejecting immediately. The rescued type still comes only from
   // regex evidence over the user's own message, never from whatever the LLM proposed.
   const normalizationSourceType = initialTypeSupported ? initialType : "ask_clarification";
-  const type = completionRequested &&
+  const baseType = completionRequested &&
     !mixedReadWriteRequest &&
     (normalizationSourceType === "ask_clarification" || normalizationSourceType === "inspect_tasks" || normalizationSourceType === "complete_task")
     ? "complete_task"
+    : calendarCreateRequested &&
+      !conflictingWriteRequest &&
+      !mixedReadWriteRequest &&
+      (normalizationSourceType === "ask_clarification" || normalizationSourceType === "inspect_calendar" || normalizationSourceType === "create_calendar_event")
+      ? "create_calendar_event"
+      : calendarUpdateRequested &&
+        !conflictingWriteRequest &&
+        !mixedReadWriteRequest &&
+        (normalizationSourceType === "ask_clarification" || normalizationSourceType === "inspect_calendar" || normalizationSourceType === "update_calendar_event")
+        ? "update_calendar_event"
     : taskCreateRequested &&
       !conflictingWriteRequest &&
       !mixedReadWriteRequest &&
@@ -583,6 +675,18 @@ export function validateAgentIntentProposal(input: {
         (normalizationSourceType === "ask_clarification" || normalizationSourceType === "inspect_github_issues" || normalizationSourceType === "write_github_issue_update")
         ? "write_github_issue_update"
         : normalizeReadIntentFromEvidence(normalizationSourceType, domainEvidence, input.userMessage);
+  // Task 22 post-step: a time-of-day forces calendar routing even without
+  // an explicit calendar noun (tasks have no time-of-day field) -- applied
+  // AFTER the main resolution above, not folded into writeRequestCount, so
+  // it can never manufacture a false conflict against the task branch it
+  // is about to override. Only swaps a clean, unconflicted create_task/
+  // update_task resolution -- never touches any other type (ambiguous,
+  // clarification, GitHub writes, reads all pass through unchanged).
+  const type = messageHasTime && baseType === "create_task"
+    ? "create_calendar_event"
+    : messageHasTime && baseType === "update_task"
+      ? "update_calendar_event"
+      : baseType;
   const normalizedByEvidence = type !== initialType;
   if (!initialTypeSupported && type === "ask_clarification") {
     return createSafeProposal("unsupported", {
@@ -698,6 +802,17 @@ export function validateAgentIntentProposal(input: {
   const target = type === "complete_task"
     ? deriveTaskCompletionTarget(input.safeContext, normalizeTarget(input.rawProposal.target), input.userMessage)
     : normalizeTarget(input.rawProposal.target);
+  // Task 22: when the time-forces-calendar post-step (above) reclassifies
+  // a create_task/update_task proposal into its calendar sibling, the
+  // model itself was never told to populate eventTitle/eventReference --
+  // it populated title/taskReference, believing it was proposing a task.
+  // Bridge that naming gap here rather than silently failing calendar's
+  // own "eventTitle is required" check on a proposal that DID name a
+  // subject, just under the task-shaped field name.
+  if ((type === "create_calendar_event" || type === "update_calendar_event") && target) {
+    if (!target.eventTitle && target.title) target.eventTitle = target.title;
+    if (!target.eventReference && target.taskReference) target.eventReference = target.taskReference;
+  }
   if ((type === "create_task" || type === "update_task") && target && deterministicDueDate.value !== undefined) {
     target.dueDate = deterministicDueDate.value;
   }
@@ -759,6 +874,48 @@ export function validateAgentIntentProposal(input: {
     }
     target!.taskId = match.task.id;
     target!.taskTitleHint = match.task.title;
+  }
+  if (type === "create_calendar_event" && !target?.eventTitle) {
+    return createSafeProposal("ask_clarification", {
+      userMessage: input.userMessage,
+      language: input.language,
+      now,
+      question: textFor(input.language, "clarify"),
+      reason: "Event title is required before creating a calendar event.",
+    });
+  }
+  if (type === "create_calendar_event" && !target?.start) {
+    return createSafeProposal("ask_clarification", {
+      userMessage: input.userMessage,
+      language: input.language,
+      now,
+      question: textFor(input.language, "clarify"),
+      reason: "Exact start time is required before creating a calendar event.",
+    });
+  }
+  if (type === "update_calendar_event") {
+    const match = findCalendarEventTarget(input.safeContext, target);
+    if (match.status !== "matched" || !match.event.id) {
+      return createSafeProposal("ask_clarification", {
+        userMessage: input.userMessage,
+        language: input.language,
+        now,
+        question: textFor(input.language, "clarify"),
+        reason: match.status === "ambiguous"
+          ? "Multiple matching calendar events require clarification."
+          : "Exact calendar event target is required before updating it.",
+      });
+    }
+    if (!target?.eventTitle && !target?.start && !target?.end) {
+      return createSafeProposal("ask_clarification", {
+        userMessage: input.userMessage,
+        language: input.language,
+        now,
+        question: textFor(input.language, "clarify"),
+        reason: "At least one calendar event update field is required.",
+      });
+    }
+    target!.eventId = match.event.id;
   }
   if (type === "write_github_issue_comment" && findGithubIssueCommentTarget(target).status !== "matched") {
     return createSafeProposal("ask_clarification", {

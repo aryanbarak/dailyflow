@@ -20,6 +20,26 @@ export interface ParsedTaskWriteIntent {
   titleSource?: 'correction'
 }
 
+// Task 22: PO decision -- tasks have no time-of-day column, so any write
+// request carrying a specific time is routed here instead (see
+// detectWriteDomainSignal below). Mirrors ParsedTaskWriteIntent's shape
+// deliberately (title/notes/titleSource/dateClarificationNeeded fields are
+// identical in spirit) so the shared primitives (title validation, date
+// parsing) apply unchanged -- startDate/startTime/endTime replace
+// dueDate/timeOfDay because a calendar event structurally needs a time
+// range, not just a day.
+export interface ParsedCalendarWriteIntent {
+  kind: 'create_calendar_event' | 'update_calendar_event'
+  title?: string
+  eventReference?: string
+  notes?: string
+  startDate?: string | null
+  startTime?: string
+  endTime?: string
+  dateClarificationNeeded?: boolean
+  titleSource?: 'correction'
+}
+
 export interface RecentChatTurn {
   role: string
   content: string
@@ -43,9 +63,33 @@ interface AlarmRow {
   trigger_at: string
 }
 
+// Task 22 -- mirrors calendarService.ts's own DB row shape exactly (see
+// src/features/calendar/calendarService.ts's DbRow) so a Worker-written
+// row round-trips through the same frontend read path unchanged: `date`/
+// `start_time`/`end_time` are plain text, not timestamps, and hold the
+// UTC-instant digits of a genuine timezone-resolved instant (see
+// zonedDateTimeToUtcIso below) -- never a naive local wall-clock string.
+interface CalendarEventRow {
+  id: string
+  user_id: string
+  title: string
+  date: string
+  start_time: string | null
+  end_time: string | null
+  location: string | null
+  description: string | null
+  color: string | null
+  type: string | null
+  all_day: boolean
+  created_at: string
+  updated_at: string
+}
+
 type UndoEntry =
   | { kind: 'create_task'; userId: string; taskId: string; expiresAt: string }
   | { kind: 'update_task'; userId: string; taskId: string; previous: Pick<TaskRow, 'title' | 'notes' | 'due_date' | 'completed'>; expiresAt: string }
+  | { kind: 'create_calendar_event'; userId: string; eventId: string; expiresAt: string }
+  | { kind: 'update_calendar_event'; userId: string; eventId: string; previous: Pick<CalendarEventRow, 'title' | 'date' | 'start_time' | 'end_time' | 'description'>; expiresAt: string }
 
 export const FLOW_WRITE_UNDO_WINDOW_MS = 10 * 60 * 1000
 
@@ -92,13 +136,23 @@ function undoExpiresAt(now: Date) {
   return new Date(now.getTime() + FLOW_WRITE_UNDO_WINDOW_MS).toISOString()
 }
 
+// Task 22: `task_id` is reused as-is for a calendar event's id -- verified
+// against the migration (supabase/migrations/20260813010000_flow_write_
+// permissions.sql) that this column carries no foreign-key constraint to
+// `tasks`, only `not null`, so it is safely a generic "the row this undo
+// entry is about" id slot regardless of kind. Not renamed, to avoid an
+// unnecessary migration + touching every existing call site.
+function undoRecordId(entry: UndoEntry): string {
+  return entry.kind === 'create_task' || entry.kind === 'update_task' ? entry.taskId : entry.eventId
+}
+
 async function persistUndoRecord(env: Env, entry: UndoEntry, undoId: string) {
-  const payload = entry.kind === 'update_task' ? { previous: entry.previous } : {}
+  const payload = entry.kind === 'update_task' || entry.kind === 'update_calendar_event' ? { previous: entry.previous } : {}
   await supabaseWriteNoContent(env, 'POST', 'flow_write_undo_records', {
     id: undoUuid(undoId),
     user_id: entry.userId,
     kind: entry.kind,
-    task_id: entry.taskId,
+    task_id: undoRecordId(entry),
     payload,
     expires_at: entry.expiresAt,
   })
@@ -107,9 +161,13 @@ async function persistUndoRecord(env: Env, entry: UndoEntry, undoId: string) {
 interface UndoRecordRow {
   id: string
   user_id: string
-  kind: 'create_task' | 'update_task'
+  kind: 'create_task' | 'update_task' | 'create_calendar_event' | 'update_calendar_event'
   task_id: string
-  payload: { previous?: Pick<TaskRow, 'title' | 'notes' | 'due_date' | 'completed'> } | null
+  payload: {
+    previous?:
+      | Pick<TaskRow, 'title' | 'notes' | 'due_date' | 'completed'>
+      | Pick<CalendarEventRow, 'title' | 'date' | 'start_time' | 'end_time' | 'description'>
+  } | null
   expires_at: string
   consumed_at: string | null
 }
@@ -128,9 +186,15 @@ async function consumeUndoRecord(env: Env, userId: string, undoId: string, now: 
   })
 
   if (row.kind === 'create_task') return { kind: 'create_task', userId, taskId: row.task_id, expiresAt: row.expires_at }
-  const previous = row.payload?.previous
+  if (row.kind === 'create_calendar_event') return { kind: 'create_calendar_event', userId, eventId: row.task_id, expiresAt: row.expires_at }
+  if (row.kind === 'update_task') {
+    const previous = row.payload?.previous as Pick<TaskRow, 'title' | 'notes' | 'due_date' | 'completed'> | undefined
+    if (!previous) return null
+    return { kind: 'update_task', userId, taskId: row.task_id, previous, expiresAt: row.expires_at }
+  }
+  const previous = row.payload?.previous as Pick<CalendarEventRow, 'title' | 'date' | 'start_time' | 'end_time' | 'description'> | undefined
   if (!previous) return null
-  return { kind: 'update_task', userId, taskId: row.task_id, previous, expiresAt: row.expires_at }
+  return { kind: 'update_calendar_event', userId, eventId: row.task_id, previous, expiresAt: row.expires_at }
 }
 
 export function defaultFlowWriteMode(domain: string, action: string): FlowWriteMode {
@@ -201,7 +265,9 @@ function boundText(value: string, max: number) {
   return normalized.length > max ? `${normalized.slice(0, max - 3).trim()}...` : normalized
 }
 
-function zonedDateTimeToUtcIso(dateKeyValue: string, timeOfDay: string, timeZone: string) {
+// Task 22: exported -- reused directly for calendar event start/end
+// resolution (executeAutoCalendarWrite below), not just task alarms.
+export function zonedDateTimeToUtcIso(dateKeyValue: string, timeOfDay: string, timeZone: string) {
   const [year, month, day] = dateKeyValue.split('-').map(Number)
   const [hour, minute] = timeOfDay.split(':').map(Number)
   const desiredUtcMs = Date.UTC(year, month - 1, day, hour, minute, 0)
@@ -243,6 +309,30 @@ export function parseDeterministicTimeOfDay(message: string): string | undefined
   if ((suffix === 'pm' || suffix === '\u0639\u0635\u0631' || suffix === '\u0628\u0639\u062f \u0627\u0632 \u0638\u0647\u0631' || suffix === '\u0634\u0628') && hour < 12) hour += 12
   if ((suffix === 'am' || suffix === '\u0635\u0628\u062d') && hour === 12) hour = 0
   return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
+}
+
+const RANGE_CONNECTOR = /\bto\b|\buntil\b|\btill\b|\bbis\b|\u062a\u0627/i
+
+/**
+ * Task 22: a calendar event's end time, kept intentionally thin -- reuses
+ * parseDeterministicTimeOfDay (unchanged) TWICE rather than inventing a
+ * new range grammar. Finds a start time, then looks for a connector word
+ * ("to"/"until"/"bis"/"\u062a\u0627") and re-parses the text after it as a second
+ * time -- first as-is (covers "13:00 to 15:00" and "...bis 15 Uhr", which
+ * already satisfy parseDeterministicTimeOfDay's own patterns), then with
+ * an injected "at " cue (covers a bare hour like "...to 3pm"). No range
+ * found -- or a genuinely unparseable one -- degrades to a single start
+ * time; executeAutoCalendarWrite defaults the missing end to +1 hour.
+ * Exported for direct unit testing.
+ */
+export function parseDeterministicTimeRange(message: string): { start?: string; end?: string } {
+  const start = parseDeterministicTimeOfDay(message)
+  if (!start) return {}
+  const connectorIndex = message.search(RANGE_CONNECTOR)
+  if (connectorIndex === -1) return { start }
+  const tail = message.slice(connectorIndex).replace(RANGE_CONNECTOR, ' ')
+  const end = parseDeterministicTimeOfDay(tail) ?? parseDeterministicTimeOfDay(`at ${tail}`)
+  return end && end !== start ? { start, end } : { start }
 }
 
 function removeDateAndTimePhrases(value: string) {
@@ -384,16 +474,19 @@ export function extractOriginalRequestText(notes: string | undefined, fallbackMe
 }
 
 /**
- * Resolves the title for a create_task auto-write: asks the model for a
- * short subject line, validates it, and falls back to the deterministic
+ * Task 22: generalized out of resolveCreateTaskTitle -- asks the model for
+ * a short subject line, validates it, and falls back to the deterministic
  * pattern extractor's own (also-validated) result only if the model call
- * fails or its title is rejected. Never called for an explicit user title
- * correction (intent.titleSource === 'correction') -- that title is exact
- * user intent, not something to re-derive.
+ * fails or its title is rejected. Takes only the minimal {title?, notes?}
+ * shape both ParsedTaskWriteIntent and ParsedCalendarWriteIntent satisfy,
+ * so one implementation serves both domains -- genuine reuse, not a
+ * parallel copy. Never called for an explicit user title correction
+ * (titleSource === 'correction') -- that title is exact user intent, not
+ * something to re-derive.
  */
-export async function resolveCreateTaskTitle(
+export async function resolveCreateTitle(
   env: Env,
-  intent: ParsedTaskWriteIntent,
+  intent: { title?: string; notes?: string },
   rawMessage: string,
   callModel: (requestText: string, env: Env) => Promise<string> = callGeminiForTaskTitle,
 ): Promise<string | undefined> {
@@ -407,9 +500,29 @@ export async function resolveCreateTaskTitle(
     const validated = validateCandidateTitle(modelTitle, requestText)
     if (validated) return validated
   } catch (err) {
-    console.error('[TaskTitle] model title extraction failed, falling back to pattern extraction:', (err as Error).message)
+    console.error('[Title] model title extraction failed, falling back to pattern extraction:', (err as Error).message)
   }
   return patternFallback
+}
+
+/** Task 21-fix6 name/signature kept for existing call sites -- thin wrapper over resolveCreateTitle. */
+export async function resolveCreateTaskTitle(
+  env: Env,
+  intent: ParsedTaskWriteIntent,
+  rawMessage: string,
+  callModel: (requestText: string, env: Env) => Promise<string> = callGeminiForTaskTitle,
+): Promise<string | undefined> {
+  return resolveCreateTitle(env, intent, rawMessage, callModel)
+}
+
+/** Task 22: calendar-event sibling of resolveCreateTaskTitle -- same validator, same model call. */
+export async function resolveCreateEventTitle(
+  env: Env,
+  intent: ParsedCalendarWriteIntent,
+  rawMessage: string,
+  callModel: (requestText: string, env: Env) => Promise<string> = callGeminiForTaskTitle,
+): Promise<string | undefined> {
+  return resolveCreateTitle(env, intent, rawMessage, callModel)
 }
 
 async function createTaskAlarmIfNeeded(env: Env, userId: string, task: TaskRow, timeOfDay: string | undefined, timeZone: string) {
@@ -470,6 +583,70 @@ export function parseDeterministicDueDate(message: string, now: Date, timeZone: 
   if (/\b(due|deadline|fÃ¤llig)\b|\u0645\u0648\u0639\u062f|\u062a\u0627\u0631\u06cc\u062e/i.test(text)) return { clarificationNeeded: true }
   if (/\b(due|deadline|fÃ¤llig|Ù…ÙˆØ¹Ø¯|ØªØ§Ø±ÛŒØ®)\b/i.test(message)) return { clarificationNeeded: true }
   return { clarificationNeeded: false }
+}
+
+// ---------------------------------------------------------------------------
+// Task 22 -- task vs. calendar routing. The product rule (PO decision):
+// a request naming a calendar concept (event/appointment/meeting) is
+// calendar business regardless of whether a time was given; a request
+// naming only a task, if it ALSO carries a resolved time-of-day, is
+// still routed to calendar because tasks have no time-of-day column to
+// hold it in -- that is "today's behaviour" (a date with no time stays a
+// task) plus the one PO-mandated exception (a time forces calendar). Both
+// noun classes matching in the same message is treated as genuinely
+// ambiguous (e.g. "task for the meeting") and asks once rather than
+// guessing; see index.ts for the one-question, no-loop handling.
+// ---------------------------------------------------------------------------
+
+function isCalendarWriteTrigger(message: string): boolean {
+  const createCal = /\b(create|add|set up|schedule|erstelle|hinzuf[üu]gen)\b.{0,50}\b(event|appointment|meeting|termin|kalender)\b/i.test(message) ||
+    /(?:یک|ک|یه)?\s*(?:رویداد|جلسه|قرار|ملاقات).{0,50}(?:بساز|ایجاد کن|اضافه کن)/i.test(message)
+  const updateCal = /\b(update|edit|change|reschedule|move|aktualisiere|bearbeite|verschiebe)\b.{0,60}\b(event|appointment|meeting|termin|kalender)\b/i.test(message) ||
+    /(?:رویداد|جلسه|قرار|ملاقات).{0,60}(?:به‌روزرسانی کن|ویرایش کن|جابجا کن|تغییر بده)/i.test(message)
+  return createCal || updateCal
+}
+
+function resolvesToCalendarDomain(message: string, now: Date, timeZone: string): boolean {
+  if (isCalendarWriteTrigger(message)) return true
+  return parseTaskWriteIntent(message, now, timeZone) !== null && Boolean(parseDeterministicTimeOfDay(message))
+}
+
+export type WriteDomainSignal = 'task' | 'calendar' | 'ambiguous' | 'none'
+
+/**
+ * The single deterministic routing decision -- see file header above.
+ * Exported for direct unit testing.
+ */
+export function detectWriteDomainSignal(message: string, now: Date, timeZone: string): WriteDomainSignal {
+  const taskTrigger = parseTaskWriteIntent(message, now, timeZone) !== null
+  const calendarTrigger = isCalendarWriteTrigger(message)
+  if (!taskTrigger && !calendarTrigger) return 'none'
+  if (taskTrigger && calendarTrigger) return 'ambiguous'
+  return resolvesToCalendarDomain(message, now, timeZone) ? 'calendar' : 'task'
+}
+
+/**
+ * A continuation message ("yes", "بله بساز", a title correction) carries
+ * no domain wording of its own -- assembleTaskWriteIntent/
+ * assembleCalendarWriteIntent each resolve it by scanning history for the
+ * ORIGINAL triggering message. Routing must follow that same original
+ * message, not the continuation text, or a time-bearing original request
+ * would fall back to the task pipeline just because its "yes" reply
+ * doesn't repeat the word "event". Mirrors assembleTaskWriteIntent's own
+ * history-scan window (last 6 user messages) so the two stay consistent.
+ * Exported for direct unit testing.
+ */
+export function detectContinuationDomain(recentTurns: RecentChatTurn[], now: Date, timeZone: string): 'task' | 'calendar' | null {
+  const recentUserMessages = recentTurns
+    .filter(turn => turn.role === 'user')
+    .map(turn => turn.content)
+    .slice(-6)
+    .reverse()
+  for (const content of recentUserMessages) {
+    const signal = detectWriteDomainSignal(content, now, timeZone)
+    if (signal === 'task' || signal === 'calendar') return signal
+  }
+  return null
 }
 
 export function parseTaskWriteIntent(message: string, now: Date, timeZone: string): ParsedTaskWriteIntent | null {
@@ -559,6 +736,94 @@ export function assembleTaskWriteIntent(message: string, recentTurns: RecentChat
   return previous ? mergeTaskIntent(previous, message, now, timeZone) : null
 }
 
+// ---------------------------------------------------------------------------
+// Task 22 -- calendar event intent parsing. Mirrors parseTaskWriteIntent/
+// mergeTaskIntent/assembleTaskWriteIntent structurally (same multi-turn
+// pending-intent mechanism: isAffirmativeWriteContinuation,
+// looksLikeSubjectChange, parseTitleCorrection, and the "don't reassemble
+// after a server confirmation" guard are all reused unchanged) -- kept as
+// a parallel pipeline rather than folded into the task one because the
+// target shape genuinely differs (a time range, not a due date only).
+// ---------------------------------------------------------------------------
+
+/**
+ * Only ever called after detectWriteDomainSignal has already decided
+ * 'calendar' -- its own gate (resolvesToCalendarDomain) mirrors that
+ * decision exactly, so it is also safe to call standalone (e.g. when
+ * assembleCalendarWriteIntent below re-parses OLDER history messages one
+ * at a time, where the live routing decision for THIS turn doesn't apply).
+ * Exported for direct unit testing.
+ */
+export function parseCalendarWriteIntent(message: string, now: Date, timeZone: string): ParsedCalendarWriteIntent | null {
+  if (!resolvesToCalendarDomain(message, now, timeZone)) return null
+  const isUpdate = /\b(update|edit|change|reschedule|move|aktualisiere|bearbeite|verschiebe)\b/i.test(message) ||
+    /(?:به‌روزرسانی کن|ویرایش کن|جابجا کن|تغییر بده)/.test(message)
+
+  const date = parseDeterministicDueDate(message, now, timeZone)
+  const { start, end } = parseDeterministicTimeRange(message)
+  const quoted = message.match(/["'«“](.+?)["'»”]/)?.[1]?.trim()
+
+  if (!isUpdate) {
+    const title = extractTaskTitle(message)
+    return {
+      kind: 'create_calendar_event',
+      title: title || undefined,
+      notes: createTaskNotes(message, start),
+      startDate: date.value,
+      startTime: start,
+      endTime: end,
+      dateClarificationNeeded: date.clarificationNeeded,
+    }
+  }
+  return {
+    kind: 'update_calendar_event',
+    eventReference: quoted,
+    startDate: date.value,
+    startTime: start,
+    endTime: end,
+    dateClarificationNeeded: date.clarificationNeeded,
+  }
+}
+
+function mergeCalendarIntent(base: ParsedCalendarWriteIntent, message: string, now: Date, timeZone: string): ParsedCalendarWriteIntent {
+  const correctionTitle = parseTitleCorrection(message)
+  const direct = parseCalendarWriteIntent(message, now, timeZone)
+  const { start, end } = parseDeterministicTimeRange(message)
+  const startTime = start ?? direct?.startTime ?? base.startTime
+  const endTime = end ?? direct?.endTime ?? base.endTime
+  const startDate = direct?.startDate !== undefined ? direct.startDate : base.startDate
+  return {
+    ...base,
+    title: correctionTitle ?? direct?.title ?? base.title,
+    titleSource: correctionTitle ? 'correction' : (direct?.title ? undefined : base.titleSource),
+    notes: createTaskNotes(`${base.notes ?? ''}\n${message}`.trim(), startTime),
+    startDate,
+    startTime,
+    endTime,
+    dateClarificationNeeded: direct?.dateClarificationNeeded ?? base.dateClarificationNeeded,
+  }
+}
+
+export function assembleCalendarWriteIntent(message: string, recentTurns: RecentChatTurn[], now: Date, timeZone: string): ParsedCalendarWriteIntent | null {
+  const direct = parseCalendarWriteIntent(message, now, timeZone)
+  if (direct) return direct
+  if (looksLikeSubjectChange(message)) return null
+  if (!isAffirmativeWriteContinuation(message) && !parseTitleCorrection(message)) return null
+  if (recentTurns.slice(-4).some(turn => turn.role === 'assistant' && /✓ .*(Event created|Event updated|Ereignis .*erstellt|Ereignis .*aktualisiert|رویداد .*(?:ایجاد شد|به‌روزرسانی شد))/.test(turn.content))) {
+    return null
+  }
+
+  const recentUserMessages = recentTurns
+    .filter(turn => turn.role === 'user')
+    .map(turn => turn.content)
+    .slice(-6)
+    .reverse()
+  const previous = recentUserMessages
+    .map(content => parseCalendarWriteIntent(content, now, timeZone))
+    .find((intent): intent is ParsedCalendarWriteIntent => Boolean(intent && intent.kind === 'create_calendar_event'))
+  return previous ? mergeCalendarIntent(previous, message, now, timeZone) : null
+}
+
 export async function executeAutoTaskWrite(input: {
   env: Env
   userId: string
@@ -603,18 +868,145 @@ export async function executeAutoTaskWrite(input: {
   return { status: 'executed', reply: confirmation(language, 'update_task', updated.title, updated.due_date, intent.timeOfDay), undoId, undoExpiresAt: expiresAt }
 }
 
-export async function undoAutoTaskWrite(env: Env, userId: string, undoId: string, now: Date): Promise<boolean> {
+function confirmationForCalendar(
+  language: Language,
+  kind: 'create_calendar_event' | 'update_calendar_event',
+  title: string,
+  startDate: string | null | undefined,
+  startTime: string | undefined,
+) {
+  const when = startDate && startTime ? ` — ${startDate} ${startTime}` : startDate ? ` — ${startDate}` : ''
+  if (language === 'de') return `✓ Ereignis ${kind === 'create_calendar_event' ? 'erstellt' : 'aktualisiert'}: ${title}${when}`
+  if (language === 'fa') return `✓ رویداد ${kind === 'create_calendar_event' ? 'ایجاد شد' : 'به‌روزرسانی شد'}: ${title}${when}`
+  return `✓ Event ${kind === 'create_calendar_event' ? 'created' : 'updated'}: ${title}${when}`
+}
+
+async function createCalendarEventAlarmIfNeeded(env: Env, userId: string, event: CalendarEventRow, startUtcIso: string) {
+  const rows = await supabaseWriteReturning<AlarmRow[]>(env, 'POST', 'alarms?select=id,source_id,trigger_at', {
+    user_id: userId,
+    source_type: 'calendar_event',
+    source_id: event.id,
+    source_title: event.title,
+    trigger_at: startUtcIso,
+    remind_before_minutes: 0,
+    is_fired: false,
+    is_dismissed: false,
+  })
+  return rows[0]
+}
+
+const DEFAULT_EVENT_DURATION_MS = 60 * 60 * 1000
+const CALENDAR_EVENT_SELECT = 'id,user_id,title,date,start_time,end_time,location,description,color,type,all_day,created_at,updated_at'
+
+/**
+ * Task 22: mirrors executeAutoTaskWrite's shape exactly (clarify/failed/
+ * not_found/executed statuses, undo persistence, confirmation line). The
+ * date/start_time/end_time columns it writes are built the same way
+ * calendarService.ts's toInsertRow does client-side (slice a genuine UTC
+ * ISO instant into date/HH:MM text) -- see zonedDateTimeToUtcIso above --
+ * just resolved via the request's own IANA timeZone instead of a
+ * browser's implicit local one, so an event created here reads back
+ * identically through the real calendar UI.
+ */
+export async function executeAutoCalendarWrite(input: {
+  env: Env
+  userId: string
+  language: Language
+  intent: ParsedCalendarWriteIntent
+  now: Date
+  timeZone: string
+}): Promise<{ status: 'executed'; reply: string; undoId: string; undoExpiresAt: string } | { status: 'clarify'; reply: string } | { status: 'failed'; reply: string } | { status: 'not_found' }> {
+  const { env, userId, intent, language, now, timeZone } = input
+  if (intent.dateClarificationNeeded) return { status: 'clarify', reply: 'Which exact date should I use?' }
+  if (intent.kind === 'create_calendar_event') {
+    if (!intent.title) return { status: 'clarify', reply: 'What should the event be called?' }
+    if (!intent.startDate || !intent.startTime) return { status: 'clarify', reply: 'What date and time should the event be at?' }
+    const startUtcIso = zonedDateTimeToUtcIso(intent.startDate, intent.startTime, timeZone)
+    const endUtcIso = intent.endTime
+      ? zonedDateTimeToUtcIso(intent.startDate, intent.endTime, timeZone)
+      : new Date(new Date(startUtcIso).getTime() + DEFAULT_EVENT_DURATION_MS).toISOString()
+    const rows = await supabaseWriteReturning<CalendarEventRow[]>(env, 'POST', `calendar_events?select=${CALENDAR_EVENT_SELECT}`, {
+      user_id: userId,
+      title: intent.title,
+      date: startUtcIso.slice(0, 10),
+      start_time: startUtcIso.slice(11, 16),
+      end_time: endUtcIso.slice(11, 16),
+      location: null,
+      description: intent.notes ?? null,
+      color: null,
+      type: null,
+      all_day: false,
+    })
+    const event = rows[0]
+    if (!event?.id) return { status: 'failed', reply: 'I could not verify that the event was created.' }
+    await createCalendarEventAlarmIfNeeded(env, userId, event, startUtcIso)
+    const undoId = `undo:${crypto.randomUUID()}`
+    const expiresAt = undoExpiresAt(now)
+    await persistUndoRecord(env, { kind: 'create_calendar_event', userId, eventId: event.id, expiresAt }, undoId)
+    return { status: 'executed', reply: confirmationForCalendar(language, 'create_calendar_event', event.title, event.date, event.start_time ?? undefined), undoId, undoExpiresAt: expiresAt }
+  }
+
+  const events = await supabaseGet<CalendarEventRow[]>(env, `calendar_events?user_id=eq.${esc(userId)}&select=${CALENDAR_EVENT_SELECT}`)
+  const ref = intent.eventReference?.toLowerCase()
+  const matches = ref ? events.filter(event => event.title.toLowerCase().includes(ref) || ref.includes(event.title.toLowerCase())) : []
+  if (matches.length !== 1) return { status: matches.length > 1 ? 'clarify' : 'not_found', reply: 'Which exact event should I update?' }
+  const before = matches[0]
+  const patch: Record<string, unknown> = {}
+  if (intent.startDate !== undefined && intent.startDate !== null) patch.date = intent.startDate
+  if (intent.startTime) {
+    const dateForTime = intent.startDate ?? before.date
+    const startUtcIso = zonedDateTimeToUtcIso(dateForTime, intent.startTime, timeZone)
+    patch.date = startUtcIso.slice(0, 10)
+    patch.start_time = startUtcIso.slice(11, 16)
+    if (intent.endTime) patch.end_time = zonedDateTimeToUtcIso(dateForTime, intent.endTime, timeZone).slice(11, 16)
+  }
+  const rows = await supabaseWriteReturning<CalendarEventRow[]>(env, 'PATCH', `calendar_events?id=eq.${esc(before.id)}&user_id=eq.${esc(userId)}&select=${CALENDAR_EVENT_SELECT}`, patch)
+  const updated = rows[0]
+  if (!updated?.id) return { status: 'failed', reply: 'I could not verify that the event was updated.' }
+  const undoId = `undo:${crypto.randomUUID()}`
+  const expiresAt = undoExpiresAt(now)
+  await persistUndoRecord(env, {
+    kind: 'update_calendar_event',
+    userId,
+    eventId: before.id,
+    previous: { title: before.title, date: before.date, start_time: before.start_time, end_time: before.end_time, description: before.description },
+    expiresAt,
+  }, undoId)
+  return { status: 'executed', reply: confirmationForCalendar(language, 'update_calendar_event', updated.title, updated.date, updated.start_time ?? undefined), undoId, undoExpiresAt: expiresAt }
+}
+
+/**
+ * Task 22: renamed from undoAutoTaskWrite (only call site was index.ts,
+ * updated there too) -- now dispatches on the persisted kind to undo
+ * either a task or calendar_events write, since the undo record itself
+ * (not the caller) is what determines which domain to act on.
+ */
+export async function undoAutoWrite(env: Env, userId: string, undoId: string, now: Date): Promise<boolean> {
   const entry = await consumeUndoRecord(env, userId, undoId, now)
   if (!entry || entry.userId !== userId) return false
   if (entry.kind === 'create_task') {
     await supabaseWriteReturning<TaskRow[]>(env, 'DELETE', `tasks?id=eq.${esc(entry.taskId)}&user_id=eq.${esc(userId)}&select=id`)
     return true
   }
-  await supabaseWriteReturning<TaskRow[]>(env, 'PATCH', `tasks?id=eq.${esc(entry.taskId)}&user_id=eq.${esc(userId)}&select=id`, {
+  if (entry.kind === 'update_task') {
+    await supabaseWriteReturning<TaskRow[]>(env, 'PATCH', `tasks?id=eq.${esc(entry.taskId)}&user_id=eq.${esc(userId)}&select=id`, {
+      title: entry.previous.title,
+      notes: entry.previous.notes,
+      due_date: entry.previous.due_date,
+      completed: entry.previous.completed,
+    })
+    return true
+  }
+  if (entry.kind === 'create_calendar_event') {
+    await supabaseWriteReturning<CalendarEventRow[]>(env, 'DELETE', `calendar_events?id=eq.${esc(entry.eventId)}&user_id=eq.${esc(userId)}&select=id`)
+    return true
+  }
+  await supabaseWriteReturning<CalendarEventRow[]>(env, 'PATCH', `calendar_events?id=eq.${esc(entry.eventId)}&user_id=eq.${esc(userId)}&select=id`, {
     title: entry.previous.title,
-    notes: entry.previous.notes,
-    due_date: entry.previous.due_date,
-    completed: entry.previous.completed,
+    date: entry.previous.date,
+    start_time: entry.previous.start_time,
+    end_time: entry.previous.end_time,
+    description: entry.previous.description,
   })
   return true
 }

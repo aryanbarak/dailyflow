@@ -34,7 +34,7 @@ export const calendarTools: AgentToolDefinition[] = [
   {
     id: "calendar.create_event",
     name: "Create calendar event",
-    description: "Future contract for scheduling a calendar event after explicit approval.",
+    description: "Create a calendar event after policy evaluation and approval or user pre-authorization.",
     domain: "calendar",
     capability: "schedule",
     mode: "write",
@@ -70,7 +70,7 @@ export const calendarTools: AgentToolDefinition[] = [
     },
     enabled: true,
     version: "1.0.0",
-    tags: ["future", "calendar", "write"],
+    tags: ["calendar", "write"],
     examples: [
       {
         title: "Schedule focus time",
@@ -79,15 +79,15 @@ export const calendarTools: AgentToolDefinition[] = [
           start: "2026-07-12T09:00:00Z",
           end: "2026-07-12T10:00:00Z",
         },
-        expectedOutcome: "Creates an event only after explicit approval in a future executor.",
+        expectedOutcome: "Creates an event only after write policy allows execution or explicit approval.",
       },
     ],
-    constraints: ["Contract only.", "No handler is registered.", "Requires explicit user approval."],
+    constraints: ["Requires write policy authorization.", "Auto mode is allowed only while the operation remains undoable."],
   },
   {
     id: "calendar.update_event",
     name: "Update calendar event",
-    description: "Future contract for updating a calendar event after explicit approval.",
+    description: "Update calendar event metadata after policy evaluation and approval or user pre-authorization.",
     domain: "calendar",
     capability: "update",
     mode: "write",
@@ -117,14 +117,14 @@ export const calendarTools: AgentToolDefinition[] = [
     },
     enabled: true,
     version: "1.0.0",
-    tags: ["future", "calendar", "write"],
+    tags: ["calendar", "write"],
     examples: [
       {
         title: "Move an event",
         input: { eventId: "event-1", fields: { start: "2026-07-12T11:00:00Z" } },
-        expectedOutcome: "Updates an event only after explicit approval in a future executor.",
+        expectedOutcome: "Updates an event only after write policy allows execution or explicit approval.",
       },
     ],
-    constraints: ["Contract only.", "No handler is registered.", "Requires explicit user approval."],
+    constraints: ["Requires write policy authorization.", "Auto mode is allowed only while the operation remains undoable."],
   },
 ];

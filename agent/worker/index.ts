@@ -1,4 +1,4 @@
-import type { Env, AgentBriefing, ExtractedFact, MemoryEntry, UserContext, BriefingMode, ChatMessage, ChatOptions } from './types'
+import type { Env, AgentBriefing, ExtractedFact, MemoryEntry, UserContext, BriefingMode, ChatMessage, ChatOptions, Language } from './types'
 import { buildUserContext, fetchConfirmedPersonalMemory, fetchUserLanguage, fetchTaskSnapshot, fetchCalendarSnapshot, fetchHabitSnapshot, fetchFinanceSnapshot, supabaseGet, supabasePost, supabasePatch } from './context-builder'
 import { buildConfirmedMemoryIndicatorLine } from './personal-memory-prompt-serialization'
 import { buildPrompt, buildExtractionPrompt, buildChatExtractionPrompt, EXTRACTABLE_KEYS, buildChatSystemPrompt } from './prompt-builder'
@@ -15,7 +15,18 @@ import { handlePersonalMemoryExtractionRequest } from './personal-memory-extract
 import { handleDocumentMemoryExtractionRequest } from './document-memory-extraction-endpoint'
 import { buildAttachmentTextPart, resolveChatAttachment } from './chat-attachment-context'
 import { checkForFalseCompletionClaim } from './completion-claim-guard'
-import { assembleTaskWriteIntent, executeAutoTaskWrite, resolveCreateTaskTitle, resolveServerFlowWriteMode, undoAutoTaskWrite } from './flow-write-policy'
+import {
+  assembleCalendarWriteIntent,
+  assembleTaskWriteIntent,
+  detectContinuationDomain,
+  detectWriteDomainSignal,
+  executeAutoCalendarWrite,
+  executeAutoTaskWrite,
+  resolveCreateEventTitle,
+  resolveCreateTaskTitle,
+  resolveServerFlowWriteMode,
+  undoAutoWrite,
+} from './flow-write-policy'
 
 // ADR-0010 Product Owner Resolution Q4: always-on background extraction
 // into user_context is DISABLED by this decision (SUPERSEDE per Q3 --
@@ -645,6 +656,36 @@ async function handleFinanceSuggestions(request: Request, env: Env): Promise<Res
 // =============================================
 // /chat handler
 // =============================================
+// Task 22: shared by the task and calendar auto-write branches below --
+// persists the turn, builds the undo affordance, and returns the HTTP
+// response for a terminal execution outcome (executed/clarify/failed).
+// Returns null for 'not_found' so the caller falls through to the
+// pending-ask-mode path below, exactly like the pre-task-22 inline logic.
+async function respondToWriteExecution(
+  env: Env,
+  userId: string,
+  sessionId: string,
+  origin: string,
+  message: string,
+  language: Language,
+  domain: 'tasks' | 'calendar',
+  action: 'create' | 'update',
+  mode: 'auto' | 'ask' | 'off',
+  execution:
+    | { status: 'executed'; reply: string; undoId: string; undoExpiresAt: string }
+    | { status: 'clarify'; reply: string }
+    | { status: 'failed'; reply: string }
+    | { status: 'not_found' },
+): Promise<Response | null> {
+  if (execution.status !== 'executed' && execution.status !== 'clarify' && execution.status !== 'failed') return null
+  await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'user', content: message })
+  await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: execution.reply })
+  const undo = execution.status === 'executed'
+    ? { id: execution.undoId, label: language === 'de' ? 'Rückgängig' : language === 'fa' ? 'برگرداندن' : 'Undo', expiresAt: execution.undoExpiresAt }
+    : undefined
+  return json({ reply: execution.reply, writePolicy: { domain, action, mode }, writeExecution: execution.status, undo }, 200, origin)
+}
+
 async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const origin = request.headers.get('Origin') ?? ''
 
@@ -724,7 +765,7 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
     const undoMatch = message.match(/\bundo:([0-9a-f-]{36})\b/i)
     if (undoIdFromBody || undoMatch) {
       const undoId = undoIdFromBody ?? `undo:${undoMatch![1]}`
-      const undone = await undoAutoTaskWrite(env, userId, undoId, new Date())
+      const undone = await undoAutoWrite(env, userId, undoId, new Date())
       const reply = undone ? 'Undo complete.' : 'I could not undo that action. The undo window may have expired.'
       await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'user', content: undoIdFromBody ? 'Undo' : message })
       await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: reply })
@@ -743,11 +784,44 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
       .map(r => ({ role: r.role as ChatMessage['role'], content: r.content }))
       .reverse()
 
-    let pendingWritePolicy: { domain: 'tasks'; action: 'create' | 'update'; mode: 'ask' } | undefined
-    const taskWriteIntent = assembleTaskWriteIntent(message, history, new Date(), timeZone)
-    if (taskWriteIntent) {
-      const action = taskWriteIntent.kind === 'create_task' ? 'create' : 'update'
-      const mode = await resolveServerFlowWriteMode(env, userId, 'tasks', action)
+    let pendingWritePolicy: { domain: 'tasks' | 'calendar'; action: 'create' | 'update'; mode: 'ask' } | undefined
+
+    // Task 22 -- routing: a request naming a calendar concept, or a
+    // task-shaped request that ALSO carries a resolved time-of-day
+    // (tasks have no time-of-day column), is calendar business; a
+    // date-only task-shaped request is unchanged from today. Both noun
+    // classes matching is genuinely ambiguous -- ask once, don't loop:
+    // no pending state is stored, so the very next message is evaluated
+    // fresh and resolves on its own once it names either domain.
+    const writeDomainSignal = detectWriteDomainSignal(message, new Date(), timeZone)
+    if (writeDomainSignal === 'ambiguous') {
+      const reply = language === 'de'
+        ? 'Soll ich ein Kalenderereignis oder eine Aufgabe erstellen?'
+        : language === 'fa'
+          ? 'رویداد تقویم بسازم یا تسک؟'
+          : 'Should I create a calendar event or a task?'
+      await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'user', content: message })
+      await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: reply })
+      return json({ reply }, 200, origin)
+    }
+
+    // 'none' on THIS message doesn't rule out a continuation (an
+    // affirmative "yes"/"بله" or a title correction) of a domain-bearing
+    // message earlier in the conversation -- detectContinuationDomain
+    // finds which domain that was, so a time-bearing original request
+    // still resolves to calendar even when the reply that finally
+    // triggers execution says neither "task" nor "event".
+    const resolvedDomain: 'task' | 'calendar' | null =
+      writeDomainSignal === 'task' || writeDomainSignal === 'calendar'
+        ? writeDomainSignal
+        : detectContinuationDomain(history, new Date(), timeZone)
+    const taskWriteIntent = resolvedDomain === 'task' ? assembleTaskWriteIntent(message, history, new Date(), timeZone) : null
+    const calendarWriteIntent = resolvedDomain === 'calendar' ? assembleCalendarWriteIntent(message, history, new Date(), timeZone) : null
+
+    if (taskWriteIntent || calendarWriteIntent) {
+      const domain: 'tasks' | 'calendar' = taskWriteIntent ? 'tasks' : 'calendar'
+      const action: 'create' | 'update' = (taskWriteIntent?.kind ?? calendarWriteIntent!.kind).startsWith('create') ? 'create' : 'update'
+      const mode = await resolveServerFlowWriteMode(env, userId, domain, action)
       if (mode === 'off') {
         const reply = language === 'de'
           ? 'Diese Flow-AI-Aktion ist in deinen Einstellungen ausgeschaltet.'
@@ -756,29 +830,33 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
             : 'This Flow AI action is switched off in your settings.'
         await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'user', content: message })
         await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: reply })
-        return json({ reply, writePolicy: { domain: 'tasks', action, mode } }, 200, origin)
+        return json({ reply, writePolicy: { domain, action, mode } }, 200, origin)
       }
       if (mode === 'auto') {
-        // Task 21-fix6: resolve the create_task title through the model
-        // (validated, with pattern-extraction as a last-resort fallback)
-        // right before executing the write -- skipped for an explicit
-        // user title correction (that title is exact user intent) and
-        // when a due-date clarification is about to short-circuit this
-        // write anyway, to avoid a wasted model call.
-        if (taskWriteIntent.kind === 'create_task' && !taskWriteIntent.dateClarificationNeeded && taskWriteIntent.titleSource !== 'correction') {
-          taskWriteIntent.title = await resolveCreateTaskTitle(env, taskWriteIntent, message)
-        }
-        const execution = await executeAutoTaskWrite({ env, userId, language, intent: taskWriteIntent, now: new Date(), timeZone })
-        if (execution.status === 'executed' || execution.status === 'clarify' || execution.status === 'failed') {
-          await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'user', content: message })
-          await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: execution.reply })
-          const undo = execution.status === 'executed'
-            ? { id: execution.undoId, label: language === 'de' ? 'Rückgängig' : language === 'fa' ? 'برگرداندن' : 'Undo', expiresAt: execution.undoExpiresAt }
-            : undefined
-          return json({ reply: execution.reply, writePolicy: { domain: 'tasks', action, mode }, writeExecution: execution.status, undo }, 200, origin)
+        if (taskWriteIntent) {
+          // Task 21-fix6: resolve the create_task title through the model
+          // (validated, with pattern-extraction as a last-resort fallback)
+          // right before executing the write -- skipped for an explicit
+          // user title correction (that title is exact user intent) and
+          // when a due-date clarification is about to short-circuit this
+          // write anyway, to avoid a wasted model call.
+          if (taskWriteIntent.kind === 'create_task' && !taskWriteIntent.dateClarificationNeeded && taskWriteIntent.titleSource !== 'correction') {
+            taskWriteIntent.title = await resolveCreateTaskTitle(env, taskWriteIntent, message)
+          }
+          const execution = await executeAutoTaskWrite({ env, userId, language, intent: taskWriteIntent, now: new Date(), timeZone })
+          const response = await respondToWriteExecution(env, userId, sessionId, origin, message, language, domain, action, mode, execution)
+          if (response) return response
+        } else if (calendarWriteIntent) {
+          // Task 22: same model-title-resolution treatment as tasks above.
+          if (calendarWriteIntent.kind === 'create_calendar_event' && !calendarWriteIntent.dateClarificationNeeded && calendarWriteIntent.titleSource !== 'correction') {
+            calendarWriteIntent.title = await resolveCreateEventTitle(env, calendarWriteIntent, message)
+          }
+          const execution = await executeAutoCalendarWrite({ env, userId, language, intent: calendarWriteIntent, now: new Date(), timeZone })
+          const response = await respondToWriteExecution(env, userId, sessionId, origin, message, language, domain, action, mode, execution)
+          if (response) return response
         }
       }
-      pendingWritePolicy = { domain: 'tasks', action, mode: 'ask' }
+      pendingWritePolicy = { domain, action, mode: 'ask' }
     }
 
     // Task 19: resolve the optional attachment for THIS turn only. Nothing

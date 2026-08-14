@@ -21,6 +21,11 @@ export type AgentIntentType =
   | "complete_task"
   | "create_task"
   | "update_task"
+  // Task 22 (calendar write slice): tasks have no time-of-day field, so a
+  // request naming a calendar concept, or carrying a specific time,
+  // resolves to these instead of create_task/update_task.
+  | "create_calendar_event"
+  | "update_calendar_event"
   | "write_github_issue_comment"
   | "write_github_issue_update"
   | "ask_clarification"
@@ -41,6 +46,15 @@ export interface AgentIntentTarget {
   title?: string;
   notes?: string;
   dueDate?: string | null;
+  // Task 22 (calendar write slice): kept distinct from title/dueDate above
+  // (rather than reused) so a create_task and a create_calendar_event
+  // proposal in the same flat interface can never be confused about which
+  // domain a given field belongs to. start/end are ISO datetime strings.
+  eventTitle?: string;
+  eventReference?: string;
+  eventId?: string;
+  start?: string;
+  end?: string;
   // EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
   // Unlike task fields above, these are never fuzzy-matched against safe
   // context: repo/issueNumber/body must come from an explicit, well-formed
@@ -116,7 +130,7 @@ export type AgentLlmReasoningCaller = (
 
 export interface AgentReasoningValidationResult {
   proposal: AgentIntentProposal;
-  toolId?: "tasks.list" | "calendar.list_today" | "learning.get_progress" | "workspace.get_context" | "github.repositories.list" | "github.issues.list" | "github.epics.list" | "github.pulls.list" | "github.workflow_runs.list" | "tasks.complete" | "tasks.create" | "tasks.update" | "github.issues.comment" | "github.issues.update";
+  toolId?: "tasks.list" | "calendar.list_today" | "learning.get_progress" | "workspace.get_context" | "github.repositories.list" | "github.issues.list" | "github.epics.list" | "github.pulls.list" | "github.workflow_runs.list" | "tasks.complete" | "tasks.create" | "tasks.update" | "calendar.create_event" | "calendar.update_event" | "github.issues.comment" | "github.issues.update";
   validationReasons: string[];
 }
 

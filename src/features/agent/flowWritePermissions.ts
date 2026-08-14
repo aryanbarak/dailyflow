@@ -18,6 +18,11 @@ export interface FlowWritePermissionRow extends FlowWritePermissionKey {
 export const WIRED_FLOW_WRITE_CAPABILITIES: readonly FlowWritePermissionKey[] = Object.freeze([
   { domain: "tasks", action: "create" },
   { domain: "tasks", action: "update" },
+  // Task 22: calendar write slice -- the domain/default-mode logic below
+  // already special-cased "calendar" ahead of this, so surfacing it in
+  // Settings only requires these two entries.
+  { domain: "calendar", action: "create" },
+  { domain: "calendar", action: "update" },
 ]);
 
 export function defaultFlowWritePermissionMode(domain: string, action: string): FlowWritePermissionMode {
