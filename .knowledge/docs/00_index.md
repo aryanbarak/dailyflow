@@ -21,7 +21,7 @@ Before making a significant change, consult the relevant documents listed below.
 
 **Product name:** SmartFlow  
 **Repository:** `aryanbarak/smartflow`  
-**Application:** `https://barakzai.cloud`  
+**Application:** `https://smartaryn.com` (production; task 24 transition from `https://barakzai.cloud`, kept active in parallel until retirement is authorized)  
 **Primary documentation directory:** `.knowledge/docs/`  
 **Vector collection:** `dailyflow` — legacy technical name; do not create a second collection until a controlled migration is completed.
 

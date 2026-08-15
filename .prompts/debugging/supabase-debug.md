@@ -29,8 +29,8 @@ Debug a Supabase issue in the dailyFlow app.
 
 ### Auth issues
 - [ ] Site URL set correctly in Supabase Dashboard?
-  → Auth → URL Configuration → Site URL: https://barakzai.cloud
-- [ ] Redirect URL added? https://barakzai.cloud/**
+  → Auth → URL Configuration → Site URL: https://smartaryn.com (task 24 transition; https://barakzai.cloud was the prior value and stays active in parallel during the migration)
+- [ ] Redirect URL added? https://smartaryn.com/** (and https://barakzai.cloud/** during the transition)
 - [ ] Session expired? Check `supabase.auth.getSession()`
 
 ### Storage issues

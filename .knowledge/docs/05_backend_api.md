@@ -16,8 +16,8 @@
 ## Supabase Auth
 - Method: email + password
 - User: barakzahi@web.de
-- Site URL: https://barakzai.cloud
-- Redirect: https://barakzai.cloud/**
+- Site URL: https://smartaryn.com (task 24 transition; https://barakzai.cloud was the prior value and stays active in parallel during the migration)
+- Redirect: https://smartaryn.com/** (and https://barakzai.cloud/** during the transition)
 - Credentials: hardcoded in src/integrations/supabase/client.ts
 - Anon key is public (RLS enforces data isolation) — safe to commit
 

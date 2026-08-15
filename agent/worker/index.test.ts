@@ -1491,3 +1491,48 @@ describe('task 22-fix2: undo-persist failure must not destroy the turn (D2/D3)',
     void log
   })
 })
+
+describe('task 24: CORS allow-list -- dual-origin domain migration (barakzai.cloud -> smartaryn.com)', () => {
+  function optionsRequest(origin: string) {
+    return new Request('https://worker.test/chat', {
+      method: 'OPTIONS',
+      headers: { Origin: origin },
+    })
+  }
+
+  it.each([
+    'https://smartaryn.com',
+    'https://www.smartaryn.com',
+  ])('new production origin %s is allowed', async (origin) => {
+    const response = await worker.fetch(optionsRequest(origin), testEnv(), fakeExecutionContext())
+    expect(response.status).toBe(204)
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBe(origin)
+  })
+
+  it.each([
+    'https://barakzai.cloud',
+    'https://www.barakzai.cloud',
+  ])('the OLD production origin %s is still allowed during the transition (not removed)', async (origin) => {
+    const response = await worker.fetch(optionsRequest(origin), testEnv(), fakeExecutionContext())
+    expect(response.status).toBe(204)
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBe(origin)
+  })
+
+  it('an unrecognized origin is refused -- the response does not echo it back as Access-Control-Allow-Origin', async () => {
+    const response = await worker.fetch(optionsRequest('https://evil.example.com'), testEnv(), fakeExecutionContext())
+    expect(response.status).toBe(204)
+    const acao = response.headers.get('Access-Control-Allow-Origin')
+    expect(acao).not.toBe('https://evil.example.com')
+    // Falls back to the new primary domain -- not security-relevant (a
+    // mismatched ACAO blocks the browser regardless of the exact string),
+    // but pinned here so a future change to the fallback is a deliberate,
+    // visible edit rather than a silent behavior change.
+    expect(acao).toBe('https://smartaryn.com')
+  })
+
+  it('dev-origin regexes (localhost/private LAN) are unaffected by the domain migration', async () => {
+    const response = await worker.fetch(optionsRequest('http://localhost:5173'), testEnv(), fakeExecutionContext())
+    expect(response.status).toBe(204)
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBe('http://localhost:5173')
+  })
+})

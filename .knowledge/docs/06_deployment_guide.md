@@ -43,7 +43,7 @@ Note: FREE tier — no migration CLI, always manual.
 
 ## When Auth Breaks ("Failed to fetch" / NetworkError)
 1. Check Supabase project not paused (Dashboard → restart project)
-2. Verify Site URL = https://barakzai.cloud in Auth → URL Configuration
+2. Verify Site URL = https://smartaryn.com in Auth → URL Configuration (task 24 transition: https://barakzai.cloud was the prior value and may still be present as an additional allowed redirect during the migration)
 3. Check that VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY are NOT in GitHub Secrets
 4. Force redeploy: `gh workflow run deploy-cloudflare-pages.yml --ref main`
 
@@ -56,7 +56,7 @@ Note: FREE tier — no migration CLI, always manual.
 - [ ] .knowledge/docs/ updated if architecture changed
 
 ## Post-Deploy Verification
-- [ ] https://barakzai.cloud loads correctly
+- [ ] https://smartaryn.com loads correctly (and https://barakzai.cloud still works during the transition)
 - [ ] Login works (Supabase auth)
 - [ ] Check browser console for errors
 - [ ] Test the feature that was changed

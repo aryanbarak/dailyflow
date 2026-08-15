@@ -44,7 +44,7 @@ separate boundaries.
 
 ## Live URLs
 
-- App: https://barakzai.cloud
+- App: https://smartaryn.com (production; task 24 transition from https://barakzai.cloud, kept active in parallel until retirement is authorized)
 - AI Worker: https://api.barakzai.cloud/analyze
 - Repo: https://github.com/aryanbarak/smartflow
 - Supabase: taqxwnlwllbywaklwyno (FREE tier)

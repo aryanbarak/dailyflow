@@ -16,7 +16,7 @@ AI Tutor, Habits, Journal, Flashcards, Global Search, Settings.
 
 | Resource | URL |
 |----------|-----|
-| App | https://barakzai.cloud |
+| App | https://smartaryn.com (production; task 24 transition from https://barakzai.cloud, which stays active in parallel until retirement is authorized) |
 | AI Worker | https://api.barakzai.cloud |
 | Frontend Repo | https://github.com/aryanbarak/smartflow |
 | Worker Repo | https://github.com/aryanbarak/smartflow-ai-worker |
@@ -165,7 +165,7 @@ CORS: allows `https://barakzai.cloud` and `http://localhost:*`
 ```
 git push origin main
 → Cloudflare Pages picks up automatically (~30s build)
-→ Live at https://barakzai.cloud
+→ Live at https://smartaryn.com (task 24: production moved here from https://barakzai.cloud, which stays active in parallel during the transition)
 ```
 
 ### AI Worker

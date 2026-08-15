@@ -1462,7 +1462,14 @@ function json(body: unknown, status = 200, origin = ''): Response {
   })
 }
 
+// Task 24: the production frontend moved to https://smartaryn.com
+// (Cloudflare Pages custom domain, Supabase Site URL/redirect URLs already
+// updated). barakzai.cloud is kept alongside it -- dual-origin during the
+// transition -- and stays until the PO explicitly authorizes removing it as
+// a separate, later step.
 const PRODUCTION_ORIGINS = new Set([
+  'https://smartaryn.com',
+  'https://www.smartaryn.com',
   'https://barakzai.cloud',
   'https://www.barakzai.cloud',
 ])
@@ -1475,9 +1482,15 @@ const DEV_ORIGIN_RES = [
 ]
 
 function corsHeaders(origin: string): Record<string, string> {
+  // Task 24: this fallback value has no security effect either way -- a
+  // browser only accepts a response whose Access-Control-Allow-Origin
+  // matches ITS OWN origin exactly, so a disallowed origin is blocked
+  // client-side regardless of what string appears here. Pointed at the new
+  // primary domain purely for consistency now that smartaryn.com is the
+  // production frontend.
   const allowed = PRODUCTION_ORIGINS.has(origin) || DEV_ORIGIN_RES.some(re => re.test(origin))
     ? origin
-    : 'https://barakzai.cloud'
+    : 'https://smartaryn.com'
   return {
     'Access-Control-Allow-Origin': allowed,
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',

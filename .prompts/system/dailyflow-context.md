@@ -2,7 +2,7 @@
 
 ## Project
 Personal productivity React SPA for one user (barakzahi@web.de).
-Live at: https://barakzai.cloud
+Live at: https://smartaryn.com (task 24 transition from https://barakzai.cloud, which stays active in parallel until retirement is authorized)
 Repo: https://github.com/aryanbarak/smartflow
 
 ## Tech Stack

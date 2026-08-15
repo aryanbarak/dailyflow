@@ -10,7 +10,7 @@ Review this code for security issues in the smartFlow Supabase + React app.
 - [ ] File uploads: type and size validated before upload to Supabase Storage
 - [ ] Auth state checked before sensitive operations (getUser() at top of every service function)
 - [ ] No sensitive data in localStorage — only use smartflow: prefix keys for non-sensitive prefs
-- [ ] CORS: Cloudflare Worker only allows barakzai.cloud origin — localhost requests blocked in prod
+- [ ] CORS: Cloudflare Worker only allows smartaryn.com and barakzai.cloud origins (dual-origin during the task 24 domain transition) — localhost requests blocked in prod
 - [ ] No environment variables with secrets exposed to client bundle (VITE_ prefix variables are public)
 
 ## Code to Review:

@@ -10,7 +10,7 @@
 
 | | |
 |---|---|
-| **Live app** | `https://barakzai.cloud` |
+| **Live app** | `https://smartaryn.com` (production; transitioning from `https://barakzai.cloud`, which stays active during the migration) |
 | **AI Worker** | `https://api.barakzai.cloud/analyze` |
 | **Repo** | `https://github.com/aryanbarak/smartflow` |
 | **Supabase project** | `taqxwnlwllbywaklwyno` (aryanbarak's Project, FREE tier) |
@@ -238,7 +238,7 @@ KEY:  eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...TmhuyWcwEUwnSvxXJiZ2HueY6Jr0sudmyJW
 ### When Auth Breaks ("Failed to fetch" / "NetworkError")
 1. Check `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` in GitHub secrets — if they exist with wrong values, delete them
 2. Open browser DevTools → Network → look at the Request URL in the failed Supabase call — wrong URL = wrong/truncated secret
-3. Supabase Auth → URL Configuration must have Site URL = `https://barakzai.cloud` and redirect `https://barakzai.cloud/**`
+3. Supabase Auth → URL Configuration must have Site URL = `https://smartaryn.com` and redirect `https://smartaryn.com/**` (transition: `https://barakzai.cloud` / `https://barakzai.cloud/**` were the prior values and may still be present as an additional allowed redirect during the migration)
 4. After any fix: manually trigger workflow via `gh workflow run deploy-cloudflare-pages.yml --ref main`
 
 ### Supabase FREE Tier
@@ -253,7 +253,7 @@ KEY:  eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...TmhuyWcwEUwnSvxXJiZ2HueY6Jr0sudmyJW
 ### AI Worker
 - Source lives in `smartflow-ai-worker/` (NOT in this repo's git history — no version control)
 - `GEMINI_API_KEY` must be set manually via `npx wrangler secret put GEMINI_API_KEY` inside `smartflow-ai-worker/`
-- CORS is hardcoded to `https://barakzai.cloud` only — localhost requests are blocked in production
+- CORS is hardcoded to `https://barakzai.cloud` only — localhost requests are blocked in production (this section describes the legacy `smartflow-ai-worker/` API host, a separate repo/service from this repo's own `agent/worker` Cloudflare Worker; task 24 added `https://smartaryn.com` to `agent/worker`'s own CORS allow-list — see `agent/worker/index.ts`. Whether `smartflow-ai-worker`'s CORS also needs `smartaryn.com` is out of this task's scope; see the task 24 report)
 
 ### Deployment
 ```bash

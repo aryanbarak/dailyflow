@@ -69,7 +69,7 @@ test.describe('Feature Name', () => {
 ## ⚠️ Notes for dailyFlow
 - Always sign in first (Supabase auth required)
 - Use test data — clean up after tests to avoid polluting the DB
-- Don't test against production (barakzai.cloud) — only localhost
+- Don't test against production (smartaryn.com, or barakzai.cloud during the task 24 transition) — only localhost
 - Run against local dev server: `npm run dev` (port 8080)
 - RTL mode (Farsi): set language to 'fa' in settings before testing RTL flows
 

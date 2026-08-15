@@ -4,7 +4,8 @@
 
 **AI-powered productivity and life management platform**
 
-[![Live Demo](https://img.shields.io/badge/🌐_Live_Demo-barakzai.cloud-DAA520?style=for-the-badge)](https://barakzai.cloud)
+[![Live Demo](https://img.shields.io/badge/🌐_Live_Demo-smartaryn.com-DAA520?style=for-the-badge)](https://smartaryn.com)
+<!-- Transition note (task 24): the app is migrating from https://barakzai.cloud to https://smartaryn.com; the old domain stays active in parallel until the PO authorizes retiring it. -->
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://react.dev/)
 [![Supabase](https://img.shields.io/badge/Supabase-PostgreSQL-3FCF8E?style=for-the-badge&logo=supabase&logoColor=white)](https://supabase.com/)

@@ -2,7 +2,7 @@
 
 ## Project Info
 - Repo: https://github.com/aryanbarak/smartflow
-- Live: https://barakzai.cloud
+- Live: https://smartaryn.com (task 24 transition from https://barakzai.cloud, which stays active in parallel until retirement is authorized)
 - Hosting: Cloudflare Pages
 - CI/CD: GitHub Actions → .github/workflows/deploy-cloudflare-pages.yml
 - Build command: `npm run build`
