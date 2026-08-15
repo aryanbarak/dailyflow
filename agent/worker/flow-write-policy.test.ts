@@ -19,6 +19,7 @@ import {
   resolveCreateEventTitle,
   resolveCreateTaskTitle,
   UNDO_KIND_VALUES,
+  utcInstantToZonedDateAndTime,
   validateCandidateTitle,
   zonedDateTimeToUtcIso,
   type ParsedCalendarWriteIntent,
@@ -393,6 +394,23 @@ describe('task 22: calendar write slice + task/event routing', () => {
       // calendarService.ts's toInsertRow: date = slice(0,10), start_time = slice(11,16).
       expect(startUtcIso.slice(0, 10)).toBe('2026-08-14')
       expect(startUtcIso.slice(11, 16)).toBe('11:00')
+    })
+  })
+
+  describe('task 22-fix3: utcInstantToZonedDateAndTime -- the confirmation-line timezone fix', () => {
+    it('the exact production evidence: a persisted 2026-08-16T11:00:00.000Z instant reads back as 13:00 in Europe/Berlin, not 11:00', () => {
+      expect(utcInstantToZonedDateAndTime('2026-08-16T11:00:00.000Z', TZ)).toEqual({ date: '2026-08-16', time: '13:00' })
+    })
+
+    it('is the exact inverse of zonedDateTimeToUtcIso for the same wall-clock intent', () => {
+      const utcIso = zonedDateTimeToUtcIso('2026-08-14', '13:00', TZ)
+      expect(utcInstantToZonedDateAndTime(utcIso, TZ)).toEqual({ date: '2026-08-14', time: '13:00' })
+    })
+
+    it('converts correctly for a non-DST zone offset too (winter, UTC+1)', () => {
+      const utcIso = zonedDateTimeToUtcIso('2026-01-14', '13:00', TZ)
+      expect(utcIso).toBe('2026-01-14T12:00:00.000Z')
+      expect(utcInstantToZonedDateAndTime(utcIso, TZ)).toEqual({ date: '2026-01-14', time: '13:00' })
     })
   })
 

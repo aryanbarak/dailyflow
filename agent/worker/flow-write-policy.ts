@@ -327,6 +327,31 @@ export function zonedDateTimeToUtcIso(dateKeyValue: string, timeOfDay: string, t
   return new Date(desiredUtcMs - (actualAsUtcMs - desiredUtcMs)).toISOString()
 }
 
+// Task 22-fix3: the exact inverse of zonedDateTimeToUtcIso -- given a genuine
+// UTC instant (what calendar_events.date/start_time actually store, sliced
+// from a real UTC ISO instant, same convention as calendarService.ts's
+// toInsertRow on the frontend) and the SAME timeZone the deterministic
+// parser resolved the request with, returns the wall-clock date/time a user
+// in that zone would actually see. Confirmation-line builders must call this
+// before displaying a persisted event's date/start_time -- reading those
+// columns raw (as executeAutoCalendarWrite did before this fix) silently
+// displays UTC, not local time.
+export function utcInstantToZonedDateAndTime(utcIso: string, timeZone: string): { date: string; time: string } {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(new Date(utcIso)).reduce<Record<string, string>>((acc, part) => {
+    if (part.type !== 'literal') acc[part.type] = part.value
+    return acc
+  }, {})
+  return { date: `${parts.year}-${parts.month}-${parts.day}`, time: `${parts.hour}:${parts.minute}` }
+}
+
 export function parseDeterministicTimeOfDay(message: string): string | undefined {
   const text = normalizeDigits(message.toLowerCase())
   const persian = text.match(/\u0633\u0627\u0639\u062a\s+([01]?[0-9]|2[0-3])(?::([0-5][0-9]))?\s*(\u0635\u0628\u062d|\u0639\u0635\u0631|\u0628\u0639\u062f\s+\u0627\u0632\s+\u0638\u0647\u0631|\u0634\u0628)?/)
@@ -742,9 +767,29 @@ export function parseTaskWriteIntent(message: string, now: Date, timeZone: strin
   return { kind: 'update_task', taskReference: quoted, dueDate: date.value, timeOfDay, dateClarificationNeeded: date.clarificationNeeded }
 }
 
+// Task 22-fix3: a date/time token (digits, dashes, colons, a space -- no
+// strong letter in either script) carries no directional strength of its
+// own under the bidi algorithm (UAX#9), so a Persian confirmation line can
+// visually reorder its internal groups ("16-08-2026 13:00" reading as
+// scrambled or reversed) even though the string itself is correct left to
+// right. src/lib/bidiText.tsx (the frontend's shared bidi utility, used by
+// every markdown-rendered surface) deliberately does NOT isolate bare
+// digit/punctuation runs -- see that file's own R2 comment -- so a plain
+// numeric token like this one is exactly the case it leaves untouched.
+// Worker replies are plain text (no React tree to hand a <bdi> to), so this
+// wraps the token in the same underlying mechanism <bdi> itself uses --
+// U+2066 LEFT-TO-RIGHT ISOLATE / U+2069 POP DIRECTIONAL ISOLATE -- directly
+// in the string, guaranteeing one canonical left-to-right reading order
+// regardless of the surrounding paragraph's direction.
+const LRI = '⁦'
+const PDI = '⁩'
+function isolateForBidi(token: string): string {
+  return `${LRI}${token}${PDI}`
+}
+
 function confirmation(language: Language, kind: 'create_task' | 'update_task', title: string, dueDate: string | null | undefined, timeOfDay?: string) {
-  const due = dueDate ? ` — due ${dueDate}` : ''
-  const time = timeOfDay ? ` — time mentioned ${timeOfDay}` : ''
+  const due = dueDate ? ` — due ${isolateForBidi(dueDate)}` : ''
+  const time = timeOfDay ? ` — time mentioned ${isolateForBidi(timeOfDay)}` : ''
   if (language === 'de') return `✓ Aufgabe ${kind === 'create_task' ? 'erstellt' : 'aktualisiert'}: ${title}${due}${time}`
   if (language === 'fa') return `✓ وظیفه ${kind === 'create_task' ? 'ایجاد شد' : 'به‌روزرسانی شد'}: ${title}${due}${time}`
   return `✓ Task ${kind === 'create_task' ? 'created' : 'updated'}: ${title}${due}${time}`
@@ -1030,7 +1075,7 @@ function confirmationForCalendar(
   startDate: string | null | undefined,
   startTime: string | undefined,
 ) {
-  const when = startDate && startTime ? ` — ${startDate} ${startTime}` : startDate ? ` — ${startDate}` : ''
+  const when = startDate && startTime ? ` — ${isolateForBidi(`${startDate} ${startTime}`)}` : startDate ? ` — ${isolateForBidi(startDate)}` : ''
   if (language === 'de') return `✓ Ereignis ${kind === 'create_calendar_event' ? 'erstellt' : 'aktualisiert'}: ${title}${when}`
   if (language === 'fa') return `✓ رویداد ${kind === 'create_calendar_event' ? 'ایجاد شد' : 'به‌روزرسانی شد'}: ${title}${when}`
   return `✓ Event ${kind === 'create_calendar_event' ? 'created' : 'updated'}: ${title}${when}`
@@ -1102,7 +1147,14 @@ export async function executeAutoCalendarWrite(input: {
       if (alarm?.id) await supabaseWriteNoContent(env, 'DELETE', `alarms?id=eq.${esc(alarm.id)}&user_id=eq.${esc(userId)}`)
     })
     if (undoFailure) return undoFailure
-    return { status: 'executed', reply: confirmationForCalendar(language, 'create_calendar_event', event.title, event.date, event.start_time ?? undefined), undoId, undoExpiresAt: expiresAt }
+    // Task 22-fix3: event.date/event.start_time are the persisted columns,
+    // sliced from a genuine UTC instant (same convention as
+    // calendarService.ts's toInsertRow on the frontend) -- displaying them
+    // raw silently shows UTC. Convert back to the SAME timeZone the
+    // deterministic parser resolved this request with before building the
+    // confirmation line.
+    const localWhen = utcInstantToZonedDateAndTime(`${event.date}T${event.start_time ?? '00:00'}:00.000Z`, timeZone)
+    return { status: 'executed', reply: confirmationForCalendar(language, 'create_calendar_event', event.title, localWhen.date, localWhen.time), undoId, undoExpiresAt: expiresAt }
   }
 
   const events = await supabaseGet<CalendarEventRow[]>(env, `calendar_events?user_id=eq.${esc(userId)}&select=${CALENDAR_EVENT_SELECT}`)
@@ -1142,7 +1194,9 @@ export async function executeAutoCalendarWrite(input: {
     },
   )
   if (undoFailure) return undoFailure
-  return { status: 'executed', reply: confirmationForCalendar(language, 'update_calendar_event', updated.title, updated.date, updated.start_time ?? undefined), undoId, undoExpiresAt: expiresAt }
+  // Task 22-fix3: same conversion as the create branch above -- see its comment.
+  const localWhen = utcInstantToZonedDateAndTime(`${updated.date}T${updated.start_time ?? '00:00'}:00.000Z`, timeZone)
+  return { status: 'executed', reply: confirmationForCalendar(language, 'update_calendar_event', updated.title, localWhen.date, localWhen.time), undoId, undoExpiresAt: expiresAt }
 }
 
 /**

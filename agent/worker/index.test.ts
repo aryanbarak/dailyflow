@@ -929,11 +929,19 @@ describe('ADR-0012 server-side task write policy', () => {
       expect(body.writeExecution).toBe('executed')
       expect(log.taskWrites.length).toBe(0)
       expect(log.calendarWrites[0]?.body?.title).toBe('ترمین داکتر فامیلی')
+      // The PERSISTED columns are still UTC-sliced, exactly matching
+      // calendarService.ts's own toInsertRow convention on the frontend --
+      // that part was never the bug.
       expect(log.calendarWrites[0]?.body?.date).toBe('2026-08-15')
       expect(log.calendarWrites[0]?.body?.start_time).toBe('11:00')
       // No leaked command fragments or stray punctuation/digits.
       expect(log.calendarWrites[0]?.body?.title).not.toContain('برایم')
       expect(log.calendarWrites[0]?.body?.title).not.toMatch(/[0-9۰-۹]/)
+      // Task 22-fix3: the CHAT confirmation line must show the user's own
+      // local wall-clock time (13:00 CEST -- what they typed and what the
+      // Calendar page displays), never the raw UTC-sliced DB columns above.
+      expect(body.reply).toContain('13:00')
+      expect(body.reply).not.toContain('11:00')
     })
 
     it('rejects a model title that is just the whole raw message and falls back to the validated pattern title (unit-tested overlap-specific case lives in flow-write-policy.test.ts)', async () => {
@@ -989,6 +997,31 @@ describe('ADR-0012 server-side task write policy', () => {
       expect(body.writeExecution).toBe('executed')
       expect(log.taskWrites[0]?.body?.title).toBe('ترمین داکتر فامیلی')
       expect(log.geminiCalls.length).toBe(0)
+    })
+
+    // Task 22-fix3: a task-alarm confirmation case. A time-bearing message
+    // normally routes straight to the calendar (task 22's own routing
+    // rule), so the ONLY way a task confirmation ever carries a timeOfDay is
+    // via a multi-turn continuation whose ORIGINAL triggering message had no
+    // time at all (domain already locked to "task" by then) -- exercised
+    // here end to end. intent.timeOfDay was never round-tripped through a
+    // UTC column for tasks (tasks have no time-of-day column, task 22's own
+    // premise), so this was never the timezone bug calendar had -- this
+    // confirms it stays correct and gets the same canonical/bidi-safe
+    // formatting as the calendar fix.
+    it('task-alarm confirmation case: a time picked up on a later continuation turn still shows the correct local time', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [
+        { role: 'user', content: 'Create a task "Review invoices"' },
+      ], 'Review invoices')
+      const response = await worker.fetch(chatRequest({
+        message: 'Yes, at 3pm',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { reply?: string; writeExecution?: string }
+
+      expect(body.writeExecution).toBe('executed')
+      expect(log.taskWrites[0]?.body?.title).toBe('Review invoices')
+      expect(body.reply).toContain('15:00')
     })
   })
 
@@ -1249,6 +1282,24 @@ describe('task 22: calendar write policy + routing', () => {
     expect(log.geminiCalls.length).toBe(0)
   })
 
+  it('task 22-fix3: update_calendar_event confirmation shows the requested local time, not the UTC-sliced patch value', async () => {
+    // Mocked GET returns "Team sync" at date 2026-08-13, start_time 10:00.
+    // Moving it to 15:00 local (Europe/Berlin, CEST) patches start_time to
+    // the UTC-sliced "13:00" -- the confirmation line must still say 15:00.
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto')
+    const response = await worker.fetch(chatRequest({
+      message: 'Move the "Team sync" event to 15:00',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { reply?: string; writeExecution?: string }
+
+    expect(body.writeExecution).toBe('executed')
+    const patch = log.calendarWrites.find(w => w.method === 'PATCH')
+    expect(patch?.body?.start_time).toBe('13:00')
+    expect(body.reply).toContain('15:00')
+    expect(body.reply).not.toContain('13:00')
+  })
+
   it('undo for auto-created calendar events deletes the created event within the undo window, from a cold context', async () => {
     const undoStore: UndoStore = new Map()
     const log = installFetchMock([], null, 'Gemini should not be called', 'auto', undoStore)
@@ -1317,6 +1368,11 @@ describe('task 22-fix: implicit schedule statements reach the deterministic writ
     // Stored as the UTC-sliced instant (calendarService.ts's own row
     // shape), not the local wall-clock time: 13:00 CEST (UTC+2) -> 11:00 UTC.
     expect(log.calendarWrites[0]?.body?.start_time).toBe('11:00')
+    // Task 22-fix3: this is the literal "22-fix3" production evidence --
+    // the chat confirmation must show the local time the user actually
+    // typed (13:00), never the raw UTC-sliced DB value (11:00).
+    expect(body.reply).toContain('13:00')
+    expect(body.reply).not.toContain('11:00')
   })
 
   it('the same implicit message under an "ask" policy still returns a server-resolved policy (not silently falling through to a plain, policy-less chat reply)', async () => {
