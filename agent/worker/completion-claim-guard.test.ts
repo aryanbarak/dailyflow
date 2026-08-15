@@ -115,6 +115,88 @@ describe('checkForFalseCompletionClaim (task 20, Part A2)', () => {
     })
   })
 
+  describe('task 22-fix (C3): present/future and perfect-tense false-completion shapes', () => {
+    it('FA: production evidence -- "به تقویم اضافه می‌شود" (present/future "is being added") is flagged', () => {
+      const result = checkForFalseCompletionClaim('این را به تقویم اضافه می‌شود.', 'fa')
+      expect(result.flagged).toBe(true)
+      expect(result.matchedKind).toBe('completion_claim')
+    })
+
+    it('FA: production evidence -- "قبلاً ... اضافه شده است" (perfect "has already been added") is flagged', () => {
+      const result = checkForFalseCompletionClaim('این مورد قبلاً به تقویم شما اضافه شده است.', 'fa')
+      expect(result.flagged).toBe(true)
+      expect(result.matchedKind).toBe('completion_claim')
+    })
+
+    it('FA: "ثبت می‌شود" (present/future) is flagged', () => {
+      const result = checkForFalseCompletionClaim('رویداد شما ثبت می‌شود.', 'fa')
+      expect(result.flagged).toBe(true)
+    })
+
+    it('FA: "می‌سازم" (first-person future) is flagged', () => {
+      const result = checkForFalseCompletionClaim('الان آن را می‌سازم.', 'fa')
+      expect(result.flagged).toBe(true)
+    })
+
+    it('FA: "ساخته شده است" (perfect) is flagged', () => {
+      const result = checkForFalseCompletionClaim('این رویداد ساخته شده است.', 'fa')
+      expect(result.flagged).toBe(true)
+    })
+
+    it('EN: "has already been added" (not covered by the plain "has been added" pattern) is flagged', () => {
+      const result = checkForFalseCompletionClaim('Your event has already been added to the calendar.', 'en')
+      expect(result.flagged).toBe(true)
+    })
+
+    it('EN: "is being created" (present continuous) is flagged', () => {
+      const result = checkForFalseCompletionClaim('Your task is being created now.', 'en')
+      expect(result.flagged).toBe(true)
+    })
+
+    it('DE: "wurde bereits hinzugefügt" (not covered by "erfolgreich") is flagged', () => {
+      const result = checkForFalseCompletionClaim('Dein Termin wurde bereits hinzugefügt.', 'de')
+      expect(result.flagged).toBe(true)
+    })
+
+    it('DE: "wird erstellt" (present tense) is flagged', () => {
+      const result = checkForFalseCompletionClaim('Deine Aufgabe wird erstellt.', 'de')
+      expect(result.flagged).toBe(true)
+    })
+
+    // Note: the "already"/"bereits"/"قبلاً" cue sits INSIDE these new match
+    // patterns (unlike "successfully"/"erfolgreich"/"با موفقیت", which sit
+    // OUTSIDE their own pattern and so leave room for the attribution
+    // window to see "you've"/"du hast"/"شما" immediately before the match).
+    // That means the existing immediate-precedence attribution guard cannot
+    // exempt a "you already ..." sentence built on these specific new
+    // patterns -- a documented, narrower residual gap for this shape only,
+    // consistent with this file's own stated bias (catching a real lie over
+    // avoiding every possible false positive). False-positive bounding for
+    // these patterns instead comes from the narrow, closed domain-verb
+    // vocabulary (تنظیم/ایجاد/ذخیره/اضافه/ثبت/ساخته, set up/scheduled/
+    // created/saved/added, eingerichtet/erstellt/gespeichert/hinzugefügt/
+    // geplant/angelegt) -- verified below.
+    it('false-positive bounding: an unrelated present-tense German sentence using a different verb is NOT flagged', () => {
+      const result = checkForFalseCompletionClaim('Der Bericht wird von einem anderen Team geprüft.', 'de')
+      expect(result.flagged).toBe(false)
+    })
+
+    it('false-positive bounding: an unrelated English present-continuous sentence using a different verb is NOT flagged', () => {
+      const result = checkForFalseCompletionClaim('Your report is being reviewed by another team.', 'en')
+      expect(result.flagged).toBe(false)
+    })
+
+    it('false-positive bounding: an unrelated Persian present/future sentence using a different verb is NOT flagged', () => {
+      const result = checkForFalseCompletionClaim('گزارش شما توسط تیم دیگری بررسی می‌شود.', 'fa')
+      expect(result.flagged).toBe(false)
+    })
+
+    it('false-positive bounding: verified execution evidence still suppresses the new patterns too', () => {
+      const result = checkForFalseCompletionClaim('این را به تقویم اضافه می‌شود.', 'fa', { verifiedWriteExecutedInTurn: true })
+      expect(result.flagged).toBe(false)
+    })
+  })
+
   describe('neutral replacement copy is calm and offers to prepare the action', () => {
     it('EN replacement mentions approval, not just a bare correction', () => {
       const result = checkForFalseCompletionClaim('Successfully created your task.', 'en')

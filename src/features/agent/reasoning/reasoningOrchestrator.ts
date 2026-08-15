@@ -96,6 +96,7 @@ export async function reasonAboutUserMessage(
     safeContext: input.safeContext,
     language: responseLanguage,
     now,
+    timeZone: input.timeZone,
   });
   const result = toAgentReasoningResult(validation, responseLanguage);
 

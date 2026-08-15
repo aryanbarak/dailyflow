@@ -1905,6 +1905,7 @@ export default function ChatPage() {
             githubRepositoryInventory,
           },
           sessionId,
+          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         }, {
           callLlmReasoning: createLlmReasoningCaller({
             endpoint: reasoningTransport.endpoint,

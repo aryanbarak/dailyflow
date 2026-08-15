@@ -43,6 +43,16 @@ export interface ParsedCalendarWriteIntent {
 export interface RecentChatTurn {
   role: string
   content: string
+  // Task 22-fix (C1 off-by-one): when the message this turn holds contains
+  // its OWN relative date term ("فردا"/"tomorrow"), that term must resolve
+  // against the instant the turn was actually sent, not the current
+  // request's `now` -- otherwise re-scanning history from a LATER
+  // continuation (e.g. an affirmative "yes" sent after local midnight has
+  // passed) silently shifts "tomorrow" forward a day relative to what the
+  // user meant when they typed it. Optional so existing tests/callers that
+  // don't have it keep working (falls back to `now`, today's -- imperfect
+  // but no-worse-than-before -- behaviour).
+  createdAt?: string
 }
 
 interface TaskRow {
@@ -636,17 +646,59 @@ export function detectWriteDomainSignal(message: string, now: Date, timeZone: st
  * history-scan window (last 6 user messages) so the two stay consistent.
  * Exported for direct unit testing.
  */
+// Task 22-fix (C1 off-by-one): resolves a historical turn's OWN relative
+// date terms against the instant IT was sent, not the current turn's `now`
+// -- see RecentChatTurn.createdAt above for why.
+function turnNow(turn: RecentChatTurn, fallbackNow: Date): Date {
+  if (!turn.createdAt) return fallbackNow
+  const parsed = new Date(turn.createdAt)
+  return Number.isNaN(parsed.getTime()) ? fallbackNow : parsed
+}
+
 export function detectContinuationDomain(recentTurns: RecentChatTurn[], now: Date, timeZone: string): 'task' | 'calendar' | null {
-  const recentUserMessages = recentTurns
+  const recentUserTurns = recentTurns
     .filter(turn => turn.role === 'user')
-    .map(turn => turn.content)
     .slice(-6)
     .reverse()
-  for (const content of recentUserMessages) {
-    const signal = detectWriteDomainSignal(content, now, timeZone)
+  for (const turn of recentUserTurns) {
+    const signal = detectWriteDomainSignal(turn.content, turnNow(turn, now), timeZone)
     if (signal === 'task' || signal === 'calendar') return signal
   }
   return null
+}
+
+// Task 22-fix (C1/C2 production root cause): a bare personal statement --
+// "I have a family doctor appointment tomorrow at 13:00" -- carries the
+// exact same write intent as an explicit imperative ("create a task") but
+// without one. extractTaskTitle's own subject patterns below
+// (persianSubject/englishSubject/germanSubject) already anticipated this
+// phrasing for TITLE extraction, but nothing upstream ever recognized it as
+// a WRITE TRIGGER -- so a message phrased this way never reached ANY of
+// parseDeterministicDueDate/parseDeterministicTimeOfDay/
+// resolveServerFlowWriteMode at all: it fell straight through to the plain
+// model-generated chat reply, which is why the model's own untethered (and
+// wrong) date survived to the user, AND why no writePolicy was ever
+// returned in the response (so the frontend's approval overlay, which only
+// suppresses itself when the server explicitly says auto/off, was never
+// suppressed either -- production showed "Approval required" not because
+// the auto default failed to apply, but because this code path never ran
+// at all). Gated by a resolved date/time signal (a date phrase, a
+// clarification-needed "due"/"moved" keyword, or a resolved time-of-day) so
+// an unrelated first-person sentence never trips this, and by NOT looking
+// like a read/list question (looksLikeSubjectChange, defined below --
+// `function` hoisting makes the forward reference safe).
+function isImplicitScheduleStatement(message: string): boolean {
+  if (looksLikeSubjectChange(message)) return false
+  const text = normalizeDigits(message)
+  return /دارم/.test(text) ||                                    // "دارم" (I have)
+    /\bi\s+(?:have|need to|need)\b/i.test(text) ||                // "I have"/"I need"
+    /\b(?:dass|weil)?\s*ich\s+(?:habe|muss)\b/i.test(text)        // "ich habe"/"ich muss"
+}
+
+function hasResolvedDateOrTimeSignal(message: string, now: Date, timeZone: string): boolean {
+  if (parseDeterministicTimeOfDay(message)) return true
+  const date = parseDeterministicDueDate(message, now, timeZone)
+  return date.value !== undefined || date.clarificationNeeded
 }
 
 export function parseTaskWriteIntent(message: string, now: Date, timeZone: string): ParsedTaskWriteIntent | null {
@@ -655,12 +707,14 @@ export function parseTaskWriteIntent(message: string, now: Date, timeZone: strin
   const cleanPersianCreate = /(?:\u06cc\u06a9|\u06a9|\u06cc\u0647)?\s*(?:\u062a\u0633\u06a9|\u0648\u0638\u06cc\u0641\u0647|\u06a9\u0627\u0631).{0,50}(?:\u0628\u0633\u0627\u0632|\u0627\u06cc\u062c\u0627\u062f\s+\u06a9\u0646|\u0627\u0636\u0627\u0641\u0647\s+\u06a9\u0646)/i.test(message)
   const cleanMixedPersianCreate = /(?:\u06cc\u06a9|\u06a9|\u06cc\u0647)?\s*(?:task|todo).{0,50}(?:\u0628\u0633\u0627\u0632|\u0627\u06cc\u062c\u0627\u062f\s+\u06a9\u0646|\u0627\u0636\u0627\u0641\u0647\s+\u06a9\u0646)/i.test(message)
   const update = /\b(update|edit|change|reschedule|aktualisiere|bearbeite|verschiebe)\b.{0,60}\b(task|todo|aufgabe)\b/i.test(message)
-  if (!create && !cleanPersianCreate && !cleanMixedPersianCreate && !update) return null
+  const implicitCreate = !create && !cleanPersianCreate && !cleanMixedPersianCreate && !update &&
+    isImplicitScheduleStatement(message) && hasResolvedDateOrTimeSignal(message, now, timeZone)
+  if (!create && !cleanPersianCreate && !cleanMixedPersianCreate && !update && !implicitCreate) return null
 
   const date = parseDeterministicDueDate(message, now, timeZone)
   const timeOfDay = parseDeterministicTimeOfDay(message)
   const quoted = message.match(/["'Â«â€œ](.+?)["'Â»â€]/)?.[1]?.trim()
-  if (create || cleanPersianCreate || cleanMixedPersianCreate) {
+  if (create || cleanPersianCreate || cleanMixedPersianCreate || implicitCreate) {
     const title = extractTaskTitle(message)
     return { kind: 'create_task', title: title || undefined, notes: createTaskNotes(message, timeOfDay), dueDate: date.value, timeOfDay, dateClarificationNeeded: date.clarificationNeeded }
   }
@@ -725,13 +779,12 @@ export function assembleTaskWriteIntent(message: string, recentTurns: RecentChat
     return null
   }
 
-  const recentUserMessages = recentTurns
+  const recentUserTurns = recentTurns
     .filter(turn => turn.role === 'user')
-    .map(turn => turn.content)
     .slice(-6)
     .reverse()
-  const previous = recentUserMessages
-    .map(content => parseTaskWriteIntent(content, now, timeZone))
+  const previous = recentUserTurns
+    .map(turn => parseTaskWriteIntent(turn.content, turnNow(turn, now), timeZone))
     .find((intent): intent is ParsedTaskWriteIntent => Boolean(intent && intent.kind === 'create_task'))
   return previous ? mergeTaskIntent(previous, message, now, timeZone) : null
 }
@@ -813,13 +866,12 @@ export function assembleCalendarWriteIntent(message: string, recentTurns: Recent
     return null
   }
 
-  const recentUserMessages = recentTurns
+  const recentUserTurns = recentTurns
     .filter(turn => turn.role === 'user')
-    .map(turn => turn.content)
     .slice(-6)
     .reverse()
-  const previous = recentUserMessages
-    .map(content => parseCalendarWriteIntent(content, now, timeZone))
+  const previous = recentUserTurns
+    .map(turn => parseCalendarWriteIntent(turn.content, turnNow(turn, now), timeZone))
     .find((intent): intent is ParsedCalendarWriteIntent => Boolean(intent && intent.kind === 'create_calendar_event'))
   return previous ? mergeCalendarIntent(previous, message, now, timeZone) : null
 }

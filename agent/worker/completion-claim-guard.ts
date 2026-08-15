@@ -53,16 +53,40 @@ const COMPLETION_CLAIM_PATTERNS: Record<Language, RegExp[]> = {
     /\bhave been (?:successfully )?(?:set up|scheduled|created|saved|added)\b/i,
     /\bi(?:'ve| have) (?:set up|scheduled|created|saved|added)\b/i,
     /\b(?:is|are) now (?:set|scheduled|saved|created|added)\b/i,
+    // Task 22-fix (C3): "has already been added" was NOT covered by the
+    // "has been X" pattern above -- "already" sits BETWEEN "has" and
+    // "been", not after it, so the two are distinct phrasings. Present
+    // continuous ("is being added") is a third, separate shape: production
+    // evidence showed both surviving the guard entirely.
+    /\bhas already been (?:set up|scheduled|created|saved|added)\b/i,
+    /\bhave already been (?:set up|scheduled|created|saved|added)\b/i,
+    /\bis being (?:set up|scheduled|created|saved|added)\b/i,
+    /\bare being (?:set up|scheduled|created|saved|added)\b/i,
   ],
   de: [
     /\berfolgreich (?:eingerichtet|erstellt|gespeichert|hinzugefügt|geplant|angelegt)\b/i,
     /\bwurden? (?:erfolgreich )?(?:eingerichtet|erstellt|gespeichert|hinzugefügt|geplant|angelegt)\b/i,
     /\bich habe (?:es|das|sie|ihn) (?:eingerichtet|erstellt|gespeichert|hinzugefügt|angelegt)\b/i,
     /\b(?:ist|sind) jetzt (?:eingerichtet|erstellt|gespeichert|angelegt)\b/i,
+    // Task 22-fix (C3): "wurde bereits hinzugefügt" ("was already added")
+    // uses "bereits" (already), a different word than "erfolgreich"
+    // (successfully) above -- not covered. "wird ... erstellt" is present
+    // tense ("is being created"), a separate shape again.
+    /\bwurde bereits (?:eingerichtet|erstellt|gespeichert|hinzugefügt|angelegt)\b/i,
+    /\bwurden bereits (?:eingerichtet|erstellt|gespeichert|hinzugefügt|angelegt)\b/i,
+    /\bwird (?:gerade |jetzt )?(?:eingerichtet|erstellt|gespeichert|hinzugefügt|geplant|angelegt)\b/i,
   ],
   fa: [
     /با موفقیت (?:تنظیم|ایجاد|ذخیره|اضافه|ثبت) شد(?:ه|ند)?/,
     /(?:تنظیم|ایجاد|ذخیره|ثبت) شدند/,
+    // Task 22-fix (C3, production evidence): present/future tense ("به
+    // تقویم اضافه می‌شود" -- "is being added to the calendar") and perfect
+    // tense ("قبلاً ... اضافه شده است" -- "has already been added") --
+    // neither was covered above, which only matched simple past ("شد"/
+    // "شدند").
+    /(?:تنظیم|ایجاد|ذخیره|اضافه|ثبت|ساخته)\s*می[‌\s]?شود/,
+    /می[‌\s]?سازم/,
+    /(?:تنظیم|ایجاد|ذخیره|اضافه|ثبت|ساخته)\s+شده(?:\s+است|اند)?/,
   ],
 }
 
@@ -106,10 +130,23 @@ const FABRICATED_EXPLANATION_PATTERNS: Record<Language, RegExp[]> = {
 // still flagged; biased toward catching a real lie over avoiding every
 // possible false positive, since a missed claim reproduces the exact
 // production trust failure this exists to prevent).
+// Task 22-fix (C3): the plain FA pattern below was `(?:شما|تو)\s+(?:قبلاً\s+)?$`
+// -- it matched "شما" immediately before ANY verb, without checking whether
+// "شما" was actually the verb's subject or just a POSSESSIVE on the
+// immediately preceding noun (Persian possessives follow their noun: "تقویم
+// شما" = "your calendar"). That silently exempted the exact production
+// string this task's C3 fix targets -- "...به تقویم شما اضافه شده است" --
+// since "شما" (modifying "تقویم", the OBJECT) sat right before "اضافه شده
+// است", the same false-negative class the English comment above already
+// warns about for "Your task ... has been successfully created." Narrowed
+// to require "شما"/"تو" sit at a clause boundary (start of window, or after
+// a separator/connector) rather than directly after an arbitrary noun.
+const FA_ATTRIBUTION_SUBJECT_BOUNDARY = /(?:^|[،,.]\s*|\bو\s+|\bکه\s+)(?:شما|تو)\s+(?:قبلاً\s+)?$/
+
 const OTHER_ATTRIBUTION_IMMEDIATE_PATTERNS: Record<Language, RegExp> = {
   en: /\b(?:you(?:'ve| have)|your team(?:'s)? (?:has|have)|they(?:'ve| have)|he(?:'s| has)|she(?:'s| has))\s+(?:already\s+)?$/i,
   de: /\b(?:du (?:hast|bist)|ihr (?:habt|seid)|sie (?:haben|hat)|er (?:hat|ist)|dein team (?:hat|habt))\s+(?:bereits\s+)?$/i,
-  fa: /(?:شما|تو)\s+(?:قبلاً\s+)?$/,
+  fa: FA_ATTRIBUTION_SUBJECT_BOUNDARY,
 }
 
 const ATTRIBUTION_WINDOW_CHARS = 30

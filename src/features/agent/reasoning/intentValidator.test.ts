@@ -35,13 +35,14 @@ function proposal(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function validate(rawProposal: unknown, userMessage = "What tasks do I have?") {
+function validate(rawProposal: unknown, userMessage = "What tasks do I have?", timeZone = "UTC") {
   return validateAgentIntentProposal({
     rawProposal,
     userMessage,
     safeContext: context,
     language: "en",
     now,
+    timeZone,
   });
 }
 
@@ -50,6 +51,7 @@ function validateWithContext(
   userMessage: string,
   safeContext: AgentReasoningSafeContext,
   language: SupportedAiResponseLanguage = "en",
+  timeZone = "UTC",
 ) {
   return validateAgentIntentProposal({
     rawProposal,
@@ -57,6 +59,7 @@ function validateWithContext(
     safeContext,
     language,
     now,
+    timeZone,
   });
 }
 
@@ -84,6 +87,7 @@ describe("intentValidator", () => {
       safeContext: context,
       language: "fa",
       now: new Date("2026-08-13T18:06:00.000Z"),
+      timeZone: "Europe/Berlin",
     });
 
     expect(result.proposal.type).toBe("create_task");
@@ -391,19 +395,58 @@ describe("intentValidator", () => {
       );
       expect(missingStart.proposal.type).toBe("ask_clarification");
 
+      // Task 22-fix (C1): start/end are now deterministically resolved from
+      // the message (see intentValidator.ts's calendar override block),
+      // never trusted from the model -- so the expected start below is
+      // computed from "tomorrow at 9am" relative to `now`/UTC, not an
+      // arbitrary literal the model happened to propose.
       const complete = validate(
         proposal({
           type: "create_calendar_event",
           requestedDomain: "calendar",
           toolId: "calendar.create_event",
-          target: { eventTitle: "Team sync", start: "2026-08-14T09:00:00.000Z" },
+          target: { eventTitle: "Team sync", start: "2020-01-01T00:00:00.000Z" },
         }),
         "Create an event for tomorrow at 9am called Team sync",
       );
       expect(complete.proposal.type).toBe("create_calendar_event");
       expect(complete.toolId).toBe("calendar.create_event");
       expect(complete.proposal.requiresApproval).toBe(true);
-      expect(complete.proposal.target).toMatchObject({ eventTitle: "Team sync", start: "2026-08-14T09:00:00.000Z" });
+      expect(complete.proposal.target).toMatchObject({
+        eventTitle: "Team sync",
+        start: "2026-07-16T09:00:00.000Z",
+        end: "2026-07-16T10:00:00.000Z",
+      });
+    });
+
+    it("a model-supplied start/end is ALWAYS overridden by deterministic resolution, never partially trusted (C1)", () => {
+      // The model proposes a wildly wrong start (a different month
+      // entirely) -- mirrors the exact production evidence shape.
+      const result = validate(
+        proposal({
+          type: "create_calendar_event",
+          requestedDomain: "calendar",
+          toolId: "calendar.create_event",
+          target: { eventTitle: "Family doctor appointment", start: "2026-01-01T00:00:00.000Z" },
+        }),
+        "Create an event for tomorrow at 1pm called Family doctor appointment",
+      );
+      expect(result.proposal.type).toBe("create_calendar_event");
+      expect(result.proposal.target?.start).not.toBe("2026-01-01T00:00:00.000Z");
+      expect(result.proposal.target?.start).toBe("2026-07-16T13:00:00.000Z");
+    });
+
+    it("when the message has no deterministically resolvable date+time, the model's start/end is dropped entirely (asks for clarification) rather than shipped as-is", () => {
+      const result = validate(
+        proposal({
+          type: "create_calendar_event",
+          requestedDomain: "calendar",
+          toolId: "calendar.create_event",
+          target: { eventTitle: "Team sync", start: "2026-08-14T09:00:00.000Z" },
+        }),
+        "Create an event called Team sync",
+      );
+      expect(result.proposal.type).toBe("ask_clarification");
     });
 
     it("resolves update_calendar_event against a fuzzy-matched safe-context event, requiring at least one changed field", () => {
@@ -438,11 +481,39 @@ describe("intentValidator", () => {
           toolId: "calendar.update_event",
           target: { eventReference: "Standup", start: "2026-08-14T10:00:00.000Z" },
         }),
-        "Move the Standup event to 10am",
+        // Task 22-fix (C1): "10:00" (colon format), not bare "10am" -- see
+        // parseDeterministicTimeOfDay in deterministicDates.ts, which (like
+        // its Worker counterpart) only recognizes a bare hour+am/pm when
+        // preceded by "at"/"um"; a colon time needs no prefix. A genuine,
+        // pre-existing parsing gap shared by both the Worker and this
+        // frontend port, out of this fix's scope (not one of C1/C2/C3).
+        "Move the Standup event to 10:00",
         context,
       );
       expect(matched.proposal.type).toBe("update_calendar_event");
       expect(matched.proposal.target?.eventId).toBe("event-1");
+      // Task 22-fix (C1): the message only carries a new TIME ("to 10:00"),
+      // no new date phrase -- deterministically anchored to the MATCHED
+      // event's own existing date (2026-07-15, from its dateTimeStart),
+      // never the model's bogus "2026-08-14" guess, and never silently
+      // dropped either (mirrors the Worker's `intent.startDate ?? before.date`).
+      expect(matched.proposal.target?.start).toBe("2026-07-15T10:00:00.000Z");
+      expect(matched.proposal.target?.start).not.toBe("2026-08-14T10:00:00.000Z");
+    });
+
+    it("update_calendar_event with an explicit NEW date+time in the message overrides the existing event's date, not just its time", () => {
+      const result = validateWithContext(
+        proposal({
+          type: "update_calendar_event",
+          requestedDomain: "calendar",
+          toolId: "calendar.update_event",
+          target: { eventReference: "Standup", start: "2020-01-01T00:00:00.000Z" },
+        }),
+        "Move the Standup event to tomorrow at 11am",
+        context,
+      );
+      expect(result.proposal.type).toBe("update_calendar_event");
+      expect(result.proposal.target?.start).toBe("2026-07-16T11:00:00.000Z");
     });
 
     it("routes a time-bearing task-worded request to create_calendar_event, not create_task (a time forces calendar), bridging the model's task-shaped title field", () => {

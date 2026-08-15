@@ -8,7 +8,24 @@ import {
   type AgentReasoningSafeContext,
   type AgentReasoningValidationResult,
 } from "./reasoningTypes";
-import { parseDeterministicDueDate } from "./deterministicDates";
+import {
+  parseDeterministicDueDate,
+  parseDeterministicTimeRange,
+  zonedDateTimeToUtcIso,
+} from "./deterministicDates";
+
+// Task 22-fix (C1): every existing call site of validateAgentIntentProposal
+// omits `timeZone` (it wasn't a parameter before this fix), so this is the
+// fallback used unless a caller passes one explicitly -- matches what
+// ChatPage.tsx already sends the /chat endpoint's own `timeZone` field
+// (`Intl.DateTimeFormat().resolvedOptions().timeZone`), not a guess.
+function defaultTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch {
+    return "UTC";
+  }
+}
 
 export const supportedIntentTypes: AgentIntentType[] = [
   "inspect_tasks",
@@ -582,9 +599,16 @@ export function validateAgentIntentProposal(input: {
   safeContext: AgentReasoningSafeContext;
   language: SupportedAiResponseLanguage;
   now?: Date;
+  timeZone?: string;
 }): AgentReasoningValidationResult {
   const now = input.now ?? new Date();
-  const deterministicDueDate = parseDeterministicDueDate(input.userMessage, now, "Europe/Berlin");
+  // Task 22-fix (C1): was hardcoded to "Europe/Berlin" regardless of the
+  // actual user -- every deterministic date resolution on this path used
+  // the wrong timezone for anyone outside it. `timeZone` is optional so
+  // existing callers/tests keep working; production callers should pass
+  // the same value already sent to /chat (see defaultTimeZone above).
+  const timeZone = input.timeZone ?? defaultTimeZone();
+  const deterministicDueDate = parseDeterministicDueDate(input.userMessage, now, timeZone);
   if (!isRecord(input.rawProposal)) {
     return createSafeProposal("ask_clarification", {
       userMessage: input.userMessage,
@@ -813,6 +837,35 @@ export function validateAgentIntentProposal(input: {
     if (!target.eventTitle && target.title) target.eventTitle = target.title;
     if (!target.eventReference && target.taskReference) target.eventReference = target.taskReference;
   }
+  // Task 22-fix (C1): a model-supplied datetime must never survive to a
+  // preview or an execution -- production evidence showed the model's own
+  // guessed start date reaching the approval card verbatim (a full month
+  // off), because this file previously only checked start/end were
+  // well-formed, never re-derived them. Deterministically resolve start/end
+  // from the user's own message the same way the Worker's auto-write path
+  // already does (parseDeterministicTimeRange + zonedDateTimeToUtcIso) and
+  // OVERRIDE whatever the model proposed. When the message doesn't
+  // deterministically resolve both a date and a time, drop the model's
+  // value entirely (never partially trust it) so the "start time is
+  // required" check below asks for clarification instead of shipping an
+  // unverified guess. create_calendar_event has no existing event to fall
+  // back on, so it requires an explicit date phrase in THIS message; the
+  // update_calendar_event sibling below (after the target is matched to a
+  // safe-context event) additionally falls back to that event's own
+  // existing date when the message only carries a new time.
+  if (type === "create_calendar_event" && target) {
+    const timeRange = parseDeterministicTimeRange(input.userMessage);
+    if (timeRange.start && deterministicDueDate.value) {
+      const resolvedStart = zonedDateTimeToUtcIso(deterministicDueDate.value, timeRange.start, timeZone);
+      target.start = resolvedStart;
+      target.end = timeRange.end
+        ? zonedDateTimeToUtcIso(deterministicDueDate.value, timeRange.end, timeZone)
+        : new Date(new Date(resolvedStart).getTime() + 60 * 60 * 1000).toISOString();
+    } else {
+      target.start = undefined;
+      target.end = undefined;
+    }
+  }
   if ((type === "create_task" || type === "update_task") && target && deterministicDueDate.value !== undefined) {
     target.dueDate = deterministicDueDate.value;
   }
@@ -905,6 +958,27 @@ export function validateAgentIntentProposal(input: {
           ? "Multiple matching calendar events require clarification."
           : "Exact calendar event target is required before updating it.",
       });
+    }
+    // Task 22-fix (C1): same "never trust the model's datetime" rule as
+    // create_calendar_event above, but an update may legitimately only be
+    // changing the TIME ("move the Standup event to 10am") with no new
+    // date phrase in the message at all -- unlike create, there IS an
+    // existing event here, so fall back to ITS own date instead of
+    // requiring a fresh date phrase, mirroring the Worker's own
+    // executeAutoCalendarWrite (`intent.startDate ?? before.date`).
+    if (target) {
+      const timeRange = parseDeterministicTimeRange(input.userMessage);
+      const anchorDate = deterministicDueDate.value ?? match.event.dateTimeStart?.slice(0, 10);
+      if (timeRange.start && anchorDate) {
+        const resolvedStart = zonedDateTimeToUtcIso(anchorDate, timeRange.start, timeZone);
+        target.start = resolvedStart;
+        target.end = timeRange.end
+          ? zonedDateTimeToUtcIso(anchorDate, timeRange.end, timeZone)
+          : new Date(new Date(resolvedStart).getTime() + 60 * 60 * 1000).toISOString();
+      } else {
+        target.start = undefined;
+        target.end = undefined;
+      }
     }
     if (!target?.eventTitle && !target?.start && !target?.end) {
       return createSafeProposal("ask_clarification", {

@@ -75,3 +75,69 @@ export function parseDeterministicDueDate(
   if (/\b(due|deadline|f\u00e4llig)\b|\u0645\u0648\u0639\u062f|\u062a\u0627\u0631\u06cc\u062e/i.test(text)) return { clarificationNeeded: true };
   return { clarificationNeeded: false };
 }
+
+// Task 22-fix (C1): ports of agent/worker/flow-write-policy.ts's own
+// parseDeterministicTimeOfDay/parseDeterministicTimeRange/
+// zonedDateTimeToUtcIso -- the Worker and this frontend bundle are two
+// independently-deployed builds with no shared runtime (see this file's own
+// existing parseDeterministicDueDate above, already duplicated the same
+// way), so this is a deliberate, hand-synced port, not an import. Exists so
+// intentValidator.ts can resolve a calendar event's start/end the same
+// deterministic way the Worker's auto-write path already does, instead of
+// trusting the model's own start/end fields (see intentValidator.ts's
+// calendar target-override block for why).
+export function parseDeterministicTimeOfDay(message: string): string | undefined {
+  const text = normalizeDigits(message.toLowerCase());
+  const persian = text.match(/\u0633\u0627\u0639\u062a\s+([01]?[0-9]|2[0-3])(?::([0-5][0-9]))?\s*(\u0635\u0628\u062d|\u0639\u0635\u0631|\u0628\u0639\u062f\s+\u0627\u0632\s+\u0638\u0647\u0631|\u0634\u0628)?/);
+  const latin = text.match(/\b(?:at|um)\s+([01]?[0-9]|2[0-3])(?::([0-5][0-9]))?\s*(am|pm|uhr)?\b/);
+  const compact = text.match(/\b([01]?[0-9]|2[0-3]):([0-5][0-9])\b/);
+  const match = persian ?? latin ?? compact;
+  if (!match) return undefined;
+  let hour = Number(match[1]);
+  const minute = Number(match[2] ?? "0");
+  const suffix = match[3];
+  if ((suffix === "pm" || suffix === "\u0639\u0635\u0631" || suffix === "\u0628\u0639\u062f \u0627\u0632 \u0638\u0647\u0631" || suffix === "\u0634\u0628") && hour < 12) hour += 12;
+  if ((suffix === "am" || suffix === "\u0635\u0628\u062d") && hour === 12) hour = 0;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+const RANGE_CONNECTOR = /\bto\b|\buntil\b|\btill\b|\bbis\b|\u062a\u0627/i;
+
+export function parseDeterministicTimeRange(message: string): { start?: string; end?: string } {
+  const start = parseDeterministicTimeOfDay(message);
+  if (!start) return {};
+  const connectorIndex = message.search(RANGE_CONNECTOR);
+  if (connectorIndex === -1) return { start };
+  const tail = message.slice(connectorIndex).replace(RANGE_CONNECTOR, " ");
+  const end = parseDeterministicTimeOfDay(tail) ?? parseDeterministicTimeOfDay(`at ${tail}`);
+  return end && end !== start ? { start, end } : { start };
+}
+
+export function zonedDateTimeToUtcIso(dateKeyValue: string, timeOfDay: string, timeZone: string): string {
+  const [year, month, day] = dateKeyValue.split("-").map(Number);
+  const [hour, minute] = timeOfDay.split(":").map(Number);
+  const desiredUtcMs = Date.UTC(year, month - 1, day, hour, minute, 0);
+  const guess = new Date(desiredUtcMs);
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(guess).reduce<Record<string, string>>((acc, part) => {
+    if (part.type !== "literal") acc[part.type] = part.value;
+    return acc;
+  }, {});
+  const actualAsUtcMs = Date.UTC(
+    Number(parts.year),
+    Number(parts.month) - 1,
+    Number(parts.day),
+    Number(parts.hour),
+    Number(parts.minute),
+    Number(parts.second ?? "0"),
+  );
+  return new Date(desiredUtcMs - (actualAsUtcMs - desiredUtcMs)).toISOString();
+}

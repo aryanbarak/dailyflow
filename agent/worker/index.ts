@@ -775,13 +775,13 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
     // Last 20 messages from this session, oldest first. Loaded before
     // write-policy handling so bounded multi-turn task writes can be
     // assembled without asking the model to hold authority over execution.
-    const historyRows = await supabaseGet<Array<{ role: string; content: string }>>(
+    const historyRows = await supabaseGet<Array<{ role: string; content: string; created_at: string }>>(
       env,
-      `agent_chat_messages?select=role,content&user_id=eq.${userId}&session_id=eq.${sessionId}&order=created_at.desc&limit=20`
+      `agent_chat_messages?select=role,content,created_at&user_id=eq.${userId}&session_id=eq.${sessionId}&order=created_at.desc&limit=20`
     )
     const history: ChatMessage[] = historyRows
       .filter(r => r.role === 'user' || r.role === 'assistant')
-      .map(r => ({ role: r.role as ChatMessage['role'], content: r.content }))
+      .map(r => ({ role: r.role as ChatMessage['role'], content: r.content, createdAt: r.created_at }))
       .reverse()
 
     let pendingWritePolicy: { domain: 'tasks' | 'calendar'; action: 'create' | 'update'; mode: 'ask' } | undefined

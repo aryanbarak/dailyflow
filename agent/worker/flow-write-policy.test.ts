@@ -431,3 +431,100 @@ describe('task 22: calendar write slice + task/event routing', () => {
     })
   })
 })
+
+describe('task 22-fix: implicit schedule statements (C1/C2 production root cause)', () => {
+  describe('detectWriteDomainSignal / parseTaskWriteIntent recognize an implicit personal statement (no imperative verb)', () => {
+    it('the exact production-evidence string ("...ترمین داکتر فامیلی دارم") routes to calendar', () => {
+      const message = 'فردا ساعت ۱۳:۰۰ ترمین داکتر فامیلی دارم'
+      expect(detectWriteDomainSignal(message, NOW, TZ)).toBe('calendar')
+    })
+
+    it('the exact production-evidence string resolves via parseCalendarWriteIntent with a real, deterministic start time -- never the model\'s own guess', () => {
+      const message = 'فردا ساعت ۱۳:۰۰ ترمین داکتر فامیلی دارم'
+      expect(parseCalendarWriteIntent(message, NOW, TZ)).toMatchObject({
+        kind: 'create_calendar_event',
+        startDate: '2026-08-14',
+        startTime: '13:00',
+      })
+    })
+
+    it('an EN implicit statement ("I have a dentist appointment tomorrow at 3pm") routes to calendar', () => {
+      const message = 'I have a dentist appointment tomorrow at 3pm'
+      expect(detectWriteDomainSignal(message, NOW, TZ)).toBe('calendar')
+      expect(parseCalendarWriteIntent(message, NOW, TZ)).toMatchObject({
+        kind: 'create_calendar_event',
+        startDate: '2026-08-14',
+        startTime: '15:00',
+      })
+    })
+
+    it('a DE implicit statement ("Ich habe morgen um 15 Uhr einen Arzttermin") routes to calendar', () => {
+      const message = 'Ich habe morgen um 15 Uhr einen Arzttermin'
+      expect(detectWriteDomainSignal(message, NOW, TZ)).toBe('calendar')
+    })
+
+    it('an implicit statement with a DATE but no TIME routes to task, not calendar (unchanged routing rule)', () => {
+      const message = 'فردا ترمین داکتر فامیلی دارم'
+      expect(detectWriteDomainSignal(message, NOW, TZ)).toBe('task')
+      expect(parseTaskWriteIntent(message, NOW, TZ)).toMatchObject({ kind: 'create_task', dueDate: '2026-08-14' })
+    })
+
+    it('false-positive bound: "دارم"/"I have" with NO resolvable date or time signal at all does not trigger a write', () => {
+      expect(detectWriteDomainSignal('من یک گربه دارم', NOW, TZ)).toBe('none')
+      expect(detectWriteDomainSignal('I have a headache', NOW, TZ)).toBe('none')
+    })
+
+    it('false-positive bound: a read/list question is never treated as an implicit write, even with a date+time', () => {
+      expect(detectWriteDomainSignal('What do I have tomorrow at 3pm?', NOW, TZ)).toBe('none')
+      expect(detectWriteDomainSignal('فردا ساعت ۱۳ چه چیزی در تقویم دارم؟ لیست کن', NOW, TZ)).toBe('none')
+    })
+
+    it('an explicit imperative message is unaffected (still routes exactly as before)', () => {
+      expect(detectWriteDomainSignal('Create a task for tomorrow', NOW, TZ)).toBe('task')
+      expect(detectWriteDomainSignal('Create an event for tomorrow', NOW, TZ)).toBe('calendar')
+    })
+  })
+
+  describe('multi-turn reassembly resolves a relative date against the ORIGINAL message\'s own timestamp, not a later continuation\'s (off-by-one production evidence)', () => {
+    // Base instant chosen so Europe/Berlin has already crossed local
+    // midnight relative to it (2026-08-14T22:11Z UTC == 2026-08-15T00:11
+    // CEST) -- reproduces the exact production timestamp shape ("today" per
+    // the reasoning-step id) while keeping the ORIGINAL message's own
+    // createdAt genuinely in the Berlin-local evening of 2026-08-14.
+    const ORIGINAL_SENT_AT = '2026-08-14T20:00:00.000Z' // 22:00 CEST, still Aug 14 locally
+    const CONTINUATION_NOW = new Date('2026-08-14T22:11:00.000Z') // 00:11 CEST, already Aug 15 locally
+
+    it('assembleTaskWriteIntent: "فردا" in the ORIGINAL message anchors to the original send time, not the later continuation\'s', () => {
+      const history = [
+        { role: 'user', content: 'یک تسک برای فردا بساز', createdAt: ORIGINAL_SENT_AT },
+      ]
+      const intent = assembleTaskWriteIntent('بله', history, CONTINUATION_NOW, TZ)
+      // "فردا" relative to 2026-08-14 (the original message's own local day)
+      // is 2026-08-15 -- NOT 2026-08-16, which is what re-deriving "فردا"
+      // from CONTINUATION_NOW's already-rolled-over local day would give.
+      expect(intent).toMatchObject({ kind: 'create_task', dueDate: '2026-08-15' })
+    })
+
+    it('assembleCalendarWriteIntent: same anchoring for a calendar-shaped original message', () => {
+      const history = [
+        { role: 'user', content: 'یک رویداد برای فردا بساز، ساعت ۱۰', createdAt: ORIGINAL_SENT_AT },
+      ]
+      const intent = assembleCalendarWriteIntent('بله', history, CONTINUATION_NOW, TZ)
+      expect(intent).toMatchObject({ kind: 'create_calendar_event', startDate: '2026-08-15', startTime: '10:00' })
+    })
+
+    it('detectContinuationDomain also anchors to the original turn\'s own timestamp', () => {
+      const history = [
+        { role: 'user', content: 'Add a task for tomorrow at 9am', createdAt: ORIGINAL_SENT_AT },
+      ]
+      expect(detectContinuationDomain(history, CONTINUATION_NOW, TZ)).toBe('calendar')
+    })
+
+    it('falls back to the current `now` when a turn has no createdAt (backward compatible, no worse than before)', () => {
+      const history = [{ role: 'user', content: 'یک تسک برای فردا بساز' }]
+      const intent = assembleTaskWriteIntent('بله', history, CONTINUATION_NOW, TZ)
+      // No createdAt -> resolved against CONTINUATION_NOW's own local day (2026-08-15) + 1.
+      expect(intent).toMatchObject({ kind: 'create_task', dueDate: '2026-08-16' })
+    })
+  })
+})

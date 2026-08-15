@@ -116,6 +116,12 @@ export interface AgentBriefing {
 export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
+  // Task 22-fix (C1 off-by-one): optional so every existing call site that
+  // builds a ChatMessage without it (the Gemini-facing history array
+  // doesn't need it) keeps compiling unchanged -- see flow-write-policy.ts's
+  // RecentChatTurn.createdAt for why this is needed for write-intent
+  // reassembly specifically.
+  createdAt?: string
 }
 
 export interface ChatOptions {

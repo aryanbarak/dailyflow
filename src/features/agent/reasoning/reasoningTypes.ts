@@ -108,6 +108,13 @@ export interface AgentReasoningInput {
   safeContext: AgentReasoningSafeContext;
   now?: Date;
   sessionId?: string;
+  // Task 22-fix (C1): the caller's IANA timezone, threaded through to
+  // validateAgentIntentProposal's deterministic date/time resolution --
+  // matches the same field already sent to the Worker's /chat endpoint.
+  // Falls back to the browser's own timezone when omitted (see
+  // intentValidator.ts's defaultTimeZone), so this is explicit-for-clarity,
+  // not required for correctness.
+  timeZone?: string;
 }
 
 export interface AgentReasoningPromptInput extends AgentReasoningInput {

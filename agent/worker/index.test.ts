@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import worker from './index'
 import type { Env } from './types'
 
@@ -303,6 +303,12 @@ describe('handleChat mode routing', () => {
       'complete_task',
       'create_task',
       'update_task',
+      // Task 22 (calendar write slice): these were missing from this
+      // pre-existing assertion -- a pre-existing gap left when
+      // buildReasoningResponseSchema()'s enum was widened, unrelated to
+      // this session's changes (confirmed via `git stash`).
+      'create_calendar_event',
+      'update_calendar_event',
       'write_github_issue_comment',
       'write_github_issue_update',
       'ask_clarification',
@@ -770,7 +776,23 @@ describe('task 20, Part A2: /chat applies the deterministic completion-claim gua
 })
 
 describe('ADR-0012 server-side task write policy', () => {
+  // Task 22-fix: these tests hardcode absolute expected dates ("2026-08-15"
+  // etc.) for "tomorrow"/"فردا" relative to the REAL system clock -- with no
+  // fake timer, they only ever passed on one specific real calendar day
+  // (2026-08-14) and were bound to start failing the moment real time moved
+  // past it, exactly as happened here. That is a pre-existing TEST fragility
+  // bug (confirmed via `git stash`: these same failures exist on the
+  // committed baseline, unrelated to this session's changes) -- not a defect
+  // in the deterministic date arithmetic itself, which is independently
+  // verified correct (see flow-write-policy.test.ts's zonedDateTimeToUtcIso
+  // and multi-turn-anchoring tests). Pinning the clock makes these
+  // deterministic forever instead of re-breaking on the next calendar day.
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-14T09:00:00.000Z'))
+  })
   afterEach(() => {
+    vi.useRealTimers()
     vi.unstubAllGlobals()
   })
 
@@ -1233,5 +1255,92 @@ describe('task 22: calendar write policy + routing', () => {
     expect(undoBody.reply).toBe('Undo complete.')
     expect(coldLog.undoWrites.some(write => write.method === 'PATCH')).toBe(true)
     expect(coldLog.calendarWrites.some(write => write.method === 'DELETE')).toBe(true)
+  })
+})
+
+describe('task 22-fix: implicit schedule statements reach the deterministic write pipeline (C1/C2 production root cause)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-14T09:00:00.000Z'))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('the exact production-evidence message (no imperative verb) auto-executes with a deterministic date/time, and returns the auto writePolicy -- not a bare Gemini reply with no policy at all', async () => {
+    // taskTitleResult mocks the model-based title-extraction call (task
+    // 21-fix6/22's own established, approved path) -- the pattern-fallback
+    // extractor is deliberately a last-resort-only safety net (see its own
+    // "DO NOT add another pattern here" comment in flow-write-policy.ts)
+    // and doesn't cover this bare "X دارم" phrasing without a "که" clause,
+    // so a real turn without a model title would correctly ask for
+    // clarification instead of guessing -- this test verifies the DATE/
+    // POLICY resolution (C1/C2), not title extraction, so the model call is
+    // mocked the same way every other title-bearing test in this file does.
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'ترمین داکتر فامیلی')
+    const response = await worker.fetch(chatRequest({
+      message: 'فردا ساعت ۱۳:۰۰ ترمین داکتر فامیلی دارم',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { reply?: string; writeExecution?: string; writePolicy?: { domain?: string; action?: string; mode?: string } }
+
+    // Before the fix: this message matched neither the task nor the
+    // calendar trigger at all, so the whole write dispatcher was skipped --
+    // no writePolicy was ever returned, which is exactly why the frontend's
+    // approval overlay (only suppressed when the server explicitly says
+    // auto/off) was never suppressed either. Asserting writePolicy is
+    // present AND auto is the direct regression test for C2.
+    expect(response.status).toBe(200)
+    expect(body.writePolicy).toMatchObject({ domain: 'calendar', action: 'create', mode: 'auto' })
+    expect(body.writeExecution).toBe('executed')
+    expect(log.calendarWrites.some(write => write.method === 'POST')).toBe(true)
+    expect(log.calendarWrites[0]?.body?.date).toBe('2026-08-15')
+    // Stored as the UTC-sliced instant (calendarService.ts's own row
+    // shape), not the local wall-clock time: 13:00 CEST (UTC+2) -> 11:00 UTC.
+    expect(log.calendarWrites[0]?.body?.start_time).toBe('11:00')
+  })
+
+  it('the same implicit message under an "ask" policy still returns a server-resolved policy (not silently falling through to a plain, policy-less chat reply)', async () => {
+    const log = installFetchMock([], null, 'Write action requires explicit approval.', 'ask')
+    const response = await worker.fetch(chatRequest({
+      message: 'فردا ساعت ۱۳:۰۰ ترمین داکتر فامیلی دارم',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { writePolicy?: { domain?: string; mode?: string } }
+
+    expect(response.status).toBe(200)
+    expect(body.writePolicy).toMatchObject({ domain: 'calendar', mode: 'ask' })
+    expect(log.calendarWrites.length).toBe(0)
+  })
+
+  it('an EN implicit statement ("I have a dentist appointment tomorrow at 3pm") also reaches the deterministic auto-write path', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'Dentist appointment')
+    const response = await worker.fetch(chatRequest({
+      message: 'I have a dentist appointment tomorrow at 3pm',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { writeExecution?: string; writePolicy?: { mode?: string } }
+
+    expect(body.writePolicy?.mode).toBe('auto')
+    expect(body.writeExecution).toBe('executed')
+    expect(log.calendarWrites.some(write => write.method === 'POST')).toBe(true)
+    expect(log.calendarWrites[0]?.body?.date).toBe('2026-08-15')
+    // 3pm (15:00) CEST (UTC+2) -> 13:00 UTC.
+    expect(log.calendarWrites[0]?.body?.start_time).toBe('13:00')
+  })
+
+  it('an implicit statement with no resolvable date/time signal still falls through to a plain chat reply (false-positive bound, unchanged)', async () => {
+    const log = installFetchMock([], null, 'Sure, tell me more.', 'auto')
+    const response = await worker.fetch(chatRequest({
+      message: 'I have a headache',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { writePolicy?: unknown; reply?: string }
+
+    expect(body.writePolicy).toBeUndefined()
+    expect(log.calendarWrites.length).toBe(0)
+    expect(log.taskWrites.length).toBe(0)
+    expect(log.geminiCalls.length).toBeGreaterThan(0)
   })
 })
