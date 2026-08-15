@@ -13,6 +13,11 @@ import {
   parseDeterministicTimeRange,
   zonedDateTimeToUtcIso,
 } from "./deterministicDates";
+import {
+  writeIntentRegistry,
+  type WriteIntentToolId,
+  type WriteIntentType,
+} from "../../../../shared/writeIntentRegistry";
 
 // Task 22-fix (C1): every existing call site of validateAgentIntentProposal
 // omits `timeZone` (it wasn't a parameter before this fix), so this is the
@@ -27,6 +32,9 @@ function defaultTimeZone(): string {
   }
 }
 
+// Task 23: the four task/calendar write types are spliced in from the
+// shared registry (in its own array order) instead of being listed here a
+// second time -- see shared/writeIntentRegistry.ts.
 export const supportedIntentTypes: AgentIntentType[] = [
   "inspect_tasks",
   "inspect_calendar",
@@ -38,10 +46,7 @@ export const supportedIntentTypes: AgentIntentType[] = [
   "inspect_github_pull_requests",
   "inspect_github_workflow_runs",
   "complete_task",
-  "create_task",
-  "update_task",
-  "create_calendar_event",
-  "update_calendar_event",
+  ...writeIntentRegistry.map((entry) => entry.intentType),
   "write_github_issue_comment",
   "write_github_issue_update",
   "ask_clarification",
@@ -55,13 +60,11 @@ export const supportedIntentTypes: AgentIntentType[] = [
 // rejected by the generic create/update/add blocklist below), the mixed-
 // request gate (an already-resolved write intent is exempt from being
 // second-guessed by a read verb elsewhere in the same message), and the
-// final requiresApproval assignment.
+// final requiresApproval assignment. Task 23: the four task/calendar write
+// types come from the shared registry.
 const CONFIRMED_WRITE_INTENT_TYPES = new Set<AgentIntentType>([
   "complete_task",
-  "create_task",
-  "update_task",
-  "create_calendar_event",
-  "update_calendar_event",
+  ...writeIntentRegistry.map((entry) => entry.intentType),
   "write_github_issue_comment",
   "write_github_issue_update",
 ]);
@@ -76,6 +79,16 @@ const supportedDomains: AgentIntentDomain[] = [
 
 const supportedConfidence: AgentIntentConfidence[] = ["low", "medium", "high"];
 
+// Task 23: the four task/calendar entries below come from the shared
+// registry (WRITE_INTENT_TOOL_ENTRIES/WRITE_INTENT_DOMAIN_ENTRIES), spread
+// in at the exact same position the hand-written literals used to occupy --
+// object spread preserves the registry array's own key order, so the
+// resulting object's key order (and therefore anything that iterates it) is
+// unchanged from before this refactor.
+const WRITE_INTENT_TOOL_ENTRIES = Object.fromEntries(
+  writeIntentRegistry.map((entry) => [entry.intentType, entry.toolId]),
+) as Record<WriteIntentType, WriteIntentToolId>;
+
 const intentToolMap = {
   inspect_tasks: "tasks.list",
   inspect_calendar: "calendar.list_today",
@@ -87,15 +100,16 @@ const intentToolMap = {
   inspect_github_pull_requests: "github.pulls.list",
   inspect_github_workflow_runs: "github.workflow_runs.list",
   complete_task: "tasks.complete",
-  create_task: "tasks.create",
-  update_task: "tasks.update",
-  create_calendar_event: "calendar.create_event",
-  update_calendar_event: "calendar.update_event",
+  ...WRITE_INTENT_TOOL_ENTRIES,
   write_github_issue_comment: "github.issues.comment",
   write_github_issue_update: "github.issues.update",
 } as const;
 
 type KnownToolId = typeof intentToolMap[keyof typeof intentToolMap];
+
+const WRITE_INTENT_DOMAIN_ENTRIES = Object.fromEntries(
+  writeIntentRegistry.map((entry) => [entry.intentType, entry.domain]),
+) as Record<WriteIntentType, AgentIntentDomain>;
 
 const domainByIntent: Partial<Record<AgentIntentType, AgentIntentDomain>> = {
   inspect_tasks: "tasks",
@@ -108,10 +122,7 @@ const domainByIntent: Partial<Record<AgentIntentType, AgentIntentDomain>> = {
   inspect_github_pull_requests: "github",
   inspect_github_workflow_runs: "github",
   complete_task: "tasks",
-  create_task: "tasks",
-  update_task: "tasks",
-  create_calendar_event: "calendar",
-  update_calendar_event: "calendar",
+  ...WRITE_INTENT_DOMAIN_ENTRIES,
   write_github_issue_comment: "github",
   write_github_issue_update: "github",
 };

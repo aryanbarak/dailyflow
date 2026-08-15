@@ -25,6 +25,7 @@ import {
   type ParsedCalendarWriteIntent,
   type ParsedTaskWriteIntent,
 } from './flow-write-policy'
+import { writeIntentRegistry } from '../../shared/writeIntentRegistry'
 import type { Env } from './types'
 
 const NOW = new Date('2026-08-13T10:00:00.000Z')
@@ -551,7 +552,7 @@ describe('task 22-fix: implicit schedule statements (C1/C2 production root cause
   })
 })
 
-describe('task 22-fix2 (D1): UNDO_KIND_VALUES cross-checked against the migration file', () => {
+describe('task 22-fix2 (D1), now task 23 registry-driven: UNDO_KIND_VALUES cross-checked against the migration file', () => {
   // Production root cause: the flow_write_undo_records_kind_check
   // constraint was written (21-fix2) when only task kinds existed, and
   // task 22 added calendar UndoEntry kinds in CODE without ever getting the
@@ -563,10 +564,21 @@ describe('task 22-fix2 (D1): UNDO_KIND_VALUES cross-checked against the migratio
   // callers are built from -- see flow-write-policy.ts's own comment there)
   // declares. A future kind added to one side without the other now fails
   // a test, not a production write.
+  //
+  // Task 23: UNDO_KIND_VALUES is no longer a hand-maintained literal array
+  // -- it's derived from the shared writeIntentRegistry's own `undoKind`
+  // field (see flow-write-policy.ts's own comment on the export). This
+  // whole describe block therefore already cross-checks the REGISTRY
+  // against the migration transitively; the assertion below makes that
+  // explicit rather than relying on it being merely true by construction.
   const migrationPath = path.resolve(
     path.dirname(fileURLToPath(import.meta.url)),
     '../../supabase/migrations/20260815000000_widen_flow_write_undo_kinds.sql',
   )
+
+  it('UNDO_KIND_VALUES is exactly the shared registry\'s own undoKind values, in registry order', () => {
+    expect([...UNDO_KIND_VALUES]).toEqual(writeIntentRegistry.map((entry) => entry.undoKind))
+  })
 
   it('the widening migration exists and its CHECK constraint allows exactly the kinds UNDO_KIND_VALUES declares', () => {
     const sql = readFileSync(migrationPath, 'utf8')

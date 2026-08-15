@@ -1,4 +1,5 @@
 import { supabase } from "@/integrations/supabase/client";
+import { writeIntentRegistry } from "../../../shared/writeIntentRegistry";
 
 export type FlowWritePermissionDomain = "tasks" | "calendar" | "finance";
 export type FlowWritePermissionAction = "create" | "update" | "delete";
@@ -15,15 +16,15 @@ export interface FlowWritePermissionRow extends FlowWritePermissionKey {
   isUserSet: boolean;
 }
 
-export const WIRED_FLOW_WRITE_CAPABILITIES: readonly FlowWritePermissionKey[] = Object.freeze([
-  { domain: "tasks", action: "create" },
-  { domain: "tasks", action: "update" },
-  // Task 22: calendar write slice -- the domain/default-mode logic below
-  // already special-cased "calendar" ahead of this, so surfacing it in
-  // Settings only requires these two entries.
-  { domain: "calendar", action: "create" },
-  { domain: "calendar", action: "update" },
-]);
+// Task 23: derived from the shared registry -- one (domain, action) pair per
+// write intent, in registry order (tasks.create, tasks.update,
+// calendar.create_event, calendar.update_event), matching the pre-refactor
+// literal list exactly. The domain/default-mode logic below already
+// special-cases "calendar" generically (not per-entry), so a new registry
+// entry surfaces in Settings with no further edit here.
+export const WIRED_FLOW_WRITE_CAPABILITIES: readonly FlowWritePermissionKey[] = Object.freeze(
+  writeIntentRegistry.map((entry) => ({ domain: entry.domain, action: entry.action })),
+);
 
 export function defaultFlowWritePermissionMode(domain: string, action: string): FlowWritePermissionMode {
   if (action === "delete") return "ask";

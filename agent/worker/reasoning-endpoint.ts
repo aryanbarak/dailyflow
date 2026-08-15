@@ -1,3 +1,5 @@
+import { WRITE_INTENT_TARGET_FIELD_NAMES, writeIntentRegistry } from '../../shared/writeIntentRegistry'
+
 const LOCAL_WORKER_MODE = 'local-qa'
 const MAX_BODY_BYTES = 32 * 1024
 const MAX_PROMPT_LENGTH = 24_000
@@ -6,6 +8,14 @@ const MAX_SHORT_TEXT_LENGTH = 240
 
 export const RESPONSE_LANGUAGES = new Set(['auto', 'en', 'de', 'fa'])
 const PROPOSAL_LANGUAGES = ['en', 'de', 'fa'] as const
+// Task 23: the four write-domain values (create_task/update_task/
+// create_calendar_event/update_calendar_event) are spliced in from the
+// shared registry, in its own array order, reproducing the exact position
+// and sequence the pre-refactor literal list had (between complete_task and
+// write_github_issue_comment) -- required for provider-contract-smoke's
+// byte-identical schema check. Every other value here is a read intent,
+// GitHub write, or terminal state that isn't part of this task's scope
+// (tasks + calendar only) and stays a plain literal.
 export const SUPPORTED_INTENT_VALUES = [
   'inspect_tasks',
   'inspect_calendar',
@@ -17,13 +27,7 @@ export const SUPPORTED_INTENT_VALUES = [
   'inspect_github_pull_requests',
   'inspect_github_workflow_runs',
   'complete_task',
-  'create_task',
-  'update_task',
-  // Task 22 (calendar write slice): tasks have no time-of-day field, so a
-  // request naming a calendar concept, or carrying a specific time,
-  // resolves to these instead.
-  'create_calendar_event',
-  'update_calendar_event',
+  ...writeIntentRegistry.map((entry) => entry.intentType),
   'write_github_issue_comment',
   'write_github_issue_update',
   'ask_clarification',
@@ -46,12 +50,10 @@ const PROPOSAL_FIELDS = new Set([
   'candidates',
 ])
 const TARGET_FIELDS = new Set([
-  'taskId', 'taskReference', 'taskTitleHint',
-  'title', 'notes', 'dueDate',
-  // Task 22 (calendar write slice) -- kept distinct from title/dueDate
-  // above so a task and a calendar-event proposal in the same flat target
-  // object can never be confused about which domain a field belongs to.
-  'eventTitle', 'eventReference', 'eventId', 'start', 'end',
+  // Task 23: task + calendar field names come from the shared registry, in
+  // its domain-grouped order (see WRITE_INTENT_TARGET_FIELD_NAMES's own
+  // comment) -- reproduces the exact pre-refactor field list/order.
+  ...WRITE_INTENT_TARGET_FIELD_NAMES,
   // EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
   'repo', 'issueNumber', 'commentBody', 'updateTitle', 'updateBody', 'updateLabels',
 ])
@@ -492,18 +494,11 @@ export function buildReasoningResponseSchema() {
       target: {
         type: 'OBJECT',
         properties: {
-          taskId: { type: 'STRING' },
-          taskReference: { type: 'STRING' },
-          taskTitleHint: { type: 'STRING' },
-          title: { type: 'STRING' },
-          notes: { type: 'STRING' },
-          dueDate: { type: 'STRING' },
-          // Task 22 (calendar write slice).
-          eventTitle: { type: 'STRING' },
-          eventReference: { type: 'STRING' },
-          eventId: { type: 'STRING' },
-          start: { type: 'STRING' },
-          end: { type: 'STRING' },
+          // Task 23: task + calendar target fields, in the shared
+          // registry's domain-grouped order -- see
+          // WRITE_INTENT_TARGET_FIELD_NAMES's own comment for why order
+          // must be preserved exactly (provider-contract-smoke).
+          ...Object.fromEntries(WRITE_INTENT_TARGET_FIELD_NAMES.map((name) => [name, { type: 'STRING' }])),
           // EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
           repo: { type: 'STRING' },
           issueNumber: { type: 'INTEGER' },

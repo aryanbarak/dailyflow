@@ -38,14 +38,18 @@ import type {
   WorkspacePlanStep,
   WorkspaceStepApproval,
 } from "../workspace/workspaceTypes";
+import {
+  findWriteIntentDescriptorByToolId,
+  writeIntentRegistry,
+} from "../../../shared/writeIntentRegistry";
 
 export const WRITE_RUNTIME_VERSION = "write-runtime-v1" as const;
+// Task 23: the four task/calendar tool ids are spliced in from the shared
+// registry, in its own array order, at the exact position the hand-written
+// literals used to occupy.
 export const SUPPORTED_WRITE_TOOL_IDS = Object.freeze([
   "tasks.complete",
-  "tasks.create",
-  "tasks.update",
-  "calendar.create_event",
-  "calendar.update_event",
+  ...writeIntentRegistry.map((entry) => entry.toolId),
   "github.issues.comment",
   "github.issues.update",
   "github.files.update",
@@ -188,21 +192,24 @@ function isSupportedWriteToolId(toolId: string | undefined): toolId is Supported
 // Each supported write tool has its own capability -- this used to be a bare
 // `tool.capability !== "complete"` check that only tasks.complete could ever
 // satisfy, silently rejecting every github write tool as "unsupported".
+// Task 23: the four task/calendar cases now read their value from the
+// shared registry (entry.capability -- e.g. calendar.create_event's
+// "schedule", matching calendarTools.ts's own capability field, an
+// asymmetry the registry preserves as data rather than normalizing) instead
+// of repeating it here; tasks.complete/github.* are outside this task's
+// scope and stay literal.
 function expectedCapabilityForToolId(toolId: SupportedWriteToolId): AgentToolCapability {
   switch (toolId) {
     case "tasks.complete":
       return "complete";
     case "tasks.create":
-      return "create";
+      return findWriteIntentDescriptorByToolId(toolId)!.capability;
     case "tasks.update":
-      return "update";
+      return findWriteIntentDescriptorByToolId(toolId)!.capability;
     case "calendar.create_event":
-      // Matches calendarTools.ts's own calendar.create_event.capability
-      // ("schedule", not "create") -- unlike tasks.create, this tool
-      // predates this task's slice and already used that value.
-      return "schedule";
+      return findWriteIntentDescriptorByToolId(toolId)!.capability;
     case "calendar.update_event":
-      return "update";
+      return findWriteIntentDescriptorByToolId(toolId)!.capability;
     case "github.issues.comment":
       return "create";
     case "github.issues.update":
@@ -214,6 +221,8 @@ function expectedCapabilityForToolId(toolId: SupportedWriteToolId): AgentToolCap
 
 // Same shape of bug as the capability check above: the step's actionType/
 // domain combination is specific to each write tool, not just tasks.complete.
+// Task 23: the four task/calendar cases now read domain/action from the
+// shared registry.
 function expectedStepShapeForToolId(
   toolId: SupportedWriteToolId,
 ): { actionType: WorkspacePlanStep["actionType"]; domain: WorkspacePlanStep["domain"] } {
@@ -221,13 +230,12 @@ function expectedStepShapeForToolId(
     case "tasks.complete":
       return { actionType: "complete", domain: "tasks" };
     case "tasks.create":
-      return { actionType: "create", domain: "tasks" };
     case "tasks.update":
-      return { actionType: "update", domain: "tasks" };
     case "calendar.create_event":
-      return { actionType: "create", domain: "calendar" };
-    case "calendar.update_event":
-      return { actionType: "update", domain: "calendar" };
+    case "calendar.update_event": {
+      const entry = findWriteIntentDescriptorByToolId(toolId)!;
+      return { actionType: entry.action, domain: entry.domain };
+    }
     case "github.issues.comment":
       return { actionType: "create", domain: "github" };
     case "github.issues.update":
@@ -373,10 +381,9 @@ function safeSummaryFor(
     if (toolId === "github.issues.comment") return "Comment added.";
     if (toolId === "github.issues.update") return "Issue updated.";
     if (toolId === "github.files.update") return "File updated.";
-    if (toolId === "tasks.create") return "Task created.";
-    if (toolId === "tasks.update") return "Task updated.";
-    if (toolId === "calendar.create_event") return "Event created.";
-    if (toolId === "calendar.update_event") return "Event updated.";
+    // Task 23: the four task/calendar summaries come from the shared registry.
+    const writeEntry = toolId ? findWriteIntentDescriptorByToolId(toolId) : undefined;
+    if (writeEntry) return writeEntry.successSummary;
     return alreadyCompleted
       ? "Task was already complete."
       : "Task was marked complete.";
@@ -538,21 +545,24 @@ function validateResolvedTool(
   return { tool, toolId: resolution.toolId };
 }
 
+// Task 23: tasks.create/calendar.create_event's bespoke field checks now
+// come from the shared registry's createRequiredTargetFields (['title'] /
+// ['eventTitle', 'start'] respectively, same fields/same non-empty-string
+// check as before). tasks.update/calendar.update_event have no
+// createRequiredTargetFields (matching their pre-refactor behaviour, which
+// never had a bespoke check either) and fall through to the same generic
+// step.targetId check every other write tool already used.
 function writeTargetIsValid(request: WriteRuntimeRequest, toolId: SupportedWriteToolId) {
   const expected = expectedStepShapeForToolId(toolId);
-  if (toolId === "tasks.create") {
+  const writeEntry = findWriteIntentDescriptorByToolId(toolId);
+  if (writeEntry?.createRequiredTargetFields) {
+    const target = request.target as Record<string, unknown> | null | undefined;
     return request.step?.actionType === expected.actionType &&
       request.step.domain === expected.domain &&
-      typeof request.target?.title === "string" &&
-      request.target.title.trim().length > 0;
-  }
-  if (toolId === "calendar.create_event") {
-    return request.step?.actionType === expected.actionType &&
-      request.step.domain === expected.domain &&
-      typeof request.target?.eventTitle === "string" &&
-      request.target.eventTitle.trim().length > 0 &&
-      typeof request.target?.start === "string" &&
-      request.target.start.trim().length > 0;
+      writeEntry.createRequiredTargetFields.every((field) => {
+        const value = target?.[field];
+        return typeof value === "string" && value.trim().length > 0;
+      });
   }
   return request.step?.actionType === expected.actionType &&
     request.step.domain === expected.domain &&
@@ -579,45 +589,19 @@ function buildHandlerInput(
     };
   }
 
+  // Task 23: the four task/calendar handler-input shapes come from the
+  // shared registry's buildHandlerInput hook (ported verbatim from the
+  // per-toolId branches this replaced).
+  const writeEntry = findWriteIntentDescriptorByToolId(toolId);
+  if (writeEntry) {
+    return writeEntry.buildHandlerInput({
+      actorId: runtimeActorId,
+      targetId: request.step?.targetId?.trim(),
+      target: (request.target as Record<string, unknown> | null | undefined) ?? {},
+    });
+  }
+
   const target = request.target;
-  if (toolId === "tasks.create") {
-    return {
-      userId: runtimeActorId,
-      title: target?.title,
-      notes: target?.notes,
-      dueDate: target?.dueDate ?? null,
-    };
-  }
-
-  if (toolId === "tasks.update") {
-    return {
-      userId: runtimeActorId,
-      taskId: request.step?.targetId?.trim(),
-      ...(target?.title !== undefined ? { title: target.title } : {}),
-      ...(target?.notes !== undefined ? { notes: target.notes } : {}),
-      ...(target?.dueDate !== undefined ? { dueDate: target.dueDate } : {}),
-    };
-  }
-
-  if (toolId === "calendar.create_event") {
-    return {
-      userId: runtimeActorId,
-      title: target?.eventTitle,
-      dateTimeStart: target?.start,
-      ...(target?.end !== undefined ? { dateTimeEnd: target.end } : {}),
-    };
-  }
-
-  if (toolId === "calendar.update_event") {
-    return {
-      userId: runtimeActorId,
-      eventId: request.step?.targetId?.trim(),
-      ...(target?.eventTitle !== undefined ? { title: target.eventTitle } : {}),
-      ...(target?.start !== undefined ? { dateTimeStart: target.start } : {}),
-      ...(target?.end !== undefined ? { dateTimeEnd: target.end } : {}),
-    };
-  }
-
   if (toolId === "github.issues.comment") {
     return {
       repo: target?.repo,

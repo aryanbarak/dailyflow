@@ -1,6 +1,7 @@
 ﻿import type { Env, Language } from './types'
 import { supabaseGet } from './context-builder'
 import { callGeminiForTaskTitle } from './task-title-extraction'
+import { writeIntentRegistry, type WriteIntentType } from '../../shared/writeIntentRegistry'
 
 export type FlowWriteMode = 'auto' | 'ask' | 'off'
 export type FlowWriteAction = 'create' | 'update' | 'delete'
@@ -101,19 +102,23 @@ export type UndoEntry =
   | { kind: 'create_calendar_event'; userId: string; eventId: string; expiresAt: string }
   | { kind: 'update_calendar_event'; userId: string; eventId: string; previous: Pick<CalendarEventRow, 'title' | 'date' | 'start_time' | 'end_time' | 'description'>; expiresAt: string }
 
-// Task 22-fix2 (D1 structural lesson): the single, authoritative runtime
-// list of undo-persisting kinds -- every ADR-0012 write intent that calls
-// persistUndoRecord below MUST be added here AND to the
+// Task 22-fix2 (D1 structural lesson), now task 23 registry-driven: the
+// single, authoritative runtime list of undo-persisting kinds -- every
+// ADR-0012 write intent that calls persistUndoRecord below MUST be added
+// to the shared writeIntentRegistry (its `undoKind` field) AND to the
 // flow_write_undo_records_kind_check constraint in a migration (see
 // supabase/migrations/20260815000000_widen_flow_write_undo_kinds.sql's own
-// header comment for the same reminder from the migration's side). The
-// type-level line right below this constant fails to COMPILE if UndoEntry
-// ever gains/loses a kind without this list being updated to match; a
-// runtime test in flow-write-policy.test.ts separately cross-checks this
-// exact array against the values actually allowed by the migration file's
-// CHECK constraint, so a mismatch between CODE and the DATABASE is caught
-// at test time -- not as a production 23514 (this task's own root cause).
-export const UNDO_KIND_VALUES = ['create_task', 'update_task', 'create_calendar_event', 'update_calendar_event'] as const
+// header comment for the same reminder from the migration's side). Deriving
+// this from the registry (rather than a hand-maintained literal array, as
+// before task 23) means a new registry entry's undo kind is automatically
+// picked up here with no separate edit. The type-level line right below
+// this constant still fails to COMPILE if UndoEntry ever gains/loses a kind
+// the registry doesn't also declare; a runtime test in
+// flow-write-policy.test.ts separately cross-checks this exact array
+// against the values actually allowed by the migration file's CHECK
+// constraint, so a mismatch between CODE and the DATABASE is caught at
+// test time -- not as a production 23514 (task 22-fix2's own root cause).
+export const UNDO_KIND_VALUES: readonly WriteIntentType[] = writeIntentRegistry.map((entry) => entry.undoKind)
 // Compile-time bidirectional equality check: `_typesMatch` can only be typed
 // `true` if UndoEntry['kind'] and the UNDO_KIND_VALUES union are IDENTICAL
 // sets -- if a future kind is added to one but not the other, `IsExactly<...>`

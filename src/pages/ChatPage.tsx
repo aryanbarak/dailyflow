@@ -94,6 +94,7 @@ import {
   resolveAiResponseLanguage,
   type SupportedAiResponseLanguage,
 } from '@/features/ai/responseLanguage'
+import { findWriteIntentDescriptor, writeIntentRegistry } from '../../shared/writeIntentRegistry'
 
 interface ChatMsg {
   id: string
@@ -243,12 +244,11 @@ const readIntentAction: Record<string, WorkspacePlanActionType> = {
 // Every type here already carries requiresApproval=true from the validator;
 // this set drives which write-resolution/approval path proposalToState uses,
 // generalizing what used to be a tasks.complete-only check.
+// Task 23: the four task/calendar write types come from the shared
+// registry instead of being listed here a second time.
 const WRITE_PROPOSAL_TYPES = new Set<AgentReasoningResult['proposal']['type']>([
   'complete_task',
-  'create_task',
-  'update_task',
-  'create_calendar_event',
-  'update_calendar_event',
+  ...writeIntentRegistry.map((entry) => entry.intentType),
   'write_github_issue_comment',
   'write_github_issue_update',
 ])
@@ -666,14 +666,12 @@ function intentTitleKey(type: AgentReasoningResult['proposal']['type']): Transla
       return 'agent_intent_title_inspect_github_workflow_runs'
     case 'complete_task':
       return 'agent_intent_title_complete_task'
+    // Task 23: the four task/calendar title keys come from the shared registry.
     case 'create_task':
-      return 'agent_intent_title_create_task' as TranslationKey
     case 'update_task':
-      return 'agent_intent_title_update_task' as TranslationKey
     case 'create_calendar_event':
-      return 'agent_intent_title_create_calendar_event' as TranslationKey
     case 'update_calendar_event':
-      return 'agent_intent_title_update_calendar_event' as TranslationKey
+      return findWriteIntentDescriptor(type)!.i18n.titleKey as TranslationKey
     case 'write_github_issue_comment':
       return 'agent_intent_title_write_github_issue_comment'
     case 'write_github_issue_update':
@@ -714,7 +712,11 @@ function stepForReasoning(result: AgentReasoningResult, t: Translate): Workspace
     return null
   }
   const isGithubIssueWrite = proposal.type === 'write_github_issue_comment' || proposal.type === 'write_github_issue_update'
-  const isCalendarWrite = proposal.type === 'create_calendar_event' || proposal.type === 'update_calendar_event'
+  // Task 23: a single registry lookup replaces the per-type task/calendar
+  // branches below (domain, actionType, targetId, description) -- undefined
+  // for every non-task/calendar proposal type, so each ternary chain falls
+  // through to its original non-write branches unchanged.
+  const writeEntry = findWriteIntentDescriptor(proposal.type)
   const domain =
     proposal.type === 'inspect_github_repositories' ||
     proposal.type === 'inspect_github_issues' ||
@@ -725,18 +727,16 @@ function stepForReasoning(result: AgentReasoningResult, t: Translate): Workspace
       ? 'github'
       : proposal.type === 'inspect_workspace'
       ? 'workspace'
-      : proposal.type === 'inspect_calendar' || isCalendarWrite
+      : proposal.type === 'inspect_calendar' || writeEntry?.domain === 'calendar'
       ? 'calendar'
       : proposal.type === 'inspect_learning'
         ? 'learning'
         : 'tasks'
   const actionType = proposal.type === 'complete_task'
     ? 'complete'
-    : proposal.type === 'create_task' || proposal.type === 'create_calendar_event'
-      ? 'create'
-      : proposal.type === 'update_task' || proposal.type === 'update_calendar_event'
-        ? 'update'
-        : proposal.type === 'write_github_issue_comment'
+    : writeEntry
+      ? writeEntry.action
+      : proposal.type === 'write_github_issue_comment'
           ? 'create'
           : proposal.type === 'write_github_issue_update'
             ? 'update'
@@ -744,10 +744,10 @@ function stepForReasoning(result: AgentReasoningResult, t: Translate): Workspace
   const githubIssueTargetId = isGithubIssueWrite && proposal.target?.repo && proposal.target?.issueNumber
     ? `${proposal.target.repo}#${proposal.target.issueNumber}`
     : undefined
-  const targetId = proposal.type === 'complete_task' || proposal.type === 'update_task'
+  const targetId = proposal.type === 'complete_task'
     ? proposal.target?.taskId
-    : proposal.type === 'update_calendar_event'
-      ? proposal.target?.eventId
+    : writeEntry?.targetIdField
+      ? proposal.target?.[writeEntry.targetIdField]
       : githubIssueTargetId
 
   return {
@@ -756,15 +756,9 @@ function stepForReasoning(result: AgentReasoningResult, t: Translate): Workspace
     title: intentTitle(proposal.type, t),
     description: proposal.type === 'complete_task'
       ? t('agent_intent_complete_description', { title: proposal.target?.taskTitleHint ?? t('agent_intent_selected_task') })
-      : proposal.type === 'create_task'
-        ? t('agent_intent_create_description', { title: proposal.target?.title ?? '' })
-        : proposal.type === 'update_task'
-          ? t('agent_intent_task_update_description', { title: proposal.target?.taskTitleHint ?? proposal.target?.taskReference ?? '' })
-          : proposal.type === 'create_calendar_event'
-            ? t('agent_intent_create_calendar_event_description', { title: proposal.target?.eventTitle ?? '' })
-            : proposal.type === 'update_calendar_event'
-              ? t('agent_intent_calendar_event_update_description', { title: proposal.target?.eventTitle ?? proposal.target?.eventReference ?? '' })
-              : proposal.type === 'write_github_issue_comment'
+      : writeEntry
+        ? t(writeEntry.i18n.descriptionKey as TranslationKey, { title: writeEntry.descriptionTitle(proposal.target as Record<string, unknown> | undefined) })
+        : proposal.type === 'write_github_issue_comment'
             ? t('agent_intent_comment_description', { targetId: githubIssueTargetId ?? '' })
             : proposal.type === 'write_github_issue_update'
               ? t('agent_intent_update_description', { targetId: githubIssueTargetId ?? '' })
@@ -837,109 +831,48 @@ function approvalForReasoningStep(
     }
   }
 
-  if (proposal.type === 'create_task') {
-    const target = proposal.target
-    if (resolution.toolId !== 'tasks.create' || !target?.title) return null
-    return {
-      stepId: step.id,
-      targetId: step.id,
-      toolId: 'tasks.create',
-      toolName: tool?.name,
-      toolDescription: tool?.description,
-      toolCapability: tool?.capability,
-      toolMode: tool?.mode,
-      status: 'pending',
-      requiresApproval: true,
-      approvalReason: t('agent_intent_create_approval_reason'),
-      riskLevel: 'medium',
-      reversible: true,
-      externalEffect: true,
-      dataDomains: ['tasks'],
-      approvalScope: 'single_step',
-      previewText: [`${t('agent_intent_preview_title')}: ${target.title}`, target.dueDate ? `${t('agent_intent_preview_due')}: ${target.dueDate}` : null, target.notes ? `${t('agent_intent_preview_notes')}: ${target.notes}` : null]
-        .filter(Boolean)
-        .join('\n'),
+  // Task 23: create_task/update_task/create_calendar_event/
+  // update_calendar_event -- previously four near-identical blocks -- now
+  // read their tool id/approval reason key/reversible/dataDomains/preview
+  // construction from the shared registry. Guard conditions, targetId
+  // (step.id for create, step.targetId for update), and the ported
+  // per-field preview-line logic are unchanged.
+  const writeEntry = findWriteIntentDescriptor(proposal.type)
+  if (writeEntry) {
+    const target = proposal.target as Record<string, unknown> | undefined
+    const isCreate = writeEntry.action === 'create'
+    if (resolution.toolId !== writeEntry.toolId) return null
+    if (isCreate) {
+      const missingRequiredField = writeEntry.createRequiredTargetFields?.some((field) => !target?.[field])
+      if (missingRequiredField) return null
+    } else if (!step.targetId) {
+      return null
     }
-  }
-
-  if (proposal.type === 'update_task') {
-    const target = proposal.target
-    if (resolution.toolId !== 'tasks.update' || !step.targetId) return null
-    return {
-      stepId: step.id,
-      targetId: step.targetId,
-      toolId: 'tasks.update',
-      toolName: tool?.name,
-      toolDescription: tool?.description,
-      toolCapability: tool?.capability,
-      toolMode: tool?.mode,
-      status: 'pending',
-      requiresApproval: true,
-      approvalReason: t('agent_intent_task_update_approval_reason'),
-      riskLevel: 'medium',
-      reversible: true,
-      externalEffect: true,
-      dataDomains: ['tasks'],
-      approvalScope: 'single_step',
-      previewText: [
-        target?.title ? `${t('agent_intent_preview_title')}: ${target.title}` : null,
-        target?.dueDate !== undefined ? `${t('agent_intent_preview_due')}: ${target.dueDate ?? t('agent_intent_preview_none')}` : null,
-        target?.notes ? `${t('agent_intent_preview_notes')}: ${target.notes}` : null,
-      ].filter(Boolean).join('\n'),
+    const previewLabels = {
+      title: t('agent_intent_preview_title'),
+      due: t('agent_intent_preview_due'),
+      notes: t('agent_intent_preview_notes'),
+      start: t('agent_intent_preview_start'),
+      end: t('agent_intent_preview_end'),
+      none: t('agent_intent_preview_none'),
     }
-  }
-
-  if (proposal.type === 'create_calendar_event') {
-    const target = proposal.target
-    if (resolution.toolId !== 'calendar.create_event' || !target?.eventTitle || !target?.start) return null
     return {
       stepId: step.id,
-      targetId: step.id,
-      toolId: 'calendar.create_event',
+      targetId: isCreate ? step.id : step.targetId!,
+      toolId: writeEntry.toolId,
       toolName: tool?.name,
       toolDescription: tool?.description,
       toolCapability: tool?.capability,
       toolMode: tool?.mode,
       status: 'pending',
       requiresApproval: true,
-      approvalReason: t('agent_intent_create_calendar_event_approval_reason'),
+      approvalReason: t(writeEntry.i18n.approvalReasonKey as TranslationKey),
       riskLevel: 'medium',
-      reversible: true,
+      reversible: writeEntry.reversible,
       externalEffect: true,
-      dataDomains: ['calendar'],
+      dataDomains: [writeEntry.domain],
       approvalScope: 'single_step',
-      previewText: [
-        `${t('agent_intent_preview_title')}: ${target.eventTitle}`,
-        `${t('agent_intent_preview_start')}: ${target.start}`,
-        target.end ? `${t('agent_intent_preview_end')}: ${target.end}` : null,
-      ].filter(Boolean).join('\n'),
-    }
-  }
-
-  if (proposal.type === 'update_calendar_event') {
-    const target = proposal.target
-    if (resolution.toolId !== 'calendar.update_event' || !step.targetId) return null
-    return {
-      stepId: step.id,
-      targetId: step.targetId,
-      toolId: 'calendar.update_event',
-      toolName: tool?.name,
-      toolDescription: tool?.description,
-      toolCapability: tool?.capability,
-      toolMode: tool?.mode,
-      status: 'pending',
-      requiresApproval: true,
-      approvalReason: t('agent_intent_calendar_event_update_approval_reason'),
-      riskLevel: 'medium',
-      reversible: true,
-      externalEffect: true,
-      dataDomains: ['calendar'],
-      approvalScope: 'single_step',
-      previewText: [
-        target?.eventTitle ? `${t('agent_intent_preview_title')}: ${target.eventTitle}` : null,
-        target?.start ? `${t('agent_intent_preview_start')}: ${target.start}` : null,
-        target?.end ? `${t('agent_intent_preview_end')}: ${target.end}` : null,
-      ].filter(Boolean).join('\n'),
+      previewText: writeEntry.previewLines(target, previewLabels).filter(Boolean).join('\n'),
     }
   }
 

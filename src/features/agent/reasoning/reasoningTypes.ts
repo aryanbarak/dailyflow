@@ -5,9 +5,16 @@ import type {
   ExecutionLearningProgressSnapshot,
 } from "../executionTypes";
 import type { Workspace } from "@/features/workspace/workspaceTypes";
+import type { WriteIntentType } from "../../../../shared/writeIntentRegistry";
 
 export const AGENT_INTENT_SCHEMA_VERSION = 1 as const;
 
+// Task 23: the four write-domain members (create_task/update_task/
+// create_calendar_event/update_calendar_event) now come from the shared
+// registry's WriteIntentType instead of being listed here a second time --
+// see shared/writeIntentRegistry.ts. Every other member is a read intent,
+// GitHub write, or terminal state outside this task's scope (tasks +
+// calendar only) and stays a plain literal here.
 export type AgentIntentType =
   | "inspect_tasks"
   | "inspect_calendar"
@@ -19,13 +26,7 @@ export type AgentIntentType =
   | "inspect_github_pull_requests"
   | "inspect_github_workflow_runs"
   | "complete_task"
-  | "create_task"
-  | "update_task"
-  // Task 22 (calendar write slice): tasks have no time-of-day field, so a
-  // request naming a calendar concept, or carrying a specific time,
-  // resolves to these instead of create_task/update_task.
-  | "create_calendar_event"
-  | "update_calendar_event"
+  | WriteIntentType
   | "write_github_issue_comment"
   | "write_github_issue_update"
   | "ask_clarification"
