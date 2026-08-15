@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import path from 'node:path'
 import {
   assembleCalendarWriteIntent,
   assembleTaskWriteIntent,
@@ -15,6 +18,7 @@ import {
   parseTaskWriteIntent,
   resolveCreateEventTitle,
   resolveCreateTaskTitle,
+  UNDO_KIND_VALUES,
   validateCandidateTitle,
   zonedDateTimeToUtcIso,
   type ParsedCalendarWriteIntent,
@@ -526,5 +530,54 @@ describe('task 22-fix: implicit schedule statements (C1/C2 production root cause
       // No createdAt -> resolved against CONTINUATION_NOW's own local day (2026-08-15) + 1.
       expect(intent).toMatchObject({ kind: 'create_task', dueDate: '2026-08-16' })
     })
+  })
+})
+
+describe('task 22-fix2 (D1): UNDO_KIND_VALUES cross-checked against the migration file', () => {
+  // Production root cause: the flow_write_undo_records_kind_check
+  // constraint was written (21-fix2) when only task kinds existed, and
+  // task 22 added calendar UndoEntry kinds in CODE without ever getting the
+  // widening migration APPLIED -- a mismatch between what the code tries to
+  // persist and what the database allows, caught only in production as a
+  // 23514. This test closes that gap generally: it reads the actual
+  // migration file's CHECK constraint and asserts it allows EXACTLY the
+  // same kinds UNDO_KIND_VALUES (the single source of truth persistUndoRecord's
+  // callers are built from -- see flow-write-policy.ts's own comment there)
+  // declares. A future kind added to one side without the other now fails
+  // a test, not a production write.
+  const migrationPath = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '../../supabase/migrations/20260815000000_widen_flow_write_undo_kinds.sql',
+  )
+
+  it('the widening migration exists and its CHECK constraint allows exactly the kinds UNDO_KIND_VALUES declares', () => {
+    const sql = readFileSync(migrationPath, 'utf8')
+    const match = sql.match(/add constraint flow_write_undo_records_kind_check\s+check \(kind in \(([^)]+)\)\)/)
+    expect(match, 'migration must (re)define flow_write_undo_records_kind_check with a `kind in (...)` clause').toBeTruthy()
+    const allowedInMigration = match![1]
+      .split(',')
+      .map(entry => entry.trim().replace(/^'(.*)'$/, '$1'))
+      .sort()
+    const allowedInCode = [...UNDO_KIND_VALUES].sort()
+    expect(allowedInMigration).toEqual(allowedInCode)
+  })
+
+  it('the migration drops the constraint before re-adding it (idempotent replay -- safe to run against a database that already has an older, narrower version)', () => {
+    const sql = readFileSync(migrationPath, 'utf8')
+    expect(sql).toMatch(/drop constraint if exists flow_write_undo_records_kind_check/)
+  })
+
+  it('UNDO_KIND_VALUES itself matches every kind persistUndoOrRollback is actually called with in this file (belt-and-suspenders: catches a future call site that forgets to extend the list, independent of the migration file check above)', () => {
+    const sourcePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), './flow-write-policy.ts')
+    const source = readFileSync(sourcePath, 'utf8')
+    const kindsUsedAtCallSites = new Set<string>()
+    for (const match of source.matchAll(/persistUndoOrRollback\(\s*env,\s*\{\s*kind:\s*'([a-z_]+)'/g)) {
+      kindsUsedAtCallSites.add(match[1])
+    }
+    // Guard the guard: fail loudly if the source ever stops matching this
+    // regex shape entirely (e.g. a refactor changes call-site formatting)
+    // rather than silently passing with an empty set.
+    expect(kindsUsedAtCallSites.size).toBeGreaterThan(0)
+    expect([...kindsUsedAtCallSites].sort()).toEqual([...UNDO_KIND_VALUES].sort())
   })
 })

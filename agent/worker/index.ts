@@ -930,7 +930,18 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
     return json(pendingWritePolicy ? { reply, writePolicy: pendingWritePolicy } : { reply }, 200, origin)
   } catch (err) {
     console.error('[Chat] Error:', err)
-    return json({ error: 'Failed to generate reply' }, 500, origin)
+    // Task 22-fix2 (D2): defense-in-depth for any turn failure this
+    // handler didn't already catch and convert to a clean reply (the
+    // specific undo-persist failure this task targets is now handled
+    // inside executeAutoTaskWrite/executeAutoCalendarWrite themselves --
+    // see persistUndoOrRollback -- but nothing upstream of this catch
+    // should ever be able to surface as a bare, content-less "Failed to
+    // send": the frontend only shows that generic fallback when the HTTP
+    // response itself is non-2xx (it never inspects the error body), so a
+    // 500 here always produces it regardless of what this JSON contains.
+    // Returning 200 with a real `reply` lets the turn degrade to an
+    // honest, retryable chat message instead.
+    return json({ reply: 'Something went wrong on my end. Please try again.' }, 200, origin)
   }
 }
 

@@ -95,11 +95,32 @@ interface CalendarEventRow {
   updated_at: string
 }
 
-type UndoEntry =
+export type UndoEntry =
   | { kind: 'create_task'; userId: string; taskId: string; expiresAt: string }
   | { kind: 'update_task'; userId: string; taskId: string; previous: Pick<TaskRow, 'title' | 'notes' | 'due_date' | 'completed'>; expiresAt: string }
   | { kind: 'create_calendar_event'; userId: string; eventId: string; expiresAt: string }
   | { kind: 'update_calendar_event'; userId: string; eventId: string; previous: Pick<CalendarEventRow, 'title' | 'date' | 'start_time' | 'end_time' | 'description'>; expiresAt: string }
+
+// Task 22-fix2 (D1 structural lesson): the single, authoritative runtime
+// list of undo-persisting kinds -- every ADR-0012 write intent that calls
+// persistUndoRecord below MUST be added here AND to the
+// flow_write_undo_records_kind_check constraint in a migration (see
+// supabase/migrations/20260815000000_widen_flow_write_undo_kinds.sql's own
+// header comment for the same reminder from the migration's side). The
+// type-level line right below this constant fails to COMPILE if UndoEntry
+// ever gains/loses a kind without this list being updated to match; a
+// runtime test in flow-write-policy.test.ts separately cross-checks this
+// exact array against the values actually allowed by the migration file's
+// CHECK constraint, so a mismatch between CODE and the DATABASE is caught
+// at test time -- not as a production 23514 (this task's own root cause).
+export const UNDO_KIND_VALUES = ['create_task', 'update_task', 'create_calendar_event', 'update_calendar_event'] as const
+// Compile-time bidirectional equality check: `_typesMatch` can only be typed
+// `true` if UndoEntry['kind'] and the UNDO_KIND_VALUES union are IDENTICAL
+// sets -- if a future kind is added to one but not the other, `IsExactly<...>`
+// resolves to `false` and this assignment fails to compile (`Type 'true' is
+// not assignable to type 'false'`), catching the drift at build time.
+type IsExactly<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false
+const _typesMatch: IsExactly<UndoEntry['kind'], typeof UNDO_KIND_VALUES[number]> = true
 
 export const FLOW_WRITE_UNDO_WINDOW_MS = 10 * 60 * 1000
 
@@ -876,6 +897,75 @@ export function assembleCalendarWriteIntent(message: string, recentTurns: Recent
   return previous ? mergeCalendarIntent(previous, message, now, timeZone) : null
 }
 
+// ---------------------------------------------------------------------------
+// Task 22-fix2 (D2/D3): undo is part of the definition of an 'auto' write
+// under ADR-0012 -- a write that executed but has no undo record is a
+// silent policy violation, not a degraded-but-acceptable outcome. Both
+// execution branches below already run the primary write BEFORE
+// persistUndoRecord (D3 finding: true for tasks and calendar, create and
+// update, unchanged by this fix -- true "undo-first" ordering would need a
+// two-phase reserve/confirm flow for creates, since the undo record for a
+// create needs the row's own freshly-generated id; out of scope for this
+// fix). Given that ordering, the chosen semantics are: if persistUndoRecord
+// fails, attempt a compensating rollback of the just-made write so nothing
+// is left silently executed-without-undo, then report a clean 'failed'
+// status through the SAME path clarify/not_found already use --
+// respondToWriteExecution in index.ts turns any of these into a proper
+// JSON reply, never a bare unhandled exception (which is what previously
+// surfaced to the user as "Failed to send" with no reply at all -- this
+// task's own production evidence). If the rollback itself also fails
+// (a genuine double-fault), the write may be orphaned without undo; that
+// case is logged as CRITICAL server-side and reported honestly to the user
+// as "please verify manually" rather than a flat, possibly-false "failed."
+// ---------------------------------------------------------------------------
+
+const FAILED_WRITE_REPLY: Record<Language, { retry: string; verify: string }> = {
+  en: {
+    retry: "I couldn't complete that action. Please try again.",
+    verify: "I couldn't confirm that action finished — please check your tasks/calendar to be sure.",
+  },
+  de: {
+    retry: 'Diese Aktion konnte ich nicht abschließen. Bitte versuche es erneut.',
+    verify: 'Ich konnte nicht bestätigen, dass diese Aktion abgeschlossen wurde — bitte überprüfe deine Aufgaben/deinen Kalender.',
+  },
+  fa: {
+    retry: 'نتوانستم این کار را انجام بدهم. لطفاً دوباره امتحان کن.',
+    verify: 'نتوانستم تأیید کنم که این کار انجام شده — لطفاً تسک‌ها/تقویم خود را بررسی کن.',
+  },
+}
+
+/**
+ * Attempts to persist the undo record for a just-executed auto write.
+ * Returns `null` on success (caller proceeds to build the normal 'executed'
+ * response). On failure, attempts `rollback` (a caller-supplied compensating
+ * action reversing the write that was just made) and returns a 'failed'
+ * status either way -- the reply differs depending on whether the rollback
+ * itself could be trusted to have succeeded, so the user is never told a
+ * flatly false story in either direction.
+ */
+async function persistUndoOrRollback(
+  env: Env,
+  entry: UndoEntry,
+  undoId: string,
+  language: Language,
+  rollback: () => Promise<void>,
+): Promise<{ status: 'failed'; reply: string } | null> {
+  try {
+    await persistUndoRecord(env, entry, undoId)
+    return null
+  } catch (err) {
+    console.error(`[FlowWrite] undo-persist failed for kind=${entry.kind}, attempting compensating rollback:`, (err as Error).message)
+    try {
+      await rollback()
+      console.warn(`[FlowWrite] compensating rollback succeeded for kind=${entry.kind} -- the write was NOT retained (undo could not be recorded)`)
+      return { status: 'failed', reply: FAILED_WRITE_REPLY[language].retry }
+    } catch (rollbackErr) {
+      console.error(`[FlowWrite] CRITICAL: compensating rollback ALSO failed for kind=${entry.kind} -- write may be orphaned without an undo record:`, (rollbackErr as Error).message)
+      return { status: 'failed', reply: FAILED_WRITE_REPLY[language].verify }
+    }
+  }
+}
+
 export async function executeAutoTaskWrite(input: {
   env: Env
   userId: string
@@ -897,10 +987,14 @@ export async function executeAutoTaskWrite(input: {
     })
     const task = rows[0]
     if (!task?.id) return { status: 'failed', reply: 'I could not verify that the task was created.' }
-    await createTaskAlarmIfNeeded(env, userId, task, intent.timeOfDay, timeZone)
+    const alarm = await createTaskAlarmIfNeeded(env, userId, task, intent.timeOfDay, timeZone)
     const undoId = `undo:${crypto.randomUUID()}`
     const expiresAt = undoExpiresAt(now)
-    await persistUndoRecord(env, { kind: 'create_task', userId, taskId: task.id, expiresAt }, undoId)
+    const undoFailure = await persistUndoOrRollback(env, { kind: 'create_task', userId, taskId: task.id, expiresAt }, undoId, language, async () => {
+      await supabaseWriteNoContent(env, 'DELETE', `tasks?id=eq.${esc(task.id)}&user_id=eq.${esc(userId)}`)
+      if (alarm?.id) await supabaseWriteNoContent(env, 'DELETE', `alarms?id=eq.${esc(alarm.id)}&user_id=eq.${esc(userId)}`)
+    })
+    if (undoFailure) return undoFailure
     return { status: 'executed', reply: confirmation(language, 'create_task', task.title, task.due_date, intent.timeOfDay), undoId, undoExpiresAt: expiresAt }
   }
 
@@ -916,7 +1010,16 @@ export async function executeAutoTaskWrite(input: {
   if (!updated?.id) return { status: 'failed', reply: 'I could not verify that the task was updated.' }
   const undoId = `undo:${crypto.randomUUID()}`
   const expiresAt = undoExpiresAt(now)
-  await persistUndoRecord(env, { kind: 'update_task', userId, taskId: before.id, previous: { title: before.title, notes: before.notes, due_date: before.due_date, completed: before.completed }, expiresAt }, undoId)
+  const undoFailure = await persistUndoOrRollback(
+    env,
+    { kind: 'update_task', userId, taskId: before.id, previous: { title: before.title, notes: before.notes, due_date: before.due_date, completed: before.completed }, expiresAt },
+    undoId,
+    language,
+    async () => {
+      await supabaseWriteNoContent(env, 'PATCH', `tasks?id=eq.${esc(before.id)}&user_id=eq.${esc(userId)}`, { due_date: before.due_date })
+    },
+  )
+  if (undoFailure) return undoFailure
   return { status: 'executed', reply: confirmation(language, 'update_task', updated.title, updated.due_date, intent.timeOfDay), undoId, undoExpiresAt: expiresAt }
 }
 
@@ -991,10 +1094,14 @@ export async function executeAutoCalendarWrite(input: {
     })
     const event = rows[0]
     if (!event?.id) return { status: 'failed', reply: 'I could not verify that the event was created.' }
-    await createCalendarEventAlarmIfNeeded(env, userId, event, startUtcIso)
+    const alarm = await createCalendarEventAlarmIfNeeded(env, userId, event, startUtcIso)
     const undoId = `undo:${crypto.randomUUID()}`
     const expiresAt = undoExpiresAt(now)
-    await persistUndoRecord(env, { kind: 'create_calendar_event', userId, eventId: event.id, expiresAt }, undoId)
+    const undoFailure = await persistUndoOrRollback(env, { kind: 'create_calendar_event', userId, eventId: event.id, expiresAt }, undoId, language, async () => {
+      await supabaseWriteNoContent(env, 'DELETE', `calendar_events?id=eq.${esc(event.id)}&user_id=eq.${esc(userId)}`)
+      if (alarm?.id) await supabaseWriteNoContent(env, 'DELETE', `alarms?id=eq.${esc(alarm.id)}&user_id=eq.${esc(userId)}`)
+    })
+    if (undoFailure) return undoFailure
     return { status: 'executed', reply: confirmationForCalendar(language, 'create_calendar_event', event.title, event.date, event.start_time ?? undefined), undoId, undoExpiresAt: expiresAt }
   }
 
@@ -1017,13 +1124,24 @@ export async function executeAutoCalendarWrite(input: {
   if (!updated?.id) return { status: 'failed', reply: 'I could not verify that the event was updated.' }
   const undoId = `undo:${crypto.randomUUID()}`
   const expiresAt = undoExpiresAt(now)
-  await persistUndoRecord(env, {
-    kind: 'update_calendar_event',
-    userId,
-    eventId: before.id,
-    previous: { title: before.title, date: before.date, start_time: before.start_time, end_time: before.end_time, description: before.description },
-    expiresAt,
-  }, undoId)
+  const undoFailure = await persistUndoOrRollback(
+    env,
+    {
+      kind: 'update_calendar_event',
+      userId,
+      eventId: before.id,
+      previous: { title: before.title, date: before.date, start_time: before.start_time, end_time: before.end_time, description: before.description },
+      expiresAt,
+    },
+    undoId,
+    language,
+    async () => {
+      await supabaseWriteNoContent(env, 'PATCH', `calendar_events?id=eq.${esc(before.id)}&user_id=eq.${esc(userId)}`, {
+        title: before.title, date: before.date, start_time: before.start_time, end_time: before.end_time, description: before.description,
+      })
+    },
+  )
+  if (undoFailure) return undoFailure
   return { status: 'executed', reply: confirmationForCalendar(language, 'update_calendar_event', updated.title, updated.date, updated.start_time ?? undefined), undoId, undoExpiresAt: expiresAt }
 }
 

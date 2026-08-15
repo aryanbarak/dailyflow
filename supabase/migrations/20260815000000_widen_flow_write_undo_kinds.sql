@@ -14,6 +14,19 @@
 -- about" id slot) -- not renamed, to avoid touching every existing
 -- reader/writer of this column for a cosmetic-only change.
 
+-- Task 22-fix2 (production evidence: 23514 on POST flow_write_undo_records,
+-- kind=create_calendar_event -- this migration was authored above alongside
+-- task 22's code but never applied, which is exactly how that reached
+-- production). STRUCTURAL LESSON: this CHECK constraint is a hardcoded
+-- allowlist that the CODE'S own UndoEntry union (agent/worker/
+-- flow-write-policy.ts) does not automatically stay in sync with -- every
+-- ADR-0012 write intent that calls persistUndoRecord with a NEW `kind`
+-- MUST add that value here, in the SAME migration/PR, not as a follow-up.
+-- agent/worker/flow-write-policy.ts exports UNDO_KIND_VALUES as the single
+-- source of truth for the allowed set; agent/worker/flow-write-policy.test.ts
+-- has a test that reads THIS FILE's CHECK clause and cross-checks it
+-- against UNDO_KIND_VALUES at test time, so a future mismatch between code
+-- and this migration fails a test locally instead of a production write.
 alter table public.flow_write_undo_records
   drop constraint if exists flow_write_undo_records_kind_check;
 

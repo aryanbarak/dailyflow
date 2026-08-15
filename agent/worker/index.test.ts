@@ -85,6 +85,11 @@ function installFetchMock(
   // Task 22: the user_settings.language row -- null means no row (the
   // existing default across this whole file, resolving to 'en').
   userLanguage: 'de' | 'fa' | null = null,
+  // Task 22-fix2 (D2): simulates the exact production 23514 CHECK-
+  // constraint violation on the flow_write_undo_records POST -- lets tests
+  // exercise persistUndoOrRollback's fallback behaviour without depending
+  // on the actual constraint being wide or narrow.
+  undoPersistShouldFail = false,
 ): FetchLog {
   const chatRows = [...chatHistoryRows]
   const log: FetchLog = {
@@ -116,6 +121,13 @@ function installFetchMock(
       return new Response(JSON.stringify(flowWriteMode ? [{ mode: flowWriteMode }] : []), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
     if (url.startsWith(`${SUPABASE_URL}/rest/v1/flow_write_undo_records`) && method === 'POST') {
+      if (undoPersistShouldFail) {
+        // Mirrors the real production error shape (PostgREST 23514).
+        return new Response(
+          JSON.stringify({ code: '23514', message: 'new row for relation "flow_write_undo_records" violates check constraint "flow_write_undo_records_kind_check"' }),
+          { status: 400, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>
       log.undoWrites.push({ method, body })
       undoStore.set(String(body.id), { ...body, consumed_at: null })
@@ -167,6 +179,12 @@ function installFetchMock(
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>
       log.alarmWrites.push({ method, body })
       return new Response(JSON.stringify([{ id: 'alarm-1', source_id: body.source_id, trigger_at: body.trigger_at }]), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    if (url.startsWith(`${SUPABASE_URL}/rest/v1/alarms`) && method === 'DELETE') {
+      // Task 22-fix2 (D2): the compensating rollback for a create write
+      // whose undo-persist failed also removes the alarm it just created.
+      log.alarmWrites.push({ method })
+      return new Response(null, { status: 204 })
     }
     if (url.startsWith(`${SUPABASE_URL}/rest/v1/documents`) && method === 'GET') {
       log.documentReads += 1
@@ -1342,5 +1360,134 @@ describe('task 22-fix: implicit schedule statements reach the deterministic writ
     expect(log.calendarWrites.length).toBe(0)
     expect(log.taskWrites.length).toBe(0)
     expect(log.geminiCalls.length).toBeGreaterThan(0)
+  })
+})
+
+describe('task 22-fix2: undo-persist failure must not destroy the turn (D2/D3)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-14T09:00:00.000Z'))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  // D3 finding: execution (the POST/PATCH to tasks/calendar_events) happens
+  // BEFORE persistUndoRecord on every one of the four paths below -- true
+  // undo-first ordering isn't possible for a create (the undo record needs
+  // the row's own freshly-generated id), so the chosen D2 semantics are a
+  // compensating rollback of the just-made write whenever undo-persist
+  // fails, verified for all four paths here.
+
+  it('create_calendar_event: undo-persist failure (the exact production 23514) rolls back the event and its alarm, and returns a clean reply -- never a bare "Failed to send"', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], null, null, true)
+    const response = await worker.fetch(chatRequest({
+      message: 'Add a task for next Tuesday at 9 because I have a family doctor appointment',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { reply?: string; error?: string; writeExecution?: string; undo?: unknown }
+
+    // The defining regression check: a real reply, HTTP 200, never the bare
+    // {error: ...} 500 shape the frontend renders as "Failed to send" with
+    // no content at all.
+    expect(response.status).toBe(200)
+    expect(body.error).toBeUndefined()
+    expect(body.reply).toBeTruthy()
+    expect(body.writeExecution).toBe('failed')
+    expect(body.undo).toBeUndefined()
+    // Compensating rollback: the event AND its alarm were created, then
+    // both rolled back -- undo could not be recorded, so the write is not
+    // silently retained (ADR-0012: undo is part of the definition of auto).
+    expect(log.calendarWrites.some(w => w.method === 'POST')).toBe(true)
+    expect(log.calendarWrites.some(w => w.method === 'DELETE')).toBe(true)
+    expect(log.alarmWrites.some(w => w.method === 'POST')).toBe(true)
+    expect(log.alarmWrites.some(w => w.method === 'DELETE')).toBe(true)
+    // No undo record was ever actually persisted (the mock rejects every attempt).
+    expect(log.undoWrites.length).toBe(0)
+  })
+
+  it('create_task: undo-persist failure rolls back the task and returns a clean reply', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], null, null, true)
+    const response = await worker.fetch(chatRequest({
+      message: 'Create task "Review invoices" for tomorrow',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { reply?: string; error?: string; writeExecution?: string; undo?: unknown }
+
+    expect(response.status).toBe(200)
+    expect(body.error).toBeUndefined()
+    expect(body.reply).toBeTruthy()
+    expect(body.writeExecution).toBe('failed')
+    expect(body.undo).toBeUndefined()
+    expect(log.taskWrites.some(w => w.method === 'POST')).toBe(true)
+    expect(log.taskWrites.some(w => w.method === 'DELETE')).toBe(true)
+  })
+
+  it('update_task: undo-persist failure restores the task\'s previous due date and returns a clean reply', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], null, null, true)
+    const response = await worker.fetch(chatRequest({
+      message: 'Update task "Tax task" due date to tomorrow',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { reply?: string; error?: string; writeExecution?: string; undo?: unknown }
+
+    expect(response.status).toBe(200)
+    expect(body.error).toBeUndefined()
+    expect(body.reply).toBeTruthy()
+    expect(body.writeExecution).toBe('failed')
+    expect(body.undo).toBeUndefined()
+    const patches = log.taskWrites.filter(w => w.method === 'PATCH')
+    expect(patches.length).toBeGreaterThanOrEqual(2)
+    // The LAST patch is the compensating rollback, restoring the task's
+    // original (mocked) due_date=null, not the new due date the turn tried
+    // to apply.
+    expect(patches[patches.length - 1]?.body?.due_date ?? null).toBeNull()
+  })
+
+  it('update_calendar_event: undo-persist failure restores the event\'s previous fields and returns a clean reply', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], null, null, true)
+    const response = await worker.fetch(chatRequest({
+      message: 'Move the "Team sync" event to 15:00',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { reply?: string; error?: string; writeExecution?: string; undo?: unknown }
+
+    expect(response.status).toBe(200)
+    expect(body.error).toBeUndefined()
+    expect(body.reply).toBeTruthy()
+    expect(body.writeExecution).toBe('failed')
+    expect(body.undo).toBeUndefined()
+    const patches = log.calendarWrites.filter(w => w.method === 'PATCH')
+    expect(patches.length).toBeGreaterThanOrEqual(2)
+    // The mocked existing event's own start_time (10:00) is restored, not
+    // the new 15:00 the turn tried to apply.
+    expect(patches[patches.length - 1]?.body?.start_time).toBe('10:00')
+  })
+
+  it('the same undo-persist failure under a genuinely unexpected DOUBLE fault (rollback also fails) still returns a clean 200 reply, honestly worded differently from the simple-failure case', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], null, null, true)
+    // Force the compensating DELETE itself to fail too, simulating a
+    // genuine double-fault (e.g. a second, unrelated outage) -- vi.fn
+    // wraps the already-installed mock so every OTHER branch keeps working.
+    const originalFetch = globalThis.fetch
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/rest/v1/calendar_events') && init?.method === 'DELETE') {
+        return new Response(JSON.stringify({ message: 'network error' }), { status: 500 })
+      }
+      return originalFetch(input, init)
+    }))
+    const response = await worker.fetch(chatRequest({
+      message: 'Add a task for next Tuesday at 9 because I have a family doctor appointment',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { reply?: string; error?: string; writeExecution?: string }
+
+    expect(response.status).toBe(200)
+    expect(body.error).toBeUndefined()
+    expect(body.reply).toBeTruthy()
+    expect(body.writeExecution).toBe('failed')
+    void log
   })
 })
