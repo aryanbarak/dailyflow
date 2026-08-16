@@ -1,0 +1,979 @@
+var __defProp = Object.defineProperty;
+var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
+
+// src/index.js
+var ALLOWED_ORIGIN = "https://barakzai.cloud";
+var GEMINI_DIRECT_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
+var AI_PROVIDERS = [
+  { name: "gemini-2.5-flash", model: "gemini-2.5-flash" },
+  { name: "gemini-2.0-flash", model: "gemini-2.0-flash" }
+];
+function geminiBase(env) {
+  if (env?.CF_ACCOUNT_ID && env?.CF_GATEWAY_NAME) {
+    return `https://gateway.ai.cloudflare.com/v1/${env.CF_ACCOUNT_ID}/${env.CF_GATEWAY_NAME}/google-ai-studio/v1beta/models`;
+  }
+  return GEMINI_DIRECT_BASE;
+}
+__name(geminiBase, "geminiBase");
+async function callWorkersAI(requestBody, env) {
+  if (!env?.AI)
+    throw new Error("Workers AI binding not available");
+  const systemText = requestBody.system_instruction?.parts?.[0]?.text ?? "";
+  const messages = [];
+  if (systemText)
+    messages.push({ role: "system", content: systemText });
+  for (const turn of requestBody.contents ?? []) {
+    const role = turn.role === "model" ? "assistant" : "user";
+    const text2 = turn.parts?.map((p) => p.text ?? "").join("") ?? "";
+    if (text2)
+      messages.push({ role, content: text2 });
+  }
+  const maxTokens = requestBody.generationConfig?.maxOutputTokens ?? 2048;
+  const temperature = requestBody.generationConfig?.temperature ?? 0.7;
+  console.log("[AI Gateway] Falling back to Workers AI");
+  const result = await env.AI.run("@cf/meta/llama-3.1-8b-instruct", {
+    messages,
+    max_tokens: maxTokens,
+    temperature
+  });
+  const text = result?.response ?? "";
+  const fakeRes = new Response(
+    JSON.stringify({ candidates: [{ content: { parts: [{ text }] } }] }),
+    { status: 200, headers: { "Content-Type": "application/json" } }
+  );
+  return { res: fakeRes, provider: "workers-ai-llama-3.1-8b", model: "llama-3.1-8b" };
+}
+__name(callWorkersAI, "callWorkersAI");
+async function callGeminiWithFallback(requestBody, apiKey, env) {
+  const base = geminiBase(env);
+  let lastError = null;
+  for (const provider of AI_PROVIDERS) {
+    const url = `${base}/${provider.model}:generateContent?key=${apiKey}`;
+    let res;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody)
+      });
+    } catch (err) {
+      lastError = err;
+      console.log(`[AI Gateway] ${provider.name} unreachable: ${err.message}`);
+      continue;
+    }
+    if (res.status === 429 || res.status >= 500) {
+      const errData = await res.json().catch(() => ({}));
+      lastError = new Error(`${provider.name}: HTTP ${res.status} \u2014 ${errData.error?.message ?? "Unknown"}`);
+      console.log(`[AI Gateway] ${provider.name} failed (${res.status}), trying next...`);
+      continue;
+    }
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(`${provider.name}: ${errData.error?.message ?? "Request failed"}`);
+    }
+    console.log(`[AI Gateway] Success with ${provider.name}`);
+    return { res, provider: provider.name, model: provider.model };
+  }
+  try {
+    return await callWorkersAI(requestBody, env);
+  } catch (workerErr) {
+    throw new Error(`All AI providers failed. Last error: ${lastError?.message ?? workerErr.message}`);
+  }
+}
+__name(callGeminiWithFallback, "callGeminiWithFallback");
+var SYSTEM_PROMPTS = {
+  fiae_algorithms: "You are an expert IT tutor specializing in FIAE (Fachinformatiker Anwendungsentwicklung) exam preparation. Help with algorithms, pseudocode, data structures, sorting, searching, complexity analysis, and IHK AP2 exam topics. Use German pseudocode keywords (FUER, BIS, GIB ZURUECK, WENN, SONST). Be precise and exam-focused.",
+  wiso: "You are a WISO (Wirtschafts- und Sozialkunde) tutor for IHK exams. Cover economics, business law, labor law, social insurance, and company organization relevant to German vocational training.",
+  general_it: "You are a helpful IT tutor covering programming, networking, databases, web development, and general computer science topics. Adapt explanations to the student's level.",
+  planner: "You are a productivity and learning coach. Help with daily planning, study schedules, goal setting, time management, and workflow organization."
+};
+var LANGUAGE_INSTRUCTIONS = {
+  fa: "Always respond in Persian (Farsi), regardless of the language of the question.",
+  de: "Always respond in German, regardless of the language of the question.",
+  en: "Always respond in English, regardless of the language of the question."
+};
+function buildSystemInstruction(mode, language) {
+  const modePrompt = SYSTEM_PROMPTS[mode] ?? SYSTEM_PROMPTS.general_it;
+  const langInstruction = LANGUAGE_INSTRUCTIONS[language] ?? "Detect the language from the message and respond in the same language.";
+  return `${modePrompt}
+
+${langInstruction}`;
+}
+__name(buildSystemInstruction, "buildSystemInstruction");
+function corsHeaders(request) {
+  const origin = request.headers.get("Origin") || "";
+  const isAllowed = origin === ALLOWED_ORIGIN || /^http:\/\/localhost(:\d+)?$/.test(origin);
+  return {
+    "Access-Control-Allow-Origin": isAllowed ? origin : ALLOWED_ORIGIN,
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+    "Access-Control-Max-Age": "86400",
+    Vary: "Origin"
+  };
+}
+__name(corsHeaders, "corsHeaders");
+function json(data, status = 200, extra = {}) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "Content-Type": "application/json; charset=utf-8", ...extra }
+  });
+}
+__name(json, "json");
+function getIdentifier(request) {
+  const auth = request.headers.get("Authorization") ?? "";
+  if (auth.startsWith("Bearer ")) {
+    try {
+      const payload = JSON.parse(atob(auth.slice(7).split(".")[1].replaceAll("-", "+").replaceAll("_", "/")));
+      if (payload.sub)
+        return `u:${String(payload.sub)}`;
+    } catch {
+    }
+  }
+  return `ip:${request.headers.get("CF-Connecting-IP") ?? "unknown"}`;
+}
+__name(getIdentifier, "getIdentifier");
+async function checkRateLimit(env, identifier, endpoint, limit) {
+  if (!env.RATE_LIMIT_KV)
+    return { allowed: true, remaining: limit - 1 };
+  const key = `rl:${endpoint}:${identifier}:${Math.floor(Date.now() / 36e5)}`;
+  const current = Number.parseInt(await env.RATE_LIMIT_KV.get(key) ?? "0", 10);
+  if (current >= limit)
+    return { allowed: false, remaining: 0 };
+  await env.RATE_LIMIT_KV.put(key, String(current + 1), { expirationTtl: 3600 });
+  return { allowed: true, remaining: limit - current - 1 };
+}
+__name(checkRateLimit, "checkRateLimit");
+function rlHeaders(limit, remaining) {
+  return {
+    "X-RateLimit-Limit": String(limit),
+    "X-RateLimit-Remaining": String(remaining)
+  };
+}
+__name(rlHeaders, "rlHeaders");
+var RATE_LIMIT_EXCEEDED = {
+  error: "Too many requests",
+  message: "Rate limit exceeded. Please try again in an hour.",
+  retryAfter: 3600
+};
+function decodeJWTPayload(token) {
+  const parts = token.split(".");
+  if (parts.length !== 3)
+    throw new Error("Malformed JWT");
+  return JSON.parse(atob(parts[1].replaceAll("-", "+").replaceAll("_", "/")));
+}
+__name(decodeJWTPayload, "decodeJWTPayload");
+function requireAuth(request) {
+  const auth = request.headers.get("Authorization") ?? "";
+  if (!auth.startsWith("Bearer "))
+    return { userId: null, error: "Missing authorization token" };
+  const token = auth.slice(7);
+  try {
+    const claims = decodeJWTPayload(token);
+    if (typeof claims.exp === "number" && claims.exp < Date.now() / 1e3) {
+      return { userId: null, error: "Token expired" };
+    }
+    if (!claims.sub)
+      return { userId: null, error: "Invalid token" };
+    return { userId: String(claims.sub), error: null };
+  } catch {
+    return { userId: null, error: "Invalid token" };
+  }
+}
+__name(requireAuth, "requireAuth");
+function buildAnalyzeUserParts(message, fileData) {
+  const parts = [];
+  if (fileData?.base64 && fileData?.mimeType) {
+    parts.push({ inline_data: { mime_type: fileData.mimeType, data: fileData.base64 } });
+    if (fileData.name)
+      parts.push({ text: `[File: ${fileData.name}]
+` });
+  }
+  parts.push({ text: message || "Please analyze the attached file." });
+  return parts;
+}
+__name(buildAnalyzeUserParts, "buildAnalyzeUserParts");
+async function handleAnalyze(request, env) {
+  const cors = corsHeaders(request);
+  const { error: authError } = requireAuth(request);
+  if (authError)
+    return json({ error: authError }, 401, cors);
+  const identifier = getIdentifier(request);
+  const rl = await checkRateLimit(env, identifier, "analyze", 30);
+  const headers = { ...cors, ...rlHeaders(30, rl.remaining) };
+  if (!rl.allowed) {
+    return json(RATE_LIMIT_EXCEEDED, 429, { ...headers, "Retry-After": "3600" });
+  }
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ detail: "Invalid JSON body" }, 400, headers);
+  }
+  const message = typeof body.message === "string" ? body.message.trim() : "";
+  const history = Array.isArray(body.history) ? body.history : [];
+  const mode = typeof body.mode === "string" ? body.mode : "general_it";
+  const language = typeof body.language === "string" ? body.language : "de";
+  const memoryCtx = typeof body.memoryContext === "string" ? body.memoryContext : "";
+  const fileData = body.fileData ?? null;
+  if (!message && !fileData) {
+    return json({ detail: "message or fileData is required" }, 400, headers);
+  }
+  if (!env.GEMINI_API_KEY) {
+    return json({ error: "GEMINI_API_KEY is not configured" }, 500, headers);
+  }
+  const systemInstruction = buildSystemInstruction(mode, language);
+  const fullSystemText = memoryCtx ? `${systemInstruction}
+
+User context:
+${memoryCtx}` : systemInstruction;
+  const geminiHistory = history.map((h) => ({
+    role: h.role === "assistant" ? "model" : "user",
+    parts: [{ text: h.content }]
+  }));
+  const geminiBody = {
+    system_instruction: { parts: [{ text: fullSystemText }] },
+    contents: [
+      ...geminiHistory,
+      { role: "user", parts: buildAnalyzeUserParts(message, fileData) }
+    ],
+    generationConfig: { temperature: 0.7, maxOutputTokens: 2048 }
+  };
+  let geminiResult;
+  try {
+    geminiResult = await callGeminiWithFallback(geminiBody, env.GEMINI_API_KEY, env);
+  } catch (err) {
+    return json(
+      { error: "Failed to reach Gemini API", detail: String(err).slice(0, 200) },
+      502,
+      headers
+    );
+  }
+  const geminiData = await geminiResult.res.json();
+  const answer = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "No response from AI.";
+  return json(
+    { answer, provider: geminiResult.provider },
+    200,
+    { ...headers, "X-AI-Provider": geminiResult.provider }
+  );
+}
+__name(handleAnalyze, "handleAnalyze");
+function parseInnertubeResults(data) {
+  const items = data?.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents?.[0]?.itemSectionRenderer?.contents ?? [];
+  return items.filter((item) => item.videoRenderer).map((item) => {
+    const v = item.videoRenderer;
+    const title = v.title?.runs?.[0]?.text ?? v.title?.accessibility?.accessibilityData?.label ?? "";
+    const author = v.ownerText?.runs?.[0]?.text ?? "";
+    const durationText = v.lengthText?.simpleText ?? "";
+    const viewText = v.viewCountText?.simpleText ?? v.viewCountText?.runs?.[0]?.text ?? "0";
+    const parts = durationText.split(":").map(Number);
+    let lengthSeconds = 0;
+    if (parts.length === 3)
+      lengthSeconds = parts[0] * 3600 + parts[1] * 60 + parts[2];
+    else if (parts.length === 2)
+      lengthSeconds = parts[0] * 60 + parts[1];
+    const viewCount = Number.parseInt(viewText.replace(/\D/g, ""), 10) || 0;
+    return { type: "video", videoId: v.videoId, title, author, lengthSeconds, viewCount };
+  });
+}
+__name(parseInnertubeResults, "parseInnertubeResults");
+async function handleSearch(request, env, url) {
+  const cors = corsHeaders(request);
+  const q = url.searchParams.get("q");
+  if (!q)
+    return json({ error: "q is required" }, 400, cors);
+  const identifier = getIdentifier(request);
+  const rl = await checkRateLimit(env, identifier, "search", 60);
+  const headers = { ...cors, ...rlHeaders(60, rl.remaining) };
+  if (!rl.allowed) {
+    return json(RATE_LIMIT_EXCEEDED, 429, { ...headers, "Retry-After": "3600" });
+  }
+  let ytResponse;
+  try {
+    ytResponse = await fetch(
+      "https://www.youtube.com/youtubei/v1/search",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          context: { client: { clientName: "WEB", clientVersion: "2.20250101.00.00" } },
+          query: q
+        }),
+        signal: AbortSignal.timeout(1e4)
+      }
+    );
+  } catch (err) {
+    return json({ error: "Search unavailable", detail: String(err) }, 503, headers);
+  }
+  if (!ytResponse.ok) {
+    return json({ error: "Search unavailable", status: ytResponse.status }, 503, headers);
+  }
+  const data = await ytResponse.json();
+  const results = parseInnertubeResults(data);
+  if (results.length === 0) {
+    return json({ error: "No results found" }, 503, headers);
+  }
+  return json({ results }, 200, headers);
+}
+__name(handleSearch, "handleSearch");
+async function handlePhotoUpload(request, env) {
+  const cors = corsHeaders(request);
+  const { userId, error: authError } = requireAuth(request);
+  if (authError)
+    return json({ error: authError }, 401, cors);
+  let formData;
+  try {
+    formData = await request.formData();
+  } catch {
+    return json({ error: "Invalid multipart body" }, 400, cors);
+  }
+  const file = formData.get("file");
+  const thumb = formData.get("thumb");
+  const uuid = formData.get("uuid");
+  if (!file || typeof file === "string")
+    return json({ error: "file field is required" }, 400, cors);
+  if (!uuid || typeof uuid !== "string")
+    return json({ error: "uuid field is required" }, 400, cors);
+  if (!env.PHOTOS_BUCKET)
+    return json({ error: "Storage not configured" }, 500, cors);
+  const nameParts = file.name.split(".");
+  const ext = nameParts.length > 1 ? nameParts.pop().toLowerCase() : "bin";
+  const key = `photos/${userId}/${uuid}.${ext}`;
+  const thumbKey = `photos/${userId}/${uuid}_thumb.jpg`;
+  await env.PHOTOS_BUCKET.put(key, file.stream(), {
+    httpMetadata: { contentType: file.type || "application/octet-stream" }
+  });
+  if (thumb && typeof thumb !== "string") {
+    await env.PHOTOS_BUCKET.put(thumbKey, thumb.stream(), {
+      httpMetadata: { contentType: "image/jpeg" }
+    });
+  }
+  return json({ key, thumbKey }, 200, cors);
+}
+__name(handlePhotoUpload, "handlePhotoUpload");
+async function handlePhotoFile(request, env, url) {
+  const cors = corsHeaders(request);
+  const key = url.searchParams.get("key");
+  if (!key)
+    return json({ error: "key is required" }, 400, cors);
+  if (!env.PHOTOS_BUCKET)
+    return json({ error: "Storage not configured" }, 500, cors);
+  const obj = await env.PHOTOS_BUCKET.get(key);
+  if (!obj)
+    return json({ error: "Not found" }, 404, cors);
+  const headers = new Headers(cors);
+  headers.set("Content-Type", obj.httpMetadata?.contentType ?? "application/octet-stream");
+  headers.set("Cache-Control", "public, max-age=31536000, immutable");
+  return new Response(obj.body, { status: 200, headers });
+}
+__name(handlePhotoFile, "handlePhotoFile");
+async function handlePhotoDelete(request, env, url) {
+  const cors = corsHeaders(request);
+  const { userId, error: authError } = requireAuth(request);
+  if (authError)
+    return json({ error: authError }, 401, cors);
+  const key = url.searchParams.get("key");
+  if (!key)
+    return json({ error: "key is required" }, 400, cors);
+  if (!key.startsWith(`photos/${userId}/`)) {
+    return json({ error: "Forbidden" }, 403, cors);
+  }
+  if (!env.PHOTOS_BUCKET)
+    return json({ error: "Storage not configured" }, 500, cors);
+  await env.PHOTOS_BUCKET.delete(key);
+  const thumbKey = key.replace(/(\.[^.]+)?$/, "_thumb.jpg");
+  await env.PHOTOS_BUCKET.delete(thumbKey).catch(() => void 0);
+  return json({ ok: true }, 200, cors);
+}
+__name(handlePhotoDelete, "handlePhotoDelete");
+async function handlePhotoAnalyze(request, env) {
+  const cors = corsHeaders(request);
+  const { userId, error: authError } = requireAuth(request);
+  if (authError)
+    return json({ error: authError }, 401, cors);
+  const identifier = getIdentifier(request);
+  const rl = await checkRateLimit(env, identifier, "photo-analyze", 10);
+  const headers = { ...cors, ...rlHeaders(10, rl.remaining) };
+  if (!rl.allowed) {
+    return json(RATE_LIMIT_EXCEEDED, 429, { ...headers, "Retry-After": "3600" });
+  }
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: "Invalid JSON body" }, 400, headers);
+  }
+  const { key } = body;
+  if (!key || typeof key !== "string") {
+    return json({ error: "key is required" }, 400, headers);
+  }
+  if (!key.startsWith(`photos/${userId}/`)) {
+    return json({ error: "Forbidden" }, 403, headers);
+  }
+  if (!env.PHOTOS_BUCKET)
+    return json({ error: "Storage not configured" }, 500, headers);
+  if (!env.GEMINI_API_KEY)
+    return json({ error: "GEMINI_API_KEY not configured" }, 500, headers);
+  const obj = await env.PHOTOS_BUCKET.get(key);
+  if (!obj)
+    return json({ error: "Photo not found" }, 404, headers);
+  const bytes = await obj.arrayBuffer();
+  const arr = new Uint8Array(bytes);
+  let str = "";
+  const chunk = 8192;
+  for (let i = 0; i < arr.length; i += chunk) {
+    str += String.fromCodePoint(...arr.subarray(i, i + chunk));
+  }
+  const base64 = btoa(str);
+  const mimeType = obj.httpMetadata?.contentType ?? "image/jpeg";
+  const prompt = 'Analyze this photo. Respond with JSON only (no markdown fence):\n{"description":"one sentence","tags":["tag1","tag2"],"people_count":0}\nRules: tags are 3-8 lowercase words/phrases for objects, setting, activity, mood. people_count is number of visible people (0 if none).';
+  let geminiResult;
+  try {
+    geminiResult = await callGeminiWithFallback({
+      // NOSONAR
+      contents: [{
+        role: "user",
+        parts: [
+          { inline_data: { mime_type: mimeType, data: base64 } },
+          { text: prompt }
+        ]
+      }],
+      generationConfig: { responseMimeType: "application/json" }
+    }, env.GEMINI_API_KEY, env);
+  } catch (err) {
+    return json({ error: "Failed to reach Gemini API", detail: String(err) }, 502, headers);
+  }
+  const geminiData = await geminiResult.res.json();
+  const text = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
+  let result;
+  try {
+    result = JSON.parse(text);
+  } catch {
+    result = {};
+  }
+  return json({
+    description: typeof result.description === "string" ? result.description : "",
+    tags: Array.isArray(result.tags) ? result.tags.filter((t) => typeof t === "string") : [],
+    people_count: typeof result.people_count === "number" ? result.people_count : 0
+  }, 200, headers);
+}
+__name(handlePhotoAnalyze, "handlePhotoAnalyze");
+function stripMarkdownFence(text) {
+  return text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
+}
+__name(stripMarkdownFence, "stripMarkdownFence");
+function findJsonEnd(clean, start) {
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < clean.length; i++) {
+    const c = clean[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (c === "\\" && inString) {
+      escape = true;
+      continue;
+    }
+    if (c === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString)
+      continue;
+    if (c === "{") {
+      depth++;
+      continue;
+    }
+    if (c === "}" && --depth === 0)
+      return i;
+  }
+  return -1;
+}
+__name(findJsonEnd, "findJsonEnd");
+function extractJsonObject(text) {
+  const clean = stripMarkdownFence(text);
+  const start = clean.indexOf("{");
+  if (start === -1)
+    throw new Error("No complete JSON object found in response");
+  const end = findJsonEnd(clean, start);
+  if (end === -1)
+    throw new Error("No complete JSON object found in response");
+  return JSON.parse(clean.slice(start, end + 1));
+}
+__name(extractJsonObject, "extractJsonObject");
+async function fileToBase64(file) {
+  const bytes = await file.arrayBuffer();
+  const arr = new Uint8Array(bytes);
+  let str = "";
+  const chunkSize = 8192;
+  for (let i = 0; i < arr.length; i += chunkSize) {
+    str += String.fromCodePoint(...arr.subarray(i, i + chunkSize));
+  }
+  return btoa(str);
+}
+__name(fileToBase64, "fileToBase64");
+function buildOcrPrompt(language) {
+  const langNames = { de: "German", en: "English", fa: "Persian (Farsi)" };
+  const langHint = langNames[language] ?? String(language);
+  return `Extract all text from this document. Primary language hint: ${langHint}. Return ONLY the extracted text, preserving paragraphs and line breaks. Do not add commentary, headers, or explanations.`;
+}
+__name(buildOcrPrompt, "buildOcrPrompt");
+async function handleOcr(request, env) {
+  const cors = corsHeaders(request);
+  const { error: authError } = requireAuth(request);
+  if (authError)
+    return json({ error: authError }, 401, cors);
+  const identifier = getIdentifier(request);
+  const rl = await checkRateLimit(env, identifier, "ocr", 10);
+  const headers = { ...cors, ...rlHeaders(10, rl.remaining) };
+  if (!rl.allowed) {
+    return json(RATE_LIMIT_EXCEEDED, 429, { ...headers, "Retry-After": "3600" });
+  }
+  if (!env.GEMINI_API_KEY) {
+    return json({ error: "GEMINI_API_KEY is not configured" }, 500, headers);
+  }
+  let formData;
+  try {
+    formData = await request.formData();
+  } catch {
+    return json({ error: "Invalid multipart body" }, 400, headers);
+  }
+  const file = formData.get("file");
+  const language = formData.get("language") ?? "en";
+  if (!file || typeof file === "string") {
+    return json({ error: "file field is required" }, 400, headers);
+  }
+  if (file.size > 15 * 1024 * 1024) {
+    return json({ error: "File too large (max 15 MB)" }, 413, headers);
+  }
+  console.log("[ocr] file received:", file.name ?? "unknown", file.size, "bytes, lang:", language);
+  const base64 = await fileToBase64(file);
+  const prompt = buildOcrPrompt(language);
+  let geminiResult;
+  try {
+    geminiResult = await callGeminiWithFallback({
+      // NOSONAR
+      contents: [{
+        role: "user",
+        parts: [
+          { inline_data: { mime_type: file.type || "application/octet-stream", data: base64 } },
+          { text: prompt }
+        ]
+      }],
+      generationConfig: { maxOutputTokens: 4096, temperature: 0.1 }
+    }, env.GEMINI_API_KEY, env);
+  } catch (err) {
+    console.log("[ocr] callGeminiWithFallback threw:", String(err));
+    return json({ error: "Failed to reach Gemini API", detail: String(err).slice(0, 200) }, 502, headers);
+  }
+  if (!geminiResult?.res) {
+    return json({ error: "No response from Gemini" }, 502, headers);
+  }
+  if (!geminiResult.res.ok) {
+    const errText = await geminiResult.res.text().catch(() => "");
+    console.log("[ocr] Gemini OCR not ok:", geminiResult.res.status, errText.slice(0, 200));
+    return json({ error: `Gemini API error: ${geminiResult.res.status}`, detail: errText.slice(0, 200) }, 502, headers);
+  }
+  const geminiData = await geminiResult.res.json();
+  const extractedText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+  console.log("[ocr] OCR text length:", extractedText.length);
+  let summary = null;
+  if (extractedText.trim().length > 50) {
+    console.log("[ocr] starting summary generation...");
+    const summaryPrompt = `You are analyzing a document for the person who uploaded it.
+Language hint: ${language}. Respond in the same language as the document content.
+
+Generate a structured analysis. Return ONLY valid JSON, no markdown:
+{
+  "title": "document title (short)",
+  "summary": "2-3 sentence summary",
+  "key_points": ["point 1", "point 2", "point 3"],
+  "action_items": [
+    {
+      "title": "action the document owner should take",
+      "reason": "why this action matters",
+      "priority": "low|medium|high"
+    }
+  ]
+}
+
+IMPORTANT: Action items are for the DOCUMENT OWNER/UPLOADER only.
+Not for external parties, companies, or recipients.
+Maximum 5 action items.
+
+Document text:
+${extractedText.slice(0, 3e3)}`;
+    let summaryText = "";
+    try {
+      const summaryResult = await callGeminiWithFallback(
+        // NOSONAR
+        {
+          contents: [{ parts: [{ text: summaryPrompt }] }],
+          generationConfig: { maxOutputTokens: 2048, temperature: 0.3, thinkingConfig: { thinkingBudget: 0 } }
+        },
+        env.GEMINI_API_KEY,
+        env
+      );
+      if (!summaryResult.res.ok) {
+        throw new Error(`Summary Gemini failed: ${summaryResult.res.status}`);
+      }
+      const summaryData = await summaryResult.res.json();
+      const candidate = summaryData.candidates?.[0];
+      console.log("[ocr] summary finishReason:", candidate?.finishReason);
+      summaryText = candidate?.content?.parts?.[0]?.text ?? "";
+      console.log("[ocr] summaryText length:", summaryText.length);
+      summary = extractJsonObject(summaryText);
+      console.log("[ocr] summary generated successfully");
+    } catch (err) {
+      console.log("[ocr] summary parse failed. raw text:", summaryText.slice(0, 500));
+      console.log("[ocr] summary error:", String(err));
+    }
+  }
+  return json({ text: extractedText, characters: extractedText.length, summary, provider: geminiResult.provider }, 200, headers);
+}
+__name(handleOcr, "handleOcr");
+function ttsTextError(text) {
+  if (!text || typeof text !== "string" || !text.trim())
+    return "text is required";
+  if (text.length > 3e3)
+    return "Text too long (max 3,000 characters)";
+  return null;
+}
+__name(ttsTextError, "ttsTextError");
+async function callElevenLabs(apiKey, text, voiceId, modelId) {
+  const res = await fetch(
+    `https://api.elevenlabs.io/v1/text-to-speech/${String(voiceId)}`,
+    {
+      method: "POST",
+      headers: {
+        "xi-api-key": apiKey,
+        "Content-Type": "application/json",
+        "Accept": "audio/mpeg"
+      },
+      body: JSON.stringify({
+        text: text.trim(),
+        model_id: modelId || "eleven_v3",
+        voice_settings: { stability: 0.5, similarity_boost: 0.75 }
+      })
+    }
+  );
+  return res;
+}
+__name(callElevenLabs, "callElevenLabs");
+async function handleTts(request, env) {
+  const cors = corsHeaders(request);
+  const { error: authError } = requireAuth(request);
+  if (authError)
+    return json({ error: authError }, 401, cors);
+  const identifier = getIdentifier(request);
+  const rl = await checkRateLimit(env, identifier, "tts", 10);
+  const headers = { ...cors, ...rlHeaders(10, rl.remaining) };
+  if (!rl.allowed) {
+    return json(RATE_LIMIT_EXCEEDED, 429, { ...headers, "Retry-After": "3600" });
+  }
+  const elevenKey = (env.ELEVENLABS_API_KEY ?? "").trim();
+  if (!elevenKey) {
+    return json({ error: "ELEVENLABS_API_KEY is not configured" }, 500, cors);
+  }
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: "Invalid JSON body" }, 400, cors);
+  }
+  const { text, voiceId = "pNInz6obpgDQGcFmaJgB", modelId = "eleven_v3" } = body;
+  const textErr = ttsTextError(text);
+  if (textErr)
+    return json({ error: textErr }, 400, cors);
+  return fetchAndStreamAudio(elevenKey, text, voiceId, modelId, cors);
+}
+__name(handleTts, "handleTts");
+async function fetchAndStreamAudio(elevenKey, text, voiceId, modelId, cors) {
+  let ttsRes;
+  try {
+    ttsRes = await callElevenLabs(elevenKey, text, voiceId, modelId);
+  } catch (err) {
+    return json({ error: "Failed to reach ElevenLabs API", detail: String(err) }, 502, cors);
+  }
+  if (!ttsRes.ok) {
+    const detail = await ttsRes.text().catch(() => "(unreadable)");
+    return json({ error: "ElevenLabs API error", status: ttsRes.status, detail }, 502, cors);
+  }
+  const audioBuffer = await ttsRes.arrayBuffer();
+  return new Response(audioBuffer, {
+    status: 200,
+    headers: { "Content-Type": "audio/mpeg", "Content-Disposition": 'inline; filename="audio.mp3"', ...cors }
+  });
+}
+__name(fetchAndStreamAudio, "fetchAndStreamAudio");
+var AZURE_VOICES = { de: "de-DE-KatjaNeural", fa: "fa-IR-DilaraNeural" };
+var AZURE_LOCALES = { de: "de-DE", fa: "fa-IR" };
+function escapeXml(str) {
+  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+}
+__name(escapeXml, "escapeXml");
+async function handleTtsAzure(request, env) {
+  const cors = corsHeaders(request);
+  const { error: authError } = requireAuth(request);
+  if (authError)
+    return json({ error: authError }, 401, cors);
+  if (!env.AZURE_TTS_KEY || !env.AZURE_TTS_REGION) {
+    return json({ error: "Azure TTS not configured on this server" }, 503, cors);
+  }
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: "Invalid JSON body" }, 400, cors);
+  }
+  const { text, lang = "de" } = body;
+  if (!text || typeof text !== "string" || !text.trim()) {
+    return json({ error: "text is required" }, 400, cors);
+  }
+  const voice = AZURE_VOICES[lang] ?? AZURE_VOICES.de;
+  const locale = AZURE_LOCALES[lang] ?? AZURE_LOCALES.de;
+  const safeText = escapeXml(text.slice(0, 1e4));
+  const ssml = `<speak version='1.0' xml:lang='${locale}'><voice name='${voice}'>${safeText}</voice></speak>`;
+  return fetchAndStreamAzureAudio(ssml, env, cors);
+}
+__name(handleTtsAzure, "handleTtsAzure");
+async function fetchAndStreamAzureAudio(ssml, env, cors) {
+  let azureRes;
+  try {
+    azureRes = await fetch(
+      `https://${env.AZURE_TTS_REGION}.tts.speech.microsoft.com/cognitiveservices/v1`,
+      {
+        method: "POST",
+        headers: {
+          "Ocp-Apim-Subscription-Key": env.AZURE_TTS_KEY,
+          "Content-Type": "application/ssml+xml",
+          "X-Microsoft-OutputFormat": "audio-24khz-48kbitrate-mono-mp3"
+        },
+        body: ssml
+      }
+    );
+  } catch (err) {
+    return json({ error: "Azure TTS request failed", detail: String(err) }, 502, cors);
+  }
+  if (!azureRes.ok) {
+    const detail = await azureRes.text().catch(() => "(unreadable)");
+    return json({ error: "Azure TTS error", status: azureRes.status, detail }, 502, cors);
+  }
+  const audioBuffer = await azureRes.arrayBuffer();
+  return new Response(audioBuffer, {
+    status: 200,
+    headers: { "Content-Type": "audio/mpeg", "Content-Disposition": 'inline; filename="tts.mp3"', ...cors }
+  });
+}
+__name(fetchAndStreamAzureAudio, "fetchAndStreamAzureAudio");
+var DEEPL_LANGS = { fa: "FA", de: "DE", en: "EN-GB" };
+async function callDeepL(apiKey, text, targetLang, sourceLang) {
+  const body = { text: [text.slice(0, 5e4)], target_lang: DEEPL_LANGS[targetLang] ?? "DE" };
+  if (sourceLang)
+    body.source_lang = DEEPL_LANGS[sourceLang];
+  const res = await fetch("https://api-free.deepl.com/v2/translate", {
+    method: "POST",
+    headers: { "Authorization": `DeepL-Auth-Key ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "(unreadable)");
+    throw Object.assign(new Error("DeepL API error"), { status: res.status, detail });
+  }
+  const data = await res.json();
+  return {
+    translated: data.translations?.[0]?.text ?? "",
+    detected_source: data.translations?.[0]?.detected_source_language ?? null
+  };
+}
+__name(callDeepL, "callDeepL");
+async function handleTranslate(request, env) {
+  const cors = corsHeaders(request);
+  const { error: authError } = requireAuth(request);
+  if (authError)
+    return json({ error: authError }, 401, cors);
+  const identifier = getIdentifier(request);
+  const rl = await checkRateLimit(env, identifier, "translate", 30);
+  const headers = { ...cors, ...rlHeaders(30, rl.remaining) };
+  if (!rl.allowed) {
+    return json(RATE_LIMIT_EXCEEDED, 429, { ...headers, "Retry-After": "3600" });
+  }
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: "Invalid JSON body" }, 400, headers);
+  }
+  const { text, targetLang, sourceLang } = body;
+  if (!text || typeof text !== "string" || !text.trim()) {
+    return json({ error: "text is required" }, 400, headers);
+  }
+  if (!targetLang) {
+    return json({ error: "targetLang is required" }, 400, headers);
+  }
+  if (!env.DEEPL_API_KEY) {
+    return json({ error: "DEEPL_API_KEY is not configured" }, 500, headers);
+  }
+  try {
+    const result = await callDeepL(env.DEEPL_API_KEY, text, targetLang, sourceLang);
+    return json(result, 200, headers);
+  } catch (err) {
+    const status = err.status ?? 502;
+    const detail = err.detail ?? String(err);
+    return json({ error: err.message, status, detail }, 502, headers);
+  }
+}
+__name(handleTranslate, "handleTranslate");
+async function handleImportBank(request, env) {
+  const cors = corsHeaders(request);
+  const { error: authError } = requireAuth(request);
+  if (authError)
+    return json({ error: authError }, 401, cors);
+  const identifier = getIdentifier(request);
+  const rl = await checkRateLimit(env, identifier, "import-bank", 10);
+  const headers = { ...cors, ...rlHeaders(10, rl.remaining) };
+  if (!rl.allowed) {
+    return json(RATE_LIMIT_EXCEEDED, 429, { ...headers, "Retry-After": "3600" });
+  }
+  if (!env.GEMINI_API_KEY) {
+    return json({ error: "GEMINI_API_KEY is not configured" }, 500, headers);
+  }
+  let formData;
+  try {
+    formData = await request.formData();
+  } catch {
+    return json({ error: "Invalid multipart body" }, 400, headers);
+  }
+  const file = formData.get("file");
+  if (!file || typeof file === "string") {
+    return json({ error: "No file provided" }, 400, headers);
+  }
+  if (file.size > 20 * 1024 * 1024) {
+    return json({ error: "File too large (max 20 MB)" }, 413, headers);
+  }
+  const base64 = await fileToBase64(file);
+  const prompt = `You are analyzing a German bank statement (Sparkasse or similar).
+Extract ALL transactions from this PDF bank statement.
+
+For each transaction, extract:
+- date: in ISO format YYYY-MM-DD (convert from DD.MM.YYYY)
+- description: the Erl\xE4uterung/description field (keep original German text, max 100 chars)
+- amount: numeric value (negative = expense, positive = income)
+- type: "income" if amount > 0, "expense" if amount < 0
+- category: auto-categorize based on description:
+  * "Rent" \u2014 Miete, Warmmiete, Kaltmiete, Wohnung
+  * "Food" \u2014 REWE, EDEKA, Lidl, Aldi, Netto, Penny, dm, Rossmann, Restaurant, B\xE4ckerei, Supermarkt
+  * "Transport" \u2014 HVV, DB, Deutsche Bahn, Uber, Tank, Benzin, \xD6PNV, Bus, Bahn
+  * "Health" \u2014 Apotheke, Arzt, Krankenhaus, AOK, TK, DAK
+  * "Insurance" \u2014 Versicherung, Allianz, HUK, ADAC
+  * "Utilities" \u2014 Strom, Gas, Wasser, Internet, Telekom, Vodafone, O2
+  * "Shopping" \u2014 Amazon, Zalando, Otto, PayPal purchases
+  * "Entertainment" \u2014 Netflix, Spotify, Disney, YouTube, Apple
+  * "Salary" \u2014 Gehalt, Lohn, Gutschrift vom Arbeitgeber
+  * "Transfer" \u2014 \xDCberweisung, Gutschrift (between own accounts)
+  * "Other" \u2014 anything else
+
+Return ONLY valid JSON, no markdown, no explanation:
+{
+  "transactions": [
+    {
+      "date": "2026-03-11",
+      "description": "Telekom Deutschland GmbH",
+      "amount": -37.90,
+      "type": "expense",
+      "category": "Utilities"
+    }
+  ],
+  "account_holder": "name if visible",
+  "statement_period": "2026-03-01 to 2026-03-31",
+  "opening_balance": 0,
+  "closing_balance": 0
+}`;
+  let geminiResult;
+  try {
+    geminiResult = await callGeminiWithFallback(
+      // NOSONAR
+      {
+        contents: [{
+          role: "user",
+          parts: [
+            { inline_data: { mime_type: "application/pdf", data: base64 } },
+            { text: prompt }
+          ]
+        }],
+        generationConfig: { maxOutputTokens: 16384, temperature: 0.1 }
+      },
+      env.GEMINI_API_KEY,
+      env
+    );
+  } catch (err) {
+    return json({ error: "Failed to reach Gemini API", detail: String(err) }, 502, headers);
+  }
+  const geminiData = await geminiResult.res.json();
+  const candidate = geminiData.candidates?.[0];
+  const finishReason = candidate?.finishReason ?? "UNKNOWN";
+  const text = candidate?.content?.parts?.[0]?.text ?? "";
+  console.log("[import-bank] finishReason:", finishReason, "| text length:", text.length);
+  console.log("[import-bank] Raw Gemini response (first 500 chars):", text.slice(0, 500));
+  if (!text) {
+    console.log("[import-bank] Empty text \u2014 full geminiData:", JSON.stringify(geminiData).slice(0, 1e3));
+    return json({ error: "Gemini returned empty response", finishReason, raw: JSON.stringify(geminiData).slice(0, 500) }, 502, headers);
+  }
+  if (finishReason === "MAX_TOKENS") {
+    console.log("[import-bank] Response truncated (MAX_TOKENS) \u2014 last 200:", text.slice(-200));
+    return json({ error: "Response truncated \u2014 too many transactions. Try a shorter date range.", finishReason }, 502, headers);
+  }
+  let parsed;
+  try {
+    let jsonStr = text.trim();
+    jsonStr = jsonStr.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
+    const start = jsonStr.indexOf("{");
+    const end = jsonStr.lastIndexOf("}");
+    if (start !== -1 && end !== -1) {
+      jsonStr = jsonStr.slice(start, end + 1);
+    }
+    console.log("[import-bank] Cleaned JSON (first 200):", jsonStr.slice(0, 200));
+    console.log("[import-bank] Cleaned JSON (last 200):", jsonStr.slice(-200));
+    try {
+      parsed = JSON.parse(jsonStr);
+    } catch (parseErr) {
+      console.log("[import-bank] Parse error:", parseErr.message);
+      throw new Error(`JSON parse failed: ${parseErr.message}`);
+    }
+  } catch (err) {
+    return json({ error: "Failed to parse AI response", detail: String(err), raw: text.slice(0, 500) }, 502, headers);
+  }
+  return json({ ...parsed, provider: geminiResult.provider }, 200, headers);
+}
+__name(handleImportBank, "handleImportBank");
+var ROUTES = {
+  "GET /health": (req, env, _url) => json({ ok: true, service: "smartflow-ai-worker" }, 200, corsHeaders(req)),
+  "POST /analyze": (req, env) => handleAnalyze(req, env),
+  "GET /search": (req, env, url) => handleSearch(req, env, url),
+  "POST /photos/upload": (req, env) => handlePhotoUpload(req, env),
+  "GET /photos/file": (req, env, url) => handlePhotoFile(req, env, url),
+  "DELETE /photos/delete": (req, env, url) => handlePhotoDelete(req, env, url),
+  "POST /photos/analyze": (req, env) => handlePhotoAnalyze(req, env),
+  "POST /translate": (req, env) => handleTranslate(req, env),
+  "POST /ocr": (req, env) => handleOcr(req, env),
+  "POST /tts": (req, env) => handleTts(req, env),
+  "POST /tts-azure": (req, env) => handleTtsAzure(req, env),
+  "POST /import-bank": (req, env) => handleImportBank(req, env)
+};
+var src_default = {
+  async fetch(request, env) {
+    if (request.method === "OPTIONS") {
+      return new Response(null, { status: 204, headers: corsHeaders(request) });
+    }
+    const url = new URL(request.url);
+    const handler = ROUTES[`${request.method} ${url.pathname}`];
+    if (handler)
+      return handler(request, env, url);
+    return json({ error: "Not found" }, 404, corsHeaders(request));
+  }
+};
+export {
+  src_default as default
+};
+//# sourceMappingURL=index.js.map

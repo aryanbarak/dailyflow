@@ -1,0 +1,155 @@
+{
+  "result": {
+    "items": [
+      {
+        "id": "775fa0b1-5874-4a72-b623-0b3c132ec807",
+        "number": 73,
+        "metadata": {
+          "created_on": "2026-06-30T03:13:48.357466Z",
+          "source": "wrangler",
+          "author_id": "8e6500ed0f380c0f882f5534d07fef49",
+          "author_email": "barakzahi@web.de",
+          "has_preview": true
+        },
+        "annotations": {
+          "workers/triggered_by": "version_upload"
+        }
+      },
+      {
+        "id": "2458a0d8-1c98-4225-a305-c10adde39d4e",
+        "number": 72,
+        "metadata": {
+          "created_on": "2026-06-29T20:11:33.599443Z",
+          "source": "wrangler",
+          "author_id": "8e6500ed0f380c0f882f5534d07fef49",
+          "author_email": "barakzahi@web.de",
+          "has_preview": true
+        },
+        "annotations": {
+          "workers/triggered_by": "version_upload"
+        }
+      },
+      {
+        "id": "20aa08fb-bf07-4018-b065-611095b5aece",
+        "number": 71,
+        "metadata": {
+          "created_on": "2026-06-15T21:53:03.674916Z",
+          "source": "wrangler",
+          "author_id": "8e6500ed0f380c0f882f5534d07fef49",
+          "author_email": "barakzahi@web.de",
+          "has_preview": true
+        },
+        "annotations": {
+          "workers/triggered_by": "version_upload"
+        }
+      },
+      {
+        "id": "0de5180e-1962-4e86-aeeb-66cf38d8c808",
+        "number": 70,
+        "metadata": {
+          "created_on": "2026-06-12T16:20:33.348577Z",
+          "source": "wrangler",
+          "author_id": "8e6500ed0f380c0f882f5534d07fef49",
+          "author_email": "barakzahi@web.de",
+          "has_preview": true
+        },
+        "annotations": {
+          "workers/triggered_by": "version_upload"
+        }
+      },
+      {
+        "id": "5b1f21d2-e723-4ff0-bbcb-c509712caab3",
+        "number": 69,
+        "metadata": {
+          "created_on": "2026-06-12T02:21:28.719723Z",
+          "source": "wrangler",
+          "author_id": "8e6500ed0f380c0f882f5534d07fef49",
+          "author_email": "barakzahi@web.de",
+          "has_preview": true
+        },
+        "annotations": {
+          "workers/triggered_by": "version_upload"
+        }
+      },
+      {
+        "id": "aa5949bc-d4a1-4b79-8f4a-e6b5fab1e937",
+        "number": 68,
+        "metadata": {
+          "created_on": "2026-06-10T03:01:51.201812Z",
+          "source": "wrangler",
+          "author_id": "8e6500ed0f380c0f882f5534d07fef49",
+          "author_email": "barakzahi@web.de",
+          "has_preview": true
+        },
+        "annotations": {
+          "workers/triggered_by": "version_upload"
+        }
+      },
+      {
+        "id": "b26011d8-12b0-47d5-94c0-8a44f8084b5e",
+        "number": 67,
+        "metadata": {
+          "created_on": "2026-06-10T02:34:53.367377Z",
+          "source": "wrangler",
+          "author_id": "8e6500ed0f380c0f882f5534d07fef49",
+          "author_email": "barakzahi@web.de",
+          "has_preview": true
+        },
+        "annotations": {
+          "workers/triggered_by": "version_upload"
+        }
+      },
+      {
+        "id": "2716073e-8e96-4135-82d4-7df240227ff8",
+        "number": 66,
+        "metadata": {
+          "created_on": "2026-06-10T01:19:35.3938Z",
+          "source": "wrangler",
+          "author_id": "8e6500ed0f380c0f882f5534d07fef49",
+          "author_email": "barakzahi@web.de",
+          "has_preview": true
+        },
+        "annotations": {
+          "workers/triggered_by": "version_upload"
+        }
+      },
+      {
+        "id": "68bbed96-1235-4119-9170-73866d5bb207",
+        "number": 65,
+        "metadata": {
+          "created_on": "2026-06-10T01:15:29.68749Z",
+          "source": "wrangler",
+          "author_id": "8e6500ed0f380c0f882f5534d07fef49",
+          "author_email": "barakzahi@web.de",
+          "has_preview": true
+        },
+        "annotations": {
+          "workers/triggered_by": "version_upload"
+        }
+      },
+      {
+        "id": "10d9d7c6-49aa-4af9-80cc-c6f60bd57f14",
+        "number": 64,
+        "metadata": {
+          "created_on": "2026-06-08T22:20:51.922414Z",
+          "source": "wrangler",
+          "author_id": "8e6500ed0f380c0f882f5534d07fef49",
+          "author_email": "barakzahi@web.de",
+          "has_preview": true
+        },
+        "annotations": {
+          "workers/triggered_by": "version_upload"
+        }
+      }
+    ]
+  },
+  "success": true,
+  "errors": null,
+  "messages": null,
+  "result_info": {
+    "page": 1,
+    "per_page": 10,
+    "count": 10,
+    "total_count": 73
+  }
+}
