@@ -327,6 +327,9 @@ describe('handleChat mode routing', () => {
       // this session's changes (confirmed via `git stash`).
       'create_calendar_event',
       'update_calendar_event',
+      // Task 28 (finance write slice): registry-derived, same as the
+      // calendar pair above.
+      'create_finance_transaction',
       'write_github_issue_comment',
       'write_github_issue_update',
       'ask_clarification',

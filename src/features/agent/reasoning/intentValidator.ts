@@ -72,6 +72,7 @@ const CONFIRMED_WRITE_INTENT_TYPES = new Set<AgentIntentType>([
 const supportedDomains: AgentIntentDomain[] = [
   "tasks",
   "calendar",
+  "finance",
   "learning",
   "workspace",
   "github",
@@ -263,6 +264,21 @@ function normalizeTarget(value: unknown) {
     eventId: safeString(value.eventId) || undefined,
     start: safeIsoDateTime(value.start),
     end: safeIsoDateTime(value.end),
+    // Task 28: amount/currency/direction/transactionDate/iban are all
+    // OVERRIDDEN below (see the create_finance_transaction override step,
+    // mirroring create_calendar_event's start/end override) -- the
+    // well-formed-or-dropped read here is only ever a placeholder that
+    // survives if the trigger below never fires (i.e. never reaches the
+    // user). category/description have no deterministic re-derivation (out
+    // of this task's stated parsing scope) so their model-proposed value
+    // (bounded, never trusted beyond that) is what actually survives.
+    amount: safeBoundedText(value.amount, 32),
+    currency: safeBoundedText(value.currency, 8),
+    direction: safeString(value.direction) || undefined,
+    transactionDate: safeBoundedText(value.transactionDate, 32),
+    category: safeBoundedText(value.category, 100),
+    description: safeBoundedText(value.description, 500),
+    iban: safeBoundedText(value.iban, 42),
     repo: safeRepoIdentifier(value.repo),
     issueNumber: safePositiveInteger(value.issueNumber),
     commentBody: safeBoundedText(value.commentBody, 10_000),
@@ -270,6 +286,81 @@ function normalizeTarget(value: unknown) {
     updateBody: safeBoundedText(value.updateBody, 10_000),
     updateLabels: safeLabelList(value.updateLabels),
   };
+}
+
+// Task 28: this surface's OWN deterministic amount/IBAN parsing, kept
+// intentionally parallel to (not shared with) agent/worker/flow-write-
+// policy.ts's identically-named logic -- the same "what stays hand-written"
+// boundary this file's date parsers already follow (deterministicDates.ts
+// is its own frontend-local copy of the Worker's date logic, not an import
+// from it; see this file's own top-of-file import list). A model-proposed
+// amount/IBAN must never survive to a preview or approval, the same rule
+// task 22-fix's own C1 fix applied to a model-proposed calendar datetime.
+function todayDateKey(now: Date, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" })
+    .formatToParts(now)
+    .reduce<Record<string, string>>((acc, part) => {
+      if (part.type !== "literal") acc[part.type] = part.value;
+      return acc;
+    }, {});
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+function normalizeDigitsForAmount(value: string): string {
+  return value
+    .replace(/[۰-۹]/g, (ch) => String(ch.charCodeAt(0) - 0x06f0))
+    .replace(/[٠-٩]/g, (ch) => String(ch.charCodeAt(0) - 0x0660));
+}
+
+const EURO_CURRENCY_PATTERN = /€|\beur\b|euro|یورو/i;
+const AMOUNT_TOKEN_PATTERN = /[0-9]{1,3}(?:[.,٬][0-9]{3})+(?:[.,][0-9]{1,2})?|[0-9]+(?:[.,][0-9]{1,2})?/;
+
+function parseDeterministicAmount(message: string): { amount?: string; currency?: string } {
+  const text = normalizeDigitsForAmount(message);
+  const match = text.match(AMOUNT_TOKEN_PATTERN);
+  if (!match) return {};
+  const raw = match[0];
+  const decimalIndex = Math.max(raw.lastIndexOf(","), raw.lastIndexOf("."));
+  let normalized: string;
+  if (decimalIndex === -1) {
+    normalized = raw.replace(/٬/g, "");
+  } else {
+    const integerPart = raw.slice(0, decimalIndex).replace(/[.,٬]/g, "");
+    const fractionPart = raw.slice(decimalIndex + 1);
+    normalized = fractionPart.length === 3 ? `${integerPart}${fractionPart}` : `${integerPart}.${fractionPart}`;
+  }
+  const amount = Number(normalized);
+  if (!Number.isFinite(amount) || amount < 0) return {};
+  return { amount: String(amount), currency: EURO_CURRENCY_PATTERN.test(text) ? "EUR" : undefined };
+}
+
+function parseDeterministicDirection(message: string): "income" | "expense" | undefined {
+  const text = message.toLowerCase();
+  if (/\bgot paid\b/.test(text) || /\b(income|earned|received|salary)\b/.test(text) || /\b(einnahme|erhalten|gehalt)\b/.test(text) || /درآمد|دریافت|حقوق/.test(message)) return "income";
+  if (/\b(expense|spent|paid|pay|bought|cost|send|sent|transfer)\b/.test(text) || /\b(ausgabe|bezahlt|zahle|gekauft|kosten|sende|überweise)\b/.test(text) || /هزینه|خرید|پرداخت|بفرست/.test(message)) return "expense";
+  return undefined;
+}
+
+const IBAN_GROUPED_PATTERN = /\b[A-Za-z]{2}[0-9]{2}(?:\s[A-Za-z0-9]{4}){2,7}(?:\s[A-Za-z0-9]{1,4})?\b/;
+const IBAN_COMPACT_PATTERN = /\b[A-Za-z]{2}[0-9]{2}[A-Za-z0-9]{11,30}\b/;
+
+function findIbanCandidate(message: string): string | undefined {
+  return message.match(IBAN_GROUPED_PATTERN)?.[0] ?? message.match(IBAN_COMPACT_PATTERN)?.[0];
+}
+
+// ISO 7064 MOD 97-10 -- see agent/worker/flow-write-policy.ts's own comment
+// on its copy of this exact algorithm for the full rationale (BigInt
+// required, not optional, for precision beyond Number.MAX_SAFE_INTEGER).
+export function isValidIbanClientSide(candidate: string): boolean {
+  const iban = candidate.replace(/\s+/g, "").toUpperCase();
+  if (!/^[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}$/.test(iban)) return false;
+  const rearranged = iban.slice(4) + iban.slice(0, 4);
+  const numeric = rearranged.replace(/[A-Z]/g, (ch) => String(ch.charCodeAt(0) - 55));
+  try {
+    return BigInt(numeric) % 97n === 1n;
+  } catch {
+    return false;
+  }
 }
 
 function findGithubIssueCommentTarget(target: ReturnType<typeof normalizeTarget>) {
@@ -375,6 +466,19 @@ function requestLooksLikeCalendarCreate(message: string) {
 function requestLooksLikeCalendarUpdate(message: string) {
   return /\b(update|edit|change|move|reschedule|aktualisiere|bearbeite|verschiebe)\b.{0,50}\b(event|appointment|meeting|calendar)\b/i.test(message) ||
     /(\u0631\u0648\u06cc\u062f\u0627\u062f|\u062c\u0644\u0633\u0647|\u0642\u0631\u0627\u0631|\u0645\u0644\u0627\u0642\u0627\u062a).{0,50}(\u0628\u0647[\u200c\s-]?\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06cc\s+\u06a9\u0646|\u0648\u06cc\u0631\u0627\u06cc\u0634\s+\u06a9\u0646|\u062a\u063a\u06cc\u06cc\u0631\s+\u0628\u062f\u0647)/i.test(message);
+}
+
+// Task 28 (finance write slice) -- same noun-gated shape as the task/
+// calendar create triggers above, kept intentionally parallel to (not
+// shared with) agent/worker/flow-write-policy.ts's isFinanceWriteTrigger.
+// Create-only: there is no create_finance_transaction update sibling to
+// mirror an "update" trigger for.
+function requestLooksLikeFinanceCreate(message: string) {
+  return /\b(log|record|add|create)\b.{0,40}\b(expense|income|transaction|payment)\b/i.test(message) ||
+    /\b(i\s+)?(spent|paid|bought)\b.{0,40}\b(on|for|euro|eur|\u20ac|\d)/i.test(message) ||
+    /\b(pay|send|transfer)\b.{0,40}\b(euro|eur|\u20ac|\d|[A-Za-z]{2}[0-9]{2}[A-Za-z0-9]{11,30})/i.test(message) ||
+    /\b(erfasse|buche|trage)\b.{0,40}\b(ausgabe|einnahme|transaktion|zahlung)\b/i.test(message) ||
+    /(\u0647\u0632\u06cc\u0646\u0647|\u062f\u0631\u0622\u0645\u062f|\u062a\u0631\u0627\u06a9\u0646\u0634|\u067e\u0631\u062f\u0627\u062e\u062a).{0,40}(\u062b\u0628\u062a \u06a9\u0646|\u0627\u0636\u0627\u0641\u0647 \u06a9\u0646|\u0628\u0633\u0627\u0632|\u062b\u0628\u062a \u0634\u0648\u062f)/.test(message);
 }
 
 // EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
@@ -666,7 +770,8 @@ export function validateAgentIntentProposal(input: {
     /ساعت\s+[۰-۹0-9]{1,2}/.test(input.userMessage);
   const calendarCreateRequested = requestLooksLikeCalendarCreate(input.userMessage);
   const calendarUpdateRequested = requestLooksLikeCalendarUpdate(input.userMessage);
-  const writeRequestCount = [commentRequested, issueUpdateRequested, taskCreateRequested, taskUpdateRequested, completionRequested, calendarCreateRequested, calendarUpdateRequested]
+  const financeCreateRequested = requestLooksLikeFinanceCreate(input.userMessage);
+  const writeRequestCount = [commentRequested, issueUpdateRequested, taskCreateRequested, taskUpdateRequested, completionRequested, calendarCreateRequested, calendarUpdateRequested, financeCreateRequested]
     .filter(Boolean).length;
   const conflictingWriteRequest = writeRequestCount > 1;
   const mixedReadWriteRequest = requestLooksMixed(input.userMessage, "inspect_tasks");
@@ -689,6 +794,11 @@ export function validateAgentIntentProposal(input: {
         !mixedReadWriteRequest &&
         (normalizationSourceType === "ask_clarification" || normalizationSourceType === "inspect_calendar" || normalizationSourceType === "update_calendar_event")
         ? "update_calendar_event"
+    : financeCreateRequested &&
+      !conflictingWriteRequest &&
+      !mixedReadWriteRequest &&
+      (normalizationSourceType === "ask_clarification" || normalizationSourceType === "create_finance_transaction")
+      ? "create_finance_transaction"
     : taskCreateRequested &&
       !conflictingWriteRequest &&
       !mixedReadWriteRequest &&
@@ -877,6 +987,28 @@ export function validateAgentIntentProposal(input: {
       target.end = undefined;
     }
   }
+  // Task 28: same "never trust the model's own value" rule as
+  // create_calendar_event's start/end override above, applied to
+  // amount/currency/direction/iban -- every one of these is re-derived
+  // from the raw message and OVERWRITES whatever the model proposed.
+  // transactionDate defaults to today when the message names no date
+  // (create_finance_transaction tolerates an absent date, unlike
+  // create_calendar_event's start, which is required -- see
+  // createRequiredTargetFields in the shared registry).
+  if (type === "create_finance_transaction" && target) {
+    const ibanCandidate = findIbanCandidate(input.userMessage);
+    const messageForAmount = ibanCandidate ? input.userMessage.replace(ibanCandidate, " ") : input.userMessage;
+    const { amount, currency } = parseDeterministicAmount(messageForAmount);
+    target.amount = amount;
+    target.currency = currency;
+    target.direction = parseDeterministicDirection(input.userMessage);
+    // Unmentioned defaults to today, in the request's own timeZone (this
+    // domain tolerates an absent date, unlike create_calendar_event's
+    // start) -- mirrors agent/worker/flow-write-policy.ts's own
+    // `date.value ?? dateKey(now, timeZone)`.
+    target.transactionDate = deterministicDueDate.value ?? todayDateKey(now, timeZone);
+    target.iban = ibanCandidate ? ibanCandidate.replace(/\s+/g, "").toUpperCase() : undefined;
+  }
   if ((type === "create_task" || type === "update_task") && target && deterministicDueDate.value !== undefined) {
     target.dueDate = deterministicDueDate.value;
   }
@@ -1001,6 +1133,37 @@ export function validateAgentIntentProposal(input: {
       });
     }
     target!.eventId = match.event.id;
+  }
+  if (type === "create_finance_transaction" && !target?.amount) {
+    return createSafeProposal("ask_clarification", {
+      userMessage: input.userMessage,
+      language: input.language,
+      now,
+      question: textFor(input.language, "clarify"),
+      reason: "An exact amount is required before recording a transaction.",
+    });
+  }
+  if (type === "create_finance_transaction" && !target?.direction) {
+    return createSafeProposal("ask_clarification", {
+      userMessage: input.userMessage,
+      language: input.language,
+      now,
+      question: textFor(input.language, "clarify"),
+      reason: "Whether this is income or an expense is required before recording a transaction.",
+    });
+  }
+  // Task 28: an IBAN-shaped token that fails the mod-97 check is a typed
+  // rejection, never a silent drop or a silent pass -- ask_clarification
+  // (not unsupported) since the rest of the transaction may still be
+  // well-formed; the user can correct just the IBAN.
+  if (type === "create_finance_transaction" && target?.iban && !isValidIbanClientSide(target.iban)) {
+    return createSafeProposal("ask_clarification", {
+      userMessage: input.userMessage,
+      language: input.language,
+      now,
+      question: textFor(input.language, "clarify"),
+      reason: "The IBAN mentioned does not pass validation and must be corrected before approval.",
+    });
   }
   if (type === "write_github_issue_comment" && findGithubIssueCommentTarget(target).status !== "matched") {
     return createSafeProposal("ask_clarification", {

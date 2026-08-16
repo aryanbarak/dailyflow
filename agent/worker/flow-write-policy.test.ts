@@ -4,25 +4,32 @@ import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import {
   assembleCalendarWriteIntent,
+  assembleFinanceWriteIntent,
   assembleTaskWriteIntent,
   cleanTitleEdges,
   defaultFlowWriteMode,
   detectContinuationDomain,
   detectWriteDomainSignal,
+  executeAutoFinanceWrite,
   extractOriginalRequestText,
   isTitleSubstantiallyTheMessage,
+  isValidIban,
   parseCalendarWriteIntent,
   parseDeterministicDueDate,
   parseDeterministicTimeOfDay,
   parseDeterministicTimeRange,
+  parseFinanceWriteIntent,
   parseTaskWriteIntent,
   resolveCreateEventTitle,
   resolveCreateTaskTitle,
+  resolveServerFlowWriteMode,
+  undoAutoWrite,
   UNDO_KIND_VALUES,
   utcInstantToZonedDateAndTime,
   validateCandidateTitle,
   zonedDateTimeToUtcIso,
   type ParsedCalendarWriteIntent,
+  type ParsedFinanceWriteIntent,
   type ParsedTaskWriteIntent,
 } from './flow-write-policy'
 import { writeIntentRegistry } from '../../shared/writeIntentRegistry'
@@ -573,7 +580,15 @@ describe('task 22-fix2 (D1), now task 23 registry-driven: UNDO_KIND_VALUES cross
   // explicit rather than relying on it being merely true by construction.
   const migrationPath = path.resolve(
     path.dirname(fileURLToPath(import.meta.url)),
-    '../../supabase/migrations/20260815000000_widen_flow_write_undo_kinds.sql',
+    // Task 28: repointed to the latest widening migration (finance's
+    // create_finance_transaction kind) -- each time this CHECK constraint
+    // is widened via a new migration, this path must move to that new
+    // file, the same way it presumably moved here from an earlier task
+    // 21/22 file when THIS migration was introduced. The 20260815 file
+    // remains in the repo as migration history; it is not re-applied on
+    // top of this one, this one's own `drop constraint if exists` +
+    // `add constraint` fully re-specifies the complete allowed set standalone.
+    '../../supabase/migrations/20260817000000_widen_flow_write_undo_kinds_finance.sql',
   )
 
   it('UNDO_KIND_VALUES is exactly the shared registry\'s own undoKind values, in registry order', () => {
@@ -609,5 +624,271 @@ describe('task 22-fix2 (D1), now task 23 registry-driven: UNDO_KIND_VALUES cross
     // rather than silently passing with an empty set.
     expect(kindsUsedAtCallSites.size).toBeGreaterThan(0)
     expect([...kindsUsedAtCallSites].sort()).toEqual([...UNDO_KIND_VALUES].sort())
+  })
+})
+
+describe('task 28: finance write slice', () => {
+  const FINANCE_NOW = new Date('2026-08-17T10:00:00.000Z')
+
+  describe('parseFinanceWriteIntent -- deterministic amount/currency/direction/date parsing', () => {
+    it('parses a Farsi amount with the یورو currency token', () => {
+      const intent = parseFinanceWriteIntent('یک هزینه ۴۵ یورو ثبت کن', FINANCE_NOW, TZ)
+      expect(intent).toMatchObject({ amount: 45, currency: 'EUR', direction: 'expense', amountClarificationNeeded: false })
+    })
+
+    it('parses a German comma-decimal amount with the € symbol', () => {
+      const intent = parseFinanceWriteIntent('Erfasse eine Ausgabe von 45,50 € für Lebensmittel', FINANCE_NOW, TZ)
+      expect(intent).toMatchObject({ amount: 45.5, currency: 'EUR', direction: 'expense' })
+    })
+
+    it('parses an English dot-decimal amount and an income direction', () => {
+      const intent = parseFinanceWriteIntent('Log an income of 1234.56 EUR', FINANCE_NOW, TZ)
+      expect(intent).toMatchObject({ amount: 1234.56, currency: 'EUR', direction: 'income' })
+    })
+
+    it('disambiguates German thousands-grouped form (1.234,56) from English (1,234.56) -- both resolve to the same value', () => {
+      expect(parseFinanceWriteIntent('Erfasse eine Ausgabe von 1.234,56 €', FINANCE_NOW, TZ)?.amount).toBe(1234.56)
+      expect(parseFinanceWriteIntent('Log an expense of 1,234.56 EUR', FINANCE_NOW, TZ)?.amount).toBe(1234.56)
+    })
+
+    it('parses a Farsi thousands separator (٬) with no decimal fraction', () => {
+      expect(parseFinanceWriteIntent('یک هزینه ۱٬۲۳۴ یورو ثبت کن', FINANCE_NOW, TZ)?.amount).toBe(1234)
+    })
+
+    it('a finance-shaped message with no parseable amount is a typed clarification-needed, never a guess (e.g. a zero or omitted amount)', () => {
+      const intent = parseFinanceWriteIntent('Log an expense please', FINANCE_NOW, TZ)
+      expect(intent).toMatchObject({ amount: undefined, amountClarificationNeeded: true })
+    })
+
+    it('a message with no finance-write trigger at all returns null, not a clarification', () => {
+      expect(parseFinanceWriteIntent('What is my current balance?', FINANCE_NOW, TZ)).toBeNull()
+    })
+
+    it('defaults the transaction date to today when the message names no date, rather than asking', () => {
+      const intent = parseFinanceWriteIntent('Log an expense of 20 EUR', FINANCE_NOW, TZ)
+      expect(intent?.transactionDate).toBe('2026-08-17')
+    })
+
+    it('resolves an explicit date phrase ("yesterday"-equivalent day names are out of scope; tomorrow is in scope) via the shared deterministic date parser', () => {
+      const intent = parseFinanceWriteIntent('Log an expense of 20 EUR for tomorrow', FINANCE_NOW, TZ)
+      expect(intent?.transactionDate).toBe('2026-08-18')
+    })
+
+    it('description is a bounded passthrough of the raw message, not an extraction', () => {
+      const message = 'Log an expense of 20 EUR for groceries'
+      expect(parseFinanceWriteIntent(message, FINANCE_NOW, TZ)?.description).toBe(message)
+    })
+
+    it('an IBAN token in the message never leaks into the amount parse', () => {
+      const intent = parseFinanceWriteIntent('Log a payment of 45 EUR to DE89 3704 0044 0532 0130 00', FINANCE_NOW, TZ)
+      expect(intent?.amount).toBe(45)
+      expect(intent?.iban).toBe('DE89370400440532013000')
+    })
+  })
+
+  describe('IBAN validation -- ISO 7064 MOD 97-10, deterministic in code', () => {
+    it('accepts the canonical valid example IBAN (Deutsche Bundesbank), compact or space-grouped', () => {
+      expect(isValidIban('DE89370400440532013000')).toBe(true)
+      expect(isValidIban('DE89 3704 0044 0532 0130 00')).toBe(true)
+    })
+
+    it('rejects an IBAN with an invalid checksum digit -- never a silent pass', () => {
+      expect(isValidIban('DE89370400440532013001')).toBe(false)
+    })
+
+    it('rejects a non-IBAN-shaped string outright', () => {
+      expect(isValidIban('not an iban')).toBe(false)
+      expect(isValidIban('12345')).toBe(false)
+    })
+
+    it('parseFinanceWriteIntent surfaces both the candidate and its validity, never silently dropping an invalid one', () => {
+      const valid = parseFinanceWriteIntent('Pay 45 EUR to DE89370400440532013000', FINANCE_NOW, TZ)
+      expect(valid).toMatchObject({ iban: 'DE89370400440532013000', ibanValid: true })
+      const invalid = parseFinanceWriteIntent('Pay 45 EUR to DE89370400440532013001', FINANCE_NOW, TZ)
+      expect(invalid).toMatchObject({ iban: 'DE89370400440532013001', ibanValid: false })
+    })
+  })
+
+  describe('detectWriteDomainSignal / detectContinuationDomain -- finance as a third independent signal', () => {
+    it('a finance-only trigger resolves to \'finance\'', () => {
+      expect(detectWriteDomainSignal('Log an expense of 20 EUR', FINANCE_NOW, TZ)).toBe('finance')
+    })
+
+    it('a message matching both a task trigger and a finance trigger is ambiguous, not guessed', () => {
+      expect(detectWriteDomainSignal('Create a task to log an expense of 20 EUR', FINANCE_NOW, TZ)).toBe('ambiguous')
+    })
+
+    it('existing task/calendar-only routing is completely unaffected (task 23\'s zero-behaviour-change constraint)', () => {
+      expect(detectWriteDomainSignal('Create a task to buy milk', FINANCE_NOW, TZ)).toBe('task')
+      expect(detectWriteDomainSignal('Schedule a meeting tomorrow at 13:00', FINANCE_NOW, TZ)).toBe('calendar')
+    })
+
+    it('an affirmative continuation after a finance-triggering message resolves the continuation domain to \'finance\'', () => {
+      const history = [{ role: 'user', content: 'Log an expense of 20 EUR' }]
+      expect(detectContinuationDomain(history, FINANCE_NOW, TZ)).toBe('finance')
+    })
+  })
+
+  describe('assembleFinanceWriteIntent -- multi-turn continuation, mirroring assembleTaskWriteIntent\'s shape', () => {
+    it('resolves a bare affirmative reply against the ORIGINAL triggering message', () => {
+      const history = [{ role: 'user', content: 'Log an expense of 45 EUR for groceries' }]
+      const intent = assembleFinanceWriteIntent('yes', history, FINANCE_NOW, TZ)
+      expect(intent).toMatchObject({ amount: 45, direction: 'expense' })
+    })
+
+    it('does not re-assemble after the server already confirmed the write in this conversation', () => {
+      const history = [
+        { role: 'user', content: 'Log an expense of 45 EUR' },
+        { role: 'assistant', content: '✓ Transaction recorded: expense — 45.00 EUR 2026-08-17' },
+      ]
+      expect(assembleFinanceWriteIntent('yes', history, FINANCE_NOW, TZ)).toBeNull()
+    })
+  })
+
+  function mockEnv(): Env {
+    return {
+      SUPABASE_URL: 'https://supa.test', SUPABASE_ANON_KEY: 'anon', SUPABASE_SERVICE_KEY: 'service',
+      GEMINI_API_KEY: 'key', GEMINI_MODEL: 'gemini-2.5-flash', AI: {} as unknown as Env['AI'],
+    } as Env
+  }
+
+  describe('resolveServerFlowWriteMode -- server-side hard clamp: finance never resolves \'auto\', even on an explicit client-stored row', () => {
+    it('returns \'ask\' even when the stored permission row explicitly requests \'auto\' for (finance, create)', async () => {
+      const originalFetch = global.fetch
+      global.fetch = (async () => new Response(JSON.stringify([{ mode: 'auto' }]), { status: 200 })) as typeof fetch
+      try {
+        const mode = await resolveServerFlowWriteMode(mockEnv(), 'user-1', 'finance', 'create')
+        expect(mode).toBe('ask')
+      } finally {
+        global.fetch = originalFetch
+      }
+    })
+
+    it('the same stored \'auto\' row for (tasks, create) is honoured unchanged (the clamp is finance-specific, not a general auto ban)', async () => {
+      const originalFetch = global.fetch
+      global.fetch = (async () => new Response(JSON.stringify([{ mode: 'auto' }]), { status: 200 })) as typeof fetch
+      try {
+        const mode = await resolveServerFlowWriteMode(mockEnv(), 'user-1', 'tasks', 'create')
+        expect(mode).toBe('auto')
+      } finally {
+        global.fetch = originalFetch
+      }
+    })
+
+    it('defaultFlowWriteMode itself (no stored row) is already \'ask\' for finance -- the clamp above is defense in depth beyond this default', () => {
+      expect(defaultFlowWriteMode('finance', 'create')).toBe('ask')
+    })
+  })
+
+  describe('executeAutoFinanceWrite + undoAutoWrite -- persist-first undo round trip, mirroring the calendar/task triads', () => {
+    interface Call { method: string; url: string; body?: unknown }
+
+    function mockSupabaseSequence(responses: Array<{ status: number; body: unknown }>) {
+      const calls: Call[] = []
+      let i = 0
+      const fetchMock = (async (url: string, init?: RequestInit) => {
+        calls.push({ method: init?.method ?? 'GET', url, body: init?.body ? JSON.parse(String(init.body)) : undefined })
+        const response = responses[Math.min(i, responses.length - 1)]
+        i += 1
+        return new Response(JSON.stringify(response.body), { status: response.status })
+      }) as typeof fetch
+      return { fetchMock, calls }
+    }
+
+    const VALID_INTENT: ParsedFinanceWriteIntent = {
+      kind: 'create_finance_transaction',
+      amount: 45.5,
+      currency: 'EUR',
+      direction: 'expense',
+      transactionDate: '2026-08-17',
+      description: 'groceries',
+      amountClarificationNeeded: false,
+    }
+
+    it('an invalid IBAN produces a typed clarify rejection and never reaches the insert (no silent drop, no silent proceed)', async () => {
+      const { fetchMock, calls } = mockSupabaseSequence([{ status: 200, body: [] }])
+      const originalFetch = global.fetch
+      global.fetch = fetchMock
+      try {
+        const result = await executeAutoFinanceWrite({
+          env: mockEnv(), userId: 'user-1', language: 'en', now: FINANCE_NOW,
+          intent: { ...VALID_INTENT, iban: 'DE89370400440532013001', ibanValid: false },
+        })
+        expect(result.status).toBe('clarify')
+        expect(calls.length).toBe(0)
+      } finally {
+        global.fetch = originalFetch
+      }
+    })
+
+    it('a missing amount asks a specific clarifying question rather than inserting a zero/guessed amount', async () => {
+      const result = await executeAutoFinanceWrite({
+        env: mockEnv(), userId: 'user-1', language: 'en', now: FINANCE_NOW,
+        intent: { ...VALID_INTENT, amount: undefined, amountClarificationNeeded: true },
+      })
+      expect(result).toMatchObject({ status: 'clarify' })
+    })
+
+    it('executes the insert, persists an undo record BEFORE returning, and the confirmation echoes the local amount/date -- then undoAutoWrite deletes the row', async () => {
+      const transactionRow = { id: 'txn-1', user_id: 'user-1', type: 'expense', amount: 45.5, category: 'Flow AI', date: '2026-08-17', notes: 'groceries', created_at: FINANCE_NOW.toISOString(), updated_at: FINANCE_NOW.toISOString() }
+      const { fetchMock, calls } = mockSupabaseSequence([
+        { status: 200, body: [transactionRow] }, // POST finance_transactions
+        { status: 200, body: null },              // POST flow_write_undo_records (no-content response body ignored)
+      ])
+      const originalFetch = global.fetch
+      global.fetch = fetchMock
+      try {
+        const result = await executeAutoFinanceWrite({ env: mockEnv(), userId: 'user-1', language: 'en', now: FINANCE_NOW, intent: VALID_INTENT })
+        expect(result.status).toBe('executed')
+        if (result.status !== 'executed') throw new Error('unreachable')
+        expect(result.reply).toContain('45.50')
+        expect(result.reply).toContain('EUR')
+        expect(result.reply).toContain('2026-08-17')
+
+        // Undo persisted BEFORE the confirmation was returned (calls[1] is the flow_write_undo_records POST).
+        expect(calls[1].method).toBe('POST')
+        expect(String(calls[1].url)).toContain('flow_write_undo_records')
+        expect((calls[1].body as { kind: string }).kind).toBe('create_finance_transaction')
+      } finally {
+        global.fetch = originalFetch
+      }
+
+      // Now the undo round trip: consumeUndoRecord's GET (finds the record) + PATCH (marks consumed), then the DELETE.
+      const undoRow = { id: 'undo-id-1', user_id: 'user-1', kind: 'create_finance_transaction', task_id: 'txn-1', payload: {}, expires_at: new Date(FINANCE_NOW.getTime() + 60_000).toISOString(), consumed_at: null }
+      const { fetchMock: undoFetchMock, calls: undoCalls } = mockSupabaseSequence([
+        { status: 200, body: [undoRow] }, // GET flow_write_undo_records
+        { status: 200, body: null },      // PATCH consumed_at
+        { status: 200, body: [{ id: 'txn-1' }] }, // DELETE finance_transactions
+      ])
+      const originalFetch2 = global.fetch
+      global.fetch = undoFetchMock
+      try {
+        const undone = await undoAutoWrite(mockEnv(), 'user-1', 'undo:undo-id-1', FINANCE_NOW)
+        expect(undone).toBe(true)
+        const deleteCall = undoCalls.find((call) => call.method === 'DELETE')
+        expect(deleteCall).toBeTruthy()
+        expect(String(deleteCall!.url)).toContain('finance_transactions')
+        expect(String(deleteCall!.url)).toContain('txn-1')
+      } finally {
+        global.fetch = originalFetch2
+      }
+    })
+
+    it('confirmation bidi: the amount+date token is isolated with U+2066 LRI / U+2069 PDI, the same mechanism task 22-fix3 (4995b29) uses for calendar/task', async () => {
+      const transactionRow = { id: 'txn-2', user_id: 'user-1', type: 'income', amount: 1234.56, category: 'Flow AI', date: '2026-08-17', notes: null, created_at: FINANCE_NOW.toISOString(), updated_at: FINANCE_NOW.toISOString() }
+      const { fetchMock } = mockSupabaseSequence([{ status: 200, body: [transactionRow] }, { status: 200, body: null }])
+      const originalFetch = global.fetch
+      global.fetch = fetchMock
+      try {
+        const result = await executeAutoFinanceWrite({ env: mockEnv(), userId: 'user-1', language: 'fa', now: FINANCE_NOW, intent: { ...VALID_INTENT, amount: 1234.56, direction: 'income' } })
+        expect(result.status).toBe('executed')
+        if (result.status !== 'executed') throw new Error('unreachable')
+        expect(result.reply).toContain('⁦')
+        expect(result.reply).toContain('⁩')
+        expect(result.reply).toContain('درآمد')
+      } finally {
+        global.fetch = originalFetch
+      }
+    })
   })
 })

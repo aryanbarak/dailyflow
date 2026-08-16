@@ -18,6 +18,7 @@ const EXPECTED_INTENT_TYPES: readonly WriteIntentType[] = [
   'update_task',
   'create_calendar_event',
   'update_calendar_event',
+  'create_finance_transaction',
 ]
 
 describe('writeIntentRegistry completeness (task 23)', () => {
@@ -39,7 +40,7 @@ describe('writeIntentRegistry completeness (task 23)', () => {
     '%s has every required descriptor field populated',
     (_intentType, entry) => {
       expect(entry.intentType).toBeTruthy()
-      expect(['tasks', 'calendar']).toContain(entry.domain)
+      expect(['tasks', 'calendar', 'finance']).toContain(entry.domain)
       expect(['create', 'update']).toContain(entry.action)
       expect(entry.toolId).toBeTruthy()
       expect(entry.capability).toBeTruthy()
@@ -92,6 +93,7 @@ describe('writeIntentRegistry completeness (task 23)', () => {
     expect(WRITE_INTENT_TARGET_FIELD_NAMES).toEqual([
       'taskId', 'taskReference', 'taskTitleHint', 'title', 'notes', 'dueDate',
       'eventTitle', 'eventReference', 'eventId', 'start', 'end',
+      'amount', 'currency', 'direction', 'transactionDate', 'category', 'description', 'iban',
     ])
   })
 
@@ -121,6 +123,22 @@ describe('writeIntentRegistry completeness (task 23)', () => {
       const labels = { title: 'Title', due: 'Due', notes: 'Notes', start: 'Start', end: 'End', none: 'None' }
       expect(entry.previewLines({ dueDate: null }, labels).filter(Boolean)).toEqual(['Due: None'])
       expect(entry.previewLines({}, labels).filter(Boolean)).toEqual([])
+    })
+
+    it('create_finance_transaction.buildHandlerInput maps direction to type, never persists iban, and defaults category to null when unmentioned', () => {
+      const entry = findWriteIntentDescriptor('create_finance_transaction')!
+      expect(entry.buildHandlerInput({
+        actorId: 'user-1',
+        target: { amount: '45.50', direction: 'expense', transactionDate: '2026-08-20', category: 'Groceries', description: 'weekly shop', iban: 'DE89370400440532013000' },
+      })).toEqual({ userId: 'user-1', type: 'expense', amount: '45.50', category: 'Groceries', date: '2026-08-20', notes: 'weekly shop' })
+      expect(entry.buildHandlerInput({ actorId: 'user-1', target: { amount: '10', direction: 'income', transactionDate: '2026-08-20' } }).category).toBe('Flow AI')
+    })
+
+    it('create_finance_transaction.previewLines flags an IBAN as sensitive and never omits it silently', () => {
+      const entry = findWriteIntentDescriptor('create_finance_transaction')!
+      const labels = { title: 'Title', due: 'Due', notes: 'Notes', start: 'Start', end: 'End', none: 'None' }
+      const lines = entry.previewLines({ amount: '45.50', currency: 'EUR', direction: 'expense', iban: 'DE89370400440532013000' }, labels).filter(Boolean)
+      expect(lines.some((line) => line?.includes('sensitive'))).toBe(true)
     })
   })
 })

@@ -96,11 +96,28 @@ interface CalendarEventRow {
   updated_at: string
 }
 
+// Task 28 -- mirrors financeService.ts's own insert row shape (frontend).
+// Create-only (no update_finance_transaction intent exists), so this row
+// type only ever needs to support the create branch's undo (a plain
+// DELETE), the same shape create_task/create_calendar_event already use.
+interface FinanceTransactionRow {
+  id: string
+  user_id: string
+  type: 'income' | 'expense'
+  amount: number
+  category: string
+  date: string
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
 export type UndoEntry =
   | { kind: 'create_task'; userId: string; taskId: string; expiresAt: string }
   | { kind: 'update_task'; userId: string; taskId: string; previous: Pick<TaskRow, 'title' | 'notes' | 'due_date' | 'completed'>; expiresAt: string }
   | { kind: 'create_calendar_event'; userId: string; eventId: string; expiresAt: string }
   | { kind: 'update_calendar_event'; userId: string; eventId: string; previous: Pick<CalendarEventRow, 'title' | 'date' | 'start_time' | 'end_time' | 'description'>; expiresAt: string }
+  | { kind: 'create_finance_transaction'; userId: string; transactionId: string; expiresAt: string }
 
 // Task 22-fix2 (D1 structural lesson), now task 23 registry-driven: the
 // single, authoritative runtime list of undo-persisting kinds -- every
@@ -179,7 +196,9 @@ function undoExpiresAt(now: Date) {
 // entry is about" id slot regardless of kind. Not renamed, to avoid an
 // unnecessary migration + touching every existing call site.
 function undoRecordId(entry: UndoEntry): string {
-  return entry.kind === 'create_task' || entry.kind === 'update_task' ? entry.taskId : entry.eventId
+  if (entry.kind === 'create_task' || entry.kind === 'update_task') return entry.taskId
+  if (entry.kind === 'create_finance_transaction') return entry.transactionId
+  return entry.eventId
 }
 
 async function persistUndoRecord(env: Env, entry: UndoEntry, undoId: string) {
@@ -197,7 +216,7 @@ async function persistUndoRecord(env: Env, entry: UndoEntry, undoId: string) {
 interface UndoRecordRow {
   id: string
   user_id: string
-  kind: 'create_task' | 'update_task' | 'create_calendar_event' | 'update_calendar_event'
+  kind: 'create_task' | 'update_task' | 'create_calendar_event' | 'update_calendar_event' | 'create_finance_transaction'
   task_id: string
   payload: {
     previous?:
@@ -223,6 +242,7 @@ async function consumeUndoRecord(env: Env, userId: string, undoId: string, now: 
 
   if (row.kind === 'create_task') return { kind: 'create_task', userId, taskId: row.task_id, expiresAt: row.expires_at }
   if (row.kind === 'create_calendar_event') return { kind: 'create_calendar_event', userId, eventId: row.task_id, expiresAt: row.expires_at }
+  if (row.kind === 'create_finance_transaction') return { kind: 'create_finance_transaction', userId, transactionId: row.task_id, expiresAt: row.expires_at }
   if (row.kind === 'update_task') {
     const previous = row.payload?.previous as Pick<TaskRow, 'title' | 'notes' | 'due_date' | 'completed'> | undefined
     if (!previous) return null
@@ -251,7 +271,18 @@ export async function resolveServerFlowWriteMode(env: Env, userId: string, domai
     return 'ask'
   }
   const mode = rows[0]?.mode
-  return mode === 'auto' || mode === 'ask' || mode === 'off' ? mode : defaultFlowWriteMode(domain, action)
+  const resolved = mode === 'auto' || mode === 'ask' || mode === 'off' ? mode : defaultFlowWriteMode(domain, action)
+  // Task 28: ADR-0012 lists "finance writes: ask" under DEFAULT policy --
+  // by itself that only governs the no-row case (defaultFlowWriteMode
+  // above), not a row a client explicitly wrote requesting 'auto'. Finance
+  // never auto-executing is a stronger, non-negotiable guarantee for this
+  // domain specifically (money, unlike a task's due date or a calendar
+  // slot) -- this clamp is defense in depth beyond the browser layer, which
+  // ADR-0012 already treats as preference input only, never execution
+  // authority: even a maliciously or accidentally stored ('finance',
+  // 'create', 'auto') row can never reach the auto-execute branch below.
+  if (domain === 'finance' && resolved === 'auto') return 'ask'
+  return resolved
 }
 
 function dateKey(date: Date, timeZone: string) {
@@ -672,17 +703,24 @@ function resolvesToCalendarDomain(message: string, now: Date, timeZone: string):
   return parseTaskWriteIntent(message, now, timeZone) !== null && Boolean(parseDeterministicTimeOfDay(message))
 }
 
-export type WriteDomainSignal = 'task' | 'calendar' | 'ambiguous' | 'none'
+export type WriteDomainSignal = 'task' | 'calendar' | 'finance' | 'ambiguous' | 'none'
 
 /**
  * The single deterministic routing decision -- see file header above.
- * Exported for direct unit testing.
+ * Task 28: finance is a third, independent signal in the same
+ * conflict-detection scheme -- when it doesn't fire (the common case for
+ * any pre-existing task/calendar message), behaviour is byte-identical to
+ * before this task, satisfying task 23's own "zero behaviour change for
+ * existing domains" constraint. Exported for direct unit testing.
  */
 export function detectWriteDomainSignal(message: string, now: Date, timeZone: string): WriteDomainSignal {
   const taskTrigger = parseTaskWriteIntent(message, now, timeZone) !== null
   const calendarTrigger = isCalendarWriteTrigger(message)
-  if (!taskTrigger && !calendarTrigger) return 'none'
-  if (taskTrigger && calendarTrigger) return 'ambiguous'
+  const financeTrigger = isFinanceWriteTrigger(message)
+  const triggerCount = [taskTrigger, calendarTrigger, financeTrigger].filter(Boolean).length
+  if (triggerCount === 0) return 'none'
+  if (triggerCount > 1) return 'ambiguous'
+  if (financeTrigger) return 'finance'
   return resolvesToCalendarDomain(message, now, timeZone) ? 'calendar' : 'task'
 }
 
@@ -706,14 +744,14 @@ function turnNow(turn: RecentChatTurn, fallbackNow: Date): Date {
   return Number.isNaN(parsed.getTime()) ? fallbackNow : parsed
 }
 
-export function detectContinuationDomain(recentTurns: RecentChatTurn[], now: Date, timeZone: string): 'task' | 'calendar' | null {
+export function detectContinuationDomain(recentTurns: RecentChatTurn[], now: Date, timeZone: string): 'task' | 'calendar' | 'finance' | null {
   const recentUserTurns = recentTurns
     .filter(turn => turn.role === 'user')
     .slice(-6)
     .reverse()
   for (const turn of recentUserTurns) {
     const signal = detectWriteDomainSignal(turn.content, turnNow(turn, now), timeZone)
-    if (signal === 'task' || signal === 'calendar') return signal
+    if (signal === 'task' || signal === 'calendar' || signal === 'finance') return signal
   }
   return null
 }
@@ -948,6 +986,171 @@ export function assembleCalendarWriteIntent(message: string, recentTurns: Recent
 }
 
 // ---------------------------------------------------------------------------
+// Task 28 -- finance write slice. Create-only (no update_finance_transaction
+// intent exists, so there is no merge/correction pipeline to mirror from
+// task/calendar) -- deliberately simpler than the two triads above for that
+// reason, not an oversight. Every value below is re-derived deterministically
+// from the raw message; nothing here is ever asked of, or trusted from, a
+// model (ADR-0012's own boundary, doubly true for money).
+// ---------------------------------------------------------------------------
+
+function isFinanceWriteTrigger(message: string): boolean {
+  return /\b(log|record|add|create)\b.{0,40}\b(expense|income|transaction|payment)\b/i.test(message) ||
+    /\b(i\s+)?(spent|paid|bought)\b.{0,40}\b(on|for|euro|eur|€|\d)/i.test(message) ||
+    // Bank-transfer phrasing ("pay"/"send" + an amount or an IBAN-shaped
+    // token) is finance-write evidence too -- the IBAN rule below only
+    // ever matters once a message is already routed here.
+    /\b(pay|send|transfer)\b.{0,40}\b(euro|eur|€|\d|[A-Za-z]{2}[0-9]{2}[A-Za-z0-9]{11,30})/i.test(message) ||
+    /\b(erfasse|buche|trage)\b.{0,40}\b(ausgabe|einnahme|transaktion|zahlung)\b/i.test(message) ||
+    /(هزینه|درآمد|تراکنش|پرداخت).{0,40}(ثبت کن|اضافه کن|بساز|ثبت شود)/.test(message)
+}
+
+function parseFinanceDirection(message: string): 'income' | 'expense' | undefined {
+  const text = message.toLowerCase()
+  // "got paid"/"received a payment" is income; a bare "pay"/"paid"/"send"/
+  // "transfer" (no "got"/"received" framing) is money going out, the
+  // common case for a single-user app recording the user's OWN transactions.
+  if (/\bgot paid\b/.test(text) || /\b(income|earned|received|salary)\b/.test(text) || /\b(einnahme|erhalten|gehalt)\b/.test(text) || /درآمد|دریافت|حقوق/.test(message)) return 'income'
+  if (/\b(expense|spent|paid|pay|bought|cost|send|sent|transfer)\b/.test(text) || /\b(ausgabe|bezahlt|zahle|gekauft|kosten|sende|überweise)\b/.test(text) || /هزینه|خرید|پرداخت|بفرست/.test(message)) return 'expense'
+  return undefined
+}
+
+// Task 28: matches an amount+optional-currency token in Farsi (Arabic-indic
+// digits, normalized via normalizeDigits already used by the date parsers
+// above), German (comma-decimal, "45,50"), and English (dot-decimal,
+// "45.50") conventions, plus thousands-grouped forms in either the Arabic
+// separator ٬ (U+066C) or the Latin '.'/',' -- disambiguated by treating
+// whichever of '.'/',' appears LAST in the matched token as the decimal
+// separator (the convention both German "1.234,56" and English "1,234.56"
+// agree on: the final separator is always the decimal one), and a trailing
+// 3-digit group after that as a thousands group, not a fraction, so
+// "1.234" (no further split) still resolves to 1234, not 1.234.
+const EURO_CURRENCY_PATTERN = /€|\beur\b|euro|یورو/i
+const AMOUNT_TOKEN_PATTERN = /[0-9]{1,3}(?:[.,٬][0-9]{3})+(?:[.,][0-9]{1,2})?|[0-9]+(?:[.,][0-9]{1,2})?/
+
+function parseDeterministicAmount(message: string): { amount?: number; currency?: string } {
+  const text = normalizeDigits(message)
+  const match = text.match(AMOUNT_TOKEN_PATTERN)
+  if (!match) return {}
+  const raw = match[0]
+  const decimalIndex = Math.max(raw.lastIndexOf(','), raw.lastIndexOf('.'))
+  let normalized: string
+  if (decimalIndex === -1) {
+    normalized = raw.replace(/٬/g, '')
+  } else {
+    const integerPart = raw.slice(0, decimalIndex).replace(/[.,٬]/g, '')
+    const fractionPart = raw.slice(decimalIndex + 1)
+    normalized = fractionPart.length === 3 ? `${integerPart}${fractionPart}` : `${integerPart}.${fractionPart}`
+  }
+  const amount = Number(normalized)
+  if (!Number.isFinite(amount) || amount < 0) return {}
+  return { amount, currency: EURO_CURRENCY_PATTERN.test(text) ? 'EUR' : undefined }
+}
+
+// Task 28: IBAN-shaped token detection -- either compact ("DE893704...") or
+// human space-grouped in 4s ("DE89 3704 0044 0532 0130 00"). "IBAN-shaped"
+// per this task's own wording, not a guarantee of a syntactically perfect
+// IBAN -- the mod-97 check below (isValidIban) is what actually decides
+// valid/invalid; this pattern only decides whether there is anything to
+// validate at all.
+const IBAN_GROUPED_PATTERN = /\b[A-Za-z]{2}[0-9]{2}(?:\s[A-Za-z0-9]{4}){2,7}(?:\s[A-Za-z0-9]{1,4})?\b/
+const IBAN_COMPACT_PATTERN = /\b[A-Za-z]{2}[0-9]{2}[A-Za-z0-9]{11,30}\b/
+
+function findIbanCandidate(message: string): string | undefined {
+  return message.match(IBAN_GROUPED_PATTERN)?.[0] ?? message.match(IBAN_COMPACT_PATTERN)?.[0]
+}
+
+function normalizeIbanCandidate(raw: string): string {
+  return raw.replace(/\s+/g, '').toUpperCase()
+}
+
+// Task 28: ISO 7064 MOD 97-10, the standard IBAN checksum -- move the first
+// 4 characters (country code + check digits) to the end, convert letters to
+// numbers (A=10 ... Z=35), and the resulting numeric string must be
+// congruent to 1 mod 97. BigInt is required, not optional: a 30-odd digit
+// numeric string is well past Number's safe-integer precision, and a
+// precision-lossy mod here would silently accept some invalid IBANs and
+// reject some valid ones -- exactly the "silent drop" this task's own
+// requirement rules out.
+export function isValidIban(candidate: string): boolean {
+  const iban = normalizeIbanCandidate(candidate)
+  if (!/^[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}$/.test(iban)) return false
+  const rearranged = iban.slice(4) + iban.slice(0, 4)
+  const numeric = rearranged.replace(/[A-Z]/g, ch => String(ch.charCodeAt(0) - 55))
+  try {
+    return BigInt(numeric) % 97n === 1n
+  } catch {
+    return false
+  }
+}
+
+export interface ParsedFinanceWriteIntent {
+  kind: 'create_finance_transaction'
+  amount?: number
+  currency?: string
+  direction?: 'income' | 'expense'
+  transactionDate?: string
+  description?: string
+  iban?: string
+  ibanValid?: boolean
+  amountClarificationNeeded: boolean
+}
+
+/**
+ * Exported for direct unit testing. Only ever returns null when the
+ * message carries no finance-write trigger at all -- an absent amount or
+ * direction on an otherwise-triggering message still returns a descriptor
+ * (with `amountClarificationNeeded`/no `direction`), so the caller can ask
+ * a specific clarifying question instead of silently dropping the request.
+ */
+export function parseFinanceWriteIntent(message: string, now: Date, timeZone: string): ParsedFinanceWriteIntent | null {
+  if (!isFinanceWriteTrigger(message)) return null
+  const ibanCandidate = findIbanCandidate(message)
+  const iban = ibanCandidate ? normalizeIbanCandidate(ibanCandidate) : undefined
+  const ibanValid = iban ? isValidIban(iban) : undefined
+  // The IBAN's own digits must never leak into the amount parse below --
+  // masked out first, not merely hoped to not match.
+  const messageForAmount = ibanCandidate ? message.replace(ibanCandidate, ' ') : message
+  const { amount, currency } = parseDeterministicAmount(messageForAmount)
+  const direction = parseFinanceDirection(message)
+  const date = parseDeterministicDueDate(message, now, timeZone)
+  // Task 28: unlike a task's dueDate or a calendar event's start, an
+  // unmentioned transaction date defaults to today rather than asking --
+  // "log a 45 euro expense" is already a complete, well-formed request
+  // without a date phrase, the same tolerance create_task already has for
+  // an absent dueDate.
+  const transactionDate = date.value ?? dateKey(now, timeZone)
+  return {
+    kind: 'create_finance_transaction',
+    amount,
+    currency,
+    direction,
+    transactionDate,
+    description: boundText(message, 500),
+    iban,
+    ibanValid,
+    amountClarificationNeeded: amount === undefined,
+  }
+}
+
+export function assembleFinanceWriteIntent(message: string, recentTurns: RecentChatTurn[], now: Date, timeZone: string): ParsedFinanceWriteIntent | null {
+  const direct = parseFinanceWriteIntent(message, now, timeZone)
+  if (direct) return direct
+  if (looksLikeSubjectChange(message)) return null
+  if (!isAffirmativeWriteContinuation(message)) return null
+  if (recentTurns.slice(-4).some(turn => turn.role === 'assistant' && /✓ .*(Transaction recorded|Transaktion erfasst|تراکنش ثبت شد)/.test(turn.content))) {
+    return null
+  }
+  const recentUserTurns = recentTurns
+    .filter(turn => turn.role === 'user')
+    .slice(-6)
+    .reverse()
+  return recentUserTurns
+    .map(turn => parseFinanceWriteIntent(turn.content, turnNow(turn, now), timeZone))
+    .find((intent): intent is ParsedFinanceWriteIntent => Boolean(intent)) ?? null
+}
+
+// ---------------------------------------------------------------------------
 // Task 22-fix2 (D2/D3): undo is part of the definition of an 'auto' write
 // under ADR-0012 -- a write that executed but has no undo record is a
 // silent policy violation, not a degraded-but-acceptable outcome. Both
@@ -1086,6 +1289,20 @@ function confirmationForCalendar(
   return `✓ Event ${kind === 'create_calendar_event' ? 'created' : 'updated'}: ${title}${when}`
 }
 
+// Task 28: mirrors confirmationForCalendar's bidi-isolation treatment
+// exactly (task 22-fix3, commit 4995b29) -- the amount+date token is a bare
+// digit/punctuation run with no bidi strength of its own (UAX#9), so it is
+// wrapped in the same U+2066 LRI / U+2069 PDI isolate the calendar/task
+// confirmations already use, applied consistently rather than introduced
+// as a one-off for this domain.
+function confirmationForFinance(language: Language, direction: 'income' | 'expense', amount: number, currency: string | undefined, transactionDate: string): string {
+  const amountLabel = `${amount.toFixed(2)}${currency ? ` ${currency}` : ''}`
+  const when = ` — ${isolateForBidi(`${amountLabel} ${transactionDate}`)}`
+  if (language === 'de') return `✓ Transaktion erfasst: ${direction === 'income' ? 'Einnahme' : 'Ausgabe'}${when}`
+  if (language === 'fa') return `✓ تراکنش ثبت شد: ${direction === 'income' ? 'درآمد' : 'هزینه'}${when}`
+  return `✓ Transaction recorded: ${direction === 'income' ? 'income' : 'expense'}${when}`
+}
+
 async function createCalendarEventAlarmIfNeeded(env: Env, userId: string, event: CalendarEventRow, startUtcIso: string) {
   const rows = await supabaseWriteReturning<AlarmRow[]>(env, 'POST', 'alarms?select=id,source_id,trigger_at', {
     user_id: userId,
@@ -1205,6 +1422,64 @@ export async function executeAutoCalendarWrite(input: {
 }
 
 /**
+ * Task 28: mirrors executeAutoTaskWrite/executeAutoCalendarWrite's shape
+ * (clarify/failed/executed statuses, undo persistence, confirmation line).
+ * Create-only, so there is no not_found/matching branch to mirror --
+ * every code path either produces a well-formed insert or asks a specific
+ * clarifying question. In production this is only ever reachable through a
+ * direct unit-test call: resolveServerFlowWriteMode hard-clamps the
+ * 'finance' domain to never resolve 'auto' (see its own comment), so
+ * index.ts's `mode === 'auto'` dispatch branch never calls this function
+ * for a real request today. Built anyway, mirroring the existing triads
+ * exactly, per this task's own instruction -- see the task 28 report for
+ * this disclosed as a finding, not a bug.
+ */
+export async function executeAutoFinanceWrite(input: {
+  env: Env
+  userId: string
+  language: Language
+  intent: ParsedFinanceWriteIntent
+  now: Date
+}): Promise<{ status: 'executed'; reply: string; undoId: string; undoExpiresAt: string } | { status: 'clarify'; reply: string } | { status: 'failed'; reply: string }> {
+  const { env, userId, intent, language, now } = input
+  if (intent.iban && intent.ibanValid === false) {
+    return { status: 'clarify', reply: 'That IBAN does not look valid. Please double-check it and try again.' }
+  }
+  if (intent.amountClarificationNeeded || intent.amount === undefined) {
+    return { status: 'clarify', reply: 'How much was the transaction for?' }
+  }
+  if (!intent.direction) {
+    return { status: 'clarify', reply: 'Was that income or an expense?' }
+  }
+  const transactionDate = intent.transactionDate ?? dateKey(now, 'UTC')
+  const rows = await supabaseWriteReturning<FinanceTransactionRow[]>(env, 'POST', 'finance_transactions?select=id,user_id,type,amount,category,date,notes,created_at,updated_at', {
+    user_id: userId,
+    type: intent.direction,
+    amount: intent.amount,
+    // No dedicated category parser (out of this task's stated scope) --
+    // same fallback the shared registry's buildHandlerInput uses for the
+    // ask-approved path, kept identical across both write paths on purpose.
+    category: 'Flow AI',
+    date: transactionDate,
+    notes: intent.description ?? null,
+  })
+  const transaction = rows[0]
+  if (!transaction?.id) return { status: 'failed', reply: 'I could not verify that the transaction was recorded.' }
+  const undoId = `undo:${crypto.randomUUID()}`
+  const expiresAt = undoExpiresAt(now)
+  const undoFailure = await persistUndoOrRollback(env, { kind: 'create_finance_transaction', userId, transactionId: transaction.id, expiresAt }, undoId, language, async () => {
+    await supabaseWriteNoContent(env, 'DELETE', `finance_transactions?id=eq.${esc(transaction.id)}&user_id=eq.${esc(userId)}`)
+  })
+  if (undoFailure) return undoFailure
+  return {
+    status: 'executed',
+    reply: confirmationForFinance(language, transaction.type, transaction.amount, intent.currency, transactionDate),
+    undoId,
+    undoExpiresAt: expiresAt,
+  }
+}
+
+/**
  * Task 22: renamed from undoAutoTaskWrite (only call site was index.ts,
  * updated there too) -- now dispatches on the persisted kind to undo
  * either a task or calendar_events write, since the undo record itself
@@ -1228,6 +1503,10 @@ export async function undoAutoWrite(env: Env, userId: string, undoId: string, no
   }
   if (entry.kind === 'create_calendar_event') {
     await supabaseWriteReturning<CalendarEventRow[]>(env, 'DELETE', `calendar_events?id=eq.${esc(entry.eventId)}&user_id=eq.${esc(userId)}&select=id`)
+    return true
+  }
+  if (entry.kind === 'create_finance_transaction') {
+    await supabaseWriteReturning<FinanceTransactionRow[]>(env, 'DELETE', `finance_transactions?id=eq.${esc(entry.transactionId)}&user_id=eq.${esc(userId)}&select=id`)
     return true
   }
   await supabaseWriteReturning<CalendarEventRow[]>(env, 'PATCH', `calendar_events?id=eq.${esc(entry.eventId)}&user_id=eq.${esc(userId)}&select=id`, {

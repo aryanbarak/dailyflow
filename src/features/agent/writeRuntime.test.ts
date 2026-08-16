@@ -44,6 +44,21 @@ vi.mock("@/features/calendar/calendarService", () => ({
   calendarService: calendarServiceMock,
 }));
 
+// Task 28: financeCreateTransactionHandler (reached transitively via
+// writeHandlers.ts) imports financeService.ts, which imports the real
+// Supabase client -- mocked here for the exact same reason
+// tasksService/calendarService are mocked above.
+const { financeServiceMock } = vi.hoisted(() => ({
+  financeServiceMock: {
+    createTransaction: vi.fn(),
+    listTransactions: vi.fn(),
+  },
+}));
+
+vi.mock("@/features/finance/financeService", () => ({
+  financeService: financeServiceMock,
+}));
+
 import {
   clearExecutionAuditRecords,
   getExecutionAuditRecordsByRequestId,

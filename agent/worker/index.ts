@@ -17,10 +17,12 @@ import { buildAttachmentTextPart, resolveChatAttachment } from './chat-attachmen
 import { checkForFalseCompletionClaim } from './completion-claim-guard'
 import {
   assembleCalendarWriteIntent,
+  assembleFinanceWriteIntent,
   assembleTaskWriteIntent,
   detectContinuationDomain,
   detectWriteDomainSignal,
   executeAutoCalendarWrite,
+  executeAutoFinanceWrite,
   executeAutoTaskWrite,
   resolveCreateEventTitle,
   resolveCreateTaskTitle,
@@ -668,7 +670,7 @@ async function respondToWriteExecution(
   origin: string,
   message: string,
   language: Language,
-  domain: 'tasks' | 'calendar',
+  domain: 'tasks' | 'calendar' | 'finance',
   action: 'create' | 'update',
   mode: 'auto' | 'ask' | 'off',
   execution:
@@ -784,7 +786,7 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
       .map(r => ({ role: r.role as ChatMessage['role'], content: r.content, createdAt: r.created_at }))
       .reverse()
 
-    let pendingWritePolicy: { domain: 'tasks' | 'calendar'; action: 'create' | 'update'; mode: 'ask' } | undefined
+    let pendingWritePolicy: { domain: 'tasks' | 'calendar' | 'finance'; action: 'create' | 'update'; mode: 'ask' } | undefined
 
     // Task 22 -- routing: a request naming a calendar concept, or a
     // task-shaped request that ALSO carries a resolved time-of-day
@@ -811,16 +813,25 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
     // finds which domain that was, so a time-bearing original request
     // still resolves to calendar even when the reply that finally
     // triggers execution says neither "task" nor "event".
-    const resolvedDomain: 'task' | 'calendar' | null =
-      writeDomainSignal === 'task' || writeDomainSignal === 'calendar'
+    const resolvedDomain: 'task' | 'calendar' | 'finance' | null =
+      writeDomainSignal === 'task' || writeDomainSignal === 'calendar' || writeDomainSignal === 'finance'
         ? writeDomainSignal
         : detectContinuationDomain(history, new Date(), timeZone)
     const taskWriteIntent = resolvedDomain === 'task' ? assembleTaskWriteIntent(message, history, new Date(), timeZone) : null
     const calendarWriteIntent = resolvedDomain === 'calendar' ? assembleCalendarWriteIntent(message, history, new Date(), timeZone) : null
+    // Task 28: parsed the same way as task/calendar above, but never
+    // reaches an 'auto' execution in production -- resolveServerFlowWriteMode
+    // hard-clamps the 'finance' domain to 'ask' regardless of what mode is
+    // resolved below (see that function's own comment). Parsed here anyway
+    // so the 'ask' branch's pendingWritePolicy response is still accurate
+    // for the frontend, and so executeAutoFinanceWrite stays exercised by
+    // this dispatch shape for symmetry with the other two domains, per this
+    // task's own instruction.
+    const financeWriteIntent = resolvedDomain === 'finance' ? assembleFinanceWriteIntent(message, history, new Date(), timeZone) : null
 
-    if (taskWriteIntent || calendarWriteIntent) {
-      const domain: 'tasks' | 'calendar' = taskWriteIntent ? 'tasks' : 'calendar'
-      const action: 'create' | 'update' = (taskWriteIntent?.kind ?? calendarWriteIntent!.kind).startsWith('create') ? 'create' : 'update'
+    if (taskWriteIntent || calendarWriteIntent || financeWriteIntent) {
+      const domain: 'tasks' | 'calendar' | 'finance' = taskWriteIntent ? 'tasks' : calendarWriteIntent ? 'calendar' : 'finance'
+      const action: 'create' | 'update' = (taskWriteIntent?.kind ?? calendarWriteIntent?.kind ?? financeWriteIntent!.kind).startsWith('create') ? 'create' : 'update'
       const mode = await resolveServerFlowWriteMode(env, userId, domain, action)
       if (mode === 'off') {
         const reply = language === 'de'
@@ -852,6 +863,17 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
             calendarWriteIntent.title = await resolveCreateEventTitle(env, calendarWriteIntent, message)
           }
           const execution = await executeAutoCalendarWrite({ env, userId, language, intent: calendarWriteIntent, now: new Date(), timeZone })
+          const response = await respondToWriteExecution(env, userId, sessionId, origin, message, language, domain, action, mode, execution)
+          if (response) return response
+        } else if (financeWriteIntent) {
+          // Task 28: unreachable in production today -- resolveServerFlowWriteMode
+          // hard-clamps 'finance' to never resolve 'auto' (see its own
+          // comment), so this branch only ever runs under a direct unit
+          // test that calls executeAutoFinanceWrite/this dispatch shape
+          // with a forced mode. Kept for symmetry with the task/calendar
+          // branches above, per this task's own instruction to build the
+          // full triad -- see the task 28 report.
+          const execution = await executeAutoFinanceWrite({ env, userId, language, intent: financeWriteIntent, now: new Date() })
           const response = await respondToWriteExecution(env, userId, sessionId, origin, message, language, domain, action, mode, execution)
           if (response) return response
         }

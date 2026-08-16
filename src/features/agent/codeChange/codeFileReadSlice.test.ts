@@ -26,6 +26,16 @@ vi.mock("@/features/calendar/calendarService", () => ({
   },
 }));
 
+// Task 28: writeHandlers.ts now also pulls in financeCreateTransactionHandler.ts
+// -> the real "@/features/finance/financeService", same real-Supabase-client
+// side effect as tasksService/calendarService above -- mocked for the same reason.
+vi.mock("@/features/finance/financeService", () => ({
+  financeService: {
+    createTransaction: vi.fn(),
+    listTransactions: vi.fn(),
+  },
+}));
+
 import { approveWorkspaceStep } from "../approvalInteraction";
 import { clearExecutionAuditRecords, getExecutionAuditRecordsByRequestId } from "../executionAudit";
 import { getToolById } from "../toolRegistry";

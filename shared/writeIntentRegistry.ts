@@ -54,14 +54,16 @@ export type WriteIntentType =
   | 'update_task'
   | 'create_calendar_event'
   | 'update_calendar_event'
+  | 'create_finance_transaction'
 
-export type WriteIntentDomain = 'tasks' | 'calendar'
+export type WriteIntentDomain = 'tasks' | 'calendar' | 'finance'
 export type WriteIntentAction = 'create' | 'update'
 export type WriteIntentToolId =
   | 'tasks.create'
   | 'tasks.update'
   | 'calendar.create_event'
   | 'calendar.update_event'
+  | 'finance.create_transaction'
 export type WriteIntentCapability = 'create' | 'update' | 'schedule'
 
 export interface WriteIntentTargetField {
@@ -95,6 +97,24 @@ export const WRITE_DOMAIN_TARGET_FIELDS: Record<WriteIntentDomain, readonly Writ
     { name: 'eventId', schemaType: 'STRING' },
     { name: 'start', schemaType: 'STRING' },
     { name: 'end', schemaType: 'STRING' },
+  ],
+  // Task 28: amount/iban are STRING here for the same reason start/end are
+  // above -- the Gemini structured-output schema has no numeric target type
+  // in this flat object, and every one of these values is re-derived
+  // deterministically from the raw message (never trusted from the model)
+  // before it reaches a preview or execution -- see
+  // agent/worker/flow-write-policy.ts's parseFinanceWriteIntent and
+  // intentValidator.ts's normalizeTarget. category has no dedicated parser
+  // (out of this task's stated parsing scope) and defaults to a fixed
+  // fallback in buildHandlerInput when the user never mentioned one.
+  finance: [
+    { name: 'amount', schemaType: 'STRING' },
+    { name: 'currency', schemaType: 'STRING' },
+    { name: 'direction', schemaType: 'STRING' },
+    { name: 'transactionDate', schemaType: 'STRING' },
+    { name: 'category', schemaType: 'STRING' },
+    { name: 'description', schemaType: 'STRING' },
+    { name: 'iban', schemaType: 'STRING' },
   ],
 }
 
@@ -280,6 +300,65 @@ export const writeIntentRegistry: readonly WriteIntentDescriptor[] = [
       ...(target.end !== undefined ? { dateTimeEnd: target.end } : {}),
     }),
   },
+  {
+    intentType: 'create_finance_transaction',
+    domain: 'finance',
+    action: 'create',
+    toolId: 'finance.create_transaction',
+    capability: 'create',
+    undoKind: 'create_finance_transaction',
+    // Task 28: amount and direction are the two fields nothing else can
+    // stand in for -- a transaction with no amount or no income/expense
+    // sign is not a well-formed write, the same bar create_task's `title`
+    // and create_calendar_event's `eventTitle`+`start` set for their own
+    // domains. transactionDate is not required here: parseFinanceWriteIntent
+    // defaults an unmentioned date to "today" (see its own comment) rather
+    // than asking, mirroring how create_task tolerates an absent dueDate.
+    createRequiredTargetFields: ['amount', 'direction'],
+    reversible: true,
+    successSummary: 'Transaction recorded.',
+    i18n: {
+      titleKey: 'agent_intent_title_create_finance_transaction',
+      descriptionKey: 'agent_intent_create_finance_transaction_description',
+      approvalReasonKey: 'agent_intent_create_finance_transaction_approval_reason',
+    },
+    descriptionTitle: (target) => (target?.category as string | undefined) ?? '',
+    previewLines: (target, labels) => [
+      target?.amount ? `${labels.title}: ${target.amount as string} ${(target.currency as string | undefined) ?? ''}`.trim() : null,
+      target?.direction ? `${labels.title}: ${target.direction as string}` : null,
+      target?.transactionDate ? `${labels.due}: ${target.transactionDate as string}` : null,
+      target?.category ? `${labels.notes}: ${target.category as string}` : null,
+      target?.description ? `${labels.notes}: ${target.description as string}` : null,
+      // IBAN is preview-only and never persisted -- see buildHandlerInput's
+      // own comment below. Deliberately still shown here, flagged, so the
+      // approval card's own generic "sensitive" rendering treats it as such
+      // rather than a plain label/value line -- matches the tool catalog's
+      // `inputSchema[].sensitive` marking for this same value.
+      target?.iban ? `${labels.notes}: IBAN ${target.iban as string} (sensitive, not stored)` : null,
+    ],
+    buildHandlerInput: ({ actorId, target }) => ({
+      userId: actorId,
+      type: target.direction,
+      amount: target.amount,
+      // finance_transactions.category is NOT NULL (unlike tasks.due_date's
+      // nullable column, which is why create_task's own dueDate above is
+      // `?? null`) -- category has no dedicated parser (out of this task's
+      // stated scope), so an unmentioned category needs a real fallback
+      // STRING here, not null, or the insert fails the column constraint.
+      category: (target.category as string | undefined) ?? 'Flow AI',
+      date: target.transactionDate,
+      notes: target.description,
+      // Task 28: IBAN is validated deterministically (mod-97, see
+      // agent/worker/flow-write-policy.ts's validateIban and
+      // intentValidator.ts's own re-derivation) but finance_transactions
+      // has no iban column and this handler input feeds financeService's
+      // insert shape directly -- there is nowhere safe to persist it, and
+      // the ADR-0004 write boundary this registry's own "what stays
+      // hand-written" doc section describes never invents a new column for
+      // a value the approval preview already surfaced. Confirmation-only,
+      // by design, not an oversight.
+    }),
+  },
 ]
 
 export function findWriteIntentDescriptor(intentType: string): WriteIntentDescriptor | undefined {
@@ -291,7 +370,8 @@ export function findWriteIntentDescriptorByToolId(toolId: string): WriteIntentDe
 }
 
 // The union of every write intent's target field names, in
-// WRITE_DOMAIN_TARGET_FIELDS's domain-grouped order (tasks then calendar) --
+// WRITE_DOMAIN_TARGET_FIELDS's domain-grouped order (tasks then calendar then
+// finance, appended in registration order) --
 // this is what reproduces the pre-refactor schema's exact field order. Do
 // not derive this by flat-mapping writeIntentRegistry directly: iterating
 // by INTENT (create_task, update_task, ...) rather than by DOMAIN would
@@ -301,4 +381,5 @@ export function findWriteIntentDescriptorByToolId(toolId: string): WriteIntentDe
 export const WRITE_INTENT_TARGET_FIELD_NAMES: readonly string[] = [
   ...WRITE_DOMAIN_TARGET_FIELDS.tasks.map((field) => field.name),
   ...WRITE_DOMAIN_TARGET_FIELDS.calendar.map((field) => field.name),
+  ...WRITE_DOMAIN_TARGET_FIELDS.finance.map((field) => field.name),
 ]

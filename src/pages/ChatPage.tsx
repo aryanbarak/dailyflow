@@ -620,6 +620,7 @@ function isSupportedActionableProposalType(type: AgentReasoningResult['proposal'
     case 'update_task':
     case 'create_calendar_event':
     case 'update_calendar_event':
+    case 'create_finance_transaction':
     case 'write_github_issue_comment':
     case 'write_github_issue_update':
       return true
@@ -666,11 +667,12 @@ function intentTitleKey(type: AgentReasoningResult['proposal']['type']): Transla
       return 'agent_intent_title_inspect_github_workflow_runs'
     case 'complete_task':
       return 'agent_intent_title_complete_task'
-    // Task 23: the four task/calendar title keys come from the shared registry.
+    // Task 23/28: the task/calendar/finance write title keys come from the shared registry.
     case 'create_task':
     case 'update_task':
     case 'create_calendar_event':
     case 'update_calendar_event':
+    case 'create_finance_transaction':
       return findWriteIntentDescriptor(type)!.i18n.titleKey as TranslationKey
     case 'write_github_issue_comment':
       return 'agent_intent_title_write_github_issue_comment'
@@ -729,6 +731,8 @@ function stepForReasoning(result: AgentReasoningResult, t: Translate): Workspace
       ? 'workspace'
       : proposal.type === 'inspect_calendar' || writeEntry?.domain === 'calendar'
       ? 'calendar'
+      : writeEntry?.domain === 'finance'
+      ? 'finance'
       : proposal.type === 'inspect_learning'
         ? 'learning'
         : 'tasks'

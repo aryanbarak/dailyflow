@@ -883,3 +883,72 @@ describe("resolveDisambiguationCandidates", () => {
     expect(result[0].proposal.requiresApproval).toBe(false);
   });
 });
+
+describe("Task 28 (finance write slice) write intents", () => {
+  it("resolves create_finance_transaction only with an amount and a direction, otherwise asks for clarification", () => {
+    const incomplete = validate(
+      proposal({ type: "create_finance_transaction", requestedDomain: "finance", toolId: "finance.create_transaction" }),
+      "Log an expense please",
+    );
+    expect(incomplete.proposal.type).toBe("ask_clarification");
+
+    // The model's own proposed amount/currency/direction are IGNORED --
+    // re-derived deterministically from the message instead, the same
+    // "never trust the model" rule create_calendar_event's start/end
+    // override already enforces above.
+    const complete = validate(
+      proposal({
+        type: "create_finance_transaction",
+        requestedDomain: "finance",
+        toolId: "finance.create_transaction",
+        target: { amount: "999999", currency: "USD", direction: "income" },
+      }),
+      "Log an expense of 45,50 € for groceries",
+    );
+    expect(complete.proposal.type).toBe("create_finance_transaction");
+    expect(complete.toolId).toBe("finance.create_transaction");
+    expect(complete.proposal.requiresApproval).toBe(true);
+    expect(complete.proposal.target).toMatchObject({ amount: "45.5", currency: "EUR", direction: "expense" });
+  });
+
+  it("defaults the transaction date to today when the message names no date", () => {
+    const result = validate(
+      proposal({ type: "create_finance_transaction", requestedDomain: "finance", toolId: "finance.create_transaction", target: {} }),
+      "Log an expense of 20 EUR",
+    );
+    expect(result.proposal.target?.transactionDate).toBe("2026-07-15");
+  });
+
+  it("a valid IBAN in the message survives to the target, flagged for the approval preview", () => {
+    const result = validate(
+      proposal({ type: "create_finance_transaction", requestedDomain: "finance", toolId: "finance.create_transaction", target: {} }),
+      "Pay 45 EUR to DE89 3704 0044 0532 0130 00",
+    );
+    expect(result.proposal.type).toBe("create_finance_transaction");
+    expect(result.proposal.target?.iban).toBe("DE89370400440532013000");
+  });
+
+  it("an IBAN that fails the mod-97 check is a typed rejection (ask_clarification), never a silent pass or a silent drop", () => {
+    const result = validate(
+      proposal({ type: "create_finance_transaction", requestedDomain: "finance", toolId: "finance.create_transaction" }),
+      "Pay 45 EUR to DE89 3704 0044 0532 0130 01",
+    );
+    expect(result.proposal.type).toBe("ask_clarification");
+  });
+
+  it("a message matching both a task trigger and a finance trigger is genuinely ambiguous, not guessed -- consistent with this validator's existing (pre-task-28) behavior for any two conflicting write triggers: it falls through to read-evidence normalization and is then rejected as unsupported, rather than silently picking one", () => {
+    const result = validate(
+      proposal({ type: "ask_clarification" }),
+      "Create a task to log an expense of 20 EUR",
+    );
+    expect(result.proposal.type).toBe("unsupported");
+  });
+
+  it("existing calendar/task resolution is unaffected by the finance branch's addition to the cascade", () => {
+    const result = validate(
+      proposal({ type: "create_task", requestedDomain: "tasks", toolId: "tasks.create", target: { title: "Buy milk" } }),
+      "Create a task to buy milk",
+    );
+    expect(result.proposal.type).toBe("create_task");
+  });
+});

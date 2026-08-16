@@ -36,6 +36,7 @@ export type AgentIntentConfidence = "low" | "medium" | "high";
 export type AgentIntentDomain =
   | "tasks"
   | "calendar"
+  | "finance"
   | "learning"
   | "workspace"
   | "github";
@@ -56,6 +57,21 @@ export interface AgentIntentTarget {
   eventId?: string;
   start?: string;
   end?: string;
+  // Task 28 (finance write slice): amount/currency/iban are re-derived
+  // deterministically from the raw message and OVERRIDE whatever the model
+  // proposed here, mirroring how start/end above are re-derived rather than
+  // trusted (task 22-fix's own C1 fix) -- see intentValidator.ts's own
+  // normalizeTarget and its post-validation override step. transactionDate
+  // defaults to today when unmentioned; category has no dedicated parser
+  // and defaults to a fixed fallback in the shared registry's
+  // buildHandlerInput.
+  amount?: string;
+  currency?: string;
+  direction?: string;
+  transactionDate?: string;
+  category?: string;
+  description?: string;
+  iban?: string;
   // EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
   // Unlike task fields above, these are never fuzzy-matched against safe
   // context: repo/issueNumber/body must come from an explicit, well-formed
@@ -138,7 +154,7 @@ export type AgentLlmReasoningCaller = (
 
 export interface AgentReasoningValidationResult {
   proposal: AgentIntentProposal;
-  toolId?: "tasks.list" | "calendar.list_today" | "learning.get_progress" | "workspace.get_context" | "github.repositories.list" | "github.issues.list" | "github.epics.list" | "github.pulls.list" | "github.workflow_runs.list" | "tasks.complete" | "tasks.create" | "tasks.update" | "calendar.create_event" | "calendar.update_event" | "github.issues.comment" | "github.issues.update";
+  toolId?: "tasks.list" | "calendar.list_today" | "learning.get_progress" | "workspace.get_context" | "github.repositories.list" | "github.issues.list" | "github.epics.list" | "github.pulls.list" | "github.workflow_runs.list" | "tasks.complete" | "tasks.create" | "tasks.update" | "calendar.create_event" | "calendar.update_event" | "finance.create_transaction" | "github.issues.comment" | "github.issues.update";
   validationReasons: string[];
 }
 
