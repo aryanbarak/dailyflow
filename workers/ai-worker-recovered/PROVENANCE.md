@@ -49,3 +49,20 @@ Size: 39135 bytes
 Recorded: 2026-08-16
 Any future mismatch of this hash means the file is no longer the byte-exact
 production copy and must not be treated as the canonical baseline.
+
+## Modifications after recovery
+
+**2026-08-16 (task 26):** `index.js` was intentionally edited — this breaks the
+integrity hash above **by design**, not by accident. The original SHA256 in the
+Integrity section remains the recovery baseline (proof of what was actually live
+in production as of version 73 / 775fa0b1) and must not be updated or replaced.
+
+Change made: replaced the static `ALLOWED_ORIGIN = "https://barakzai.cloud"`
+constant with an `ALLOWED_ORIGINS` allow-list (`smartaryn.com`, `www.smartaryn.com`,
+`barakzai.cloud`, `www.barakzai.cloud`, plus existing `localhost` regex), so
+`corsHeaders()` echoes the request's own `Origin` when allowed instead of always
+returning the single hardcoded string. No other line was touched. Full diff is in
+the task 26 report / `git diff`.
+
+SHA256 (index.js) after this change: 1b4b6311bb0c3fc348b404c3fba6890ae82dee3a9658cd25cd4a44b800892a14
+Size after this change: 39252 bytes

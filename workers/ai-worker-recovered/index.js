@@ -2,7 +2,12 @@ var __defProp = Object.defineProperty;
 var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
 
 // src/index.js
-var ALLOWED_ORIGIN = "https://barakzai.cloud";
+var ALLOWED_ORIGINS = new Set([
+  "https://smartaryn.com",
+  "https://www.smartaryn.com",
+  "https://barakzai.cloud",
+  "https://www.barakzai.cloud"
+]);
 var GEMINI_DIRECT_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 var AI_PROVIDERS = [
   { name: "gemini-2.5-flash", model: "gemini-2.5-flash" },
@@ -102,9 +107,9 @@ ${langInstruction}`;
 __name(buildSystemInstruction, "buildSystemInstruction");
 function corsHeaders(request) {
   const origin = request.headers.get("Origin") || "";
-  const isAllowed = origin === ALLOWED_ORIGIN || /^http:\/\/localhost(:\d+)?$/.test(origin);
+  const isAllowed = ALLOWED_ORIGINS.has(origin) || /^http:\/\/localhost(:\d+)?$/.test(origin);
   return {
-    "Access-Control-Allow-Origin": isAllowed ? origin : ALLOWED_ORIGIN,
+    "Access-Control-Allow-Origin": isAllowed ? origin : "https://smartaryn.com",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
     "Access-Control-Max-Age": "86400",

@@ -1,0 +1,60 @@
+# Reconstructed 2026-08-16 from production evidence only (task 26).
+# Every value below is sourced from a live, read-only Cloudflare API pull
+# against the existing "dailyflow-ai-worker" script (same authenticated
+# session as task 25's recovery) or from task 25's own verified route table.
+# See the task 26 report for the full evidence table with sources.
+#
+# Secrets are deliberately NOT declared here: they already exist on the
+# live Worker (confirmed via `wrangler secret list`) and survive a script
+# update that doesn't touch bindings. Declaring them here would do nothing
+# useful and risks masking the mismatches recorded in the report.
+
+name = "dailyflow-ai-worker"
+main = "index.js"
+compatibility_date = "2025-05-23"
+compatibility_flags = []
+usage_model = "standard"
+workers_dev = false
+
+[[routes]]
+pattern = "api.barakzai.cloud/analyze"
+zone_name = "barakzai.cloud"
+
+[[routes]]
+pattern = "api.barakzai.cloud/import-bank"
+zone_name = "barakzai.cloud"
+
+[[routes]]
+pattern = "api.barakzai.cloud/ocr"
+zone_name = "barakzai.cloud"
+
+[[routes]]
+pattern = "api.barakzai.cloud/photos/*"
+zone_name = "barakzai.cloud"
+
+[[routes]]
+pattern = "api.barakzai.cloud/search"
+zone_name = "barakzai.cloud"
+
+[[routes]]
+pattern = "api.barakzai.cloud/translate"
+zone_name = "barakzai.cloud"
+
+[[routes]]
+pattern = "api.barakzai.cloud/tts"
+zone_name = "barakzai.cloud"
+
+[[routes]]
+pattern = "api.barakzai.cloud/tts-azure"
+zone_name = "barakzai.cloud"
+
+[ai]
+binding = "AI"
+
+[[r2_buckets]]
+binding = "PHOTOS_BUCKET"
+bucket_name = "dailyflow-photos"
+
+[[kv_namespaces]]
+binding = "RATE_LIMIT_KV"
+id = "9b284a5212594011a99861750ffb9326"
