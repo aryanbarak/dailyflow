@@ -13,7 +13,8 @@ name = "dailyflow-ai-worker"
 main = "index.js"
 compatibility_date = "2025-05-23"
 compatibility_flags = []
-usage_model = "standard"
+# usage_model = "standard" — reported by the settings API but rejected by
+# wrangler 4.x top-level schema; Workers are standard-only since 2024.
 workers_dev = false
 
 [[routes]]
