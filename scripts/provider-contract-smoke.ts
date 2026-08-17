@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// SmartFlow -- Provider-contract smoke script (task 16-fix, PO-mandated).
+// SmartFlow -- Provider-contract smoke script (task 16-fix, PO-mandated;
+// fifth contract added task 28b to cover the reasoning-endpoint schema).
 //
-// MANUAL USE ONLY -- never wire this into CI. It makes three minimal REAL
+// MANUAL USE ONLY -- never wire this into CI. It makes five minimal REAL
 // calls against the live Gemini API to catch the exact class of break that
 // motivated this script: a provider silently retiring a model
 // (text-embedding-004, shut down Jan 2026) turns a previously-working
@@ -22,19 +23,46 @@
 // Run manually:
 //   GEMINI_API_KEY=... npx vite-node scripts/provider-contract-smoke.ts
 
+// Task 28b-guard: this check is written first, before the imports below, so
+// a reader sees it before anything else -- even though ESM hoists import
+// resolution ahead of it at runtime regardless of text position. That's
+// safe here because none of agent/worker/*-endpoint.ts read process.env at
+// module scope (env is always passed in as a function parameter, per the
+// Cloudflare Worker pattern) -- so this guard is still the first thing
+// that can observe or act on GEMINI_API_KEY, and the first thing that can
+// fail because of it.
+//
+// A previous run of this script sourced agent/worker/.dev.vars with `source`
+// to get GEMINI_API_KEY into the shell, which also fed the multi-line
+// GITHUB_APP_PRIVATE_KEY PEM in that same file into bash as literal
+// commands -- echoing most of the private key into the transcript as
+// "command not found" errors (that key was rotated afterward). The fix is
+// not "remember not to do that" -- it's this guard: it never reads a
+// secrets file itself, and it tells the caller exactly how to set the one
+// variable this script needs, in-process, without sourcing anything.
+if (!process.env.GEMINI_API_KEY) {
+  console.error(
+    [
+      'GEMINI_API_KEY is not set in this process.',
+      'Set it for THIS PROCESS ONLY, e.g. PowerShell:',
+      '  $env:GEMINI_API_KEY = "<paste key here>"',
+      'then run the smoke again in the same session.',
+      'NEVER source/cat/echo agent/worker/.dev.vars or any secrets file --',
+      'multi-line secrets in it will leak into the transcript.',
+    ].join('\n'),
+  )
+  process.exit(1)
+}
+
 import { buildExtractionSystemInstruction, buildExtractionPrompt, buildExtractionResponseSchema } from '../agent/worker/personal-memory-extraction-endpoint'
 import { buildDerivationSystemInstruction, buildDerivationPrompt, buildDerivationResponseSchema } from '../agent/worker/context-derivation-endpoint'
 import { buildTaskTitleSystemInstruction, buildTaskTitlePrompt, buildTaskTitleResponseSchema } from '../agent/worker/task-title-extraction'
+import { buildReasoningSystemInstruction, buildReasoningResponseSchema, SUPPORTED_INTENT_VALUES } from '../agent/worker/reasoning-endpoint'
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? ''
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash'
 const EMBEDDING_MODEL = 'gemini-embedding-001'
 const EMBEDDING_DIMENSIONS = 768
-
-if (!GEMINI_API_KEY) {
-  console.error('FAIL: GEMINI_API_KEY is not set in the environment. Aborting before any call.')
-  process.exit(1)
-}
 
 interface ContractResult {
   readonly name: string;
@@ -108,6 +136,27 @@ async function checkTaskTitleContract(): Promise<ContractResult> {
   }
 }
 
+async function checkReasoningContract(): Promise<ContractResult> {
+  const name = 'generateContent + buildReasoningResponseSchema (reasoning-endpoint.ts)'
+  try {
+    const prompt = 'Latest user message: "I spent 45 EUR on groceries today." Propose one intent for this SmartFlow request.'
+    const { status, bodyText } = await callGenerateContent(GEMINI_MODEL, buildReasoningSystemInstruction('en'), prompt, buildReasoningResponseSchema())
+    if (status !== 200) return { name, pass: false, detail: `httpStatus=${status} body=${bodyText.slice(0, 300)}` }
+    const parsed = JSON.parse(bodyText) as { candidates?: Array<{ finishReason?: string; content?: { parts?: Array<{ text?: string }> } }> }
+    const candidate = parsed.candidates?.[0]
+    if (candidate?.finishReason !== 'STOP') return { name, pass: false, detail: `unexpected finishReason=${candidate?.finishReason}` }
+    const text = candidate.content?.parts?.[0]?.text
+    if (typeof text !== 'string' || !text.trim()) return { name, pass: false, detail: 'model returned no proposal content' }
+    const proposal = JSON.parse(text) as { type?: unknown }
+    if (typeof proposal.type !== 'string' || !(SUPPORTED_INTENT_VALUES as readonly string[]).includes(proposal.type)) {
+      return { name, pass: false, detail: `intent ${JSON.stringify(proposal.type)} is not in SUPPORTED_INTENT_VALUES` }
+    }
+    return { name, pass: true, detail: `httpStatus=200 finishReason=STOP intent=${proposal.type}` }
+  } catch (error) {
+    return { name, pass: false, detail: (error as Error).message }
+  }
+}
+
 async function checkEmbeddingContract(): Promise<ContractResult> {
   const name = `embedContent on ${EMBEDDING_MODEL} with outputDimensionality=${EMBEDDING_DIMENSIONS}`
   try {
@@ -135,7 +184,7 @@ async function main() {
   console.log(`Provider-contract smoke test -- model=${GEMINI_MODEL} embeddingModel=${EMBEDDING_MODEL}`)
   console.log('(manual run only -- never wired into CI)\n')
 
-  const results = [await checkExtractionContract(), await checkDerivationContract(), await checkTaskTitleContract(), await checkEmbeddingContract()]
+  const results = [await checkExtractionContract(), await checkDerivationContract(), await checkTaskTitleContract(), await checkReasoningContract(), await checkEmbeddingContract()]
 
   for (const result of results) {
     console.log(`${result.pass ? 'PASS' : 'FAIL'} -- ${result.name}`)

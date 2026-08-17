@@ -1,0 +1,221 @@
+{
+  "schema": {
+    "type": "OBJECT",
+    "required": [
+      "type",
+      "confidence",
+      "reasons",
+      "language"
+    ],
+    "properties": {
+      "type": {
+        "type": "STRING",
+        "enum": [
+          "inspect_tasks",
+          "inspect_calendar",
+          "inspect_learning",
+          "inspect_workspace",
+          "inspect_github_repositories",
+          "inspect_github_issues",
+          "inspect_github_epics",
+          "inspect_github_pull_requests",
+          "inspect_github_workflow_runs",
+          "complete_task",
+          "create_task",
+          "update_task",
+          "create_calendar_event",
+          "update_calendar_event",
+          "create_finance_transaction",
+          "write_github_issue_comment",
+          "write_github_issue_update",
+          "ask_clarification",
+          "unsupported"
+        ]
+      },
+      "confidence": {
+        "type": "STRING",
+        "enum": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "requestedDomain": {
+        "type": "STRING",
+        "enum": [
+          "tasks",
+          "calendar",
+          "learning",
+          "workspace",
+          "github"
+        ]
+      },
+      "target": {
+        "type": "OBJECT",
+        "properties": {
+          "taskId": {
+            "type": "STRING"
+          },
+          "taskReference": {
+            "type": "STRING"
+          },
+          "taskTitleHint": {
+            "type": "STRING"
+          },
+          "title": {
+            "type": "STRING"
+          },
+          "notes": {
+            "type": "STRING"
+          },
+          "dueDate": {
+            "type": "STRING"
+          },
+          "eventTitle": {
+            "type": "STRING"
+          },
+          "eventReference": {
+            "type": "STRING"
+          },
+          "eventId": {
+            "type": "STRING"
+          },
+          "start": {
+            "type": "STRING"
+          },
+          "end": {
+            "type": "STRING"
+          },
+          "amount": {
+            "type": "STRING"
+          },
+          "currency": {
+            "type": "STRING"
+          },
+          "direction": {
+            "type": "STRING"
+          },
+          "transactionDate": {
+            "type": "STRING"
+          },
+          "category": {
+            "type": "STRING"
+          },
+          "description": {
+            "type": "STRING"
+          },
+          "iban": {
+            "type": "STRING"
+          },
+          "repo": {
+            "type": "STRING"
+          },
+          "issueNumber": {
+            "type": "INTEGER"
+          },
+          "commentBody": {
+            "type": "STRING"
+          },
+          "updateTitle": {
+            "type": "STRING"
+          },
+          "updateBody": {
+            "type": "STRING"
+          },
+          "updateLabels": {
+            "type": "ARRAY",
+            "items": {
+              "type": "STRING"
+            }
+          }
+        }
+      },
+      "clarificationQuestion": {
+        "type": "STRING"
+      },
+      "reasons": {
+        "type": "ARRAY",
+        "minItems": 1,
+        "maxItems": 3,
+        "items": {
+          "type": "STRING"
+        }
+      },
+      "candidates": {
+        "type": "ARRAY",
+        "minItems": 2,
+        "maxItems": 6,
+        "items": {
+          "type": "OBJECT",
+          "required": [
+            "type",
+            "reasons"
+          ],
+          "properties": {
+            "type": {
+              "type": "STRING",
+              "enum": [
+                "inspect_tasks",
+                "inspect_calendar",
+                "inspect_learning",
+                "inspect_workspace",
+                "inspect_github_repositories",
+                "inspect_github_issues",
+                "inspect_github_epics",
+                "inspect_github_pull_requests",
+                "inspect_github_workflow_runs",
+                "complete_task",
+                "create_task",
+                "update_task",
+                "create_calendar_event",
+                "update_calendar_event",
+                "create_finance_transaction",
+                "write_github_issue_comment",
+                "write_github_issue_update",
+                "ask_clarification",
+                "unsupported"
+              ]
+            },
+            "reasons": {
+              "type": "ARRAY",
+              "minItems": 1,
+              "maxItems": 3,
+              "items": {
+                "type": "STRING"
+              }
+            }
+          }
+        }
+      },
+      "language": {
+        "type": "STRING",
+        "enum": [
+          "en",
+          "de",
+          "fa"
+        ]
+      }
+    }
+  },
+  "intents": [
+    "inspect_tasks",
+    "inspect_calendar",
+    "inspect_learning",
+    "inspect_workspace",
+    "inspect_github_repositories",
+    "inspect_github_issues",
+    "inspect_github_epics",
+    "inspect_github_pull_requests",
+    "inspect_github_workflow_runs",
+    "complete_task",
+    "create_task",
+    "update_task",
+    "create_calendar_event",
+    "update_calendar_event",
+    "create_finance_transaction",
+    "write_github_issue_comment",
+    "write_github_issue_update",
+    "ask_clarification",
+    "unsupported"
+  ]
+}
