@@ -65,6 +65,7 @@ import {
 } from "./executionAudit";
 import { getToolById } from "./toolRegistry";
 import { getWriteHandlerByToolId } from "./writeHandlers";
+import { writeIntentRegistry } from "../../../shared/writeIntentRegistry";
 import {
   clearExecutionIntentLifecycleRegistry,
   createCanonicalExecutionIntent,
@@ -728,9 +729,23 @@ describe("writeRuntime", () => {
     expect(handler.execute).not.toHaveBeenCalled();
   });
 
+  // Task 30: "finance.create_transaction" used to be listed here -- a stale
+  // assertion left over from when it really was unsupported (a future
+  // placeholder with no handler). It has been a real, registered write tool
+  // since task 28 (financeTools.ts, financeCreateTransactionHandler.ts),
+  // and SUPPORTED_WRITE_TOOL_IDS has included it via writeIntentRegistry
+  // since then too -- this test was asserting the exact production bug task
+  // 30 fixes (expectedCapabilityForToolId/expectedStepShapeForToolId's
+  // switches were missing a case for it) as if it were correct behavior.
+  // Replaced with finance.delete_transaction, a plausible but genuinely
+  // unsupported action (no delete capability exists for the finance
+  // domain) so this guard still covers "an unregistered tool id in a
+  // registered domain" without re-asserting the bug. See the
+  // "supports every write-registry entry" test below for the positive
+  // guard that would have caught this regression.
   it.each([
     "documents.delete",
-    "finance.create_transaction",
+    "finance.delete_transaction",
     "messages.send",
   ])("rejects unsupported write tool %s", async (toolId) => {
     const sourceStep = step({ actionType: toolId.startsWith("tasks.") ? "create" : "update" });
@@ -747,6 +762,62 @@ describe("writeRuntime", () => {
 
     expect(result.status).toBe("unsupported_tool");
   });
+
+  // Task 30 regression guard: create_finance_transaction was a registered
+  // write tool (financeTools.ts, SUPPORTED_WRITE_TOOL_IDS via
+  // writeIntentRegistry) whose OWN capability/step-shape switches in this
+  // file (expectedCapabilityForToolId, expectedStepShapeForToolId) were
+  // missing a case for it -- both fell through to `undefined` (TS strict
+  // mode is off here, so this was never caught at typecheck), which made
+  // validateResolvedTool reject it as "unsupported_tool" despite being
+  // fully registered. This loops over EVERY writeIntentRegistry entry (not
+  // just finance) and drives it all the way to "success" through the real
+  // runWriteTool path -- including deriving riskLevel from the entry's own
+  // registered tool (getToolById(entry.toolId).riskLevel) rather than
+  // assuming "medium", which is what let a second bug (ChatPage.tsx's own
+  // approvalForReasoningStep hardcoding riskLevel: 'medium') hide behind
+  // the first one -- so the next write domain added to the registry cannot
+  // ship with either gap unnoticed.
+  it.each(writeIntentRegistry.map((entry) => [entry.toolId, entry] as const))(
+    "%s resolves through the write runtime's tool-support lookup and succeeds",
+    async (_toolId, entry) => {
+      const tool = getToolById(entry.toolId);
+      if (!tool) throw new Error(`no registered tool for ${entry.toolId}`);
+      const targetId = `step:registry-loop:${entry.toolId}`;
+      const sourceStep = step({
+        id: targetId,
+        domain: entry.domain,
+        actionType: entry.action,
+        targetId,
+      });
+      const target = Object.fromEntries(
+        (entry.createRequiredTargetFields ?? []).map((field) => [field, "value"]),
+      );
+      const handler = writeHandler({
+        toolId: entry.toolId,
+        validateInput: () => ({ valid: true, errors: [] }),
+      });
+      const result = await runWriteTool(request({
+        requestId: `write:registry-loop:${entry.toolId}`,
+        step: sourceStep,
+        toolResolution: resolution(sourceStep, entry.toolId),
+        approval: approval(sourceStep, {
+          toolId: entry.toolId,
+          targetId,
+          riskLevel: tool.riskLevel,
+          dataDomains: [entry.domain],
+        }),
+        target,
+      }), {
+        authorityContext: trustedAuthority(),
+        getWriteHandlerByToolId: () => handler,
+        now: () => now,
+      });
+
+      expect(result.status).not.toBe("unsupported_tool");
+      expect(result.status).toBe("success");
+    },
+  );
 
   it("evaluates policy before resolving the write handler", async () => {
     const getWriteHandler = vi.fn(() => writeHandler());

@@ -61,6 +61,7 @@ import {
   resolveToolForStep,
   runReadOnlyTool,
   runWriteTool,
+  approveWorkspaceStep,
   type AgentReasoningResult,
   type AgentReasoningGitHubInventory,
   type ReadOnlyRuntimeResult,
@@ -748,14 +749,36 @@ function stepForReasoning(result: AgentReasoningResult, t: Translate): Workspace
   const githubIssueTargetId = isGithubIssueWrite && proposal.target?.repo && proposal.target?.issueNumber
     ? `${proposal.target.repo}#${proposal.target.issueNumber}`
     : undefined
+  const stepId = `reasoning-step:${proposal.id}`
+  // Task 30: a CREATE write entry (create_task/create_calendar_event/
+  // create_finance_transaction) has no existing record to target, so it has
+  // no targetIdField and used to fall all the way through to
+  // githubIssueTargetId (undefined for non-github types), leaving
+  // step.targetId undefined. approvalForReasoningStep already assumes
+  // step.id doubles as the target identity for a not-yet-existing create
+  // (`targetId: isCreate ? step.id : step.targetId!`) -- but writeRuntime's
+  // validateApprovalBoundary requires step.targetId to be truthy AND equal
+  // approval.targetId for EVERY write tool, creates included, so every
+  // create write's own step/approval pair failed that check and runWriteTool
+  // returned approval_required even after an explicit approve. This was
+  // invisible for create_task/create_calendar_event (defaultFlowWritePermissionMode
+  // is "auto" for both, so the Worker executes them directly and this
+  // frontend run-write path is only reached if a user overrides their
+  // permission to "ask") but is the ONLY path finance ever takes
+  // (defaultFlowWritePermissionMode hard-clamps finance to "ask" -- see
+  // flowWritePermissions.ts), so it surfaced there first. Fixed at the
+  // source: step.targetId now equals step.id for every CREATE write entry,
+  // exactly what approvalForReasoningStep already assumed.
   const targetId = proposal.type === 'complete_task'
     ? proposal.target?.taskId
     : writeEntry?.targetIdField
       ? proposal.target?.[writeEntry.targetIdField]
-      : githubIssueTargetId
+      : writeEntry?.action === 'create'
+        ? stepId
+        : githubIssueTargetId
 
   return {
-    id: `reasoning-step:${proposal.id}`,
+    id: stepId,
     order: 1,
     title: intentTitle(proposal.type, t),
     description: proposal.type === 'complete_task'
@@ -859,6 +882,12 @@ function approvalForReasoningStep(
       start: t('agent_intent_preview_start'),
       end: t('agent_intent_preview_end'),
       none: t('agent_intent_preview_none'),
+      amount: t('agent_intent_preview_amount'),
+      direction: t('agent_intent_preview_direction'),
+      date: t('agent_intent_preview_date'),
+      category: t('agent_intent_preview_category'),
+      description: t('agent_intent_preview_description'),
+      iban: t('agent_intent_preview_iban'),
     }
     return {
       stepId: step.id,
@@ -871,7 +900,15 @@ function approvalForReasoningStep(
       status: 'pending',
       requiresApproval: true,
       approvalReason: t(writeEntry.i18n.approvalReasonKey as TranslationKey),
-      riskLevel: 'medium',
+      // Was hardcoded 'medium', matching tasks.create/update and
+      // calendar.create_event/update_event's own registered riskLevel by
+      // coincidence -- silently wrong for create_finance_transaction, whose
+      // tool is registered "high" (financeTools.ts), which made
+      // validateApprovalBoundary's compareRiskLevels(approval.riskLevel,
+      // tool.riskLevel) reject every approved finance approval as
+      // insufficient. Now reads the actually resolved tool's own riskLevel,
+      // same source expectedCapabilityForToolId already trusts.
+      riskLevel: tool?.riskLevel ?? 'medium',
       reversible: writeEntry.reversible,
       externalEffect: true,
       dataDomains: [writeEntry.domain],
@@ -1233,12 +1270,14 @@ export function ReasoningProposalCard({
   onRunReadOnly,
   onReviewApproval,
   onRunWrite,
+  onConfirmAndRunWrite,
   compact = false,
 }: Readonly<{
   proposal: ReasoningProposalState
   onRunReadOnly: () => void
   onReviewApproval: () => void
   onRunWrite: () => void
+  onConfirmAndRunWrite: () => void
   compact?: boolean
 }>) {
   const { t } = useT()
@@ -1310,6 +1349,23 @@ export function ReasoningProposalCard({
         <p className="mt-3 text-xs text-muted-foreground">{t('agent_intent_rejected')}</p>
       )}
 
+      {/* Task 30 (PO decision, one-click approval): the full preview
+          (amount, direction, date, category, ...) is shown directly on the
+          card, not only inside the separate Review dialog -- the Review
+          dialog stays available (see canReviewApproval below) but is no
+          longer the only way to see what will be recorded before
+          confirming. */}
+      {approval?.previewText && (
+        <div className="mt-3 rounded-lg border border-border/25 bg-background/30 px-3 py-2">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            {t('approval_preview_label')}
+          </p>
+          <p className="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-foreground/90" dir="auto">
+            {approval.previewText}
+          </p>
+        </div>
+      )}
+
       {!proposal.step || !resolution?.resolved ? (
         <p className="mt-3 text-xs text-muted-foreground">{t('agent_intent_no_runtime')}</p>
       ) : (
@@ -1325,9 +1381,31 @@ export function ReasoningProposalCard({
             </Button>
           )}
           {canReviewApproval && (
-            <Button type="button" size="sm" variant="outline" onClick={onReviewApproval}>
-              {t('agent_intent_review_approval')}
-            </Button>
+            <>
+              {/* Task 30 (PO decision, one-click approval): the primary
+                  action on a pending write proposal now confirms and runs
+                  directly, in one click -- the full preview is already
+                  shown on the card above. This does NOT skip approval: it
+                  calls the exact same approveWorkspaceStep the Review
+                  dialog's own Approve button calls
+                  (handleConfirmAndRunWrite in ChatPage), so every policy
+                  check (evaluateExecutionPolicy, validateApprovalBoundary,
+                  the server-side ask-clamp) still runs unchanged. Review
+                  stays available as a secondary action for anyone who wants
+                  the full diagnostic panel first -- it is no longer
+                  mandatory. */}
+              <Button
+                type="button"
+                size="sm"
+                onClick={onConfirmAndRunWrite}
+                disabled={isRunning}
+              >
+                {isRunning ? t('agent_intent_running') : intentTitle(result.proposal.type, t)}
+              </Button>
+              <Button type="button" size="sm" variant="outline" onClick={onReviewApproval}>
+                {t('agent_intent_review_approval')}
+              </Button>
+            </>
           )}
           {isWriteProposal && isApproved && (
             <Button
@@ -2152,10 +2230,17 @@ export default function ChatPage() {
   // `target` is threaded through here so the github handlers can see
   // repo/issueNumber/commentBody/etc. -- step.targetId alone only carries
   // `${repo}#${issueNumber}`, never the comment body or update fields.
-  const handleRunWriteProposal = useCallback(async () => {
+  //
+  // Task 30: takes `approval` as an explicit parameter instead of always
+  // reading `reasoningProposal[0].approval` from closure state -- the
+  // one-click confirm path (handleConfirmAndRunWrite below) approves and
+  // runs in the same user gesture, and setReasoningProposal's state update
+  // from the approval step is not guaranteed to have landed yet by the time
+  // this runs, so it passes the just-issued approval straight through
+  // rather than re-reading state that may still be stale.
+  const runWriteProposalWithApproval = useCallback(async (approval: WorkspaceStepApproval) => {
     const current = reasoningProposal?.[0]
     if (!current?.step || !current.resolution?.resolved) return
-    if (current.approval?.status !== 'approved') return
 
     const toolId = current.resolution.toolId
     setReasoningProposal(prev => prev
@@ -2166,7 +2251,7 @@ export default function ChatPage() {
       requestId: `reasoning:write:${toolId}:${current.step.id}:${currentTime.getTime()}`,
       step: current.step,
       toolResolution: current.resolution,
-      approval: current.approval,
+      approval,
       target: current.result.proposal.target,
       executionContext: {
         ...workspace.agentContext,
@@ -2221,6 +2306,43 @@ export default function ChatPage() {
       current.result.responseLanguage,
     )
   }, [appendAssistantResult, reasoningProposal, tasks, workerUrl, workspace])
+
+  const handleRunWriteProposal = useCallback(async () => {
+    const current = reasoningProposal?.[0]
+    if (!current?.approval || current.approval.status !== 'approved') return
+    await runWriteProposalWithApproval(current.approval)
+  }, [reasoningProposal, runWriteProposalWithApproval])
+
+  // Task 30 (PO decision, one-click approval): the server-side ask-clamp
+  // (resolveServerFlowWriteMode in agent/worker/flow-write-policy.ts) and
+  // every local policy check (evaluateExecutionPolicy, validateApprovalBoundary)
+  // are untouched by this -- this is a UI step-count change only. It goes
+  // through the EXACT SAME approveWorkspaceStep the Review dialog's own
+  // Approve button calls (StepApprovalDialog.tsx's handleApprove), just
+  // without requiring the dialog to be opened first. The full preview
+  // (amount, direction, date, category, ...) is already visible on the card
+  // itself before this is pressed -- see ReasoningProposalCard's previewText
+  // block below.
+  const handleConfirmAndRunWrite = useCallback(async () => {
+    const current = reasoningProposal?.[0]
+    if (!current?.step || !current.approval || current.approval.status !== 'pending') return
+    const decision = await approveWorkspaceStep({
+      step: current.step,
+      stepApproval: current.approval,
+      tool: current.resolution?.tool,
+    })
+    if (!decision.ok || decision.decision !== 'approved' || !decision.approval) {
+      setReasoningProposal(prev => prev
+        ? prev.map((p, i) => i === 0 ? { ...p, runStatus: 'rejected' } : p)
+        : prev)
+      return
+    }
+    const approvedApproval = decision.approval
+    setReasoningProposal(prev => prev
+      ? prev.map((p, i) => i === 0 ? { ...p, approval: approvedApproval, runStatus: 'approved' } : p)
+      : prev)
+    await runWriteProposalWithApproval(approvedApproval)
+  }, [reasoningProposal, runWriteProposalWithApproval])
 
   const firstName =
     profile?.displayName?.trim()?.split(' ')[0] ||
@@ -2377,6 +2499,7 @@ export default function ChatPage() {
                 onRunReadOnly={() => handleRunReasoningProposal(index)}
                 onReviewApproval={() => setApprovalDialogOpen(true)}
                 onRunWrite={handleRunWriteProposal}
+                onConfirmAndRunWrite={handleConfirmAndRunWrite}
                 compact={compact}
               />
             ))}

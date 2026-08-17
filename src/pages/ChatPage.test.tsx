@@ -549,6 +549,7 @@ describe("ChatPage LLM reasoning UX boundary", () => {
         onRunReadOnly={onRunReadOnly}
         onReviewApproval={vi.fn()}
         onRunWrite={vi.fn()}
+        onConfirmAndRunWrite={vi.fn()}
       />,
     );
 
@@ -563,7 +564,15 @@ describe("ChatPage LLM reasoning UX boundary", () => {
     expect(onRunReadOnly).not.toHaveBeenCalled();
   });
 
-  it("keeps approval and write execution separated for complete_task", () => {
+  // Task 30 (PO decision, one-click approval): a pending write proposal now
+  // shows BOTH the one-click confirm button (labeled with the intent title,
+  // wired to onConfirmAndRunWrite -- calls approveWorkspaceStep itself, then
+  // runs, all policy checks intact) and the secondary Review approval
+  // button, side by side -- Review is no longer the only way to act on a
+  // pending proposal. Once approved via the Review dialog, Review approval
+  // disappears and the dialog-approved run button (wired to onRunWrite)
+  // takes over, unchanged from before this task.
+  it("shows the one-click confirm button alongside Review approval while pending, and only the run button once approved", () => {
     const pendingHtml = renderToString(
       <ReasoningProposalCard
         proposal={{
@@ -576,6 +585,7 @@ describe("ChatPage LLM reasoning UX boundary", () => {
         onRunReadOnly={vi.fn()}
         onReviewApproval={vi.fn()}
         onRunWrite={vi.fn()}
+        onConfirmAndRunWrite={vi.fn()}
       />,
     );
     const approvedHtml = renderToString(
@@ -590,12 +600,14 @@ describe("ChatPage LLM reasoning UX boundary", () => {
         onRunReadOnly={vi.fn()}
         onReviewApproval={vi.fn()}
         onRunWrite={vi.fn()}
+        onConfirmAndRunWrite={vi.fn()}
       />,
     );
 
     expect(pendingHtml).toContain("Review approval");
-    expect(pendingHtml).not.toContain(">Complete task</button>");
+    expect(pendingHtml).toContain(">Complete task</button>");
     expect(approvedHtml).toContain("Complete task");
+    expect(approvedHtml).not.toContain("Review approval");
   });
 
   // Regression test for a bug where writeResolutionForStep/approvalForReasoningStep
@@ -628,6 +640,7 @@ describe("ChatPage LLM reasoning UX boundary", () => {
     const onRunReadOnly = vi.fn();
     const onReviewApproval = vi.fn();
     const onRunWrite = vi.fn();
+    const onConfirmAndRunWrite = vi.fn();
 
     const pendingHtml = renderToString(
       <ReasoningProposalCard
@@ -635,6 +648,7 @@ describe("ChatPage LLM reasoning UX boundary", () => {
         onRunReadOnly={onRunReadOnly}
         onReviewApproval={onReviewApproval}
         onRunWrite={onRunWrite}
+        onConfirmAndRunWrite={onConfirmAndRunWrite}
       />,
     );
     const approvedHtml = renderToString(
@@ -643,6 +657,7 @@ describe("ChatPage LLM reasoning UX boundary", () => {
         onRunReadOnly={onRunReadOnly}
         onReviewApproval={onReviewApproval}
         onRunWrite={onRunWrite}
+        onConfirmAndRunWrite={onConfirmAndRunWrite}
       />,
     );
 
@@ -863,6 +878,7 @@ describe("ChatPage LLM reasoning UX boundary", () => {
         onRunReadOnly={vi.fn()}
         onReviewApproval={vi.fn()}
         onRunWrite={vi.fn()}
+        onConfirmAndRunWrite={vi.fn()}
       />,
     );
 
@@ -1291,6 +1307,42 @@ describe("ChatPage LLM reasoning UX boundary", () => {
 
       expect(outcome.content).toBe("Task creation is switched off in your settings.");
       expect(outcome.reasoningStates).toBeNull();
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // Task 30: found while diagnosing the finance write-execution bug, not
+  // finance-specific. A CREATE write proposal (create_task,
+  // create_calendar_event, create_finance_transaction) has no existing
+  // record to target, so stepForReasoning's targetId used to fall through
+  // to undefined for all three -- while approvalForReasoningStep already
+  // assumed `targetId: isCreate ? step.id : step.targetId!`. writeRuntime's
+  // validateApprovalBoundary requires step.targetId to be truthy AND equal
+  // approval.targetId for every write tool, creates included, so every
+  // create write's own step/approval pair failed that check and running it
+  // always returned approval_required even after an explicit approve. This
+  // was invisible for create_task/create_calendar_event because both
+  // default to "auto" write-permission mode (the Worker executes them
+  // directly; this frontend run-write path only runs if a user overrides
+  // their permission to "ask"), but finance is hard-clamped to "ask" (see
+  // flowWritePermissions.ts's defaultFlowWritePermissionMode), so it's the
+  // only domain that always takes this path -- which is why it surfaced
+  // there first.
+  describe("task 30: create-write step/approval targetId agreement", () => {
+    it.each([
+      ["create_task", "tasks.create", { title: "Buy milk" }],
+      ["create_calendar_event", "calendar.create_event", { eventTitle: "Standup", start: "2026-07-15T09:00:00.000Z" }],
+      ["create_finance_transaction", "finance.create_transaction", { amount: "45", direction: "expense" }],
+    ] as const)("%s: step.targetId is truthy and equals approval.targetId (validateApprovalBoundary's exact requirement)", (type, toolId, target) => {
+      const t = (key: string) => key;
+      const overlay = reasoningResult(type, toolId);
+      overlay.proposal.target = target;
+      overlay.proposal.requiresApproval = true;
+      const state = proposalToState(overlay, t);
+
+      expect(state.step?.targetId).toBeTruthy();
+      expect(state.step?.targetId).toBe(state.approval?.targetId);
+      expect(state.step?.targetId).toBe(state.step?.id);
     });
   });
 

@@ -210,6 +210,8 @@ function expectedCapabilityForToolId(toolId: SupportedWriteToolId): AgentToolCap
       return findWriteIntentDescriptorByToolId(toolId)!.capability;
     case "calendar.update_event":
       return findWriteIntentDescriptorByToolId(toolId)!.capability;
+    case "finance.create_transaction":
+      return findWriteIntentDescriptorByToolId(toolId)!.capability;
     case "github.issues.comment":
       return "create";
     case "github.issues.update":
@@ -232,7 +234,8 @@ function expectedStepShapeForToolId(
     case "tasks.create":
     case "tasks.update":
     case "calendar.create_event":
-    case "calendar.update_event": {
+    case "calendar.update_event":
+    case "finance.create_transaction": {
       const entry = findWriteIntentDescriptorByToolId(toolId)!;
       return { actionType: entry.action, domain: entry.domain };
     }

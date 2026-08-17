@@ -133,6 +133,38 @@ export interface WriteIntentPreviewLabels {
   readonly start: string
   readonly end: string
   readonly none: string
+  // Task 30: finance's own preview lines used to reuse title/due/notes
+  // above (task/calendar's vocabulary), rendering as "Title: 45 EUR",
+  // "Title: expense" (two lines both labeled Title), "Due: ...", "Notes:
+  // ...". Finance needed its own label set instead of overloading the
+  // task-shaped ones.
+  readonly amount: string
+  readonly direction: string
+  readonly date: string
+  readonly category: string
+  readonly description: string
+  readonly iban: string
+}
+
+// Task 30, mirroring 4995b29 (agent/worker/flow-write-policy.ts's own
+// isolateForBidi): a bare digit/punctuation token (an amount or an ISO date)
+// carries no directional strength of its own under the bidi algorithm
+// (UAX#9) and can visually reorder inside a Persian preview line. This
+// module is plain data/functions shared with the Worker (see the
+// SHARED-MODULE CONSTRAINT above) -- no React tree to hand a <bdi> to even
+// on the frontend side, since previewLines returns plain strings rendered
+// via {stepApproval.previewText} (StepApprovalDialog.tsx), not markdown --
+// so the same underlying mechanism as the Worker fix is applied directly in
+// the string: U+2066 LEFT-TO-RIGHT ISOLATE / U+2069 POP DIRECTIONAL ISOLATE.
+const LRI = '⁦'
+const PDI = '⁩'
+function isolateForBidi(token: string): string {
+  return `${LRI}${token}${PDI}`
+}
+
+function formatFinanceAmountToken(amount: string, currency: string | undefined): string {
+  const currencySuffix = currency ? ` ${currency}` : ''
+  return isolateForBidi(`${amount}${currencySuffix}`)
 }
 
 export interface WriteIntentHandlerInputParams {
@@ -323,18 +355,27 @@ export const writeIntentRegistry: readonly WriteIntentDescriptor[] = [
       approvalReasonKey: 'agent_intent_create_finance_transaction_approval_reason',
     },
     descriptionTitle: (target) => (target?.category as string | undefined) ?? '',
+    // Task 30: was labels.title/labels.title/labels.due/labels.notes/
+    // labels.notes -- task/calendar's own vocabulary reused wholesale,
+    // rendering "Title: 45 EUR" and "Title: expense" as two lines both
+    // labeled Title. Now uses finance's own label set (added to
+    // WriteIntentPreviewLabels above). Amount and date are bidi-isolated
+    // (isolateForBidi) since these bare digit tokens render inside Farsi
+    // preview text with no directional strength of their own.
     previewLines: (target, labels) => [
-      target?.amount ? `${labels.title}: ${target.amount as string} ${(target.currency as string | undefined) ?? ''}`.trim() : null,
-      target?.direction ? `${labels.title}: ${target.direction as string}` : null,
-      target?.transactionDate ? `${labels.due}: ${target.transactionDate as string}` : null,
-      target?.category ? `${labels.notes}: ${target.category as string}` : null,
-      target?.description ? `${labels.notes}: ${target.description as string}` : null,
+      target?.amount
+        ? `${labels.amount}: ${formatFinanceAmountToken(target.amount as string, target.currency as string | undefined)}`
+        : null,
+      target?.direction ? `${labels.direction}: ${target.direction as string}` : null,
+      target?.transactionDate ? `${labels.date}: ${isolateForBidi(target.transactionDate as string)}` : null,
+      target?.category ? `${labels.category}: ${target.category as string}` : null,
+      target?.description ? `${labels.description}: ${target.description as string}` : null,
       // IBAN is preview-only and never persisted -- see buildHandlerInput's
       // own comment below. Deliberately still shown here, flagged, so the
       // approval card's own generic "sensitive" rendering treats it as such
       // rather than a plain label/value line -- matches the tool catalog's
       // `inputSchema[].sensitive` marking for this same value.
-      target?.iban ? `${labels.notes}: IBAN ${target.iban as string} (sensitive, not stored)` : null,
+      target?.iban ? `${labels.iban}: ${isolateForBidi(target.iban as string)} (sensitive, not stored)` : null,
     ],
     buildHandlerInput: ({ actorId, target }) => ({
       userId: actorId,

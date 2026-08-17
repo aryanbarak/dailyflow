@@ -5,8 +5,30 @@ import {
   findWriteIntentDescriptor,
   findWriteIntentDescriptorByToolId,
   writeIntentRegistry,
+  type WriteIntentPreviewLabels,
   type WriteIntentType,
 } from './writeIntentRegistry'
+
+// Task 30: the full label set every previewLines hook is called with in
+// production (see ChatPage.tsx's own previewLabels object) -- task/calendar
+// entries only read title/due/notes/start/end/none; finance reads
+// amount/direction/date/category/description/iban. A single shared fixture
+// so a future domain's own labels don't need yet another hand-copied object
+// literal per test.
+const PREVIEW_LABELS_FIXTURE: WriteIntentPreviewLabels = {
+  title: 'Title',
+  due: 'Due',
+  notes: 'Notes',
+  start: 'Start',
+  end: 'End',
+  none: 'None',
+  amount: 'Amount',
+  direction: 'Direction',
+  date: 'Date',
+  category: 'Category',
+  description: 'Description',
+  iban: 'IBAN',
+}
 
 // Task 23: the exact set of write intents this registry is authoritative
 // for today (tasks + calendar only, per the task's own scope). A future
@@ -120,7 +142,7 @@ describe('writeIntentRegistry completeness (task 23)', () => {
 
     it('update_task.previewLines shows "none" for an explicit null dueDate, and omits the due line entirely when dueDate was never mentioned', () => {
       const entry = findWriteIntentDescriptor('update_task')!
-      const labels = { title: 'Title', due: 'Due', notes: 'Notes', start: 'Start', end: 'End', none: 'None' }
+      const labels = { ...PREVIEW_LABELS_FIXTURE }
       expect(entry.previewLines({ dueDate: null }, labels).filter(Boolean)).toEqual(['Due: None'])
       expect(entry.previewLines({}, labels).filter(Boolean)).toEqual([])
     })
@@ -136,9 +158,60 @@ describe('writeIntentRegistry completeness (task 23)', () => {
 
     it('create_finance_transaction.previewLines flags an IBAN as sensitive and never omits it silently', () => {
       const entry = findWriteIntentDescriptor('create_finance_transaction')!
-      const labels = { title: 'Title', due: 'Due', notes: 'Notes', start: 'Start', end: 'End', none: 'None' }
+      const labels = { ...PREVIEW_LABELS_FIXTURE }
       const lines = entry.previewLines({ amount: '45.50', currency: 'EUR', direction: 'expense', iban: 'DE89370400440532013000' }, labels).filter(Boolean)
       expect(lines.some((line) => line?.includes('sensitive'))).toBe(true)
+    })
+
+    // Task 30: production evidence -- the finance approval card rendered
+    // "Title: 45 EUR", "Title: expense" (two lines both labeled Title,
+    // since amount and direction both reused labels.title), "Due:
+    // 2026-08-17" (labels.due, task/calendar's own vocabulary), "Notes:
+    // مواد غذایی" (labels.notes, reused for category too). This is the
+    // guard that catches a regression back to that bug: it fails loudly
+    // (not silently truncates/mislabels) if previewLines ever again reuses
+    // the task/calendar label set instead of its own.
+    it('create_finance_transaction.previewLines uses finance-specific labels, never the task/calendar Title/Due/Notes vocabulary', () => {
+      const entry = findWriteIntentDescriptor('create_finance_transaction')!
+      const labels = { ...PREVIEW_LABELS_FIXTURE }
+      const lines = entry.previewLines(
+        {
+          amount: '45',
+          currency: 'EUR',
+          direction: 'expense',
+          transactionDate: '2026-08-17',
+          category: 'Groceries',
+          description: 'weekly shop',
+        },
+        labels,
+      ).filter((line): line is string => Boolean(line))
+
+      expect(lines.some((line) => line.startsWith(`${labels.amount}:`))).toBe(true)
+      expect(lines.some((line) => line.startsWith(`${labels.direction}:`))).toBe(true)
+      expect(lines.some((line) => line.startsWith(`${labels.date}:`))).toBe(true)
+      expect(lines.some((line) => line.startsWith(`${labels.category}:`))).toBe(true)
+      expect(lines.some((line) => line.startsWith(`${labels.description}:`))).toBe(true)
+      // The exact regression: amount AND direction both used to render as
+      // "Title: ...", so there were two "Title:"-prefixed lines and the
+      // date line read "Due: ..." instead of "Date: ...".
+      expect(lines.filter((line) => line.startsWith(`${labels.title}:`))).toHaveLength(0)
+      expect(lines.some((line) => line.startsWith(`${labels.due}:`))).toBe(false)
+      expect(lines.some((line) => line.startsWith(`${labels.notes}:`))).toBe(false)
+    })
+
+    it('create_finance_transaction.previewLines bidi-isolates the amount and date tokens (same LRI/PDI mechanism as 4995b29)', () => {
+      const entry = findWriteIntentDescriptor('create_finance_transaction')!
+      const labels = { ...PREVIEW_LABELS_FIXTURE }
+      const lines = entry.previewLines(
+        { amount: '45', currency: 'EUR', direction: 'expense', transactionDate: '2026-08-17' },
+        labels,
+      ).filter((line): line is string => Boolean(line))
+      const amountLine = lines.find((line) => line.startsWith(`${labels.amount}:`))
+      const dateLine = lines.find((line) => line.startsWith(`${labels.date}:`))
+      expect(amountLine).toContain('⁦')
+      expect(amountLine).toContain('⁩')
+      expect(dateLine).toContain('⁦')
+      expect(dateLine).toContain('⁩')
     })
   })
 })

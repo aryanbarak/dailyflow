@@ -107,6 +107,7 @@ describe("ReasoningProposalCard compact mode", () => {
         onRunReadOnly={vi.fn()}
         onReviewApproval={vi.fn()}
         onRunWrite={vi.fn()}
+        onConfirmAndRunWrite={vi.fn()}
       />,
     );
     expect(html).toContain("p-3");
@@ -119,6 +120,7 @@ describe("ReasoningProposalCard compact mode", () => {
         onRunReadOnly={vi.fn()}
         onReviewApproval={vi.fn()}
         onRunWrite={vi.fn()}
+        onConfirmAndRunWrite={vi.fn()}
         compact
       />,
     );
