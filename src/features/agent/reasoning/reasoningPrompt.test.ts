@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildReasoningPrompt } from "./reasoningPrompt";
 import type { AgentReasoningPromptInput, AgentReasoningSafeContext } from "./reasoningTypes";
+import { writeIntentRegistry } from "../../../../shared/writeIntentRegistry";
 
 const now = new Date("2026-07-25T09:00:00.000Z");
 
@@ -73,4 +74,20 @@ describe("buildReasoningPrompt githubRepositoryInventory", () => {
     const prompt = buildReasoningPrompt(promptInput());
     expect(prompt).toContain("never by itself selects which GitHub tool");
   });
+});
+
+describe("buildReasoningPrompt finance support", () => {
+  it("lists create_finance_transaction as supported and drops the old finance-unsupported phrasing", () => {
+    const prompt = buildReasoningPrompt(promptInput());
+    expect(prompt).toContain("create_finance_transaction");
+    expect(prompt).not.toContain("finance mutations");
+  });
+
+  it.each(writeIntentRegistry.map((entry) => entry.intentType))(
+    "includes registry write intent %s in the built prompt",
+    (intentType) => {
+      const prompt = buildReasoningPrompt(promptInput());
+      expect(prompt).toContain(intentType);
+    },
+  );
 });
