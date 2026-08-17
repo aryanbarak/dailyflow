@@ -181,10 +181,27 @@ Richtig: "So würde ich es einrichten: eine tägliche Lernaufgabe und zwei tägl
 درست: «این چیزی است که تنظیم می‌کردم: یک تسک روزانه مطالعه و دو یادآور روزانه.» / «خودم نمی‌توانم یادآورها را ایجاد کنم؛ می‌توانم توصیفشان کنم، و سیستم عملیاتی نوشتن‌های پشتیبانی‌شدهٔ تسک را مدیریت می‌کند.»`,
 }
 
+// Task 30: production evidence showed a finance transaction request (amount
+// and income/expense direction both present, so create_finance_transaction
+// resolved with no ambiguity on the frontend's own reasoning path -- see
+// reasoningPrompt.ts's finance line and intentValidator.ts's deterministic
+// today-default for transactionDate) still getting a conversational
+// "which date exactly?" follow-up question. Root cause: this contract only
+// ever mentioned "task" create/update requests, and its generic "if a
+// required field is missing, ask exactly for that missing field" rule gave
+// the model no signal that a finance transaction's date is NOT a required
+// field it should ever ask about -- the deterministic today-default happens
+// entirely outside this conversational reply, in a call this prompt has no
+// visibility into. The finance-specific carve-out below closes that gap at
+// the source; reasoningPrompt.ts's own finance line was hardened the same
+// way as a second, redundant guard (belt-and-suspenders, not because it was
+// shown to be the origin -- it already forced clarificationQuestion:
+// undefined for a validated create_finance_transaction proposal before this
+// task).
 const CHAT_WRITE_POLICY_CONTRACT: Record<Language, string> = {
-  en: 'For supported task create/update requests, do not ask for final confirmation or say the user must approve before anything can happen. The server-side Flow AI write policy decides whether the action executes automatically, needs the approval panel, or is switched off. If a required field is missing, ask exactly for that missing field. Never claim execution unless the server has executed it.',
-  de: 'Bei unterstützten Anfragen zum Erstellen/Aktualisieren von Aufgaben frag nicht nach einer abschließenden Bestätigung und sag nicht, dass der Nutzer zuerst zustimmen muss. Die serverseitige Flow-AI-Schreibrichtlinie entscheidet, ob die Aktion automatisch ausgeführt wird, das Freigabefenster braucht oder ausgeschaltet ist. Wenn ein Pflichtfeld fehlt, frag genau nach diesem fehlenden Feld. Behaupte niemals eine Ausführung, außer der Server hat sie ausgeführt.',
-  fa: 'برای درخواست‌های پشتیبانی‌شدهٔ ایجاد یا به‌روزرسانی تسک، تأیید نهایی نخواه و نگو کاربر باید قبل از هر اتفاقی تأیید کند. سیاست نوشتن Flow AI در سمت سرور تصمیم می‌گیرد که اقدام خودکار اجرا شود، پنل تأیید لازم داشته باشد، یا خاموش باشد. اگر یک فیلد ضروری کم است، فقط همان فیلد گمشده را بپرس. هرگز ادعای اجرا نکن مگر اینکه سرور آن را اجرا کرده باشد.',
+  en: 'For supported task, calendar, or finance create/update requests, do not ask for final confirmation or say the user must approve before anything can happen. The server-side Flow AI write policy decides whether the action executes automatically, needs the approval panel, or is switched off. If a required field is missing, ask exactly for that missing field. For a finance transaction (income or expense), the only required fields are the amount and whether it is income or an expense -- never ask which date to use; an unstated date defaults automatically to today. Never claim execution unless the server has executed it.',
+  de: 'Bei unterstützten Anfragen zum Erstellen/Aktualisieren von Aufgaben, Kalenderereignissen oder Finanztransaktionen frag nicht nach einer abschließenden Bestätigung und sag nicht, dass der Nutzer zuerst zustimmen muss. Die serverseitige Flow-AI-Schreibrichtlinie entscheidet, ob die Aktion automatisch ausgeführt wird, das Freigabefenster braucht oder ausgeschaltet ist. Wenn ein Pflichtfeld fehlt, frag genau nach diesem fehlenden Feld. Bei einer Finanztransaktion (Einnahme oder Ausgabe) sind nur der Betrag und ob es sich um eine Einnahme oder Ausgabe handelt Pflichtfelder -- frag niemals, welches Datum verwendet werden soll; ein nicht genanntes Datum wird automatisch auf heute gesetzt. Behaupte niemals eine Ausführung, außer der Server hat sie ausgeführt.',
+  fa: 'برای درخواست‌های پشتیبانی‌شدهٔ ایجاد یا به‌روزرسانی تسک، رویداد تقویم، یا تراکنش مالی، تأیید نهایی نخواه و نگو کاربر باید قبل از هر اتفاقی تأیید کند. سیاست نوشتن Flow AI در سمت سرور تصمیم می‌گیرد که اقدام خودکار اجرا شود، پنل تأیید لازم داشته باشد، یا خاموش باشد. اگر یک فیلد ضروری کم است، فقط همان فیلد گمشده را بپرس. برای یک تراکنش مالی (درآمد یا هزینه)، تنها فیلدهای ضروری مبلغ و اینکه درآمد است یا هزینه هستند -- هرگز نپرس از کدام تاریخ استفاده شود؛ تاریخ ذکرنشده به‌طور خودکار روی امروز تنظیم می‌شود. هرگز ادعای اجرا نکن مگر اینکه سرور آن را اجرا کرده باشد.',
 }
 
 const CHAT_MARKDOWN_CONTRACT_EXAMPLES = [
