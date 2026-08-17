@@ -47,3 +47,5 @@ android/app/src/main/assets/
 agent/worker/.dev.vars
 agent/worker/.dev.vars.*
 .github-qa-pids
+.codex/*
+!.codex/config.toml

@@ -1,0 +1,3 @@
+[mcp_servers.cloudflare]
+url = "https://mcp.cloudflare.com/mcp"
+default_tools_approval_mode = "prompt"
