@@ -49,6 +49,8 @@ import {
   type FlowWritePermissionRow,
 } from '@/features/agent/flowWritePermissions';
 import { useT, type TranslationKey } from '@/i18n';
+import { isolateBidiRunsInText, resolveMessageBaseDirection } from '@/lib/bidiText';
+import { MICRO_BREAK_DURATION_PRESETS_SECONDS } from '@/features/micro-breaks/types';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -409,9 +411,9 @@ function AppearanceTab() {
   const { theme, setTheme } = useTheme();
   const {
     density, accentColor, reducedMotion, language,
-    orbEnabled, orbColor, orbSize, orbOpacity,
+    orbEnabled, orbColor, orbSize, orbOpacity, microBreakDurationSeconds,
     setDensity, setAccentColor, setReducedMotion, setLanguage,
-    setOrbEnabled, setOrbColor, setOrbSize, setOrbOpacity,
+    setOrbEnabled, setOrbColor, setOrbSize, setOrbOpacity, setMicroBreakDurationSeconds,
   } = useAppearance();
   const { preferences, setTheme: setPrefTheme, setCurrency } = usePreferences();
   const { t } = useT();
@@ -777,6 +779,37 @@ function AppearanceTab() {
             </div>
           </>
         )}
+      </SectionCard>
+
+      {/* MB-03, ADR-0014 §7: the frozen 60/90/120s duration preset -- read
+          once by MicroBreakOverlay at game start (never reactively; see
+          that component's own comment for why a mid-game change here must
+          not affect a running session). Persisted via THIS store, the same
+          pattern as every other appearance preference -- not the
+          session-only microBreaksStore.ts runtime store. */}
+      <SectionCard title={t('settings_micro_breaks_title')}>
+        <div className="py-3.5 space-y-2">
+          <p className="text-sm font-medium">{t('settings_micro_breaks_duration_label')}</p>
+          <div className="flex gap-2 flex-wrap">
+            {MICRO_BREAK_DURATION_PRESETS_SECONDS.map(seconds => {
+              const optionText = t('micro_breaks_duration_option', { seconds });
+              return (
+                <button
+                  key={seconds}
+                  type="button"
+                  onClick={() => setMicroBreakDurationSeconds(seconds)}
+                  className="px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors"
+                  style={{
+                    borderColor: microBreakDurationSeconds === seconds ? 'hsl(var(--primary))' : 'hsl(var(--border))',
+                    background: microBreakDurationSeconds === seconds ? 'hsl(var(--primary) / 0.08)' : 'transparent',
+                  }}
+                >
+                  <span dir={resolveMessageBaseDirection(optionText)}>{isolateBidiRunsInText(optionText, `mb-duration-${seconds}`)}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </SectionCard>
 
       <SectionCard title="Accessibility">

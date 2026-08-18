@@ -334,6 +334,80 @@ doc has full evidence).
   Design note:
   [`docs/architecture/notes/conversation-quality-v1-design-note.md`](docs/architecture/notes/conversation-quality-v1-design-note.md).
 
+### 2.6 Micro Breaks — Slice 1 (tasks MB-02/MB-02b)
+
+- **Classic Pong gameplay, no persistence.**
+  [ADR-0014](docs/decisions/adr/ADR-0014-micro-breaks-architecture-boundary.md)
+  (Accepted). `src/features/micro-breaks/`: a pure delta-time physics engine
+  (`engine/pongEngine.ts` — dt clamp/substep, wall/paddle collision,
+  contact-point→angle mapping, progressive speed with a hard cap,
+  degenerate-angle prevention, fixed 90s timer), a visibility-aware rAF loop
+  (`engine/useVisibilityAwareGameLoop.ts` — pauses on tab-hidden, resets the
+  previous-timestamp reference on resume), a Canvas renderer
+  (`components/PongCanvas.tsx` — single rAF, no per-frame React state), and a
+  bespoke a11y-complete overlay (`components/MicroBreakOverlay.tsx` — Esc,
+  focus trap/restore, scroll-lock, `role="dialog"`). Orb visual tokens
+  (`orbTokens.ts`) are shared between the existing DOM pointer-follower and
+  the new canvas renderer per ADR-0014 §5. Entry points: a small
+  command-palette launcher in `Sidebar.tsx` and a MobileNav icon. i18n
+  en/de/fa throughout, RTL-safe via the existing `bidiText.tsx` pattern.
+  Committed `549482c`.
+- **MB-02b production incident fix.** A color-format bug
+  (`hsl(<hex-value> / alpha)` — `--flow-*` tokens are hex, not HSL
+  components; `CanvasGradient.addColorStop` throws on invalid CSS, unlike
+  `ctx.fillStyle`, which silently no-ops) crashed the renderer on frame one
+  in production (smartaryn.com) with no error boundary anywhere in the app,
+  taking down the entire page — not just the game — and leaving Esc
+  non-functional (its own listener effect never got the chance to run before
+  the unmount cascade). Fixed by a new format-agnostic color normalizer
+  (`colorNormalization.ts` — hex/rgb/hsl → `rgba()`, with an alpha/brightness
+  visibility floor and safe fallback for unparseable input) and a
+  render-exception guard in `PongCanvas.tsx` (`draw()` now catches and routes
+  to an in-overlay `'error'` phase in `MicroBreakOverlay.tsx`, with full
+  teardown identical to a normal exit — see ADR-0014 §3's post-MB-02b
+  amendment). Reproduced and verified in a real browser (jsdom stubs canvas
+  2D entirely, so it could not have caught this) via a new
+  `import.meta.env.DEV`-gated harness route
+  (`/__dev/micro-breaks-harness`, `MicroBreaksDevHarness.tsx`) and a new
+  Playwright real-browser smoke layer (`playwright.config.ts`, `e2e/`).
+  Committed `8053408`.
+- **Pending gates before Slice 3** (Supabase persistence — ADR-0014 §6/§12,
+  explicit PO "برو" required per its Tier-1 classification): the duration
+  preset SET (60/90/120s) must be frozen (still true as of Slice 2 — see
+  below), and the paddle-miss rule (floor-bounce, no lives — ADR-0014 §7)
+  must be frozen before the score/session schema is designed around it.
+  Neither gate is about to be touched casually; both are named explicitly so
+  Slice 3 doesn't start against a still-moving target.
+- **Backlog (not yet scheduled, recorded so it isn't lost):**
+  1. **App-wide error boundary — high priority.** MB-02b's fix stops this
+     *specific* draw exception from ever reaching React's reconciler, but
+     `App.tsx` has no error boundary anywhere; any other future uncaught
+     render/effect exception elsewhere in the app would still take the whole
+     page down the same way. Recorded as a real hardening gap, not designed
+     here (out of MB-02b's "smallest change" scope).
+  2. Measured (not analytical/viewport-center) game-start position for the
+     orb handoff — Slice 1's `viewportCenter()` assumption breaks under
+     safe-areas/orientation; scheduled for Slice 2's mobile/PWA acceptance
+     work (ADR-0014 §4), not yet done as of this entry.
+  3. e2e-vs-production-database isolation before Slice 3: the new Playwright
+     harness currently runs against the real production Supabase project
+     (`VITE_SMARTFLOW_SUPABASE_MODE=production`, same anon key already public
+     in the client bundle) because Micro Breaks itself never calls Supabase —
+     that stops being safe the moment Slice 3 adds real writes, and needs a
+     resolved local/staging target before then.
+  4. `SmartflowPointerFollower`'s pointer-lerp (`current += (target -
+     current) * 0.085`) is frame-rate-dependent, not delta-time-based —
+     pre-existing (task 17h), unrelated to Micro Breaks' own delta-time
+     engine, noticed only because the two now sit side by side.
+  5. `colorNormalization.ts`'s `MIN_VISIBLE_ALPHA`/`MIN_VISIBLE_BRIGHTNESS`
+     floors are untested against an actual dark `--flow-*` token — none of
+     today's palette needs them; worth a look if a dark orb color is ever
+     added.
+  6. Old git stashes in this working tree have not been reviewed/triaged.
+  7. Orb-click entry (making the pointer-events:none orb itself clickable) —
+     explicitly backlog per ADR-0014 §10, needs its own core-only hit-target
+     design.
+
 ## 3. Verified NOT implemented
 
 Confirmed from code, not assumed (full detail in the reconciliation doc §6):
@@ -578,6 +652,15 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
    topic liberation — Tier 2~~ — **complete.** See §2.5. Design note:
    [`docs/architecture/notes/conversation-quality-v1-design-note.md`](docs/architecture/notes/conversation-quality-v1-design-note.md).
    Independent review may follow post-merge per ADR-0008's Tier 2 path.
+
+8. ~~Micro Breaks Slice 1 (Classic Pong gameplay + entry points, no
+   persistence) + MB-02b production-incident fix~~ — **merged/complete.**
+   [ADR-0014](docs/decisions/adr/ADR-0014-micro-breaks-architecture-boundary.md)
+   (Accepted, amended post-MB-02b). See §2.6.
+9. Micro Breaks Slice 2 (combo, sensory final wave, duration-preset Settings
+   UI, mobile/PWA acceptance, bounded polish) — **next**, per ADR-0014 §12
+   sequencing. No persistence in this slice either; Slice 3 (Supabase) stays
+   gated behind the §2.6 pending gates and an explicit PO "برو".
 
 Superseded/completed sprint milestones from the prior version of this
 document have been removed rather than carried forward as history; git

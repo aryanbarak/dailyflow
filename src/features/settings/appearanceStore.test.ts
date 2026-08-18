@@ -10,6 +10,7 @@
 // working stub in place BEFORE each fresh module import).
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { useAppearance as UseAppearance } from "./appearanceStore";
+import { resolveMicroBreakDurationSeconds } from "@/features/micro-breaks/types";
 
 class MemoryStorage implements Storage {
   private values = new Map<string, string>();
@@ -125,5 +126,60 @@ describe("useAppearance orb* preferences (task 17h)", () => {
     expect(rehydrated.orbColor).toBe("review");
     expect(rehydrated.orbSize).toBe("small");
     expect(rehydrated.orbOpacity).toBe(0.5);
+  });
+});
+
+describe("useAppearance microBreakDurationSeconds preference (MB-03, ADR-0014 §7)", () => {
+  let mod: Awaited<ReturnType<typeof freshStore>>;
+  let store: typeof UseAppearance;
+
+  beforeEach(async () => {
+    vi.stubGlobal("localStorage", new MemoryStorage());
+    mod = await freshStore();
+    store = mod.useAppearance;
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("defaults to 90 seconds (ADR-0014 §7 default)", () => {
+    expect(store.getState().microBreakDurationSeconds).toBe(90);
+  });
+
+  it("setMicroBreakDurationSeconds sets a valid preset", () => {
+    store.getState().setMicroBreakDurationSeconds(60);
+    expect(store.getState().microBreakDurationSeconds).toBe(60);
+    store.getState().setMicroBreakDurationSeconds(120);
+    expect(store.getState().microBreakDurationSeconds).toBe(120);
+  });
+
+  it("setMicroBreakDurationSeconds falls back to 90 for a value outside the frozen preset set (defensive even at write time)", () => {
+    // @ts-expect-error -- deliberately passing an invalid preset to prove the runtime guard, not just the type guard
+    store.getState().setMicroBreakDurationSeconds(45);
+    expect(store.getState().microBreakDurationSeconds).toBe(90);
+  });
+
+  it("persists to the SAME 'smartflow:appearance' key -- no new storage key introduced", () => {
+    store.getState().setMicroBreakDurationSeconds(120);
+    const stored = JSON.parse(localStorage.getItem("smartflow:appearance") ?? "{}");
+    expect(stored.state).toMatchObject({ microBreakDurationSeconds: 120 });
+  });
+
+  it("persists across a simulated reload (rehydration)", async () => {
+    store.getState().setMicroBreakDurationSeconds(60);
+    const reloaded = await freshStore();
+    expect(reloaded.useAppearance.getState().microBreakDurationSeconds).toBe(60);
+  });
+
+  it("a corrupted/hand-edited localStorage value survives rehydration as raw data (persist merges unchecked), but resolveMicroBreakDurationSeconds still normalizes it for every real consumer", async () => {
+    localStorage.setItem("smartflow:appearance", JSON.stringify({ state: { microBreakDurationSeconds: 45 }, version: 0 }));
+    const reloaded = await freshStore();
+    const rehydrated = reloaded.useAppearance.getState().microBreakDurationSeconds;
+    // Zustand's persist merge is unchecked -- the raw field itself may carry the bad value...
+    expect(rehydrated).toBe(45);
+    // ...but every real consumer (Settings UI, game start) reads it through
+    // this normalizer, which is what actually guarantees "falls back to 90."
+    expect(resolveMicroBreakDurationSeconds(rehydrated)).toBe(90);
   });
 });

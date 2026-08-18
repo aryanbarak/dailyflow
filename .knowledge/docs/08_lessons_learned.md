@@ -298,6 +298,46 @@ problem and preserves explicit execution boundaries.
 Rule: every new agent layer must have a narrow responsibility and must not blur
 planning, approval, execution, audit, reflection, or response boundaries.
 
+### Green jsdom Proves Nothing About Canvas Rendering
+
+Problem: MB-02 shipped a canvas color bug (`hsl(<hex> / alpha)` — invalid
+CSS, since `--flow-*` tokens are hex, not HSL components) with a fully
+green jsdom test suite. `HTMLCanvasElement.getContext('2d')` returns `null`
+in jsdom without the `canvas` npm package, so every draw call silently
+no-ops there — invalid color strings, `CanvasGradient.addColorStop` throws,
+none of it is ever exercised.
+
+Solution: MB-02b added a real-browser Playwright smoke layer
+(`playwright.config.ts`, `e2e/`) plus a `import.meta.env.DEV`-gated,
+auth-free harness route for features an authenticated app shell would
+otherwise block from automated browser testing.
+
+Rule: any visual/canvas/rendering feature needs a real-browser smoke test,
+not just jsdom unit tests, before it's considered verified. jsdom is the
+right tool for logic; it cannot see a browser API reject a value.
+
+### A Full-Screen Overlay's Exit Path Must Not Depend on Its Content Surviving
+
+Problem: MB-02's Micro Breaks overlay had no error boundary anywhere in the
+app. When the canvas renderer threw an uncaught exception, React unmounted
+the entire root — not just the game — taking the Esc-listener effect down
+with it before it even got the chance to attach. The result was a fully
+blank, dead page requiring a hard refresh, not just a broken game.
+
+Solution: MB-02b guards the renderer's own draw call (catch at the source,
+never let it escape uncaught) and gives the overlay an explicit `'error'`
+phase so Esc/close keep working and teardown still runs, independent of
+whatever crashed inside the overlay's content.
+
+Rule: a modal/overlay's exit mechanism (Esc, close button, focus
+restoration, teardown) must be wired so it survives a crash in whatever it
+is displaying — never assume the content will render successfully. This
+matters most for anything with a live render loop (canvas, video, WebGL),
+where user-supplied or environment-dependent values can reach a strict
+browser API. Recorded in
+[ADR-0014](../../docs/decisions/adr/ADR-0014-micro-breaks-architecture-boundary.md)
+§3's post-MB-02b amendment.
+
 ## Development Workflow That Works
 
 1. Plan feature with a written implementation brief.

@@ -17,8 +17,13 @@ const settingsPageSource = readFileSync(
 
 describe("Settings > Appearance: pointer glow section (task 17h)", () => {
   it("reads orb preferences + setters from appearanceStore (not local-only state)", () => {
+    // MB-03 added microBreakDurationSeconds/setMicroBreakDurationSeconds on
+    // the SAME two lines (a legitimate destructuring extension, not a
+    // regression) -- \S* tolerates whatever else shares the line without
+    // weakening what this test actually verifies (orb fields + setters are
+    // still destructured from appearanceStore, not local-only state).
     expect(settingsPageSource).toMatch(
-      /orbEnabled, orbColor, orbSize, orbOpacity,\s*\n\s*setDensity, setAccentColor, setReducedMotion, setLanguage,\s*\n\s*setOrbEnabled, setOrbColor, setOrbSize, setOrbOpacity,/,
+      /orbEnabled, orbColor, orbSize, orbOpacity,\s*\S*\s*\n\s*setDensity, setAccentColor, setReducedMotion, setLanguage,\s*\n\s*setOrbEnabled, setOrbColor, setOrbSize, setOrbOpacity,/,
     );
   });
 

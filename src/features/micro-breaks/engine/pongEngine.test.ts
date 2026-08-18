@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { BOARD_MAX_WIDTH_PX, BOARD_MIN_WIDTH_PX, PADDLE_BOTTOM_MARGIN_RATIO } from '../tuning';
 import {
+  computeBoardConfig,
   createInitialPongState,
   DEFAULT_PONG_CONFIG,
   getRemainingSeconds,
+  isFinalWave,
+  rescalePongState,
   setPaddleX,
   stepPong,
   type PongEngineConfig,
@@ -121,8 +125,237 @@ describe('pongEngine: progressive speed with hard cap', () => {
       speed = newSpeed;
     }
 
-    expect(state.score).toBe(10);
+    // MB-03: score now follows the combo formula (baseScorePerHit *
+    // min(combo, comboCap)), not a flat +1 -- 10 consecutive hits with
+    // comboCap=5: 1+2+3+4+5+5+5+5+5+5 = 40.
+    expect(state.score).toBe(40);
+    expect(state.combo).toBe(10);
     expect(speed).toBeCloseTo(ramped.maxSpeed, 3);
+  });
+});
+
+describe('pongEngine: combo (MB-03, ADR-0014 §11-12)', () => {
+  it('a single hit sets combo to 1 and awards exactly baseScorePerHit (matches Slice 1\'s flat "+1" for an isolated hit)', () => {
+    const state = straightDownState({ ball: { x: 200, y: CONFIG.paddleY - 10 }, paddleX: 200 });
+    const next = stepPong(state, 16, CONFIG);
+    expect(next.combo).toBe(1);
+    expect(next.score).toBe(CONFIG.baseScorePerHit);
+  });
+
+  it('consecutive hits increment combo and each hit is worth MORE than the last, up to the cap', () => {
+    let state = createInitialPongState(CONFIG);
+    let previousGain = 0;
+
+    for (let hit = 0; hit < CONFIG.comboCap + 2; hit++) {
+      const prevScore = state.score;
+      state = { ...state, ball: { x: state.paddleX, y: CONFIG.paddleY - 10 }, ballVelocity: { x: 0, y: 300 } };
+      state = stepPong(state, 16, CONFIG);
+      const gain = state.score - prevScore;
+      expect(state.combo).toBe(hit + 1);
+      if (hit < CONFIG.comboCap) {
+        expect(gain).toBe(CONFIG.baseScorePerHit * (hit + 1));
+        expect(gain).toBeGreaterThan(previousGain);
+      } else {
+        // At/above the cap, each hit's gain plateaus at baseScorePerHit * comboCap.
+        expect(gain).toBe(CONFIG.baseScorePerHit * CONFIG.comboCap);
+        expect(gain).toBe(previousGain);
+      }
+      previousGain = gain;
+    }
+  });
+
+  it('a floor bounce (miss) resets combo to 0 but NEVER reduces score', () => {
+    // Build up a combo of 3 first.
+    let state = createInitialPongState(CONFIG);
+    for (let hit = 0; hit < 3; hit++) {
+      state = { ...state, ball: { x: state.paddleX, y: CONFIG.paddleY - 10 }, ballVelocity: { x: 0, y: 300 } };
+      state = stepPong(state, 16, CONFIG);
+    }
+    expect(state.combo).toBe(3);
+    const scoreBeforeMiss = state.score;
+
+    // Now miss: ball far from the paddle, about to hit the floor.
+    state = { ...state, ball: { x: 10, y: CONFIG.height - 2 }, paddleX: 300, ballVelocity: { x: 0, y: 300 } };
+    const afterMiss = stepPong(state, 16, CONFIG);
+
+    expect(afterMiss.combo).toBe(0);
+    expect(afterMiss.score).toBe(scoreBeforeMiss); // unchanged, not decreased
+  });
+
+  it('score is monotonically non-decreasing across an interleaved sequence of hits and misses', () => {
+    let state = createInitialPongState(CONFIG);
+    let lastScore = state.score;
+
+    const actions: Array<'hit' | 'miss'> = ['hit', 'hit', 'miss', 'hit', 'miss', 'miss', 'hit', 'hit', 'hit'];
+    for (const action of actions) {
+      if (action === 'hit') {
+        state = { ...state, ball: { x: state.paddleX, y: CONFIG.paddleY - 10 }, ballVelocity: { x: 0, y: 300 } };
+      } else {
+        state = { ...state, ball: { x: 10, y: CONFIG.height - 2 }, paddleX: 300, ballVelocity: { x: 0, y: 300 } };
+      }
+      state = stepPong(state, 16, CONFIG);
+      expect(state.score).toBeGreaterThanOrEqual(lastScore);
+      lastScore = state.score;
+    }
+  });
+});
+
+describe('pongEngine: final wave detection (MB-03, ADR-0014 §12)', () => {
+  it('is false at the start of a session', () => {
+    const state = createInitialPongState(CONFIG);
+    expect(isFinalWave(state, CONFIG)).toBe(false);
+  });
+
+  it('is true once remaining time drops to finalWaveWindowSeconds, false just before', () => {
+    const shortConfig: PongEngineConfig = { ...CONFIG, durationSeconds: 60, finalWaveWindowSeconds: 10 };
+    const justOutside: PongState = { ...createInitialPongState(shortConfig), elapsedSeconds: 49.9 };
+    const justInside: PongState = { ...createInitialPongState(shortConfig), elapsedSeconds: 50 };
+    expect(isFinalWave(justOutside, shortConfig)).toBe(false);
+    expect(isFinalWave(justInside, shortConfig)).toBe(true);
+  });
+
+  it('is false once the session has ended (no lingering "final wave" after the timer already ended it)', () => {
+    const shortConfig: PongEngineConfig = { ...CONFIG, durationSeconds: 60, finalWaveWindowSeconds: 10 };
+    const ended: PongState = { ...createInitialPongState(shortConfig), elapsedSeconds: 60, status: 'ended' };
+    expect(isFinalWave(ended, shortConfig)).toBe(false);
+  });
+
+  it('speed ramps faster on a hit during the final wave than an identical hit outside it, without exceeding maxSpeed', () => {
+    const rampedConfig: PongEngineConfig = {
+      ...CONFIG,
+      durationSeconds: 60,
+      finalWaveWindowSeconds: 10,
+      speedRampPerHit: 1.2,
+      finalWaveRampBoost: 2,
+      maxSpeed: 10_000, // effectively unreachable here, isolates the ramp-rate comparison
+    };
+    const hitState = (elapsedSeconds: number): PongState => ({
+      ...createInitialPongState(rampedConfig),
+      elapsedSeconds,
+      ball: { x: 200, y: rampedConfig.paddleY - 10 },
+      ballVelocity: { x: 0, y: 300 },
+    });
+
+    const normalHit = stepPong(hitState(0), 16, rampedConfig);
+    const finalWaveHit = stepPong(hitState(55), 16, rampedConfig);
+
+    const normalSpeed = Math.hypot(normalHit.ballVelocity.x, normalHit.ballVelocity.y);
+    const finalWaveSpeed = Math.hypot(finalWaveHit.ballVelocity.x, finalWaveHit.ballVelocity.y);
+    expect(finalWaveSpeed).toBeGreaterThan(normalSpeed);
+  });
+
+  it('the final-wave ramp boost never lets speed exceed the hard cap', () => {
+    const rampedConfig: PongEngineConfig = {
+      ...CONFIG,
+      durationSeconds: 60,
+      finalWaveWindowSeconds: 10,
+      speedRampPerHit: 1.5,
+      finalWaveRampBoost: 5,
+      maxSpeed: 500,
+    };
+    let state: PongState = { ...createInitialPongState(rampedConfig), elapsedSeconds: 55 };
+    for (let hit = 0; hit < 8; hit++) {
+      state = { ...state, ball: { x: state.paddleX, y: rampedConfig.paddleY - 10 }, ballVelocity: { x: 0, y: 300 } };
+      state = stepPong(state, 16, rampedConfig);
+      const speed = Math.hypot(state.ballVelocity.x, state.ballVelocity.y);
+      expect(speed).toBeLessThanOrEqual(rampedConfig.maxSpeed + 1e-6);
+    }
+  });
+});
+
+describe('pongEngine: resize/rescale (MB-03, mobile/PWA acceptance)', () => {
+  it('preserves relative position: a ball at 50% width/height stays at ~50% after a resize', () => {
+    const oldConfig: PongEngineConfig = { ...CONFIG, width: 400, height: 600 };
+    const newConfig: PongEngineConfig = { ...CONFIG, width: 300, height: 450 };
+    const state: PongState = { ...createInitialPongState(oldConfig), ball: { x: 200, y: 300 }, paddleX: 200 };
+
+    const rescaled = rescalePongState(state, oldConfig, newConfig);
+
+    expect(rescaled.ball.x / newConfig.width).toBeCloseTo(state.ball.x / oldConfig.width, 5);
+    expect(rescaled.ball.y / newConfig.height).toBeCloseTo(state.ball.y / oldConfig.height, 5);
+    expect(rescaled.paddleX / newConfig.width).toBeCloseTo(state.paddleX / oldConfig.width, 5);
+  });
+
+  it('never exceeds the new bounds, even for a position near the old edge that would otherwise overflow a smaller board', () => {
+    const oldConfig: PongEngineConfig = { ...CONFIG, width: 400, height: 600, ballRadius: 8 };
+    const newConfig: PongEngineConfig = { ...CONFIG, width: 200, height: 300, ballRadius: 8 };
+    const state: PongState = {
+      ...createInitialPongState(oldConfig),
+      ball: { x: oldConfig.width - 2, y: oldConfig.height - 2 },
+      paddleX: oldConfig.width - 5,
+    };
+
+    const rescaled = rescalePongState(state, oldConfig, newConfig);
+
+    expect(rescaled.ball.x).toBeLessThanOrEqual(newConfig.width - newConfig.ballRadius);
+    expect(rescaled.ball.y).toBeLessThanOrEqual(newConfig.height - newConfig.ballRadius);
+    expect(rescaled.ball.x).toBeGreaterThanOrEqual(newConfig.ballRadius);
+    expect(rescaled.paddleX).toBeLessThanOrEqual(newConfig.width - newConfig.paddleWidth / 2);
+  });
+
+  it('scales velocity proportionally, so the ball keeps crossing the board in the same relative time', () => {
+    const oldConfig: PongEngineConfig = { ...CONFIG, width: 400, height: 600 };
+    const newConfig: PongEngineConfig = { ...CONFIG, width: 200, height: 300 };
+    const state: PongState = { ...createInitialPongState(oldConfig), ballVelocity: { x: 100, y: -150 } };
+
+    const rescaled = rescalePongState(state, oldConfig, newConfig);
+
+    expect(rescaled.ballVelocity.x).toBeCloseTo(50, 5);
+    expect(rescaled.ballVelocity.y).toBeCloseTo(-75, 5);
+  });
+
+  it('is a no-op (same object) when dimensions are unchanged', () => {
+    const state = createInitialPongState(CONFIG);
+    expect(rescalePongState(state, CONFIG, CONFIG)).toBe(state);
+  });
+});
+
+describe('pongEngine: computeBoardConfig (MB-03, mobile/PWA acceptance)', () => {
+  it('preserves the board aspect ratio for a typical mobile portrait container', () => {
+    const config = computeBoardConfig(360, 700, CONFIG);
+    expect(config.width / config.height).toBeCloseTo(DEFAULT_PONG_CONFIG.width / DEFAULT_PONG_CONFIG.height, 5);
+  });
+
+  it('clamps width to BOARD_MIN_WIDTH_PX for a very small container', () => {
+    const config = computeBoardConfig(120, 200, CONFIG);
+    expect(config.width).toBe(BOARD_MIN_WIDTH_PX);
+  });
+
+  it('clamps width to BOARD_MAX_WIDTH_PX for a very large container', () => {
+    const config = computeBoardConfig(2000, 2000, CONFIG);
+    expect(config.width).toBe(BOARD_MAX_WIDTH_PX);
+  });
+
+  it('fits within the container on the constraining axis (landscape: height is the limiter)', () => {
+    // A realistic mobile landscape height (400px) that's still narrower
+    // than what the aspect ratio would want for the full container width --
+    // large enough that BOARD_MIN_WIDTH_PX never has to fight the fit.
+    const containerWidth = 800;
+    const containerHeight = 400;
+    const config = computeBoardConfig(containerWidth, containerHeight, CONFIG);
+    expect(config.width).toBeLessThanOrEqual(containerWidth);
+    expect(config.height).toBeLessThanOrEqual(containerHeight + 1e-6);
+  });
+
+  it("paddle sits with the tuned bottom margin, leaving room for a resting finger below it (never covers the paddle)", () => {
+    const config = computeBoardConfig(360, 700, CONFIG);
+    const paddleBottom = config.paddleY + config.paddleHeight;
+    const marginBelowPaddle = config.height - paddleBottom;
+    expect(marginBelowPaddle / config.height).toBeCloseTo(PADDLE_BOTTOM_MARGIN_RATIO, 2);
+  });
+
+  it('scales paddle/ball size proportionally with board width, never a fixed pixel size', () => {
+    const small = computeBoardConfig(240, 500, CONFIG);
+    const large = computeBoardConfig(480, 900, CONFIG);
+    expect(large.paddleWidth).toBeGreaterThan(small.paddleWidth);
+    expect(large.ballRadius).toBeGreaterThan(small.ballRadius);
+  });
+
+  it('leaves gameplay tuning (durationSeconds, speeds, combo) untouched -- only dimensions change', () => {
+    const config = computeBoardConfig(360, 700, CONFIG);
+    expect(config.durationSeconds).toBe(CONFIG.durationSeconds);
+    expect(config.baseSpeed).toBe(CONFIG.baseSpeed);
+    expect(config.comboCap).toBe(CONFIG.comboCap);
   });
 });
 

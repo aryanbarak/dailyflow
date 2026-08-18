@@ -1,5 +1,10 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import {
+  DEFAULT_MICRO_BREAK_DURATION_SECONDS,
+  resolveMicroBreakDurationSeconds,
+  type MicroBreakDurationSeconds,
+} from '@/features/micro-breaks/types';
 
 export type Density = 'compact' | 'normal' | 'comfortable';
 export type AccentColor = 'indigo' | 'violet' | 'rose' | 'amber' | 'emerald' | 'sky';
@@ -27,6 +32,14 @@ interface AppearanceState {
   orbColor: OrbColor;
   orbSize: OrbSize;
   orbOpacity: number;
+  // MB-03, ADR-0014 §7: the Micro Breaks duration PREFERENCE (which of the
+  // frozen 60/90/120s presets to start a session with). Deliberately lives
+  // here, in the SAME localStorage-backed store as every other appearance
+  // preference -- NOT in microBreaksStore.ts, which is session-only runtime
+  // state (gameActive, in-progress score) and holds no persisted
+  // preferences at all (ADR-0014 §5 spirit: runtime game state and
+  // preferences stay separate).
+  microBreakDurationSeconds: MicroBreakDurationSeconds;
   setDensity: (d: Density) => void;
   setAccentColor: (c: AccentColor) => void;
   setReducedMotion: (v: boolean) => void;
@@ -35,6 +48,7 @@ interface AppearanceState {
   setOrbColor: (c: OrbColor) => void;
   setOrbSize: (s: OrbSize) => void;
   setOrbOpacity: (o: number) => void;
+  setMicroBreakDurationSeconds: (seconds: MicroBreakDurationSeconds) => void;
 }
 
 // Task 17h: colour choices are restricted to the EXISTING --flow-* palette
@@ -97,6 +111,7 @@ export const useAppearance = create<AppearanceState>()(
       orbColor: 'primary',
       orbSize: 'medium',
       orbOpacity: 0.72,
+      microBreakDurationSeconds: DEFAULT_MICRO_BREAK_DURATION_SECONDS,
       setDensity: density => set({ density }),
       setAccentColor: accentColor => {
         const { hsl } = ACCENT_COLORS[accentColor];
@@ -109,6 +124,11 @@ export const useAppearance = create<AppearanceState>()(
       setOrbColor: orbColor => set({ orbColor }),
       setOrbSize: orbSize => set({ orbSize }),
       setOrbOpacity: orbOpacity => set({ orbOpacity }),
+      // Validated even at write time (belt-and-suspenders on top of the
+      // read-time resolveMicroBreakDurationSeconds every consumer already
+      // goes through) -- see that function's own comment for why BOTH ends
+      // matter given persist's unchecked merge.
+      setMicroBreakDurationSeconds: seconds => set({ microBreakDurationSeconds: resolveMicroBreakDurationSeconds(seconds) }),
     }),
     { name: 'smartflow:appearance' },
   ),

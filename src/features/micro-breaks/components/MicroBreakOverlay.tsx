@@ -3,16 +3,15 @@ import { motion, useReducedMotion } from 'framer-motion';
 import { AlertTriangle, X } from 'lucide-react';
 import { useT } from '@/i18n';
 import { isolateBidiRunsInText, resolveMessageBaseDirection } from '@/lib/bidiText';
+import { useAppearance } from '@/features/settings/appearanceStore';
 import { useMicroBreaksStore } from '../store/microBreaksStore';
 import { useOrbVisualTokens, type OrbVisualTokens } from '../orbTokens';
 import { getLastPointerPosition } from '../pointerPositionRef';
-import { DEFAULT_PONG_CONFIG } from '../engine/pongEngine';
+import { DEFAULT_MICRO_BREAK_DURATION_SECONDS, resolveMicroBreakDurationSeconds, type MicroBreakDurationSeconds } from '../types';
+import { BOARD_ASPECT_RATIO, FINAL_WAVE_WINDOW_SECONDS, HANDOFF_EASE, HANDOFF_TRANSITION_SECONDS } from '../tuning';
 import { PongCanvas, type ViewportPoint } from './PongCanvas';
 
 type OverlayPhase = 'idle' | 'active' | 'exiting' | 'error';
-
-const HANDOFF_TRANSITION_SECONDS = 0.28;
-const HANDOFF_EASE = [0.22, 1, 0.36, 1] as const;
 
 function viewportCenter(): ViewportPoint {
   return { x: window.innerWidth / 2, y: window.innerHeight / 2 };
@@ -20,6 +19,14 @@ function viewportCenter(): ViewportPoint {
 
 const FOCUSABLE_SELECTOR =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+// MB-03, mobile/PWA acceptance: HUD and close control stay clear of
+// notches/home indicators. `max(1rem, env(safe-area-inset-*))` -- the
+// safe-area function is 0 on devices without one, so this is a no-op
+// everywhere else.
+const SAFE_AREA_TOP: CSSProperties = { top: 'max(1rem, env(safe-area-inset-top))' };
+const SAFE_AREA_RIGHT: CSSProperties = { right: 'max(1rem, env(safe-area-inset-right))' };
+const SAFE_AREA_LEFT: CSSProperties = { left: 'max(1rem, env(safe-area-inset-left))' };
 
 // Reproduces SmartflowPointerFollower's own DOM structure (see its own
 // comment) so the handoff clone is visually identical to both the real
@@ -73,7 +80,8 @@ interface HandoffPoints {
 // focus restoration on close, and complete rAF/listener teardown (the
 // canvas -- and therefore its own rAF loop and pointer listeners --
 // unmounts the INSTANT close is triggered, before the exit handoff
-// animation even starts).
+// animation even starts). Post-MB-02b: the same guarantees hold even if the
+// renderer crashes -- see the 'error' phase below and its own comment.
 export function MicroBreakOverlay() {
   const gameActive = useMicroBreaksStore(s => s.gameActive);
   const endBreak = useMicroBreaksStore(s => s.endBreak);
@@ -81,24 +89,30 @@ export function MicroBreakOverlay() {
   const tokens = useOrbVisualTokens();
   const reducedMotion = useReducedMotion();
 
-  const config = DEFAULT_PONG_CONFIG;
-
   const [phase, setPhase] = useState<OverlayPhase>('idle');
   const [handoff, setHandoff] = useState<HandoffPoints | null>(null);
   const [score, setScore] = useState(0);
-  const [remainingSeconds, setRemainingSeconds] = useState<number>(config.durationSeconds);
+  const [combo, setCombo] = useState(0);
+  const [remainingSeconds, setRemainingSeconds] = useState<number>(DEFAULT_MICRO_BREAK_DURATION_SECONDS);
+  const [activeDurationSeconds, setActiveDurationSeconds] = useState<MicroBreakDurationSeconds>(DEFAULT_MICRO_BREAK_DURATION_SECONDS);
 
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const canvasContainerRef = useRef<HTMLDivElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const previousOverflowRef = useRef('');
+  const entryPointRef = useRef<ViewportPoint>({ x: 0, y: 0 });
   const viewportBallPositionRef = useRef<ViewportPoint | null>(null);
   const phaseRef = useRef(phase);
   phaseRef.current = phase;
 
   // Entry: gameActive flips false -> true (an entry point called
   // startBreak()). Captures everything needed to restore the workspace on
-  // exit, then kicks off the DOM-orb -> game-start-position handoff.
+  // exit, snapshots the CURRENT duration preset (MB-03 §3: read once at
+  // game start, never reactively -- a mid-game Settings change must not
+  // affect the running session), and mounts the stage. The handoff's
+  // measured target point is set by the SEPARATE layout effect below, once
+  // the stage has real geometry to measure.
   useLayoutEffect(() => {
     if (!gameActive || phase !== 'idle') return;
 
@@ -106,18 +120,32 @@ export function MicroBreakOverlay() {
     previousOverflowRef.current = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
 
+    const preset = resolveMicroBreakDurationSeconds(useAppearance.getState().microBreakDurationSeconds);
+    setActiveDurationSeconds(preset);
     setScore(0);
-    setRemainingSeconds(config.durationSeconds);
+    setCombo(0);
+    setRemainingSeconds(preset);
 
-    const entryPoint = getLastPointerPosition() ?? viewportCenter();
-    // The canvas is centered on screen by this component's own layout
-    // below, and the ball's engine-space start position is the board
-    // center -- so the stage's on-screen center IS the ball's initial
-    // viewport position, with no DOM measurement needed.
-    setHandoff({ from: entryPoint, to: viewportCenter() });
+    entryPointRef.current = getLastPointerPosition() ?? viewportCenter();
     setPhase('active');
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gameActive, phase]);
+
+  // MB-03, mobile/PWA acceptance: the entry handoff's "game start position"
+  // is now a REAL getBoundingClientRect() measurement of the stage that's
+  // about to hold the canvas -- Slice 1's `viewportCenter()` assumption for
+  // this point broke under safe-areas/orientation (the stage is not always
+  // exactly screen-center once safe-area padding is applied). Runs as a
+  // separate layout effect (after the stage above has mounted and has real
+  // geometry), both still before paint, so there is no visible flash
+  // between the stage appearing and the handoff orb starting its animation
+  // from the right target.
+  useLayoutEffect(() => {
+    if (phase !== 'active' || handoff) return;
+    const rect = canvasContainerRef.current?.getBoundingClientRect();
+    const to = rect ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } : viewportCenter();
+    setHandoff({ from: entryPointRef.current, to });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
 
   // Initial focus, placed inside the overlay the moment it becomes active.
   useEffect(() => {
@@ -165,8 +193,8 @@ export function MicroBreakOverlay() {
   }
 
   // Esc + focus containment, active for the whole time the dialog is
-  // visible (both 'active' and 'exiting' -- exit is quick, but Tab must
-  // never leak to the workspace even mid-exit-animation).
+  // visible ('active', 'exiting', and 'error' -- Tab must never leak to the
+  // workspace in any of them).
   useEffect(() => {
     if (phase === 'idle') return;
 
@@ -214,6 +242,9 @@ export function MicroBreakOverlay() {
 
   const scoreText = t('micro_breaks_score_value', { score });
   const timeText = t('micro_breaks_time_value', { seconds: Math.max(0, Math.ceil(remainingSeconds)) });
+  const comboText = t('micro_breaks_combo_value', { combo });
+  const finalWaveText = t('micro_breaks_final_wave_label');
+  const showFinalWave = phase === 'active' && remainingSeconds <= FINAL_WAVE_WINDOW_SECONDS;
 
   return (
     <>
@@ -223,38 +254,62 @@ export function MicroBreakOverlay() {
           role="dialog"
           aria-modal="true"
           aria-label={t('micro_breaks_overlay_aria_label')}
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm"
+          className="fixed inset-0 z-[100] flex select-none items-center justify-center bg-black/50 backdrop-blur-sm"
+          style={{ overscrollBehavior: 'contain', touchAction: phase === 'active' ? 'none' : undefined }}
+          onContextMenu={event => event.preventDefault()}
         >
           <button
             ref={closeButtonRef}
             type="button"
             onClick={handleClose}
             aria-label={t('micro_breaks_close_aria_label')}
-            className="absolute right-4 top-4 rounded-full bg-card/80 p-2 text-foreground shadow-lg transition-colors hover:bg-card"
+            className="absolute z-10 rounded-full bg-card/80 p-2 text-foreground shadow-lg transition-colors hover:bg-card"
+            style={{ ...SAFE_AREA_TOP, ...SAFE_AREA_RIGHT }}
           >
             <X className="h-5 w-5" />
           </button>
 
           {phase === 'active' && (
-            <div className="absolute left-4 top-4 flex flex-col gap-1 rounded-xl bg-card/80 px-4 py-2 text-sm shadow-lg">
+            <div
+              className="absolute z-10 flex flex-col gap-1 rounded-xl bg-card/80 px-4 py-2 text-sm shadow-lg"
+              style={{ ...SAFE_AREA_TOP, ...SAFE_AREA_LEFT }}
+            >
               <span dir={resolveMessageBaseDirection(scoreText)} className="font-medium">
                 {isolateBidiRunsInText(scoreText, 'mb-score')}
               </span>
               <span dir={resolveMessageBaseDirection(timeText)} className="text-muted-foreground">
                 {isolateBidiRunsInText(timeText, 'mb-time')}
               </span>
+              {combo >= 2 && (
+                <span dir={resolveMessageBaseDirection(comboText)} className="font-medium text-primary">
+                  {isolateBidiRunsInText(comboText, 'mb-combo')}
+                </span>
+              )}
+              {showFinalWave && (
+                <span dir={resolveMessageBaseDirection(finalWaveText)} className="font-medium text-destructive">
+                  {isolateBidiRunsInText(finalWaveText, 'mb-final-wave')}
+                </span>
+              )}
             </div>
           )}
 
           {phase === 'active' && (
-            <PongCanvas
-              config={config}
-              onScoreChange={setScore}
-              onTimeChange={setRemainingSeconds}
-              onGameEnd={handleClose}
-              viewportBallPositionRef={viewportBallPositionRef}
-              onRenderError={handleRenderError}
-            />
+            <div
+              ref={canvasContainerRef}
+              className="relative mx-auto w-full max-w-[480px]"
+              style={{ aspectRatio: String(BOARD_ASPECT_RATIO), maxHeight: 'min(70vh, 720px)' }}
+            >
+              <PongCanvas
+                durationSeconds={activeDurationSeconds}
+                containerRef={canvasContainerRef}
+                onScoreChange={setScore}
+                onComboChange={setCombo}
+                onTimeChange={setRemainingSeconds}
+                onGameEnd={handleClose}
+                viewportBallPositionRef={viewportBallPositionRef}
+                onRenderError={handleRenderError}
+              />
+            </div>
           )}
 
           {phase === 'error' && (

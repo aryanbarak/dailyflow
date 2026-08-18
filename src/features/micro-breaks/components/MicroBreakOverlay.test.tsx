@@ -28,14 +28,46 @@ vi.mock('framer-motion', async () => {
   };
 });
 
+// MB-03: MicroBreakOverlay now imports appearanceStore (for the duration
+// preset), whose `persist` middleware resolves `localStorage` at
+// STORE-CREATION time (module evaluation), not lazily per call -- mirrors
+// appearanceStore.test.ts's own MemoryStorage pattern. Must be stubbed
+// BEFORE the dynamic imports below, since those trigger that module
+// evaluation.
+class MemoryStorage implements Storage {
+  private values = new Map<string, string>();
+  get length() {
+    return this.values.size;
+  }
+  clear() {
+    this.values.clear();
+  }
+  getItem(key: string) {
+    return this.values.get(key) ?? null;
+  }
+  key(index: number) {
+    return Array.from(this.values.keys())[index] ?? null;
+  }
+  removeItem(key: string) {
+    this.values.delete(key);
+  }
+  setItem(key: string, value: string) {
+    this.values.set(key, value);
+  }
+}
+vi.stubGlobal('localStorage', new MemoryStorage());
+
 const { MicroBreakOverlay } = await import('./MicroBreakOverlay');
 const { useMicroBreaksStore } = await import('../store/microBreaksStore');
+const { useAppearance } = await import('@/features/settings/appearanceStore');
 
 function resetStore() {
   useMicroBreaksStore.setState({ gameActive: false, mode: 'classic', score: 0 });
+  useAppearance.setState({ microBreakDurationSeconds: 90 });
 }
 
 beforeEach(() => {
+  vi.stubGlobal('localStorage', new MemoryStorage());
   resetStore();
   document.body.style.overflow = '';
   vi.stubGlobal(
@@ -46,6 +78,19 @@ beforeEach(() => {
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
     })),
+  );
+  // jsdom has no ResizeObserver (MB-03's resize/rescale wiring needs a real
+  // browser -- see e2e/microBreaksRendering.spec.ts and PongCanvas.tsx's own
+  // `typeof ResizeObserver === 'undefined'` fallback guard for the
+  // no-throw-in-jsdom proof); this stub only needs to exist, not actually
+  // observe anything, for these DOM-lifecycle-focused tests.
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
   );
 });
 

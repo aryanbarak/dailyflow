@@ -1,9 +1,27 @@
-// ADR-0014 §4, MB-02 slice 1: pure Classic Pong physics. No DOM, no React,
-// no timers -- callers (PongCanvas's rAF loop) own real time and pass a
-// per-frame delta in. Kept pure so the collision/angle/speed-cap/dt-clamp
-// rules are unit-testable without a canvas or a browser event loop.
+// ADR-0014 §4, MB-02 slice 1 / MB-03 slice 2: pure Classic Pong physics. No
+// DOM, no React, no timers -- callers (PongCanvas's rAF loop) own real time
+// and pass a per-frame delta in. Kept pure so the collision/angle/speed-cap/
+// dt-clamp/combo/final-wave/resize rules are unit-testable without a canvas
+// or a browser event loop.
 
 import { DEFAULT_MICRO_BREAK_DURATION_SECONDS, type MicroBreakDurationSeconds } from '../types';
+import {
+  BALL_RADIUS_RATIO,
+  BASE_SCORE_PER_HIT,
+  BASE_SPEED_PX_PER_SECOND,
+  BOARD_ASPECT_RATIO,
+  BOARD_MAX_WIDTH_PX,
+  BOARD_MIN_WIDTH_PX,
+  COMBO_MULTIPLIER_CAP,
+  FINAL_WAVE_RAMP_BOOST,
+  FINAL_WAVE_WINDOW_SECONDS,
+  MAX_BOUNCE_ANGLE_DEGREES,
+  MAX_SPEED_PX_PER_SECOND,
+  PADDLE_BOTTOM_MARGIN_RATIO,
+  PADDLE_HEIGHT_RATIO,
+  PADDLE_WIDTH_RATIO,
+  SPEED_RAMP_PER_HIT,
+} from '../tuning';
 
 export interface PongVec2 {
   readonly x: number;
@@ -18,10 +36,14 @@ export interface PongEngineConfig {
   readonly paddleY: number; // top edge of the paddle rect
   readonly ballRadius: number;
   readonly baseSpeed: number; // px/s at game start
-  readonly maxSpeed: number; // px/s hard cap (progressive speed ceiling)
+  readonly maxSpeed: number; // px/s hard cap (progressive speed ceiling, unaffected by the final-wave ramp boost)
   readonly speedRampPerHit: number; // multiplier applied to speed on each paddle hit
   readonly maxBounceAngleRad: number; // degenerate-angle prevention bound -- must stay < Math.PI / 2
   readonly durationSeconds: MicroBreakDurationSeconds;
+  readonly baseScorePerHit: number; // MB-03: score awarded per hit before the combo multiplier
+  readonly comboCap: number; // MB-03: combo multiplier hard cap (named constant, ADR-0014 §11-12)
+  readonly finalWaveWindowSeconds: number; // MB-03: last N seconds of the session
+  readonly finalWaveRampBoost: number; // MB-03: multiplies speedRampPerHit's per-hit INCREMENT during the final wave, never the hard cap
 }
 
 export const DEFAULT_PONG_CONFIG: PongEngineConfig = {
@@ -31,11 +53,15 @@ export const DEFAULT_PONG_CONFIG: PongEngineConfig = {
   paddleHeight: 14,
   paddleY: 560,
   ballRadius: 8,
-  baseSpeed: 220,
-  maxSpeed: 640,
-  speedRampPerHit: 1.045,
-  maxBounceAngleRad: (60 * Math.PI) / 180,
+  baseSpeed: BASE_SPEED_PX_PER_SECOND,
+  maxSpeed: MAX_SPEED_PX_PER_SECOND,
+  speedRampPerHit: SPEED_RAMP_PER_HIT,
+  maxBounceAngleRad: (MAX_BOUNCE_ANGLE_DEGREES * Math.PI) / 180,
   durationSeconds: DEFAULT_MICRO_BREAK_DURATION_SECONDS,
+  baseScorePerHit: BASE_SCORE_PER_HIT,
+  comboCap: COMBO_MULTIPLIER_CAP,
+  finalWaveWindowSeconds: FINAL_WAVE_WINDOW_SECONDS,
+  finalWaveRampBoost: FINAL_WAVE_RAMP_BOOST,
 };
 
 export type PongStatus = 'playing' | 'ended';
@@ -45,6 +71,7 @@ export interface PongState {
   readonly ballVelocity: PongVec2; // px/s
   readonly paddleX: number; // paddle center x
   readonly score: number;
+  readonly combo: number; // MB-03: consecutive-hit streak; resets to 0 on a floor bounce (miss), never reduces score
   readonly elapsedSeconds: number;
   readonly status: PongStatus;
 }
@@ -54,7 +81,7 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 function magnitude(x: number, y: number): number {
-  return Math.sqrt(x * x + y * y);
+  return Math.hypot(x, y);
 }
 
 // Deterministic launch (no RNG) -- 30 degrees off vertical towards the
@@ -69,6 +96,7 @@ export function createInitialPongState(config: PongEngineConfig = DEFAULT_PONG_C
     },
     paddleX: config.width / 2,
     score: 0,
+    combo: 0,
     elapsedSeconds: 0,
     status: 'playing',
   };
@@ -83,6 +111,14 @@ export function setPaddleX(state: PongState, x: number, config: PongEngineConfig
 
 export function getRemainingSeconds(state: PongState, config: PongEngineConfig): number {
   return Math.max(0, config.durationSeconds - state.elapsedSeconds);
+}
+
+// MB-03, ADR-0014 §12: last `finalWaveWindowSeconds` of a still-playing
+// session. Pure, so both the engine (speed ramp boost) and the renderer/HUD
+// (visual boost, i18n indicator) derive the SAME answer from the SAME rule
+// -- no separate "is it the final wave" heuristic duplicated per consumer.
+export function isFinalWave(state: PongState, config: PongEngineConfig): boolean {
+  return state.status === 'playing' && getRemainingSeconds(state, config) <= config.finalWaveWindowSeconds;
 }
 
 // ADR-0014 §4: dt is clamped AND substepped.
@@ -109,6 +145,7 @@ function integrateSubstep(state: PongState, dtMs: number, config: PongEngineConf
   let vx = state.ballVelocity.x;
   let vy = state.ballVelocity.y;
   let score = state.score;
+  let combo = state.combo;
 
   const r = config.ballRadius;
 
@@ -146,17 +183,36 @@ function integrateSubstep(state: PongState, dtMs: number, config: PongEngineConf
     // speed * cos(maxBounceAngleRad) in magnitude.
     const relative = clamp((x - state.paddleX) / (config.paddleWidth / 2), -1, 1);
     const angle = relative * config.maxBounceAngleRad;
-    const speed = Math.min(magnitude(vx, vy) * config.speedRampPerHit, config.maxSpeed);
+
+    // MB-03, ADR-0014 §12: the final wave boosts the PER-HIT ramp rate
+    // (speed converges to maxSpeed faster) -- the hard cap itself is
+    // completely unaffected, so this can never exceed Slice 1's own
+    // ceiling. `isFinalWave` reads `state` (this substep's ENTERING
+    // elapsed time), not the not-yet-computed post-substep value.
+    const rampPerHit = isFinalWave(state, config)
+      ? 1 + (config.speedRampPerHit - 1) * config.finalWaveRampBoost
+      : config.speedRampPerHit;
+    const speed = Math.min(magnitude(vx, vy) * rampPerHit, config.maxSpeed);
     vx = speed * Math.sin(angle);
     vy = -speed * Math.cos(angle);
-    score += 1;
+
+    // MB-03, ADR-0014 §11-12: combo increments BEFORE the score gain is
+    // computed, so the FIRST hit in a streak (combo becomes 1) is worth
+    // baseScorePerHit * 1, matching Slice 1's flat "+1 per hit" exactly for
+    // an isolated (non-combo) hit -- this is a strict extension, not a
+    // rebalance of single-hit scoring.
+    combo += 1;
+    score += config.baseScorePerHit * Math.min(combo, config.comboCap);
   }
 
   // ADR-0014 §7: "no lives" -- a missed paddle still just bounces off the
-  // floor; the fixed-duration timer is the only end condition.
+  // floor; the fixed-duration timer is the only end condition. MB-03: a
+  // miss resets the combo streak but NEVER reduces score (score is
+  // monotonically non-decreasing across the whole session).
   if (!hitPaddle && y + r > config.height) {
     y = config.height - r;
     vy = -Math.abs(vy);
+    combo = 0;
   }
 
   const elapsedSeconds = state.elapsedSeconds + dt;
@@ -167,6 +223,7 @@ function integrateSubstep(state: PongState, dtMs: number, config: PongEngineConf
     ballVelocity: { x: vx, y: vy },
     paddleX: state.paddleX,
     score,
+    combo,
     elapsedSeconds,
     status,
   };
@@ -186,4 +243,74 @@ export function stepPong(state: PongState, rawDtMs: number, config: PongEngineCo
   }
 
   return current;
+}
+
+// MB-03, mobile/PWA acceptance (ADR-0014 §4 spirit -- "no teleport"):
+// orientation change / viewport resize mid-game must re-derive field
+// dimensions WITHOUT the ball or paddle jumping to a nonsensical position.
+// Scales every position/velocity component proportionally to the
+// width/height ratio between the old and new board config, then clamps to
+// the new bounds -- so relative position (e.g. "ball at 50% width") is
+// preserved and nothing can end up outside the new playable area. Pure and
+// stateless: the caller (PongCanvas's resize handler) is responsible for
+// calling this exactly once per actual dimension change, atomically with
+// updating the config it hands to subsequent stepPong calls.
+export function rescalePongState(state: PongState, oldConfig: PongEngineConfig, newConfig: PongEngineConfig): PongState {
+  if (oldConfig.width === newConfig.width && oldConfig.height === newConfig.height) return state;
+
+  const scaleX = newConfig.width / oldConfig.width;
+  const scaleY = newConfig.height / oldConfig.height;
+  const r = newConfig.ballRadius;
+  const halfPaddle = newConfig.paddleWidth / 2;
+
+  return {
+    ...state,
+    ball: {
+      x: clamp(state.ball.x * scaleX, r, newConfig.width - r),
+      y: clamp(state.ball.y * scaleY, r, newConfig.height - r),
+    },
+    ballVelocity: {
+      x: state.ballVelocity.x * scaleX,
+      y: state.ballVelocity.y * scaleY,
+    },
+    paddleX: clamp(state.paddleX * scaleX, halfPaddle, newConfig.width - halfPaddle),
+  };
+}
+
+// MB-03, mobile/PWA acceptance: derives a board's DIMENSIONAL fields
+// (width/height/paddleWidth/paddleHeight/ballRadius/paddleY) from an
+// available container size, preserving the board's aspect ratio and the
+// tuned proportions (paddle/ball size relative to board width, paddle's
+// bottom margin -- see tuning.ts). Every OTHER field of `base` (speeds,
+// combo, final-wave, durationSeconds) passes through unchanged -- this
+// function only ever touches layout, never gameplay tuning. Pure: the
+// caller (PongCanvas's ResizeObserver handler) measures the real container
+// and is responsible for calling rescalePongState alongside this so the
+// running ball/paddle position tracks the new board without teleporting.
+export function computeBoardConfig(
+  containerWidthPx: number,
+  containerHeightPx: number,
+  base: PongEngineConfig = DEFAULT_PONG_CONFIG,
+): PongEngineConfig {
+  // Fits inside whichever container axis is more constraining, then clamps
+  // to the tuned [MIN, MAX] range. BOARD_MIN_WIDTH_PX assumes a realistic
+  // phone-viewport-sized container (this overlay is full-screen); a
+  // container narrower than that is an out-of-scope degenerate case, not a
+  // real device, so the floor is allowed to win there rather than shipping
+  // an unplayably tiny board.
+  const widthFromHeight = containerHeightPx * BOARD_ASPECT_RATIO;
+  const fitWidth = Math.min(containerWidthPx, widthFromHeight);
+  const width = clamp(fitWidth, BOARD_MIN_WIDTH_PX, BOARD_MAX_WIDTH_PX);
+  const height = width / BOARD_ASPECT_RATIO;
+  const paddleHeight = height * PADDLE_HEIGHT_RATIO;
+
+  return {
+    ...base,
+    width,
+    height,
+    paddleWidth: width * PADDLE_WIDTH_RATIO,
+    paddleHeight,
+    ballRadius: width * BALL_RADIUS_RATIO,
+    paddleY: height * (1 - PADDLE_BOTTOM_MARGIN_RATIO) - paddleHeight,
+  };
 }

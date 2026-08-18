@@ -1046,6 +1046,11 @@ const en = {
   micro_breaks_score_value: 'Score: {{score}}',
   micro_breaks_time_value: 'Time: {{seconds}}s',
   micro_breaks_render_error: 'Something went wrong with the game. You can close this and try again.',
+  micro_breaks_combo_value: 'Combo x{{combo}}',
+  micro_breaks_final_wave_label: 'Final stretch!',
+  settings_micro_breaks_title: 'Micro Breaks',
+  settings_micro_breaks_duration_label: 'Break duration',
+  micro_breaks_duration_option: '{{seconds}}s',
 };
 
 type TranslationDict = typeof en;
@@ -2052,6 +2057,11 @@ const de: TranslationDict = {
   micro_breaks_score_value: 'Punkte: {{score}}',
   micro_breaks_time_value: 'Zeit: {{seconds}} s',
   micro_breaks_render_error: 'Beim Spiel ist ein Fehler aufgetreten. Sie können dieses Fenster schließen und es erneut versuchen.',
+  micro_breaks_combo_value: 'Kombo x{{combo}}',
+  micro_breaks_final_wave_label: 'Letzte Runde!',
+  settings_micro_breaks_title: 'Kurze Pausen',
+  settings_micro_breaks_duration_label: 'Pausendauer',
+  micro_breaks_duration_option: '{{seconds}} s',
 };
 
 const fa: TranslationDict = {
@@ -3056,6 +3066,11 @@ const fa: TranslationDict = {
   micro_breaks_score_value: '{{score}} امتیاز',
   micro_breaks_time_value: '{{seconds}} ثانیه باقی‌مانده',
   micro_breaks_render_error: 'مشکلی در اجرای بازی پیش آمد. می‌توانید این پنجره را ببندید و دوباره تلاش کنید.',
+  micro_breaks_combo_value: '{{combo}}× ترکیب',
+  micro_breaks_final_wave_label: 'مرحله پایانی!',
+  settings_micro_breaks_title: 'استراحت‌های کوتاه',
+  settings_micro_breaks_duration_label: 'مدت استراحت',
+  micro_breaks_duration_option: '{{seconds}} ثانیه',
 };
 
 export type TranslationKey = keyof TranslationDict;

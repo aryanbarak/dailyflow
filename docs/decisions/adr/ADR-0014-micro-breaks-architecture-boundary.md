@@ -42,6 +42,21 @@ the previously focused element on close, and complete teardown of all
 listeners and rAF. Exit always restores pointer-orb behavior and the untouched
 workspace.
 
+**Amended post-MB-02b (production incident, 2026-08-18):** a render exception
+inside the game/canvas layer took the entire app down, not just the game —
+this app has no error boundary anywhere, and an uncaught throw during a
+mount-time draw effect aborted React's passive-effect flush before the
+overlay's own Esc-listener effect ran, unmounting the whole root. The
+overlay's exit path (Esc and the visible close control) MUST remain
+functional independently of any game/renderer crash: a render exception must
+be caught at its source (never allowed to escape uncaught into React), end in
+an in-overlay error state with the close control still live, and run the same
+full teardown (listeners, rAF, `gameActive=false`, focus restore, scroll-lock
+release, pointer-follower resume) as a normal exit. A dead or blank page is
+never an acceptable outcome of a game bug. See
+[`colorNormalization.ts`](../../../src/features/micro-breaks/colorNormalization.ts)
+and `MicroBreakOverlay.tsx`'s `'error'` phase for the implementation.
+
 ### 4. Rendering & physics
 Canvas game renderer: single rAF loop, no per-frame React state, no per-frame
 DOM writes (consistent with the repo's own animation pattern). Physics is
