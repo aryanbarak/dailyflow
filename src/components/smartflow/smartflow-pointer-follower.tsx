@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { ORB_COLOR_VAR, ORB_SIZE_PX, useAppearance } from "@/features/settings/appearanceStore";
+import { useMicroBreaksStore } from "@/features/micro-breaks/store/microBreaksStore";
+import { setLastPointerPosition } from "@/features/micro-breaks/pointerPositionRef";
 
 type Point = {
   x: number;
@@ -23,8 +25,16 @@ export function SmartflowPointerFollower() {
   const orbOpacity = useAppearance(s => s.orbOpacity);
   const sizePx = ORB_SIZE_PX[orbSize];
 
+  // ADR-0014 §5: while a Micro Break is active, this component is fully
+  // suspended (no rAF loop, no window listeners) via the micro-breaks
+  // store's own `gameActive` flag -- MicroBreakOverlay renders its own
+  // handoff clone at this component's last known position (see
+  // pointerPositionRef.ts), built from the SAME shared orb tokens
+  // (orbTokens.ts), so hiding this component outright here is pop-free.
+  const gameActive = useMicroBreaksStore(s => s.gameActive);
+
   useEffect(() => {
-    if (!orbEnabled) return; // Task 17h: off switch -- no listeners, no animation loop at all.
+    if (!orbEnabled || gameActive) return; // Task 17h / ADR-0014 §5: off switch or an active break -- no listeners, no animation loop at all.
 
     const supportsFinePointer = window.matchMedia("(hover: hover) and (pointer: fine)").matches;
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -37,6 +47,7 @@ export function SmartflowPointerFollower() {
 
     const handlePointerMove = (event: PointerEvent) => {
       targetRef.current = { x: event.clientX, y: event.clientY };
+      setLastPointerPosition(event.clientX, event.clientY); // ADR-0014 §5: feeds the orb handoff transition on Micro Break entry
       setHasPointer(true);
     };
 
@@ -62,9 +73,9 @@ export function SmartflowPointerFollower() {
       window.removeEventListener("pointermove", handlePointerMove);
       if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
     };
-  }, [orbEnabled, sizePx]);
+  }, [orbEnabled, gameActive, sizePx]);
 
-  if (!orbEnabled) return null;
+  if (!orbEnabled || gameActive) return null;
 
   const colorVar = `var(${ORB_COLOR_VAR[orbColor]})`;
 

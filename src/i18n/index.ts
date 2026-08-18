@@ -1038,6 +1038,13 @@ const en = {
   // passed through a model transcription, not a native text-layer read --
   // provenance honesty for the user confirming a document-sourced fact.
   personal_memory_document_source_line: '{{fileName}} — {{section}} (via AI transcription)',
+
+  // ADR-0014, MB-02 slice 1: Micro Breaks entry points + in-game HUD.
+  micro_breaks_entry_label: 'Take a micro break',
+  micro_breaks_overlay_aria_label: 'Micro break: Classic Pong',
+  micro_breaks_close_aria_label: 'Close micro break',
+  micro_breaks_score_value: 'Score: {{score}}',
+  micro_breaks_time_value: 'Time: {{seconds}}s',
 };
 
 type TranslationDict = typeof en;
@@ -2036,6 +2043,13 @@ const de: TranslationDict = {
   doc_memory_error_provider_unavailable: 'Das KI-Modell ist vorübergehend nicht verfügbar. Bitte versuchen Sie es gleich noch einmal.',
   doc_memory_error_model_output_unusable: 'Das Modell hat kein verwertbares Ergebnis zurückgegeben. Bitte versuchen Sie es erneut.',
   personal_memory_document_source_line: '{{fileName}} — {{section}} (per KI-Transkription)',
+
+  // ADR-0014, MB-02 slice 1: Micro Breaks entry points + in-game HUD.
+  micro_breaks_entry_label: 'Kurze Pause einlegen',
+  micro_breaks_overlay_aria_label: 'Kurze Pause: Classic Pong',
+  micro_breaks_close_aria_label: 'Kurze Pause schließen',
+  micro_breaks_score_value: 'Punkte: {{score}}',
+  micro_breaks_time_value: 'Zeit: {{seconds}} s',
 };
 
 const fa: TranslationDict = {
@@ -3032,6 +3046,13 @@ const fa: TranslationDict = {
   doc_memory_error_provider_unavailable: 'مدل هوش مصنوعی موقتاً در دسترس نیست. لطفاً لحظاتی دیگر دوباره تلاش کنید.',
   doc_memory_error_model_output_unusable: 'مدل نتیجه قابل استفاده‌ای برنگرداند. لطفاً دوباره تلاش کنید.',
   personal_memory_document_source_line: '{{fileName}} — {{section}} (با رونویسی هوش مصنوعی)',
+
+  // ADR-0014, MB-02 slice 1: Micro Breaks entry points + in-game HUD.
+  micro_breaks_entry_label: 'یک استراحت کوتاه بگیرید',
+  micro_breaks_overlay_aria_label: 'استراحت کوتاه: پونگ کلاسیک',
+  micro_breaks_close_aria_label: 'بستن استراحت کوتاه',
+  micro_breaks_score_value: '{{score}} امتیاز',
+  micro_breaks_time_value: '{{seconds}} ثانیه باقی‌مانده',
 };
 
 export type TranslationKey = keyof TranslationDict;

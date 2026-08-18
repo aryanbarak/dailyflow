@@ -10,6 +10,7 @@ import { PageTitleProvider } from "@/contexts/PageTitleContext";
 import { LaunchExperience } from "@/components/LaunchExperience";
 import { LaunchProvider, useLaunch } from "@/contexts/LaunchContext";
 import { SmartflowPointerFollower } from "@/components/smartflow";
+import { MicroBreakOverlay } from "@/features/micro-breaks/components/MicroBreakOverlay";
 import { cn } from "@/lib/utils";
 import { resolveShellHeightStyle, useVisualViewportInsets } from "@/features/chat/useVisualViewportInsets";
 
@@ -79,6 +80,10 @@ function AppLayoutInner() {
             properties on its own root element, never inside its per-frame
             animation loop). */}
         <SmartflowPointerFollower />
+        {/* ADR-0014 §1: sibling of SmartflowPointerFollower, never a
+            wrapper -- workspace children below are never remounted when a
+            Micro Break opens/closes. */}
+        <MicroBreakOverlay />
         <OfflineBadge />
 
         {/* Desktop */}

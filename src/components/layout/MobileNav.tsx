@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
-import { Menu } from "lucide-react";
+import { Gamepad2, Menu } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { SmartFlowLogo } from "@/components/SmartFlowLogo";
 import { useT } from "@/i18n";
+import { useMicroBreaksStore } from "@/features/micro-breaks/store/microBreaksStore";
 import { mainNavItems, moreNavItems, type MobileNavItem } from "./mobileNavItems";
 
 // Task 17c (D3/D4): extracted so ChatPage's own header "More" entry can
@@ -53,10 +54,22 @@ export function MobileNav() {
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const { t } = useT();
+  const startBreak = useMicroBreaksStore(s => s.startBreak);
 
   return (
     <nav className="fixed bottom-0 left-0 right-0 bg-card border-t border-border z-50">
       <div className="flex items-center justify-around py-2">
+        {/* ADR-0014 §10: Micro Breaks mobile entry point -- a small icon,
+            not a route (no permanent top-level "Games" nav). */}
+        <button
+          type="button"
+          onClick={() => startBreak()}
+          aria-label={t('micro_breaks_entry_label')}
+          className="flex flex-col items-center gap-1 px-3 py-2 rounded-lg text-muted-foreground"
+        >
+          <Gamepad2 className="w-5 h-5" />
+        </button>
+
         {mainNavItems.map((item) => {
           const isActive = location.pathname === item.path;
           return (

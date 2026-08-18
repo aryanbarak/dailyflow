@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { GlobalSearch } from "@/features/search/GlobalSearch";
+import { MicroBreaksCommandLauncher } from "@/features/micro-breaks/components/MicroBreaksCommandLauncher";
 import { useAuth } from "@/hooks/useAuth";
 import { useProfile } from "@/features/profile/useProfile";
 import { FlowAIOrb } from "@/components/FlowAIOrb";
@@ -216,8 +217,10 @@ export function Sidebar() {
       </nav>
 
       {/* Search */}
-      <div className="relative z-10 px-3 py-2 border-t border-white/5">
+      <div className="relative z-10 flex items-center gap-2 px-3 py-2 border-t border-white/5">
         <GlobalSearch />
+        {/* ADR-0014 §10: Micro Breaks desktop entry point. */}
+        <MicroBreaksCommandLauncher />
       </div>
 
       {/* Footer */}
