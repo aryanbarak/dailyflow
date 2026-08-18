@@ -3,6 +3,24 @@
     "cloudflare": {
       "type": "http",
       "url": "https://mcp.cloudflare.com/mcp"
+    },
+    "github": {
+      "type": "stdio",
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-p",
+        "127.0.0.1:8085:8085",
+        "-e",
+        "GITHUB_OAUTH_CALLBACK_PORT=8085",
+        "-e",
+        "GITHUB_READ_ONLY=1",
+        "-e",
+        "GITHUB_TOOLSETS=context,repos,issues,pull_requests,actions",
+        "ghcr.io/github/github-mcp-server"
+      ]
     }
   }
 }
