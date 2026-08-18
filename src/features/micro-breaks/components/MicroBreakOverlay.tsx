@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
-import { X } from 'lucide-react';
+import { AlertTriangle, X } from 'lucide-react';
 import { useT } from '@/i18n';
 import { isolateBidiRunsInText, resolveMessageBaseDirection } from '@/lib/bidiText';
 import { useMicroBreaksStore } from '../store/microBreaksStore';
@@ -9,7 +9,7 @@ import { getLastPointerPosition } from '../pointerPositionRef';
 import { DEFAULT_PONG_CONFIG } from '../engine/pongEngine';
 import { PongCanvas, type ViewportPoint } from './PongCanvas';
 
-type OverlayPhase = 'idle' | 'active' | 'exiting';
+type OverlayPhase = 'idle' | 'active' | 'exiting' | 'error';
 
 const HANDOFF_TRANSITION_SECONDS = 0.28;
 const HANDOFF_EASE = [0.22, 1, 0.36, 1] as const;
@@ -141,11 +141,27 @@ export function MicroBreakOverlay() {
   }
 
   function handleClose() {
-    if (phaseRef.current !== 'active') return;
+    // MB-02b: closable from 'error' too -- Esc/close must work even if the
+    // renderer crashed. viewportBallPositionRef.current is already null
+    // (or stale-but-harmless) in that case; the viewportCenter() fallback
+    // covers it the same way it covers a close fired before the first tick.
+    if (phaseRef.current !== 'active' && phaseRef.current !== 'error') return;
     const exitFrom = viewportBallPositionRef.current ?? viewportCenter();
     const exitTo = getLastPointerPosition() ?? exitFrom;
     setHandoff({ from: exitFrom, to: exitTo });
     setPhase('exiting'); // unmounts PongCanvas THIS render -- its own rAF/listener teardown runs immediately, not after the exit animation
+  }
+
+  // MB-02b: draw() (PongCanvas) guarantees this is called at most once and
+  // never lets the original exception escape uncaught -- see PongCanvas's
+  // own comment for why an uncaught throw here would otherwise take down
+  // the ENTIRE app (no error boundary exists anywhere in App.tsx). Teardown
+  // (rAF/listeners) already happened via PongCanvas unmounting the instant
+  // `phase` flips away from 'active' below -- this is a normal, controlled
+  // React state transition, not a crash reaching the reconciler.
+  function handleRenderError(error: unknown) {
+    console.error('[micro-breaks] game rendering failed, showing fallback state', error);
+    setPhase('error');
   }
 
   // Esc + focus containment, active for the whole time the dialog is
@@ -219,14 +235,16 @@ export function MicroBreakOverlay() {
             <X className="h-5 w-5" />
           </button>
 
-          <div className="absolute left-4 top-4 flex flex-col gap-1 rounded-xl bg-card/80 px-4 py-2 text-sm shadow-lg">
-            <span dir={resolveMessageBaseDirection(scoreText)} className="font-medium">
-              {isolateBidiRunsInText(scoreText, 'mb-score')}
-            </span>
-            <span dir={resolveMessageBaseDirection(timeText)} className="text-muted-foreground">
-              {isolateBidiRunsInText(timeText, 'mb-time')}
-            </span>
-          </div>
+          {phase === 'active' && (
+            <div className="absolute left-4 top-4 flex flex-col gap-1 rounded-xl bg-card/80 px-4 py-2 text-sm shadow-lg">
+              <span dir={resolveMessageBaseDirection(scoreText)} className="font-medium">
+                {isolateBidiRunsInText(scoreText, 'mb-score')}
+              </span>
+              <span dir={resolveMessageBaseDirection(timeText)} className="text-muted-foreground">
+                {isolateBidiRunsInText(timeText, 'mb-time')}
+              </span>
+            </div>
+          )}
 
           {phase === 'active' && (
             <PongCanvas
@@ -235,7 +253,17 @@ export function MicroBreakOverlay() {
               onTimeChange={setRemainingSeconds}
               onGameEnd={handleClose}
               viewportBallPositionRef={viewportBallPositionRef}
+              onRenderError={handleRenderError}
             />
+          )}
+
+          {phase === 'error' && (
+            <div className="flex max-w-xs flex-col items-center gap-3 rounded-xl bg-card px-6 py-8 text-center shadow-lg">
+              <AlertTriangle className="h-8 w-8 text-destructive" aria-hidden="true" />
+              <p dir={resolveMessageBaseDirection(t('micro_breaks_render_error'))}>
+                {isolateBidiRunsInText(t('micro_breaks_render_error'), 'mb-render-error')}
+              </p>
+            </div>
           )}
         </div>
       )}

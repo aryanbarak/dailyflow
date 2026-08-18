@@ -1045,6 +1045,7 @@ const en = {
   micro_breaks_close_aria_label: 'Close micro break',
   micro_breaks_score_value: 'Score: {{score}}',
   micro_breaks_time_value: 'Time: {{seconds}}s',
+  micro_breaks_render_error: 'Something went wrong with the game. You can close this and try again.',
 };
 
 type TranslationDict = typeof en;
@@ -2050,6 +2051,7 @@ const de: TranslationDict = {
   micro_breaks_close_aria_label: 'Kurze Pause schließen',
   micro_breaks_score_value: 'Punkte: {{score}}',
   micro_breaks_time_value: 'Zeit: {{seconds}} s',
+  micro_breaks_render_error: 'Beim Spiel ist ein Fehler aufgetreten. Sie können dieses Fenster schließen und es erneut versuchen.',
 };
 
 const fa: TranslationDict = {
@@ -3053,6 +3055,7 @@ const fa: TranslationDict = {
   micro_breaks_close_aria_label: 'بستن استراحت کوتاه',
   micro_breaks_score_value: '{{score}} امتیاز',
   micro_breaks_time_value: '{{seconds}} ثانیه باقی‌مانده',
+  micro_breaks_render_error: 'مشکلی در اجرای بازی پیش آمد. می‌توانید این پنجره را ببندید و دوباره تلاش کنید.',
 };
 
 export type TranslationKey = keyof TranslationDict;

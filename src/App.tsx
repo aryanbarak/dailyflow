@@ -31,6 +31,7 @@ import { PlaylistPlayerProvider } from "@/contexts/PlaylistPlayerContext";
 import { AppLoader } from "@/components/AppLoader";
 import { LanguageProvider } from "@/components/LanguageProvider";
 import { FlowAIOrbPlayground } from "@/components/FlowAIOrb";
+import { MicroBreaksDevHarness } from "@/features/micro-breaks/components/MicroBreaksDevHarness";
 import { SmartflowLanding } from "@/components/smartflow";
 
 function AccentColorInit() {
@@ -79,6 +80,9 @@ const App = () => (
           <Routes>
             {import.meta.env.DEV && (
               <Route path="/__dev/flow-ai-orb" element={<FlowAIOrbPlayground />} />
+            )}
+            {import.meta.env.DEV && (
+              <Route path="/__dev/micro-breaks-harness" element={<MicroBreaksDevHarness />} />
             )}
             <Route path="/smartflow-preview" element={<SmartflowLanding />} />
             <Route path="/auth" element={<AuthRoute />} />

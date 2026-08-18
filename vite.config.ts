@@ -92,6 +92,11 @@ export default defineConfig(({ mode }) => {
         '**/cypress/**',
         '**/.{idea,git,cache,output,temp}/**',
         'scripts/**',
+        // MB-02b: Playwright specs (real-browser only, run via `npx
+        // playwright test`) -- these import '@playwright/test', whose
+        // test()/describe() collide with vitest's own globals if vitest
+        // tries to collect them too.
+        'e2e/**',
       ],
     },
     build: {

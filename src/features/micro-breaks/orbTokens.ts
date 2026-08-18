@@ -5,6 +5,7 @@
 // before (pixel-identical DOM), and PongCanvas draws the game ball on
 // <canvas> from these same tokens.
 import { ORB_COLOR_VAR, ORB_SIZE_PX, useAppearance, type OrbColor, type OrbSize } from '@/features/settings/appearanceStore';
+import { toCanvasColor } from './colorNormalization';
 
 export interface OrbVisualTokens {
   /** `var(--flow-*)` -- usable directly as a DOM/CSS color value. */
@@ -53,18 +54,20 @@ export interface OrbCanvasColors {
   readonly glow: (alpha: number) => string;
 }
 
-// Resolves the CSS custom property (an "H S% L%" triplet, e.g.
-// "256 100% 65%" -- see appearanceStore.ts's ORB_COLOR_VAR/flow-tokens.css)
-// to concrete color strings a <canvas> 2D context can use directly. The DOM
-// orb reads the SAME custom property via var()/color-mix() in CSS; canvas
-// has no equivalent, so this is the one place that resolves it to a plain
-// value -- kept as a small, isolated function rather than duplicating the
-// palette so both renderers still derive from one source of truth
-// (flow-tokens.css via getComputedStyle, not a hardcoded copy).
+// Resolves the CSS custom property (--flow-*, see flow-tokens.css -- stored
+// as HEX, e.g. "#7C4DFF") to concrete color strings a <canvas> 2D context
+// can use directly, via colorNormalization.ts's format-agnostic parser
+// (MB-02b: canvas cannot use var()/color-mix() the way the DOM orb does,
+// and a manual `hsl(<value> / alpha)` template broke in production because
+// the resolved value is hex, not HSL components -- see that module's own
+// comment for the full root-cause). `core` is the opaque fill used for the
+// ball/paddle themselves and always goes through the minimum-visibility
+// floor (ADR-0014); `glow` is decorative-only (trail, halo, shadow) and
+// stays fully token-driven.
 export function resolveOrbCanvasColors(tokens: OrbVisualTokens, rootElement: HTMLElement = document.documentElement): OrbCanvasColors {
-  const hslTriplet = getComputedStyle(rootElement).getPropertyValue(tokens.cssVarName).trim() || '256 100% 65%';
+  const raw = getComputedStyle(rootElement).getPropertyValue(tokens.cssVarName).trim();
   return {
-    core: `hsl(${hslTriplet})`,
-    glow: (alpha: number) => `hsl(${hslTriplet} / ${alpha})`,
+    core: toCanvasColor(raw, 1, { enforceMinimumVisibility: true }),
+    glow: (alpha: number) => toCanvasColor(raw, alpha),
   };
 }

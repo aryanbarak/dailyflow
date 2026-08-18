@@ -12,6 +12,7 @@ const MICRO_BREAKS_KEYS: TranslationKey[] = [
   'micro_breaks_close_aria_label',
   'micro_breaks_score_value',
   'micro_breaks_time_value',
+  'micro_breaks_render_error',
 ];
 
 const LANGS: Lang[] = ['en', 'de', 'fa'];

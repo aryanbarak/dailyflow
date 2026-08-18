@@ -26,6 +26,12 @@ export interface PongCanvasProps {
    *  the overlay can read it synchronously on Esc/close for the exit
    *  handoff (ADR-0014 §5) without this component owning any exit logic. */
   readonly viewportBallPositionRef?: MutableRefObject<ViewportPoint | null>;
+  /** MB-02b: called at most once if drawing throws (e.g. an unparseable
+   *  color token). The overlay uses this to show a minimal error state and
+   *  unmount this component -- normal, controlled teardown, not a crash
+   *  that reaches React's reconciler. See draw()'s own comment for why the
+   *  guard lives here rather than relying on an app-wide error boundary. */
+  readonly onRenderError: (error: unknown) => void;
 }
 
 const TRAIL_LENGTH = 10;
@@ -37,7 +43,14 @@ const SQUASH_DURATION_MS = 120;
 // a ref, and the ONLY per-frame writes are to the canvas itself. Score/time
 // only reach the parent's React state when their DISPLAYED value actually
 // changes (score on a hit; time once per whole second), never every frame.
-export function PongCanvas({ config = DEFAULT_PONG_CONFIG, onScoreChange, onTimeChange, onGameEnd, viewportBallPositionRef }: PongCanvasProps) {
+export function PongCanvas({
+  config = DEFAULT_PONG_CONFIG,
+  onScoreChange,
+  onTimeChange,
+  onGameEnd,
+  viewportBallPositionRef,
+  onRenderError,
+}: PongCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stateRef = useRef<PongState>(createInitialPongState(config));
   const trailRef = useRef<ViewportPoint[]>([]);
@@ -45,6 +58,9 @@ export function PongCanvas({ config = DEFAULT_PONG_CONFIG, onScoreChange, onTime
   const lastDisplayedSecondRef = useRef(-1);
   const squashUntilRef = useRef(0);
   const reducedMotionRef = useRef(false);
+  const crashedRef = useRef(false);
+  const onRenderErrorRef = useRef(onRenderError);
+  onRenderErrorRef.current = onRenderError;
   const tokens = useOrbVisualTokens();
 
   useEffect(() => {
@@ -99,7 +115,30 @@ export function PongCanvas({ config = DEFAULT_PONG_CONFIG, onScoreChange, onTime
     };
   }, [config]);
 
+  // MB-02b: renderFrame() itself may throw (e.g. an unparseable color
+  // token reaching a strict-validating canvas API like
+  // CanvasGradient.addColorStop -- ctx.fillStyle silently ignores bad
+  // values instead, which is why the crash only ever showed up at the
+  // gradient stops). draw() is the ONLY thing allowed to call it, and
+  // guarantees the exception never escapes uncaught: this is called from a
+  // synchronous mount-effect AND from the rAF tick, and an uncaught throw
+  // from either one crashes with no local error boundary anywhere in this
+  // app's tree (App.tsx has none) -- React unmounts the ENTIRE root, not
+  // just this component, which is what actually broke Esc/close in the
+  // MB-02b production incident (its own listener effect never got the
+  // chance to run). Once crashed, every further call is a no-op forever --
+  // this component is about to be unmounted by the overlay's error phase.
   function draw() {
+    if (crashedRef.current) return;
+    try {
+      renderFrame();
+    } catch (error) {
+      crashedRef.current = true;
+      onRenderErrorRef.current(error);
+    }
+  }
+
+  function renderFrame() {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext('2d');
     if (!canvas || !ctx) return;
@@ -174,6 +213,7 @@ export function PongCanvas({ config = DEFAULT_PONG_CONFIG, onScoreChange, onTime
   useVisibilityAwareGameLoop({
     active: true,
     onTick: dtMs => {
+      if (crashedRef.current) return;
       const prevScore = stateRef.current.score;
       const next = stepPong(stateRef.current, dtMs, config);
       stateRef.current = next;
