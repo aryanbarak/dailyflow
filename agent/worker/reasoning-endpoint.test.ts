@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  buildReasoningResponseSchema,
   handleLocalReasoningRequest,
   resolveLocalReasoningConfig,
   type LocalReasoningEnv,
 } from './reasoning-endpoint'
+import { writeIntentRegistry } from '../../shared/writeIntentRegistry'
 
 const origin = 'http://127.0.0.1:8080'
 const validEnv: LocalReasoningEnv = {
@@ -70,6 +72,22 @@ function successfulFetcher(proposal: Record<string, unknown> = {}) {
     throw new Error(`Unexpected fetch: ${url}`)
   })
 }
+
+// Task 36c, ADR-0013 Slice 2: a loop guard alongside the derivation itself
+// (SUPPORTED_DOMAIN_VALUES now splices writeIntentRegistry.map(e =>
+// e.domain), deduped) -- same it.each(writeIntentRegistry...) pattern task
+// 29-fix/task 36b established elsewhere. Calls buildReasoningResponseSchema
+// directly rather than going through the full HTTP handler, since this is
+// checking the schema's own shape, not request handling.
+describe('buildReasoningResponseSchema requestedDomain enum (task 36c)', () => {
+  it.each(writeIntentRegistry.map((entry) => entry.domain))(
+    'includes registry domain %s',
+    (domain) => {
+      const schema = buildReasoningResponseSchema()
+      expect(schema.properties.requestedDomain.enum).toContain(domain)
+    },
+  )
+})
 
 describe('local reasoning configuration', () => {
   it('accepts only explicit complete local configuration', () => {
@@ -341,7 +359,15 @@ describe('POST /agent/reason', () => {
   it.each([
     ['tool authority', { toolId: 'tasks.list' }],
     ['approval authority', { requiresApproval: true }],
-    ['unsupported domain', { requestedDomain: 'finance' }],
+    // Task 36c, ADR-0013 Slice 2: this case used to be 'finance' -- that
+    // stopped being a meaningful "unsupported domain" fixture the moment
+    // SUPPORTED_DOMAIN_VALUES started deriving 'finance' from the registry
+    // (ADR-0013's Context item 5 -- finance was always meant to be
+    // supported here, just latently missing). 'shopping' is a real
+    // SmartFlow feature domain (src/features/shopping/) with no write-
+    // intent registry entry, so it keeps testing the same thing this case
+    // always tested -- an actually-unsupported domain is rejected.
+    ['unsupported domain', { requestedDomain: 'shopping' }],
     ['unexpected field', { arbitraryPayload: { execute: true } }],
   ])('rejects %s in model output', async (_label, extraField) => {
     const fetcher = successfulFetcher(extraField)

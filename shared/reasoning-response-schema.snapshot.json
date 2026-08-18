@@ -45,6 +45,7 @@
         "enum": [
           "tasks",
           "calendar",
+          "finance",
           "learning",
           "workspace",
           "github"

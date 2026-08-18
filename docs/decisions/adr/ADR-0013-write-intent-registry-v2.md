@@ -164,6 +164,15 @@ see Consequences for why this is NOT sold as a duplication-count win.
   of the loop-based guard tests in Decision item 4 can substitute for it,
   since they check text presence, not model behavior.
 - `WriteIntentDescriptor` gains one new optional field (`promptInstruction`).
+- `promptInstruction` was made optional rather than required, per an explicit
+  PO decision at Slice 0 (task 36b): `create_task`/`update_task` have no
+  existing prose in `reasoningPrompt.ts` to move verbatim, and authoring new,
+  unreviewed model-facing text to fill a required field was rejected rather
+  than done silently. The compensating day-one guard is the registry-
+  completeness test (`shared/writeIntentRegistry.test.ts`) that locks in
+  exactly which entries carry the field (calendar create/update, finance
+  create) and which don't (both task entries) — a future edit that silently
+  adds or drops it on the wrong entry fails there.
 - `writeRuntime.ts`'s two switches change shape (lookup-first, switch for the
   remainder); this needs care to preserve or replace the TypeScript
   exhaustiveness guarantee the current all-cases switch provides — flagged as

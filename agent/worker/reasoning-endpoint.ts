@@ -34,7 +34,25 @@ export const SUPPORTED_INTENT_VALUES = [
   'unsupported',
 ] as const
 const SUPPORTED_CONFIDENCE_VALUES = ['low', 'medium', 'high'] as const
-const SUPPORTED_DOMAIN_VALUES = ['tasks', 'calendar', 'learning', 'workspace', 'github'] as const
+// Task 36c, ADR-0013 Slice 2: the write-domain members (tasks/calendar/
+// finance) are spliced in from the shared registry, deduped by first
+// occurrence. writeIntentRegistry's own array order is tasks, tasks,
+// calendar, calendar, finance (create_task, update_task, create_calendar_-
+// event, update_calendar_event, create_finance_transaction), so Set
+// iteration order (insertion order in JS) reproduces exactly tasks, then
+// calendar, then finance -- the same relative order 'tasks'/'calendar'
+// already had here. 'finance' was previously entirely absent from this
+// list (ADR-0013's Context item 5 -- a latent gap, not a behavior change);
+// it is a genuinely NEW element, inserted as the third value, which shifts
+// learning/workspace/github's array index by one without changing their
+// relative order to each other or to tasks/calendar. learning/workspace/
+// github have no registry presence and stay hand-written.
+const SUPPORTED_DOMAIN_VALUES = [
+  ...new Set(writeIntentRegistry.map((entry) => entry.domain)),
+  'learning',
+  'workspace',
+  'github',
+] as const
 const SUPPORTED_INTENTS = new Set<string>(SUPPORTED_INTENT_VALUES)
 const SUPPORTED_CONFIDENCE = new Set<string>(SUPPORTED_CONFIDENCE_VALUES)
 const SUPPORTED_DOMAINS = new Set<string>(SUPPORTED_DOMAIN_VALUES)
