@@ -131,7 +131,7 @@ describe("github.workflow_runs.list deterministic agent slice", () => {
       executionContext: {},
     });
     expect(result.success).toBe(true);
-    expect(result.safeSummary).toBe("GitHub is not connected.");
+    expect(result.safeSummary).toBe("No GitHub connection is available.");
     expect(result.safePreviewItems).toEqual([]);
   });
 

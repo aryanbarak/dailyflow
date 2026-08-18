@@ -5,6 +5,7 @@ import {
   formatAssistantResponse,
   type ResponseComposerInput,
 } from "./responseComposer";
+import { GITHUB_NOT_CONNECTED_SUMMARY } from "./readOnlyResultPresenter";
 
 function input(overrides: Partial<ResponseComposerInput>): ResponseComposerInput {
   return {
@@ -92,6 +93,59 @@ describe("responseComposer", () => {
     expect(german.summary).toContain("aktive Aufgaben");
     expect(farsi.headline).toContain("\u06a9\u0627\u0631\u0647\u0627");
     expect(farsi.summary).toContain("2");
+  });
+
+  // Task 33 production evidence: "GitHub is not connected." (raw English)
+  // rendered verbatim inside Farsi/German replies, because this composer's
+  // ONLY detection for an empty/not-connected summary was a /^no\s+/i
+  // prefix match, and readOnlyResultPresenter.ts's not-connected literal
+  // didn't start with "No " -- responseComposer.test.ts had ZERO coverage
+  // of this path before task 33-fix (confirmed by task 33's own diagnosis).
+  // Covers all four GitHub tool ids this composer actually supports
+  // (github.epics.list is NOT in SUPPORTED_RESPONSE_COMPOSER_TOOL_IDS at
+  // all today -- a separate, pre-existing gap noted in the task 33-fix
+  // report, not fixed here).
+  describe("GitHub not-connected summary renders translated, never raw English outside en (task 33-fix)", () => {
+    it.each([
+      ["github.repositories.list", "GitHub ist nicht verbunden oder es sind keine Repositories verfuegbar.", "گیت‌هاب متصل نیست یا مخزنی در دسترس نیست."],
+      ["github.issues.list", "GitHub ist nicht verbunden oder es sind keine offenen Issues verfuegbar.", "گیت‌هاب متصل نیست یا ایشوی بازی در دسترس نیست."],
+      ["github.pulls.list", "GitHub ist nicht verbunden oder es sind keine offenen Pull-Requests verfuegbar.", "گیت‌هاب متصل نیست یا پول‌ریکوئست بازی در دسترس نیست."],
+      ["github.workflow_runs.list", "GitHub ist nicht verbunden oder es sind keine letzten Workflow-Laeufe verfuegbar.", "گیت‌هاب متصل نیست یا اجرای اخیری در دسترس نیست."],
+    ] as const)("%s", (toolId, expectedDe, expectedFa) => {
+      const german = composeAssistantResponse(input({
+        toolId,
+        language: "de",
+        safeSummary: GITHUB_NOT_CONNECTED_SUMMARY,
+        safePreviewItems: [],
+      }));
+      const farsi = composeAssistantResponse(input({
+        toolId,
+        language: "fa",
+        safeSummary: GITHUB_NOT_CONNECTED_SUMMARY,
+        safePreviewItems: [],
+      }));
+
+      expect(german.summary).toBe(expectedDe);
+      expect(farsi.summary).toBe(expectedFa);
+
+      // The exact task 33 regression: the raw English literal must never
+      // survive into a non-English reply, in any form.
+      expect(german.summary).not.toContain(GITHUB_NOT_CONNECTED_SUMMARY);
+      expect(farsi.summary).not.toContain(GITHUB_NOT_CONNECTED_SUMMARY);
+      expect(german.summary).not.toContain("GitHub is not connected");
+      expect(farsi.summary).not.toContain("GitHub is not connected");
+    });
+
+    it("also normalizes to the composed English copy in en (not the raw safeSummary passed through verbatim)", () => {
+      const response = composeAssistantResponse(input({
+        toolId: "github.repositories.list",
+        language: "en",
+        safeSummary: GITHUB_NOT_CONNECTED_SUMMARY,
+        safePreviewItems: [],
+      }));
+      expect(response.summary).toBe("GitHub is not connected or no repositories are available.");
+      expect(response.summary).not.toBe(GITHUB_NOT_CONNECTED_SUMMARY);
+    });
   });
 
   it("does not invent absent preview titles or mutate runtime results", () => {

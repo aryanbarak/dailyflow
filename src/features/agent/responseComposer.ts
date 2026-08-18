@@ -1,6 +1,7 @@
 import type { AgentReflectionResult } from "./reflectionTypes";
 import type { SynthesizedContext } from "./contextSynthesis";
 import type { WorkspaceDecisionProfile } from "../workspace/workspaceTypes";
+import { GITHUB_NOT_CONNECTED_SUMMARY } from "./readOnlyResultPresenter";
 
 export const RESPONSE_COMPOSER_VERSION = "response-composer-v1" as const;
 
@@ -325,6 +326,20 @@ function summaryFor(input: ResponseComposerInput, copy: ComposerCopy) {
     if (count === 0) return copy.emptySummary;
     return copy.countSummary(count);
   }
+
+  // Task 33-fix, belt and braces: readOnlyResultPresenter.ts's raw data
+  // (result.data.connectionStatus) is not available here -- by this point
+  // it has already been collapsed into safeSummary/safePreviewItems -- so
+  // this cannot check the not-connected condition itself. It checks the
+  // exact shared constant instead of relying only on the /^no\s+/i prefix
+  // below. That prefix check is the ONLY reason task 33's English leak
+  // ("GitHub is not connected." rendering untranslated inside Farsi/German
+  // replies) went unnoticed: it depends entirely on every non-numeric
+  // safeSummary happening to be phrased "No X found", which is fragile,
+  // undocumented English-prefix language detection, not a real check. This
+  // explicit match doesn't fix that fragility -- it only hardens this one
+  // known case. The general fragility is tracked as debt, not fixed here.
+  if (input.safeSummary === GITHUB_NOT_CONNECTED_SUMMARY) return copy.emptySummary;
 
   if (/^no\s+/i.test(input.safeSummary)) return copy.emptySummary;
   return safeSummary || copy.emptySummary;

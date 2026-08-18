@@ -5,6 +5,15 @@ export interface ReadOnlyResultPresentation {
   safePreviewItems: string[];
 }
 
+// Task 33-fix: exported (not a private literal repeated 5 times below) so
+// responseComposer.ts's belt-and-braces not-connected check (summaryFor)
+// can match against this exact string instead of hand-copying it a second
+// time -- the English-leak bug this fixes existed BECAUSE this string used
+// to be phrased differently from its sibling "No ... found." summaries,
+// which broke responseComposer.ts's only detection heuristic. A single
+// shared constant means the two files cannot drift apart the same way again.
+export const GITHUB_NOT_CONNECTED_SUMMARY = "No GitHub connection is available.";
+
 interface TasksListData {
   tasks?: Array<{
     title?: string;
@@ -120,7 +129,7 @@ function learningPresentation(data: unknown): ReadOnlyResultPresentation {
 function githubPresentation(data: unknown): ReadOnlyResultPresentation {
   const value = isObject(data) ? data as GitHubRepositoriesData : {};
   if (value.connectionStatus === "not_connected") {
-    return { safeSummary: "GitHub is not connected.", safePreviewItems: [] };
+    return { safeSummary: GITHUB_NOT_CONNECTED_SUMMARY, safePreviewItems: [] };
   }
   const repositories = Array.isArray(value.repositories) ? value.repositories.slice(0, 20) : [];
   return {
@@ -140,7 +149,7 @@ function githubPresentation(data: unknown): ReadOnlyResultPresentation {
 function githubIssuesPresentation(data: unknown): ReadOnlyResultPresentation {
   const value = isObject(data) ? data as GitHubIssuesData : {};
   if (value.connectionStatus === "not_connected") {
-    return { safeSummary: "GitHub is not connected.", safePreviewItems: [] };
+    return { safeSummary: GITHUB_NOT_CONNECTED_SUMMARY, safePreviewItems: [] };
   }
   const issues = Array.isArray(value.issues) ? value.issues.slice(0, 20) : [];
   return {
@@ -160,7 +169,7 @@ function githubIssuesPresentation(data: unknown): ReadOnlyResultPresentation {
 function githubEpicsPresentation(data: unknown): ReadOnlyResultPresentation {
   const value = isObject(data) ? data as GitHubEpicsData : {};
   if (value.connectionStatus === "not_connected") {
-    return { safeSummary: "GitHub is not connected.", safePreviewItems: [] };
+    return { safeSummary: GITHUB_NOT_CONNECTED_SUMMARY, safePreviewItems: [] };
   }
   const epics = Array.isArray(value.epics) ? value.epics.slice(0, 20) : [];
   return {
@@ -184,7 +193,7 @@ function githubEpicsPresentation(data: unknown): ReadOnlyResultPresentation {
 function githubPullRequestsPresentation(data: unknown): ReadOnlyResultPresentation {
   const value = isObject(data) ? data as GitHubPullRequestsData : {};
   if (value.connectionStatus === "not_connected") {
-    return { safeSummary: "GitHub is not connected.", safePreviewItems: [] };
+    return { safeSummary: GITHUB_NOT_CONNECTED_SUMMARY, safePreviewItems: [] };
   }
   const pullRequests = Array.isArray(value.pullRequests) ? value.pullRequests.slice(0, 20) : [];
   return {
@@ -206,7 +215,7 @@ function githubPullRequestsPresentation(data: unknown): ReadOnlyResultPresentati
 function githubWorkflowRunsPresentation(data: unknown): ReadOnlyResultPresentation {
   const value = isObject(data) ? data as GitHubWorkflowRunsData : {};
   if (value.connectionStatus === "not_connected") {
-    return { safeSummary: "GitHub is not connected.", safePreviewItems: [] };
+    return { safeSummary: GITHUB_NOT_CONNECTED_SUMMARY, safePreviewItems: [] };
   }
   const workflowRuns = Array.isArray(value.workflowRuns) ? value.workflowRuns.slice(0, 10) : [];
   return {
