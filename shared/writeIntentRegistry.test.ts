@@ -88,8 +88,33 @@ describe('writeIntentRegistry completeness (task 23)', () => {
         expect(entry.targetIdField).toBeTruthy()
         expect(entry.createRequiredTargetFields).toBeUndefined()
       }
+      // Task 36b, ADR-0013 Slice 0: promptInstruction is optional (see the
+      // registry interface's own comment for why create_task/update_task
+      // don't have one) -- but wherever it IS present, it must be real text,
+      // never an accidentally-set empty string.
+      if (entry.promptInstruction !== undefined) {
+        expect(entry.promptInstruction.trim().length).toBeGreaterThan(0)
+      }
     },
   )
+
+  // Task 36b, ADR-0013 Slice 0: locks in which entries were actually
+  // backfilled (calendar + finance, sourced verbatim from
+  // reasoningPrompt.ts's existing per-intent prose) versus left unset
+  // (tasks, which has no equivalent existing prose to move) -- so a future
+  // edit that silently drops or adds promptInstruction on the wrong entry
+  // fails here, not only via the generic non-empty check above.
+  it('promptInstruction is backfilled for calendar and finance entries, left unset for tasks', () => {
+    const withInstruction = writeIntentRegistry
+      .filter((entry) => entry.promptInstruction !== undefined)
+      .map((entry) => entry.intentType)
+    expect(withInstruction).toEqual(['create_calendar_event', 'update_calendar_event', 'create_finance_transaction'])
+
+    const withoutInstruction = writeIntentRegistry
+      .filter((entry) => entry.promptInstruction === undefined)
+      .map((entry) => entry.intentType)
+    expect(withoutInstruction).toEqual(['create_task', 'update_task'])
+  })
 
   it('every entry resolves by its own toolId', () => {
     for (const entry of writeIntentRegistry) {

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import worker from './index'
 import type { Env } from './types'
+import { writeIntentRegistry } from '../../shared/writeIntentRegistry'
 
 const SUPABASE_URL = 'https://supa.test'
 
@@ -348,6 +349,34 @@ describe('handleChat mode routing', () => {
     // read confirmed personal memory, not merely omit it from the prompt.
     expect(log.personalMemoryReads).toBe(0)
   })
+
+  // Task 36b, ADR-0013 Slice 1: a loop guard alongside the hand-written
+  // array above (task 22's own gap, hit again at task 28, was exactly this
+  // array silently missing an entry) -- same it.each(writeIntentRegistry...)
+  // pattern task 29-fix established for reasoningPrompt.ts. Deliberately
+  // additive: SUPPORTED_INTENT_VALUES (reasoning-endpoint.ts) is already
+  // registry-derived in production, so this loop and the hand-written array
+  // above are two independent checks of the same real schema output, not
+  // one checking the other -- the hand-written array stays for human-
+  // reviewable diffs; this loop is what actually fails on day one if a
+  // registry intent silently drops out of the built schema.
+  it.each(writeIntentRegistry.map((entry) => entry.intentType))(
+    'reasoning schema type.enum contains registry intent %s',
+    async (intentType) => {
+      const log = installFetchMock()
+      const ctx = fakeExecutionContext()
+      const env = testEnv()
+
+      await worker.fetch(
+        chatRequest({ message: 'Reasoning prompt text', mode: 'reasoning', responseLanguage: 'en' }),
+        env,
+        ctx,
+      )
+
+      const [call] = log.geminiCalls
+      expect(call.generationConfig.responseSchema.properties.type.enum).toContain(intentType)
+    },
+  )
 
   it('mode absent behaves exactly like plain chat: unchanged persistence and config', async () => {
     const log = installFetchMock()

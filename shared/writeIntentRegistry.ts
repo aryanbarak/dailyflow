@@ -206,6 +206,21 @@ export interface WriteIntentDescriptor {
     readonly descriptionKey: string
     readonly approvalReasonKey: string
   }
+  // Task 36b, ADR-0013 Slice 0: the per-intent write-guidance fragment
+  // reasoningPrompt.ts hand-writes today (populate-these-fields
+  // instructions, approval-required reminders) -- backfilled here, moved
+  // verbatim from the current prompt text, as a future source for prompt
+  // generation (ADR-0013 Slice 5). NOT YET CONSUMED by reasoningPrompt.ts or
+  // anything else -- this slice only adds the data.
+  //
+  // Optional, not required: create_task/update_task have no equivalent
+  // existing prose in reasoningPrompt.ts to move verbatim -- the model
+  // currently infers task fields from the schema alone, with no dedicated
+  // instruction sentence for them at all. Inventing new prompt-facing text
+  // for those two here, unreviewed and untested via ADR-0013 Slice 5's
+  // mandatory empirical replay, was explicitly considered and rejected
+  // rather than silently done (PO decision, task 36b).
+  readonly promptInstruction?: string
   // The description-panel title interpolated into i18n.descriptionKey.
   readonly descriptionTitle: (target: WriteIntentTargetRecord | undefined) => string
   // The approval-card preview lines (before the caller's own
@@ -291,6 +306,19 @@ export const writeIntentRegistry: readonly WriteIntentDescriptor[] = [
       approvalReasonKey: 'agent_intent_create_calendar_event_approval_reason',
     },
     descriptionTitle: (target) => (target?.eventTitle as string | undefined) ?? '',
+    // Task 36b, ADR-0013 Slice 0: moved verbatim from reasoningPrompt.ts's
+    // create_calendar_event target-field clause (the create half of what
+    // was one semicolon-joined sentence shared with update_calendar_event)
+    // plus the calendar approval-required sentence, which already names
+    // both create_calendar_event and update_calendar_event and is reused
+    // verbatim, unsplit, in both entries below. Only edit from source: a
+    // trailing period added where the original ended at a semicolon, and
+    // capitalizing "Populate" for standalone use -- no wording changed.
+    // reasoningPrompt.ts itself is untouched by this slice; nothing reads
+    // this field yet.
+    promptInstruction:
+      'Populate target.eventTitle and target.start (and target.end if a duration or end time is given) for create_calendar_event. ' +
+      'create_calendar_event and update_calendar_event require explicit user approval before anything runs -- you are proposing the action, not performing it. Never claim the event was created or updated.',
     previewLines: (target, labels) => [
       `${labels.title}: ${target?.eventTitle as string | undefined}`,
       `${labels.start}: ${target?.start as string | undefined}`,
@@ -319,6 +347,16 @@ export const writeIntentRegistry: readonly WriteIntentDescriptor[] = [
       approvalReasonKey: 'agent_intent_calendar_event_update_approval_reason',
     },
     descriptionTitle: (target) => (target?.eventTitle as string | undefined) ?? (target?.eventReference as string | undefined) ?? '',
+    // Task 36b, ADR-0013 Slice 0: moved verbatim from reasoningPrompt.ts's
+    // update_calendar_event target-field clause (the update half of the
+    // same source sentence create_calendar_event's own comment above
+    // describes) plus the same calendar approval sentence, reused verbatim.
+    // Only edit from source: capitalizing "populate" (mid-sentence in the
+    // original) for standalone use -- no wording changed. Nothing reads
+    // this field yet.
+    promptInstruction:
+      'Populate target.eventReference (or target.eventId if known) plus whichever of eventTitle/start/end changed for update_calendar_event. ' +
+      'create_calendar_event and update_calendar_event require explicit user approval before anything runs -- you are proposing the action, not performing it. Never claim the event was created or updated.',
     previewLines: (target, labels) => [
       target?.eventTitle ? `${labels.title}: ${target.eventTitle as string}` : null,
       target?.start ? `${labels.start}: ${target.start as string}` : null,
@@ -355,6 +393,13 @@ export const writeIntentRegistry: readonly WriteIntentDescriptor[] = [
       approvalReasonKey: 'agent_intent_create_finance_transaction_approval_reason',
     },
     descriptionTitle: (target) => (target?.category as string | undefined) ?? '',
+    // Task 36b, ADR-0013 Slice 0: moved verbatim, word-for-word, from
+    // reasoningPrompt.ts's create_finance_transaction paragraph -- unlike
+    // the calendar entries above, this source paragraph is entirely about
+    // this one intent (no cross-domain content mixed in), so it required no
+    // edits at all to extract. Nothing reads this field yet.
+    promptInstruction:
+      'Requests to record an income or expense transaction map to create_finance_transaction. Populate target.amount and target.direction -- both are required and must never be invented; propose ask_clarification ONLY if amount or direction is missing or unclear. Populate target.currency, target.transactionDate, target.category, and target.description when the message states them. Never ask which date to use and never propose ask_clarification for a missing date -- an unstated transactionDate is resolved deterministically to today outside of you; do not guess a date yourself either. target.iban is used only for the confirmation preview and is validated deterministically -- never invent it. create_finance_transaction ALWAYS requires explicit user approval before anything runs, regardless of any write-permission default -- you are proposing the action, not performing it. Never claim the transaction was recorded.',
     // Task 30: was labels.title/labels.title/labels.due/labels.notes/
     // labels.notes -- task/calendar's own vocabulary reused wholesale,
     // rendering "Title: 45 EUR" and "Title: expense" as two lines both
