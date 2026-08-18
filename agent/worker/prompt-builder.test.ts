@@ -76,6 +76,34 @@ describe('buildChatSystemPrompt', () => {
     }
   })
 
+  // Task 33-fix: production evidence showed the conversational reply
+  // denying GitHub access ("متأسفم، دسترسی ندارم" / "خیر، من به گیت‌هاب
+  // دسترسی ندارم") in the SAME turn a GitHub tool call succeeded. Root
+  // cause (task 33's diagnosis): CHAT_IDENTITY's access enumeration only
+  // ever named "tasks, calendar, or the app" -- it predates GitHub tools
+  // entirely and was never extended, so nothing told the model not to
+  // guess "no access" from its own training prior. Fixed with a DEFERRING
+  // carve-out (neither claim access nor deny it -- GitHub is an optional,
+  // per-user connection, unlike tasks/calendar which every user has), not
+  // a blunt "never say you lack access" copy of the tasks/calendar
+  // wording, which would be actively wrong for a user who genuinely never
+  // connected GitHub. Looped over every language this file's own `Language`
+  // union supports (task 29-fix's registry-loop spirit -- there is no
+  // exported language list to iterate here, so the loop targets the same
+  // three languages CHAT_IDENTITY itself is keyed by, matching the pattern
+  // above rather than inventing a new source of truth just for this test).
+  it.each([
+    ['en', 'Never claim you have access to GitHub and never claim you lack it'],
+    ['de', 'Behaupte niemals, dass du Zugriff auf GitHub hast, und behaupte niemals, dass dir Zugriff fehlt'],
+    ['fa', 'هرگز ادعا نکن که به گیت‌هاب دسترسی داری و هرگز ادعا نکن که دسترسی نداری'],
+  ] as const)('%s: CHAT_IDENTITY contains the deferring GitHub carve-out', (language, deferringPhrase) => {
+    const prompt = buildChatSystemPrompt(language, [])
+    expect(prompt).toContain(deferringPhrase)
+    // The pre-existing tasks/calendar/app wording must survive untouched --
+    // this is an addition, not a rewrite.
+    expect(prompt).toContain('Flow AI')
+  })
+
   it('(b) the identity block is present regardless of whether confirmed memory exists -- not conditional on memory content', () => {
     const withMemory = buildChatSystemPrompt('en', [confirmedSkill('React')])
     const withoutMemory = buildChatSystemPrompt('en', [])
