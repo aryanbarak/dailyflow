@@ -168,6 +168,33 @@ export function MicroBreakOverlay() {
     }
   }
 
+  // MB-03-FIX: the ONLY normal path to finalizeClose() during exit is
+  // motion.div's onAnimationComplete, above. If that callback never fires --
+  // a backgrounded tab suspends the animation's rAF mid-flight, a
+  // framer-motion edge case, or any other page-visibility hiccup while the
+  // ~280ms exit transition is in progress -- `phase` stays 'exiting'
+  // indefinitely. The dialog root's gesture guards (below) are scoped to
+  // 'active' only, but a stuck 'exiting' state still leaves a
+  // position:fixed, full-viewport dialog mounted with document.body.style.
+  // overflow left 'hidden' forever, which reads to a user as "scrolling and
+  // pull-to-refresh are broken everywhere" with no way to escape (they can't
+  // even pull-to-refresh to reload). This mirrors ADR-0014 §3's post-MB-02b
+  // invariant -- exit must not depend on something else (there, the
+  // renderer; here, the exit animation) completing successfully. Generous
+  // margin over HANDOFF_TRANSITION_SECONDS so it never races the normal
+  // path on a healthy device.
+  useEffect(() => {
+    if (phase !== 'exiting') return;
+    const timeoutId = window.setTimeout(
+      () => {
+        if (phaseRef.current === 'exiting') finalizeClose();
+      },
+      (HANDOFF_TRANSITION_SECONDS + 1) * 1000,
+    );
+    return () => window.clearTimeout(timeoutId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
+
   function handleClose() {
     // MB-02b: closable from 'error' too -- Esc/close must work even if the
     // renderer crashed. viewportBallPositionRef.current is already null
@@ -255,7 +282,16 @@ export function MicroBreakOverlay() {
           aria-modal="true"
           aria-label={t('micro_breaks_overlay_aria_label')}
           className="fixed inset-0 z-[100] flex select-none items-center justify-center bg-black/50 backdrop-blur-sm"
-          style={{ overscrollBehavior: 'contain', touchAction: phase === 'active' ? 'none' : undefined }}
+          // MB-03-FIX: scoped to 'active' only (not 'exiting'/'error' too) --
+          // gameplay is the only phase where blocking scroll/pull-to-refresh
+          // is actually needed. Narrowing this window means even a stuck
+          // 'exiting' phase (see the fail-safe timeout above) can no longer
+          // leave a gesture block in place -- see this file's own report for
+          // the MB-03-FIX root-cause writeup.
+          style={{
+            overscrollBehavior: phase === 'active' ? 'contain' : undefined,
+            touchAction: phase === 'active' ? 'none' : undefined,
+          }}
           onContextMenu={event => event.preventDefault()}
         >
           <button
