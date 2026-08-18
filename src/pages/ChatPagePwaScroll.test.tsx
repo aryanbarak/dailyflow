@@ -42,6 +42,16 @@ const srcDir = path.resolve(process.cwd(), "src");
 const chatPageSource = readFileSync(path.join(srcDir, "pages", "ChatPage.tsx"), "utf-8");
 const appLayoutSource = readFileSync(path.join(srcDir, "components", "layout", "AppLayout.tsx"), "utf-8");
 const indexCssSource = readFileSync(path.join(srcDir, "index.css"), "utf-8");
+// Task 38: the mobile <main> this describe block is about was extracted out
+// of AppLayout.tsx's own JSX into its own component (MobilePullToRefreshMain,
+// which layers a custom in-app pull-to-refresh on top of this exact element)
+// -- AppLayout now only references it, it no longer inlines the className
+// itself. The overscroll-contain guarantee this file cares about moved with
+// the element, not away from it.
+const mobilePullToRefreshMainSource = readFileSync(
+  path.join(srcDir, "features", "pull-to-refresh", "MobilePullToRefreshMain.tsx"),
+  "utf-8",
+);
 
 describe("task 20c: overscroll-behavior: contain REMOVED where it existed only to block the browser's native pull-to-refresh gesture", () => {
   it("the global page root (html, body) no longer contains overscroll -- the outermost gesture-blocking link is gone", () => {
@@ -80,7 +90,12 @@ describe("task 20c: overscroll-behavior: contain KEPT where a container is a gen
 
 describe("task 20c: overscroll-behavior: contain deliberately left UNTOUCHED on AppLayout's mobile <main> -- not the chat page root, and inert for chat specifically", () => {
   it("AppLayout's mobile <main> still contains overscroll, unaffected by this task -- it protects every OTHER mobile page's own pull-to-refresh (Settings, Documents, etc.), which this task was never asked to change", () => {
-    expect(appLayoutSource).toMatch(/overflow-auto overscroll-contain/);
+    // Task 38 moved this element (and its className) into
+    // MobilePullToRefreshMain.tsx -- AppLayout.tsx itself now only renders
+    // that component, it no longer inlines the <main> JSX. Verified against
+    // the file that actually owns the element today.
+    expect(mobilePullToRefreshMainSource).toMatch(/overflow-auto overscroll-contain/);
+    expect(appLayoutSource).toMatch(/<MobilePullToRefreshMain\b/);
   });
 });
 

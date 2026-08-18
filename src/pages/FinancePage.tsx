@@ -54,6 +54,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useFinance } from "@/hooks/useFinance";
+import { usePullToRefreshHandler } from "@/features/pull-to-refresh/PullToRefreshContext";
 import {
   Transaction,
   TransactionType,
@@ -153,6 +154,12 @@ export default function FinancePage() {
     error: financeError,
     refresh,
   } = useFinance();
+  // Task 38, point 8: opts this route into the shared pull-to-refresh
+  // gesture -- `refresh` only re-fetches and replaces the `transactions`
+  // array (useFinance.ts), it never touches this page's own local dialog
+  // state (isDialogOpen/editingTx/deleteTarget below), so a mid-edit pull
+  // can't clear an open dialog (task 38, point 9).
+  usePullToRefreshHandler(refresh);
 
   // This Month / All
   const [filter, setFilter] = useState<"month" | "all">("month");

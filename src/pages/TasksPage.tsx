@@ -25,6 +25,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useTasks } from "@/hooks/useTasks";
+import { usePullToRefreshHandler } from "@/features/pull-to-refresh/PullToRefreshContext";
 import { Task } from "@/features/tasks/tasksService";
 import { SmartAcademyWidget } from "@/components/dashboard/SmartAcademyWidget";
 import { useChatSessions } from "@/hooks/useChatSessions";
@@ -84,7 +85,13 @@ export function buildTaskAssistantRequestBody(input: {
 }
 
 export default function TasksPage() {
-  const { tasks, isLoading, error, addTask, updateTask, toggleTaskCompleted, deleteTask } = useTasks();
+  const { tasks, isLoading, error, refresh, addTask, updateTask, toggleTaskCompleted, deleteTask } = useTasks();
+  // Task 38, point 8: opts this route into the shared pull-to-refresh
+  // gesture -- `refresh` only re-fetches and replaces the `tasks` array
+  // (useTasks.ts), it never touches this page's own local dialog state
+  // (isDialogOpen/editingTask/deleteTarget below), so a mid-edit pull can't
+  // clear an open dialog (task 38, point 9).
+  usePullToRefreshHandler(refresh);
   const { t } = useT();
   const interfaceLanguage = useAppearance((state) => state.language);
   const [filter, setFilter] = useState<TaskFilter>("today");

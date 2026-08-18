@@ -13,6 +13,8 @@ import { SmartflowPointerFollower } from "@/components/smartflow";
 import { MicroBreakOverlay } from "@/features/micro-breaks/components/MicroBreakOverlay";
 import { cn } from "@/lib/utils";
 import { resolveShellHeightStyle, useVisualViewportInsets } from "@/features/chat/useVisualViewportInsets";
+import { PullToRefreshProvider } from "@/features/pull-to-refresh/PullToRefreshContext";
+import { MobilePullToRefreshMain } from "@/features/pull-to-refresh/MobilePullToRefreshMain";
 
 // Task 17c, PO decisions D3/D4: on the mobile Flow AI page ONLY, the
 // bottom nav is removed (chat takes the full height; navigation moves into
@@ -60,6 +62,12 @@ function AppLayoutInner() {
       <LaunchExperience />
 
       <div style={appShellStyle} aria-hidden={!shouldShowAppShell}>
+        {/* Task 38: provider for the pull-to-refresh registration contract
+            (usePullToRefreshHandler, called by opted-in pages) -- must wrap
+            BOTH the desktop and mobile <Outlet/> below and
+            MobilePullToRefreshMain itself, all three read/write the same
+            registry. */}
+        <PullToRefreshProvider>
         {/* Task 17h: RESTORED after task 17g incorrectly gated this off the
             chat page as a "stray orb" regression -- the PO likes the
             cursor-following glow and wants it back on every page, unchanged
@@ -138,14 +146,22 @@ function AppLayoutInner() {
               actually overflows/scrolls while displaying chat and never
               becomes the chain link 20c needed to remove. It keeps
               suppressing pull-to-refresh on every OTHER page, which task
-              20c was never asked to change. */}
-          <main className={cn("flex-1 overflow-auto overscroll-contain", !hideMobileChrome && "pb-20")}>
-            <Outlet />
-          </main>
+              20c was never asked to change.
+
+              Task 38: since the native gesture stays suppressed here on
+              purpose (see above), MobilePullToRefreshMain layers a CUSTOM
+              in-app pull-to-refresh on top of this same <main> instead of
+              fighting that decision -- disabled on /chat via the same
+              hideMobileChrome flag every other chat-special-case here
+              already uses. See MobilePullToRefreshMain.tsx and
+              PullToRefreshContext.tsx for the gesture + per-route opt-in
+              contract. */}
+          <MobilePullToRefreshMain disabled={hideMobileChrome} bottomPadding={!hideMobileChrome} />
           {!hideMobileChrome && <MobileNav />}
         </div>
 
         <MiniPlayer />
+        </PullToRefreshProvider>
       </div>
     </div>
   );
