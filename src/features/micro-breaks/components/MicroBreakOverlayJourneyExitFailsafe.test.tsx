@@ -1,20 +1,23 @@
 // @vitest-environment jsdom
 //
-// MB-03-FIX: production regression -- pull-to-refresh stopped working
-// anywhere in the app after MB-03 shipped. Root cause: the dialog root's
-// gesture guards (overscroll-behavior/touch-action) were applied for the
-// WHOLE 'active' | 'exiting' | 'error' lifespan, and the only path back to
-// 'idle' during exit is the handoff animation's onAnimationComplete
-// callback. If that callback never fires -- a backgrounded tab suspending
-// the animation's rAF mid-flight, a framer-motion edge case, or any other
-// page-visibility hiccup during the ~280ms exit transition -- the dialog
-// (and its full-viewport gesture guard) stayed mounted indefinitely.
+// MB-05: re-verifies the MB-03-FIX exit fail-safe (see
+// MicroBreakOverlayExitFailsafe.test.tsx) still works in the Orb Journey
+// context -- the task's own brief requires this explicitly, since Journey
+// reuses the SAME overlay exit machinery. The fail-safe timeout effect in
+// MicroBreakOverlay.tsx operates purely on `phase === 'exiting'`, with no
+// sessionType branching at all, so this is expected to pass unchanged --
+// this file exists to PROVE that, not assume it. Mirrors
+// MicroBreakOverlayExitFailsafe.test.tsx's own stuck-animation mock
+// (deliberately different from this directory's OTHER Journey test file,
+// MicroBreakOverlayJourney.test.tsx, which mocks framer-motion to complete
+// SYNCHRONOUSLY -- a stuck mock and a synchronous mock cannot coexist in one
+// file since vi.mock is file-scoped).
 //
-// Unlike MicroBreakOverlay.test.tsx (which mocks framer-motion to complete
-// SYNCHRONOUSLY so it can test the normal, healthy exit path), this file
-// mocks it to simulate a STUCK animation -- onAnimationComplete is captured
-// but deliberately never invoked -- so the fail-safe timeout path itself is
-// exercised, not just the happy path.
+// JourneyCanvas itself is NOT mocked here (same choice
+// MicroBreakOverlayExitFailsafe.test.tsx makes for PongCanvas) -- jsdom's
+// canvas getContext() returns null, and JourneyCanvas's renderFrame() has
+// the same `if (!canvas || !ctx) return` guard PongCanvas does, so it mounts
+// and no-ops safely without needing a mock.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import '@testing-library/jest-dom/vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
@@ -24,8 +27,7 @@ vi.mock('framer-motion', async () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function MotionDivMock({ children, ...rest }: Record<string, any>) {
     // Deliberately never calls onAnimationComplete -- simulates a handoff
-    // animation that never resolves (e.g. a backgrounded tab suspending its
-    // rAF mid-flight).
+    // animation that never resolves.
     delete rest.initial;
     delete rest.animate;
     delete rest.transition;
@@ -97,27 +99,8 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('MicroBreakOverlay exit fail-safe (MB-03-FIX)', () => {
-  it('gesture guards (touch-action/overscroll-behavior) are OFF once exiting, even before the handoff animation resolves', async () => {
-    render(<MicroBreakOverlay />);
-    act(() => useMicroBreaksStore.getState().startBreak());
-    await screen.findByRole('dialog');
-    fireEvent.click(screen.getByRole('button', { name: 'Quick Break' }));
-    const dialog = await screen.findByRole('dialog');
-    // While actually playing, the guard IS on.
-    expect(dialog.style.touchAction).toBe('none');
-    expect(dialog.style.overscrollBehavior).toBe('contain');
-
-    fireEvent.click(screen.getByRole('button', { name: 'Close micro break' }));
-
-    // The mock never resolves the handoff animation, so this is still
-    // mounted ('exiting') -- but the guard must already be off.
-    const stillMountedDialog = screen.getByRole('dialog');
-    expect(stillMountedDialog.style.touchAction).not.toBe('none');
-    expect(stillMountedDialog.style.overscrollBehavior).not.toBe('contain');
-  });
-
-  it('if the handoff animation never completes, a fail-safe timeout still tears the overlay down (body scroll-lock restored, dialog unmounted, gameActive false)', async () => {
+describe('MicroBreakOverlay Orb Journey exit fail-safe (MB-05, re-verifying MB-03-FIX)', () => {
+  it('if the handoff animation never completes during a Journey session, the SAME fail-safe timeout still tears the overlay down', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     render(<MicroBreakOverlay />);
     act(() => useMicroBreaksStore.getState().startBreak());
@@ -125,11 +108,8 @@ describe('MicroBreakOverlay exit fail-safe (MB-03-FIX)', () => {
     expect(document.body.style.overflow).toBe('hidden');
 
     act(() => {
-      fireEvent.click(screen.getByRole('button', { name: 'Quick Break' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Orb Journey' }));
     });
-    // Distinguishes "actually in the 'active' phase now" from the close
-    // button (present on the choice screen too) -- PongCanvas only mounts
-    // once a session type is picked.
     await vi.waitFor(() => expect(document.querySelector('canvas')).not.toBeNull());
 
     act(() => {

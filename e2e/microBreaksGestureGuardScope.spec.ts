@@ -47,6 +47,11 @@ test.describe('Micro Breaks gesture-guard scope (MB-03-FIX)', () => {
   test('close button path: guard is present while playing, fully gone afterward', async ({ page }) => {
     await page.goto(HARNESS_URL, { waitUntil: 'networkidle' });
     await page.click(START_BUTTON);
+    // ADR-0015 § 8: the overlay now shows a session-type choice screen
+    // before either game starts -- pick "Quick Break" to reach the exact
+    // same game-active state these Quick-Break-focused specs always
+    // exercised before this slice.
+    await page.getByRole('button', { name: 'Quick Break' }).click();
 
     const dialog = page.getByRole('dialog');
     await expect(dialog).toHaveCSS('overscroll-behavior-y', 'contain');
@@ -67,6 +72,11 @@ test.describe('Micro Breaks gesture-guard scope (MB-03-FIX)', () => {
   test('Esc path: guard is present while playing, fully gone afterward', async ({ page }) => {
     await page.goto(HARNESS_URL, { waitUntil: 'networkidle' });
     await page.click(START_BUTTON);
+    // ADR-0015 § 8: the overlay now shows a session-type choice screen
+    // before either game starts -- pick "Quick Break" to reach the exact
+    // same game-active state these Quick-Break-focused specs always
+    // exercised before this slice.
+    await page.getByRole('button', { name: 'Quick Break' }).click();
 
     const dialog = page.getByRole('dialog');
     await expect(dialog).toHaveCSS('overscroll-behavior-y', 'contain');
@@ -99,6 +109,11 @@ test.describe('Micro Breaks gesture-guard scope (MB-03-FIX)', () => {
 
     await page.goto(HARNESS_URL, { waitUntil: 'networkidle' });
     await page.click(START_BUTTON);
+    // ADR-0015 § 8: the overlay now shows a session-type choice screen
+    // before either game starts -- pick "Quick Break" to reach the exact
+    // same game-active state these Quick-Break-focused specs always
+    // exercised before this slice.
+    await page.getByRole('button', { name: 'Quick Break' }).click();
 
     const dialog = page.getByRole('dialog');
     await expect(page.getByText('Something went wrong with the game')).toBeVisible();

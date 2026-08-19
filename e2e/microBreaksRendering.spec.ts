@@ -16,6 +16,11 @@ test.describe('Micro Breaks canvas rendering (MB-02b)', () => {
 
     await page.goto(HARNESS_URL, { waitUntil: 'networkidle' });
     await page.click(START_BUTTON);
+    // ADR-0015 § 8: the overlay now shows a session-type choice screen
+    // before either game starts -- pick "Quick Break" to reach the exact
+    // same game-active state these Quick-Break-focused specs always
+    // exercised before this slice.
+    await page.getByRole('button', { name: 'Quick Break' }).click();
 
     const dialog = page.getByRole('dialog');
     await expect(dialog).toBeVisible();
@@ -80,6 +85,11 @@ test.describe('Micro Breaks canvas rendering (MB-02b)', () => {
 
     await page.goto(HARNESS_URL, { waitUntil: 'networkidle' });
     await page.click(START_BUTTON);
+    // ADR-0015 § 8: the overlay now shows a session-type choice screen
+    // before either game starts -- pick "Quick Break" to reach the exact
+    // same game-active state these Quick-Break-focused specs always
+    // exercised before this slice.
+    await page.getByRole('button', { name: 'Quick Break' }).click();
 
     const dialog = page.getByRole('dialog');
     await expect(dialog).toBeVisible();
@@ -111,6 +121,11 @@ test.describe('Micro Breaks canvas rendering (MB-02b)', () => {
 
     await page.goto(HARNESS_URL, { waitUntil: 'networkidle' });
     await page.click(START_BUTTON);
+    // ADR-0015 § 8: the overlay now shows a session-type choice screen
+    // before either game starts -- pick "Quick Break" to reach the exact
+    // same game-active state these Quick-Break-focused specs always
+    // exercised before this slice.
+    await page.getByRole('button', { name: 'Quick Break' }).click();
 
     const dialog = page.getByRole('dialog');
     await expect(dialog).toBeVisible();

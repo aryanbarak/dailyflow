@@ -21,6 +21,11 @@ test.describe('Micro Breaks mobile/PWA acceptance (MB-03)', () => {
     await page.setViewportSize({ width: 390, height: 844 }); // portrait phone
     await page.goto(HARNESS_URL, { waitUntil: 'networkidle' });
     await page.click(START_BUTTON);
+    // ADR-0015 § 8: the overlay now shows a session-type choice screen
+    // before either game starts -- pick "Quick Break" to reach the exact
+    // same game-active state these Quick-Break-focused specs always
+    // exercised before this slice.
+    await page.getByRole('button', { name: 'Quick Break' }).click();
     await page.waitForTimeout(400);
 
     const beforeResize = await page.evaluate(() => {
@@ -59,6 +64,11 @@ test.describe('Micro Breaks mobile/PWA acceptance (MB-03)', () => {
   test('the close control and HUD carry safe-area-inset CSS in the real DOM (not just in source)', async ({ page }) => {
     await page.goto(HARNESS_URL, { waitUntil: 'networkidle' });
     await page.click(START_BUTTON);
+    // ADR-0015 § 8: the overlay now shows a session-type choice screen
+    // before either game starts -- pick "Quick Break" to reach the exact
+    // same game-active state these Quick-Break-focused specs always
+    // exercised before this slice.
+    await page.getByRole('button', { name: 'Quick Break' }).click();
 
     const closeButtonStyle = await page.evaluate(() => {
       const button = document.querySelector('button[aria-label="Close micro break"]') as HTMLElement | null;
@@ -73,6 +83,11 @@ test.describe('Micro Breaks mobile/PWA acceptance (MB-03)', () => {
   test('the dialog root carries the gesture-guard CSS (touch-action/overscroll-behavior) while playing', async ({ page }) => {
     await page.goto(HARNESS_URL, { waitUntil: 'networkidle' });
     await page.click(START_BUTTON);
+    // ADR-0015 § 8: the overlay now shows a session-type choice screen
+    // before either game starts -- pick "Quick Break" to reach the exact
+    // same game-active state these Quick-Break-focused specs always
+    // exercised before this slice.
+    await page.getByRole('button', { name: 'Quick Break' }).click();
 
     const dialog = page.getByRole('dialog');
     await expect(dialog).toHaveCSS('overscroll-behavior-y', 'contain');

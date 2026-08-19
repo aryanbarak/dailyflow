@@ -18,6 +18,15 @@ const MICRO_BREAKS_KEYS: TranslationKey[] = [
   'settings_micro_breaks_title',
   'settings_micro_breaks_duration_label',
   'micro_breaks_duration_option',
+  // ADR-0015, MB-05 slice 1.
+  'micro_breaks_session_choice_title',
+  'micro_breaks_session_choice_quick_break',
+  'micro_breaks_session_choice_quick_break_desc',
+  'micro_breaks_session_choice_journey',
+  'micro_breaks_session_choice_journey_desc',
+  'micro_breaks_journey_overlay_aria_label',
+  'micro_breaks_journey_room_value',
+  'micro_breaks_journey_cleared_label',
 ];
 
 const LANGS: Lang[] = ['en', 'de', 'fa'];

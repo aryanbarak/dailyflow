@@ -66,6 +66,18 @@ function resetStore() {
   useAppearance.setState({ microBreakDurationSeconds: 90 });
 }
 
+// ADR-0015 §8: the overlay now shows a session-type choice screen before
+// either game starts -- every existing lifecycle/focus test below needs to
+// pick "Quick Break" first to reach the same game-active state it used to
+// land on immediately. This is exactly the behavior change ADR-0015 §8
+// requires, not a regression: PongCanvas itself, once reached, receives the
+// identical props it always did (see MicroBreakOverlay.tsx's own render).
+async function chooseQuickBreak() {
+  const dialog = await screen.findByRole('dialog');
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Quick Break' }));
+  return dialog;
+}
+
 beforeEach(() => {
   vi.stubGlobal('localStorage', new MemoryStorage());
   resetStore();
@@ -115,11 +127,14 @@ describe('MicroBreakOverlay lifecycle (ADR-0014 §3)', () => {
       useMicroBreaksStore.getState().startBreak();
     });
 
-    const dialog = await screen.findByRole('dialog');
-    expect(dialog).toHaveAttribute('aria-modal', 'true');
-    expect(dialog).toHaveAttribute('aria-label', 'Micro break: Classic Pong');
+    const choosingDialog = await screen.findByRole('dialog');
+    expect(choosingDialog).toHaveAttribute('aria-modal', 'true');
     expect(document.activeElement).not.toBe(trigger); // initial focus moved inside the overlay
-    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(choosingDialog.contains(document.activeElement)).toBe(true);
+    fireEvent.click(within(choosingDialog).getByRole('button', { name: 'Quick Break' }));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveAttribute('aria-label', 'Micro break: Classic Pong');
     expect(useMicroBreaksStore.getState().gameActive).toBe(true);
 
     const cancelSpy = vi.spyOn(window, 'cancelAnimationFrame');
@@ -136,12 +151,14 @@ describe('MicroBreakOverlay lifecycle (ADR-0014 §3)', () => {
     document.body.removeChild(trigger);
   });
 
-  it('scroll-lock: body overflow is hidden while the overlay is open and restored on close', async () => {
+  it('scroll-lock: body overflow is hidden while the overlay is open (through the choice screen and into gameplay) and restored on close', async () => {
     render(<MicroBreakOverlay />);
     act(() => {
       useMicroBreaksStore.getState().startBreak();
     });
     await screen.findByRole('dialog');
+    expect(document.body.style.overflow).toBe('hidden'); // already locked on the choice screen, ADR-0014 §3 applies to the whole dialog
+    await chooseQuickBreak();
     expect(document.body.style.overflow).toBe('hidden');
 
     fireEvent.keyDown(document, { key: 'Escape' });
@@ -149,6 +166,20 @@ describe('MicroBreakOverlay lifecycle (ADR-0014 §3)', () => {
   });
 
   it('the visible close button closes the overlay the same way Esc does', async () => {
+    render(<MicroBreakOverlay />);
+    act(() => {
+      useMicroBreaksStore.getState().startBreak();
+    });
+    const dialog = await chooseQuickBreak();
+    const closeButton = within(dialog).getByRole('button', { name: 'Close micro break' });
+
+    fireEvent.click(closeButton);
+
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(useMicroBreaksStore.getState().gameActive).toBe(false);
+  });
+
+  it('the visible close button closes the overlay from the choice screen too (before any session type is picked)', async () => {
     render(<MicroBreakOverlay />);
     act(() => {
       useMicroBreaksStore.getState().startBreak();
@@ -169,7 +200,7 @@ describe('MicroBreakOverlay focus containment (ADR-0014 §3)', () => {
     act(() => {
       useMicroBreaksStore.getState().startBreak();
     });
-    const dialog = await screen.findByRole('dialog');
+    const dialog = await chooseQuickBreak();
 
     const focusable = dialog.querySelectorAll('button');
     const last = focusable[focusable.length - 1] as HTMLElement;
@@ -194,7 +225,7 @@ describe('MicroBreakOverlay focus containment (ADR-0014 §3)', () => {
     act(() => {
       useMicroBreaksStore.getState().startBreak();
     });
-    const dialog = await screen.findByRole('dialog');
+    const dialog = await chooseQuickBreak();
     const first = dialog.querySelectorAll('button')[0] as HTMLElement;
     first.focus();
 

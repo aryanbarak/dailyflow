@@ -75,6 +75,15 @@ function resetStore() {
   useAppearance.setState({ microBreakDurationSeconds: 90 });
 }
 
+// ADR-0015 §8: pick "Quick Break" on the new choice screen before any of
+// these HUD assertions -- see MicroBreakOverlay.test.tsx's own comment on
+// the same helper for why this isn't a regression.
+async function chooseQuickBreak() {
+  await screen.findByRole('dialog');
+  fireEvent.click(screen.getByRole('button', { name: 'Quick Break' }));
+  await screen.findByTestId('pong-canvas-stub');
+}
+
 beforeEach(() => {
   vi.stubGlobal('localStorage', new MemoryStorage());
   resetStore();
@@ -105,7 +114,7 @@ describe('MicroBreakOverlay HUD: combo (MB-03, ADR-0014 §11-12)', () => {
   it('combo is NOT shown when below 2', async () => {
     render(<MicroBreakOverlay />);
     act(() => useMicroBreaksStore.getState().startBreak());
-    await screen.findByRole('dialog');
+    await chooseQuickBreak();
 
     fireEvent.click(screen.getByText('simulate-combo-1'));
     expect(screen.queryByText(/^Combo x/)).toBeNull();
@@ -114,7 +123,7 @@ describe('MicroBreakOverlay HUD: combo (MB-03, ADR-0014 §11-12)', () => {
   it('combo IS shown once it reaches 2 or more', async () => {
     render(<MicroBreakOverlay />);
     act(() => useMicroBreaksStore.getState().startBreak());
-    await screen.findByRole('dialog');
+    await chooseQuickBreak();
 
     fireEvent.click(screen.getByText('simulate-combo-3'));
     expect(screen.getByText('Combo x3')).toBeInTheDocument();
@@ -125,7 +134,7 @@ describe('MicroBreakOverlay HUD: final wave (MB-03, ADR-0014 §12)', () => {
   it('is not shown with plenty of time left', async () => {
     render(<MicroBreakOverlay />);
     act(() => useMicroBreaksStore.getState().startBreak());
-    await screen.findByRole('dialog');
+    await chooseQuickBreak();
 
     fireEvent.click(screen.getByText('simulate-time-45'));
     expect(screen.queryByText('Final stretch!')).toBeNull();
@@ -134,7 +143,7 @@ describe('MicroBreakOverlay HUD: final wave (MB-03, ADR-0014 §12)', () => {
   it('is shown once remaining time drops to the final-wave window (<=10s)', async () => {
     render(<MicroBreakOverlay />);
     act(() => useMicroBreaksStore.getState().startBreak());
-    await screen.findByRole('dialog');
+    await chooseQuickBreak();
 
     fireEvent.click(screen.getByText('simulate-time-8-final-wave'));
     expect(screen.getByText('Final stretch!')).toBeInTheDocument();
@@ -147,7 +156,7 @@ describe('MicroBreakOverlay: duration preset (MB-03, ADR-0014 §7)', () => {
 
     render(<MicroBreakOverlay />);
     act(() => useMicroBreaksStore.getState().startBreak());
-    await screen.findByRole('dialog');
+    await chooseQuickBreak();
 
     expect(screen.getByText('Time: 60s')).toBeInTheDocument();
   });
@@ -157,7 +166,7 @@ describe('MicroBreakOverlay: duration preset (MB-03, ADR-0014 §7)', () => {
 
     render(<MicroBreakOverlay />);
     act(() => useMicroBreaksStore.getState().startBreak());
-    await screen.findByRole('dialog');
+    await chooseQuickBreak();
     expect(screen.getByText('Time: 60s')).toBeInTheDocument();
 
     // Change the PREFERENCE mid-game -- the running session must be unaffected.
@@ -172,7 +181,7 @@ describe('MicroBreakOverlay: duration preset (MB-03, ADR-0014 §7)', () => {
 
     render(<MicroBreakOverlay />);
     act(() => useMicroBreaksStore.getState().startBreak());
-    await screen.findByRole('dialog');
+    await chooseQuickBreak();
 
     expect(screen.getByText('Time: 90s')).toBeInTheDocument();
   });

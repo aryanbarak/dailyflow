@@ -4,6 +4,8 @@ import { AlertTriangle, X } from 'lucide-react';
 import { useT } from '@/i18n';
 import { isolateBidiRunsInText, resolveMessageBaseDirection } from '@/lib/bidiText';
 import { useAppearance } from '@/features/settings/appearanceStore';
+import { JourneyCanvas } from '@/features/orb-journey/JourneyCanvas';
+import type { JourneyPhase } from '@/features/orb-journey/roomEngine';
 import { useMicroBreaksStore } from '../store/microBreaksStore';
 import { useOrbVisualTokens, type OrbVisualTokens } from '../orbTokens';
 import { getLastPointerPosition } from '../pointerPositionRef';
@@ -11,7 +13,17 @@ import { DEFAULT_MICRO_BREAK_DURATION_SECONDS, resolveMicroBreakDurationSeconds,
 import { BOARD_ASPECT_RATIO, FINAL_WAVE_WINDOW_SECONDS, HANDOFF_EASE, HANDOFF_TRANSITION_SECONDS } from '../tuning';
 import { PongCanvas, type ViewportPoint } from './PongCanvas';
 
-type OverlayPhase = 'idle' | 'active' | 'exiting' | 'error';
+// ADR-0015 §1: two session INTENTS over the one shared engine, not two
+// separate products -- 'quick-break' is the existing, unchanged Classic
+// Pong; 'journey' is new. Chosen once per open, on the 'choosing' screen.
+type SessionType = 'quick-break' | 'journey';
+
+// ADR-0015 §8: 'choosing' is a new phase inserted BEFORE 'active' -- the
+// existing entry surfaces (command palette, MobileNav) still just flip
+// `gameActive`; this overlay now shows a session-type choice first instead
+// of assuming Quick Break. Every phase after 'choosing' behaves exactly as
+// it did before this slice for whichever sessionType was picked.
+type OverlayPhase = 'idle' | 'choosing' | 'active' | 'exiting' | 'error';
 
 function viewportCenter(): ViewportPoint {
   return { x: window.innerWidth / 2, y: window.innerHeight / 2 };
@@ -91,10 +103,18 @@ export function MicroBreakOverlay() {
 
   const [phase, setPhase] = useState<OverlayPhase>('idle');
   const [handoff, setHandoff] = useState<HandoffPoints | null>(null);
+  const [sessionType, setSessionType] = useState<SessionType | null>(null);
   const [score, setScore] = useState(0);
   const [combo, setCombo] = useState(0);
   const [remainingSeconds, setRemainingSeconds] = useState<number>(DEFAULT_MICRO_BREAK_DURATION_SECONDS);
   const [activeDurationSeconds, setActiveDurationSeconds] = useState<MicroBreakDurationSeconds>(DEFAULT_MICRO_BREAK_DURATION_SECONDS);
+  // ADR-0015 §6: Journey's own running state -- room number, cumulative
+  // score, and the 'cleared' acknowledgement (see roomEngine.ts's own
+  // comment on JourneyPhase). Deliberately separate state from Quick
+  // Break's score/remainingSeconds above, never read by that session type.
+  const [journeyRoom, setJourneyRoom] = useState(1);
+  const [journeyScore, setJourneyScore] = useState(0);
+  const [journeyPhase, setJourneyPhase] = useState<JourneyPhase>('playing');
 
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -108,11 +128,12 @@ export function MicroBreakOverlay() {
 
   // Entry: gameActive flips false -> true (an entry point called
   // startBreak()). Captures everything needed to restore the workspace on
-  // exit, snapshots the CURRENT duration preset (MB-03 §3: read once at
-  // game start, never reactively -- a mid-game Settings change must not
-  // affect the running session), and mounts the stage. The handoff's
-  // measured target point is set by the SEPARATE layout effect below, once
-  // the stage has real geometry to measure.
+  // exit and shows the session-type choice screen (ADR-0015 §8) -- neither
+  // session type's own state is touched yet, only whichever one the user
+  // picks gets initialized (see handleChooseQuickBreak/handleChooseJourney
+  // below). The handoff's measured target point is set by the SEPARATE
+  // layout effect below, once the game stage exists to measure (i.e. once
+  // phase reaches 'active', after a choice is made).
   useLayoutEffect(() => {
     if (!gameActive || phase !== 'idle') return;
 
@@ -120,15 +141,29 @@ export function MicroBreakOverlay() {
     previousOverflowRef.current = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
 
+    entryPointRef.current = getLastPointerPosition() ?? viewportCenter();
+    setPhase('choosing');
+  }, [gameActive, phase]);
+
+  // ADR-0015 §8: "New Journey" only this slice (no persistence, so
+  // "Continue Journey" is not yet meaningful -- ADR-0015 §9).
+  function handleChooseQuickBreak() {
     const preset = resolveMicroBreakDurationSeconds(useAppearance.getState().microBreakDurationSeconds);
     setActiveDurationSeconds(preset);
     setScore(0);
     setCombo(0);
     setRemainingSeconds(preset);
-
-    entryPointRef.current = getLastPointerPosition() ?? viewportCenter();
+    setSessionType('quick-break');
     setPhase('active');
-  }, [gameActive, phase]);
+  }
+
+  function handleChooseJourney() {
+    setJourneyRoom(1);
+    setJourneyScore(0);
+    setJourneyPhase('playing');
+    setSessionType('journey');
+    setPhase('active');
+  }
 
   // MB-03, mobile/PWA acceptance: the entry handoff's "game start position"
   // is now a REAL getBoundingClientRect() measurement of the stage that's
@@ -147,9 +182,11 @@ export function MicroBreakOverlay() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 
-  // Initial focus, placed inside the overlay the moment it becomes active.
+  // Initial focus, placed inside the overlay the moment it becomes active
+  // OR reaches the choice screen (ADR-0015 §8: the choice screen is still
+  // part of the same dialog, focus must land inside it immediately too).
   useEffect(() => {
-    if (phase === 'active') closeButtonRef.current?.focus();
+    if (phase === 'active' || phase === 'choosing') closeButtonRef.current?.focus();
   }, [phase]);
 
   function finalizeClose() {
@@ -158,6 +195,10 @@ export function MicroBreakOverlay() {
     previousFocusRef.current?.focus?.();
     setPhase('idle');
     setHandoff(null);
+    setSessionType(null);
+    setJourneyRoom(1);
+    setJourneyScore(0);
+    setJourneyPhase('playing');
   }
 
   function handleHandoffComplete() {
@@ -200,7 +241,11 @@ export function MicroBreakOverlay() {
     // renderer crashed. viewportBallPositionRef.current is already null
     // (or stale-but-harmless) in that case; the viewportCenter() fallback
     // covers it the same way it covers a close fired before the first tick.
-    if (phaseRef.current !== 'active' && phaseRef.current !== 'error') return;
+    // ADR-0015 §8: also closable from 'choosing' -- the choice screen is
+    // still part of the dialog, ADR-0014 §3's "immediate Esc exit" applies
+    // to the whole dialog, not just active gameplay. No ball position
+    // exists yet there either, same viewportCenter() fallback covers it.
+    if (phaseRef.current !== 'active' && phaseRef.current !== 'error' && phaseRef.current !== 'choosing') return;
     const exitFrom = viewportBallPositionRef.current ?? viewportCenter();
     const exitTo = getLastPointerPosition() ?? exitFrom;
     setHandoff({ from: exitFrom, to: exitTo });
@@ -271,7 +316,20 @@ export function MicroBreakOverlay() {
   const timeText = t('micro_breaks_time_value', { seconds: Math.max(0, Math.ceil(remainingSeconds)) });
   const comboText = t('micro_breaks_combo_value', { combo });
   const finalWaveText = t('micro_breaks_final_wave_label');
-  const showFinalWave = phase === 'active' && remainingSeconds <= FINAL_WAVE_WINDOW_SECONDS;
+  const showFinalWave = phase === 'active' && sessionType === 'quick-break' && remainingSeconds <= FINAL_WAVE_WINDOW_SECONDS;
+
+  const journeyScoreText = t('micro_breaks_score_value', { score: journeyScore });
+  const journeyRoomText = t('micro_breaks_journey_room_value', { room: journeyRoom });
+  const journeyClearedText = t('micro_breaks_journey_cleared_label');
+
+  // ADR-0015 §8: the choice screen is still "a micro break" generically;
+  // once a session type is picked, its own specific label takes over.
+  const dialogAriaLabel =
+    phase === 'active' && sessionType === 'journey'
+      ? t('micro_breaks_journey_overlay_aria_label')
+      : phase === 'active' && sessionType === 'quick-break'
+        ? t('micro_breaks_overlay_aria_label')
+        : t('micro_breaks_entry_label');
 
   return (
     <>
@@ -280,7 +338,7 @@ export function MicroBreakOverlay() {
           ref={dialogRef}
           role="dialog"
           aria-modal="true"
-          aria-label={t('micro_breaks_overlay_aria_label')}
+          aria-label={dialogAriaLabel}
           className="fixed inset-0 z-[100] flex select-none items-center justify-center bg-black/50 backdrop-blur-sm"
           // MB-03-FIX: scoped to 'active' only (not 'exiting'/'error' too) --
           // gameplay is the only phase where blocking scroll/pull-to-refresh
@@ -305,7 +363,43 @@ export function MicroBreakOverlay() {
             <X className="h-5 w-5" />
           </button>
 
-          {phase === 'active' && (
+          {phase === 'choosing' && (
+            <div className="flex w-full max-w-xs flex-col items-center gap-3 rounded-xl bg-card px-6 py-8 text-center shadow-lg">
+              <p dir={resolveMessageBaseDirection(t('micro_breaks_session_choice_title'))} className="text-sm font-medium text-muted-foreground">
+                {isolateBidiRunsInText(t('micro_breaks_session_choice_title'), 'mb-choice-title')}
+              </p>
+              <button
+                type="button"
+                onClick={handleChooseQuickBreak}
+                aria-label={t('micro_breaks_session_choice_quick_break')}
+                aria-describedby="mb-choice-quick-break-desc"
+                className="flex w-full flex-col gap-0.5 rounded-lg bg-secondary/60 px-4 py-3 text-left transition-colors hover:bg-secondary"
+              >
+                <span className="font-medium" aria-hidden="true">
+                  {t('micro_breaks_session_choice_quick_break')}
+                </span>
+                <span id="mb-choice-quick-break-desc" className="text-xs text-muted-foreground">
+                  {t('micro_breaks_session_choice_quick_break_desc')}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={handleChooseJourney}
+                aria-label={t('micro_breaks_session_choice_journey')}
+                aria-describedby="mb-choice-journey-desc"
+                className="flex w-full flex-col gap-0.5 rounded-lg bg-secondary/60 px-4 py-3 text-left transition-colors hover:bg-secondary"
+              >
+                <span className="font-medium" aria-hidden="true">
+                  {t('micro_breaks_session_choice_journey')}
+                </span>
+                <span id="mb-choice-journey-desc" className="text-xs text-muted-foreground">
+                  {t('micro_breaks_session_choice_journey_desc')}
+                </span>
+              </button>
+            </div>
+          )}
+
+          {phase === 'active' && sessionType === 'quick-break' && (
             <div
               className="absolute z-10 flex flex-col gap-1 rounded-xl bg-card/80 px-4 py-2 text-sm shadow-lg"
               style={{ ...SAFE_AREA_TOP, ...SAFE_AREA_LEFT }}
@@ -329,7 +423,29 @@ export function MicroBreakOverlay() {
             </div>
           )}
 
-          {phase === 'active' && (
+          {/* ADR-0015 §6: room number + running score, deliberately NO timer
+              display -- the key visual difference from Quick Break's
+              countdown, since Journey is untimed. */}
+          {phase === 'active' && sessionType === 'journey' && (
+            <div
+              className="absolute z-10 flex flex-col gap-1 rounded-xl bg-card/80 px-4 py-2 text-sm shadow-lg"
+              style={{ ...SAFE_AREA_TOP, ...SAFE_AREA_LEFT }}
+            >
+              <span dir={resolveMessageBaseDirection(journeyRoomText)} className="font-medium">
+                {isolateBidiRunsInText(journeyRoomText, 'mb-journey-room')}
+              </span>
+              <span dir={resolveMessageBaseDirection(journeyScoreText)} className="text-muted-foreground">
+                {isolateBidiRunsInText(journeyScoreText, 'mb-journey-score')}
+              </span>
+              {journeyPhase === 'cleared' && (
+                <span dir={resolveMessageBaseDirection(journeyClearedText)} className="font-medium text-primary">
+                  {isolateBidiRunsInText(journeyClearedText, 'mb-journey-cleared')}
+                </span>
+              )}
+            </div>
+          )}
+
+          {phase === 'active' && sessionType === 'quick-break' && (
             <div
               ref={canvasContainerRef}
               className="relative mx-auto w-full max-w-[480px]"
@@ -342,6 +458,23 @@ export function MicroBreakOverlay() {
                 onComboChange={setCombo}
                 onTimeChange={setRemainingSeconds}
                 onGameEnd={handleClose}
+                viewportBallPositionRef={viewportBallPositionRef}
+                onRenderError={handleRenderError}
+              />
+            </div>
+          )}
+
+          {phase === 'active' && sessionType === 'journey' && (
+            <div
+              ref={canvasContainerRef}
+              className="relative mx-auto w-full max-w-[480px]"
+              style={{ aspectRatio: String(BOARD_ASPECT_RATIO), maxHeight: 'min(70vh, 720px)' }}
+            >
+              <JourneyCanvas
+                containerRef={canvasContainerRef}
+                onRoomChange={setJourneyRoom}
+                onScoreChange={setJourneyScore}
+                onPhaseChange={setJourneyPhase}
                 viewportBallPositionRef={viewportBallPositionRef}
                 onRenderError={handleRenderError}
               />

@@ -1051,6 +1051,16 @@ const en = {
   settings_micro_breaks_title: 'Micro Breaks',
   settings_micro_breaks_duration_label: 'Break duration',
   micro_breaks_duration_option: '{{seconds}}s',
+
+  // ADR-0015, MB-05 slice 1: Orb Journey session-type choice + HUD.
+  micro_breaks_session_choice_title: 'Choose a break',
+  micro_breaks_session_choice_quick_break: 'Quick Break',
+  micro_breaks_session_choice_quick_break_desc: 'A fixed-length round of Classic Pong',
+  micro_breaks_session_choice_journey: 'Orb Journey',
+  micro_breaks_session_choice_journey_desc: 'An untimed run through a sequence of rooms',
+  micro_breaks_journey_overlay_aria_label: 'Micro break: Orb Journey',
+  micro_breaks_journey_room_value: 'Room {{room}}',
+  micro_breaks_journey_cleared_label: 'Rooms cleared — keep playing!',
 };
 
 type TranslationDict = typeof en;
@@ -2062,6 +2072,16 @@ const de: TranslationDict = {
   settings_micro_breaks_title: 'Kurze Pausen',
   settings_micro_breaks_duration_label: 'Pausendauer',
   micro_breaks_duration_option: '{{seconds}} s',
+
+  // ADR-0015, MB-05 slice 1: Orb Journey session-type choice + HUD.
+  micro_breaks_session_choice_title: 'Pause wählen',
+  micro_breaks_session_choice_quick_break: 'Kurze Pause',
+  micro_breaks_session_choice_quick_break_desc: 'Eine Runde Classic Pong mit fester Dauer',
+  micro_breaks_session_choice_journey: 'Orb-Reise',
+  micro_breaks_session_choice_journey_desc: 'Ein zeitlich unbegrenzter Lauf durch eine Reihe von Räumen',
+  micro_breaks_journey_overlay_aria_label: 'Kurze Pause: Orb-Reise',
+  micro_breaks_journey_room_value: 'Raum {{room}}',
+  micro_breaks_journey_cleared_label: 'Alle Räume geschafft — weiter geht’s!',
 };
 
 const fa: TranslationDict = {
@@ -3071,6 +3091,16 @@ const fa: TranslationDict = {
   settings_micro_breaks_title: 'استراحت‌های کوتاه',
   settings_micro_breaks_duration_label: 'مدت استراحت',
   micro_breaks_duration_option: '{{seconds}} ثانیه',
+
+  // ADR-0015, MB-05 slice 1: Orb Journey session-type choice + HUD.
+  micro_breaks_session_choice_title: 'یک استراحت انتخاب کنید',
+  micro_breaks_session_choice_quick_break: 'استراحت کوتاه',
+  micro_breaks_session_choice_quick_break_desc: 'یک دور با مدت‌زمان مشخص از پونگ کلاسیک',
+  micro_breaks_session_choice_journey: 'سفر گوی',
+  micro_breaks_session_choice_journey_desc: 'یک مسیر بدون محدودیت زمانی در میان مجموعه‌ای از اتاق‌ها',
+  micro_breaks_journey_overlay_aria_label: 'استراحت کوتاه: سفر گوی',
+  micro_breaks_journey_room_value: 'اتاق {{room}}',
+  micro_breaks_journey_cleared_label: 'همه اتاق‌ها تمام شد — به بازی ادامه دهید!',
 };
 
 export type TranslationKey = keyof TranslationDict;

@@ -74,6 +74,17 @@ export interface PongState {
   readonly combo: number; // MB-03: consecutive-hit streak; resets to 0 on a floor bounce (miss), never reduces score
   readonly elapsedSeconds: number;
   readonly status: PongStatus;
+  /** MB-05, ADR-0015: monotonically incremented every time the floor-bounce
+   *  branch below runs. Purely additive -- Quick Break (ADR-0014) never
+   *  reads it, floor-bounce PHYSICS are completely unchanged. Exists so a
+   *  caller layered ON TOP of this engine (Orb Journey's roomEngine.ts) can
+   *  detect "a miss just happened" unambiguously, including the case where
+   *  `combo` was already 0 (e.g. the very first shot of a room) and
+   *  therefore gives no signal on its own. ADR-0015 §1/§4 build order is
+   *  explicit that Journey must configure this shared engine, not fork it --
+   *  this field is the seam that makes that possible without touching the
+   *  bounce behavior itself. */
+  readonly floorMissCount: number;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -99,6 +110,7 @@ export function createInitialPongState(config: PongEngineConfig = DEFAULT_PONG_C
     combo: 0,
     elapsedSeconds: 0,
     status: 'playing',
+    floorMissCount: 0,
   };
 }
 
@@ -146,6 +158,7 @@ function integrateSubstep(state: PongState, dtMs: number, config: PongEngineConf
   let vy = state.ballVelocity.y;
   let score = state.score;
   let combo = state.combo;
+  let floorMissCount = state.floorMissCount;
 
   const r = config.ballRadius;
 
@@ -213,6 +226,7 @@ function integrateSubstep(state: PongState, dtMs: number, config: PongEngineConf
     y = config.height - r;
     vy = -Math.abs(vy);
     combo = 0;
+    floorMissCount += 1;
   }
 
   const elapsedSeconds = state.elapsedSeconds + dt;
@@ -226,6 +240,7 @@ function integrateSubstep(state: PongState, dtMs: number, config: PongEngineConf
     combo,
     elapsedSeconds,
     status,
+    floorMissCount,
   };
 }
 
