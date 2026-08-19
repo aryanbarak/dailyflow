@@ -13,8 +13,8 @@ import {
 } from '../micro-breaks/tuning';
 import type { ViewportPoint } from '../micro-breaks/components/PongCanvas';
 import { buildRoomSequence, createInitialJourneyState, stepJourney, type JourneyPhase, type JourneyState, type RoomConfig } from './roomEngine';
-import { drawRoomTheme, resolveRoomThemeColors } from './roomTheme';
-import { ROOM_TRANSITION_SECONDS, ROOM_TRANSITION_SECONDS_REDUCED_MOTION } from './tuning';
+import { computeRoomTransitionFlashAlpha, drawRoomTheme, resolveRoomThemeColors } from './roomTheme';
+import { ROOM_TRANSITION_FLASH_PEAK_ALPHA, ROOM_TRANSITION_SECONDS, ROOM_TRANSITION_SECONDS_REDUCED_MOTION } from './tuning';
 
 export interface JourneyCanvasProps {
   /** Shared with the parent overlay for the entry handoff's "game start
@@ -295,13 +295,18 @@ export function JourneyCanvas({
     ctx.restore();
 
     // ADR-0015 §2/Build 4: short, reduced-motion-aware room-transition
-    // flash -- a brief accent-colored wash that fades out, entirely absent
-    // under reduced motion (ROOM_TRANSITION_SECONDS_REDUCED_MOTION is 0, so
+    // flash -- a brief accent-colored wash, entirely absent under reduced
+    // motion (ROOM_TRANSITION_SECONDS_REDUCED_MOTION is 0, so
     // transitionUntilRef is never set ahead of `now` in that case).
+    // MB-06: the alpha envelope (computeRoomTransitionFlashAlpha, unit-
+    // tested in roomTheme.test.ts) eases in AND out over the window -- the
+    // previous version jumped straight to peak alpha the instant the
+    // transition started (a hard cut on entry) and only eased out.
     if (!reducedMotion && now < transitionUntilRef.current) {
       const remainingMs = transitionUntilRef.current - now;
       const totalMs = ROOM_TRANSITION_SECONDS * 1000;
-      const fadeAlpha = Math.max(0, Math.min(0.35, (remainingMs / totalMs) * 0.35));
+      const elapsedMs = totalMs - remainingMs;
+      const fadeAlpha = computeRoomTransitionFlashAlpha(elapsedMs, totalMs, ROOM_TRANSITION_FLASH_PEAK_ALPHA);
       ctx.fillStyle = themeColors.accent(fadeAlpha);
       ctx.fillRect(0, 0, config.width, config.height);
     }

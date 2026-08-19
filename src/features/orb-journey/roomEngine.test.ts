@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createInitialPongState, DEFAULT_PONG_CONFIG, type PongEngineConfig } from '../micro-breaks/engine/pongEngine';
+import { createInitialPongState, DEFAULT_PONG_CONFIG, stepPong, type PongEngineConfig, type PongState } from '../micro-breaks/engine/pongEngine';
 import {
   buildRoomConfig,
   buildRoomSequence,
@@ -9,6 +9,14 @@ import {
   type JourneyState,
   type RoomConfig,
 } from './roomEngine';
+
+// MB-06: the pre-MB-06 (MB-05-shipped) difficulty step, kept here ONLY as a
+// historical floor for the "noticeably wider than before" proof below -- NOT
+// re-imported from tuning.ts, since the whole point is to catch a future
+// accidental narrowing back towards (or below) what PO manual QA on MB-05
+// already reported as "hardly felt different."
+const MB05_SPEED_STEP = 0.08;
+const MB05_PADDLE_SHRINK_STEP = 0.04;
 
 // Deterministic board config: no per-hit ramp noise for tests that don't need it.
 const BOARD_CONFIG: PongEngineConfig = { ...DEFAULT_PONG_CONFIG, speedRampPerHit: 1 };
@@ -48,6 +56,59 @@ describe('roomEngine: deriveRoomEngineConfig (ADR-0015 §4, room-index-only diff
     const config = deriveRoomEngineConfig(3, BOARD_CONFIG);
     expect(config.comboCap).toBe(BOARD_CONFIG.comboCap);
     expect(config.finalWaveWindowSeconds).toBe(BOARD_CONFIG.finalWaveWindowSeconds);
+  });
+});
+
+describe('roomEngine: MB-06 widened room-2 difficulty step (PO QA: "hardly felt different" on MB-05)', () => {
+  it('room 2s speed step is noticeably larger than the MB-05-shipped step, not just nonzero', () => {
+    const room1 = deriveRoomEngineConfig(1, BOARD_CONFIG);
+    const room2 = deriveRoomEngineConfig(2, BOARD_CONFIG);
+    const actualSpeedStep = room2.baseSpeed / room1.baseSpeed - 1;
+    // A 1.5x margin over the old step (not a bare `> MB05_SPEED_STEP`) so
+    // this can't pass on floating-point rounding noise alone -- a prior
+    // draft of this test used a bare comparison and the paddle-shrink
+    // equivalent passed against the OLD 0.04 constant purely from a
+    // division rounding artifact, proving nothing.
+    expect(actualSpeedStep).toBeGreaterThan(MB05_SPEED_STEP * 1.5);
+    // Sanity band: "noticeably harder" is not "punishingly harder" -- keep
+    // this a room-to-room step, not a multi-hundred-percent jump.
+    expect(actualSpeedStep).toBeLessThan(0.5);
+  });
+
+  it('room 2s paddle-shrink step is noticeably larger than the MB-05-shipped step, not just nonzero', () => {
+    const room1 = deriveRoomEngineConfig(1, BOARD_CONFIG);
+    const room2 = deriveRoomEngineConfig(2, BOARD_CONFIG);
+    const actualShrinkStep = 1 - room2.paddleWidth / room1.paddleWidth;
+    expect(actualShrinkStep).toBeGreaterThan(MB05_PADDLE_SHRINK_STEP * 1.5); // margin, see the speed-step test's own comment
+    expect(actualShrinkStep).toBeLessThan(0.3); // still legitimately playable, per ROOM_MIN_PADDLE_WIDTH_RATIO's own intent
+  });
+
+  it('maxSpeed scales WITH baseSpeed (the room-local ceiling moves together with the floor, never leaving baseSpeed able to exceed maxSpeed)', () => {
+    const room2 = deriveRoomEngineConfig(2, BOARD_CONFIG);
+    expect(room2.baseSpeed).toBeLessThanOrEqual(room2.maxSpeed);
+  });
+});
+
+describe('roomEngine: difficulty tuning respects the ADR-0014 §4 hard ceilings (speed cap, degenerate-angle guard)', () => {
+  it('degenerate-angle guard (maxBounceAngleRad) is passed through UNCHANGED by room difficulty scaling, for every room', () => {
+    for (const roomIndex of [1, 2, 6]) {
+      const config = deriveRoomEngineConfig(roomIndex, BOARD_CONFIG);
+      expect(config.maxBounceAngleRad).toBe(BOARD_CONFIG.maxBounceAngleRad);
+      expect(config.maxBounceAngleRad).toBeLessThan(Math.PI / 2); // ADR-0014 §4: must stay strictly below 90 degrees
+    }
+  });
+
+  it('even under room 2s widened speed step, repeated paddle hits never push ball speed past that rooms own maxSpeed', () => {
+    const rooms = buildRoomSequence({ ...DEFAULT_PONG_CONFIG, speedRampPerHit: 1.045 }); // real per-hit ramp, not the deterministic test override
+    const room2 = rooms[1];
+    let state: PongState = createInitialPongState(room2.engineConfig);
+
+    for (let hit = 0; hit < 60; hit++) {
+      state = { ...state, ball: { x: state.paddleX, y: room2.engineConfig.paddleY - 2 }, ballVelocity: { x: 0, y: 300 } };
+      state = stepPong(state, 16, room2.engineConfig);
+      const speed = Math.hypot(state.ballVelocity.x, state.ballVelocity.y);
+      expect(speed).toBeLessThanOrEqual(room2.engineConfig.maxSpeed + 1e-6);
+    }
   });
 });
 

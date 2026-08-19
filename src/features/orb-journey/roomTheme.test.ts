@@ -20,7 +20,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { resolveRoomThemeColors } from './roomTheme';
+import { computeRoomTransitionFlashAlpha, resolveRoomThemeColors } from './roomTheme';
 
 const roomThemeSource = readFileSync(path.resolve(process.cwd(), 'src', 'features', 'orb-journey', 'roomTheme.ts'), 'utf-8');
 
@@ -51,6 +51,29 @@ describe('roomTheme: static import boundary (ADR-0015 §5)', () => {
     for (const line of importLines) {
       expect(line, line).toMatch(/colorNormalization|roomEngine/);
     }
+  });
+});
+
+describe('roomTheme: computeRoomTransitionFlashAlpha (MB-06 -- proves the transition eases in AND out, not a hard cut)', () => {
+  it('starts and ends at zero alpha -- no instant pop at transition entry, nothing left over at transition exit', () => {
+    expect(computeRoomTransitionFlashAlpha(0, 500, 0.35)).toBe(0);
+    expect(computeRoomTransitionFlashAlpha(500, 500, 0.35)).toBeCloseTo(0, 5);
+  });
+
+  it('reaches the configured peak alpha at the midpoint, not before', () => {
+    expect(computeRoomTransitionFlashAlpha(250, 500, 0.35)).toBeCloseTo(0.35, 5);
+    // Quarter-way through, still well short of peak -- proves this is a
+    // curve, not an instant jump-to-peak-then-linear-decay shape.
+    expect(computeRoomTransitionFlashAlpha(125, 500, 0.35)).toBeLessThan(0.35 * 0.8);
+    expect(computeRoomTransitionFlashAlpha(125, 500, 0.35)).toBeGreaterThan(0);
+  });
+
+  it('is monotonically increasing on the way in and monotonically decreasing on the way out (a real ease, not a step)', () => {
+    const samplesIn = [0, 50, 100, 150, 200, 250].map(ms => computeRoomTransitionFlashAlpha(ms, 500, 0.35));
+    for (let i = 1; i < samplesIn.length; i++) expect(samplesIn[i]).toBeGreaterThan(samplesIn[i - 1]);
+
+    const samplesOut = [250, 300, 350, 400, 450, 500].map(ms => computeRoomTransitionFlashAlpha(ms, 500, 0.35));
+    for (let i = 1; i < samplesOut.length; i++) expect(samplesOut[i]).toBeLessThan(samplesOut[i - 1]);
   });
 });
 

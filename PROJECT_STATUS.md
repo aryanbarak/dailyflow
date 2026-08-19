@@ -408,6 +408,48 @@ doc has full evidence).
      explicitly backlog per ADR-0014 §10, needs its own core-only hit-target
      design.
 
+### 2.7 Orb Journey Slice 1 (task MB-05, tuning pass MB-06)
+
+- **Second Micro Breaks session type: untimed room sequence, no persistence.**
+  [ADR-0015](docs/decisions/adr/ADR-0015-orb-journey-architecture.md)
+  (Accepted, extends ADR-0014). `src/features/orb-journey/`: a pure room
+  state machine (`roomEngine.ts` — room-index-only difficulty, room-local
+  miss-restart, "cleared" acknowledgement on the last authored room, no
+  overall game-over except Esc/close), a design-token-driven abstract room
+  theme (`roomTheme.ts` — Focus/Tasks family only, zero reads from any
+  workspace/task/calendar/finance data path), and a separate canvas renderer
+  (`JourneyCanvas.tsx`, deliberately not a fork of `PongCanvas.tsx`, so
+  Classic Pong has zero diff). Entry: a session-type choice screen
+  ("Quick Break" vs "Orb Journey") inside the existing bespoke overlay
+  (`MicroBreakOverlay.tsx`), reusing ADR-0014's a11y/exit/crash-fail-safe
+  machinery unchanged. `pongEngine.ts` gained one additive field
+  (`floorMissCount`) so the room layer can detect a miss unambiguously;
+  Quick Break's own 32/32 tests pass unmodified. Exactly 2 rooms, one theme
+  family, ricochet-only — everything else (breakable obstacles, target
+  sequences, path branching, persistence, adaptive difficulty) explicitly
+  deferred per ADR-0015 §6. Committed `cf438d9`.
+- **PO manual QA on MB-05 (partial — 2026-08-19):** choice screen legible,
+  room theme readable behind the ball/trail, room 2's difficulty step felt
+  "expected, not dramatic" (matches ADR-0015 §4's "somewhat harder" intent,
+  though the step itself — 8% speed / 4% paddle-shrink — read as barely
+  perceptible; widened in MB-06, see below). **Not yet confirmed by PO:**
+  Esc-mid-Journey, "cleared" phase behavior on the last room, Persian/RTL
+  choice screen.
+- **MB-06 difficulty/transition tuning pass:** widened
+  `ROOM_DIFFICULTY_SPEED_STEP` (0.08 → 0.22) and
+  `ROOM_DIFFICULTY_PADDLE_SHRINK_STEP` (0.04 → 0.12) in
+  `src/features/orb-journey/tuning.ts` in response to the PO feedback above
+  — room 2 is now ~22% faster / ~12% narrower-paddled than room 1 (was ~8%/
+  ~4%), still within ADR-0014 §4's speed-cap and degenerate-angle-guard
+  invariants (unit-tested, see MB-06 report). Also fixed an objective
+  smoothness gap in the room-transition accent flash
+  (`JourneyCanvas.tsx`/`roomTheme.ts`'s new `computeRoomTransitionFlashAlpha`)
+  — it previously popped instantly to peak alpha on transition entry (a hard
+  cut) and only eased on exit; now a half-sine envelope eases both in and
+  out within the same short window. Room-2 difficulty feel and transition
+  feel still need a PO real-session pass, not just the numeric/screenshot
+  verification done so far.
+
 ## 3. Verified NOT implemented
 
 Confirmed from code, not assumed (full detail in the reconciliation doc §6):

@@ -128,6 +128,18 @@ export function drawFocusTasksTheme(
   ctx.restore();
 }
 
+// MB-06: room-transition accent-flash alpha envelope, extracted out of
+// JourneyCanvas.tsx's draw() so the easing SHAPE is unit-testable without a
+// canvas (draw() itself is not testable in jsdom -- getContext('2d') returns
+// null). Half-sine over the window: 0 at both ends, peak at the midpoint --
+// deliberately NOT a linear ramp from an instant jump-to-peak, which was the
+// pre-MB-06 shape (a hard cut on transition entry, only eased on exit).
+export function computeRoomTransitionFlashAlpha(elapsedMs: number, totalMs: number, peakAlpha: number): number {
+  if (totalMs <= 0) return 0;
+  const progress = Math.min(1, Math.max(0, elapsedMs / totalMs));
+  return peakAlpha * Math.sin(Math.PI * progress);
+}
+
 export function drawRoomTheme(
   ctx: CanvasRenderingContext2D,
   geometry: RoomThemeGeometry,
