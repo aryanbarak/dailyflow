@@ -140,6 +140,55 @@ export function computeRoomTransitionFlashAlpha(elapsedMs: number, totalMs: numb
   return peakAlpha * Math.sin(Math.PI * progress);
 }
 
+// MB-07, ADR-0015 §10 (amendment): pulse alpha (0..1) for a breakable
+// obstacle's edge, extracted as a pure function so the SHAPE is unit-
+// testable without a canvas -- mirrors computeRoomTransitionFlashAlpha's
+// own rationale above. Under reduced motion this returns a fixed
+// mid-brightness value instead of animating, consistent with this
+// component's existing reduced-motion convention (trail length, shadow
+// blur, particle count, transition flash all suppress CONTINUOUS motion --
+// see JourneyCanvas.tsx) -- the obstacle must still read as visually
+// distinct (a fairness requirement, ADR-0015 §10), just without animating.
+export function computeObstaclePulseAlpha(nowMs: number, reducedMotion: boolean): number {
+  if (reducedMotion) return 0.75;
+  return (Math.sin(nowMs / 220) + 1) / 2;
+}
+
+export interface RoomObstacleRect {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+// ADR-0015 §10 (amendment): obstacles use the SAME Focus/Tasks card visual
+// language as the decorative background above (rounded rect, card
+// fill/border tokens) but read as more solid (higher fill alpha) since they
+// are REAL collision surfaces, not decoration. Breakable ones get a
+// pulsing accent border -- a FAIRNESS requirement per §10's own text, not
+// just polish: a player must be able to tell breakable apart from solid at
+// a glance. Non-breakable is supported here for forward compatibility
+// (§10 explicitly says obstacles "may be" breakable) but unused this
+// slice -- Room 2's one obstacle is always breakable.
+export function drawRoomObstacle(
+  ctx: CanvasRenderingContext2D,
+  rect: RoomObstacleRect,
+  colors: RoomThemeColors,
+  breakable: boolean,
+  pulseAlpha: number,
+): void {
+  const clampedPulse = Math.min(1, Math.max(0, pulseAlpha));
+  ctx.save();
+  ctx.beginPath();
+  ctx.roundRect(rect.x, rect.y, rect.width, rect.height, Math.min(rect.width, rect.height) * 0.22);
+  ctx.fillStyle = colors.cardFill(0.75);
+  ctx.fill();
+  ctx.lineWidth = breakable ? 2 : 1.5;
+  ctx.strokeStyle = breakable ? colors.accent(0.5 + clampedPulse * 0.5) : colors.cardBorder(0.9);
+  ctx.stroke();
+  ctx.restore();
+}
+
 export function drawRoomTheme(
   ctx: CanvasRenderingContext2D,
   geometry: RoomThemeGeometry,

@@ -28,6 +28,35 @@ export interface PongVec2 {
   readonly y: number;
 }
 
+// MB-07, ADR-0015 §10 (amendment): a rectangular collision surface beyond
+// the walls/paddle. `breakable`/`comboThresholdToBreak` are read ONLY by the
+// obstacle-collision branch below -- a non-breakable obstacle (unused this
+// slice, supported for forward compatibility per §10's own "may be marked
+// breakable") just bounces the ball forever, like a wall.
+export interface PongObstacleConfig {
+  readonly id: string;
+  readonly x: number; // top-left
+  readonly y: number; // top-left
+  readonly width: number;
+  readonly height: number;
+  readonly breakable: boolean;
+  /** Combo required, AT THE MOMENT OF CONTACT, to break this obstacle.
+   *  Meaningless when `breakable` is false. A per-obstacle field (not read
+   *  from any orb-journey module here) -- the room layer resolves this from
+   *  its own tuning constant when building the room's obstacle list, so
+   *  this engine file stays free of any orb-journey-specific import. */
+  readonly comboThresholdToBreak?: number;
+}
+
+// Per-instance broken/intact flag, one entry per `PongEngineConfig.obstacles`
+// in the same order. Deliberately NOT part of `PongObstacleConfig` -- config
+// is the room's fixed authoring data, state is what changes as the room is
+// played.
+export interface PongObstacleState {
+  readonly id: string;
+  readonly broken: boolean;
+}
+
 export interface PongEngineConfig {
   readonly width: number;
   readonly height: number;
@@ -44,6 +73,12 @@ export interface PongEngineConfig {
   readonly comboCap: number; // MB-03: combo multiplier hard cap (named constant, ADR-0014 §11-12)
   readonly finalWaveWindowSeconds: number; // MB-03: last N seconds of the session
   readonly finalWaveRampBoost: number; // MB-03: multiplies speedRampPerHit's per-hit INCREMENT during the final wave, never the hard cap
+  /** MB-07, ADR-0015 §10 (amendment): optional additional collision
+   *  surfaces beyond the walls/paddle. Undefined/empty for Quick Break
+   *  (ADR-0014) and Orb Journey's Room 1 -- both provably unaffected by
+   *  this field's mere existence, since every read of it below is gated on
+   *  `config.obstacles && config.obstacles.length > 0`. */
+  readonly obstacles?: readonly PongObstacleConfig[];
 }
 
 export const DEFAULT_PONG_CONFIG: PongEngineConfig = {
@@ -85,6 +120,14 @@ export interface PongState {
    *  this field is the seam that makes that possible without touching the
    *  bounce behavior itself. */
   readonly floorMissCount: number;
+  /** MB-07, ADR-0015 §10 (amendment): per-instance broken/intact flags, one
+   *  entry per `config.obstacles`, same order. Re-derived fresh (all
+   *  intact) every time `createInitialPongState` runs -- which is exactly
+   *  what a room-local restart already calls (roomEngine.ts's stepJourney
+   *  miss-restart branch), so a broken obstacle automatically reappears
+   *  after a floor miss with NO separate reset code needed. Empty for
+   *  Quick Break and any room with no obstacles. */
+  readonly obstacles: readonly PongObstacleState[];
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -111,6 +154,7 @@ export function createInitialPongState(config: PongEngineConfig = DEFAULT_PONG_C
     elapsedSeconds: 0,
     status: 'playing',
     floorMissCount: 0,
+    obstacles: (config.obstacles ?? []).map(obstacle => ({ id: obstacle.id, broken: false })),
   };
 }
 
@@ -159,6 +203,7 @@ function integrateSubstep(state: PongState, dtMs: number, config: PongEngineConf
   let score = state.score;
   let combo = state.combo;
   let floorMissCount = state.floorMissCount;
+  let obstacles = state.obstacles;
 
   const r = config.ballRadius;
 
@@ -173,6 +218,64 @@ function integrateSubstep(state: PongState, dtMs: number, config: PongEngineConf
   if (y - r < 0) {
     y = r;
     vy = Math.abs(vy);
+  }
+
+  // MB-07, ADR-0015 §10 (amendment): obstacle collision, resolved BEFORE the
+  // paddle check below so a threshold check ("combo at the moment of
+  // contact") reads this substep's ENTERING combo, not a value already
+  // bumped by a paddle hit later in the same substep. Gated on
+  // config.obstacles existing/non-empty, so Quick Break and Room 1 (both
+  // pass no obstacles) never even enter this branch -- their physics are
+  // byte-for-byte unchanged.
+  if (config.obstacles && config.obstacles.length > 0) {
+    for (let i = 0; i < config.obstacles.length; i++) {
+      const obstacleConfig = config.obstacles[i];
+      const obstacleState = obstacles[i];
+      if (!obstacleState || obstacleState.broken) continue;
+
+      const ballLeft = x - r;
+      const ballRight = x + r;
+      const ballTop = y - r;
+      const ballBottom = y + r;
+      const obstacleRight = obstacleConfig.x + obstacleConfig.width;
+      const obstacleBottom = obstacleConfig.y + obstacleConfig.height;
+
+      const overlapping = ballRight > obstacleConfig.x && ballLeft < obstacleRight && ballBottom > obstacleConfig.y && ballTop < obstacleBottom;
+      if (!overlapping) continue;
+
+      // Minimum-translation-vector resolution: reflect off whichever face
+      // has the LEAST overlap -- the same "closest face wins" principle the
+      // wall checks above use (each wall only tests its own single axis),
+      // generalized to 4 directions since an obstacle (unlike the paddle,
+      // always approached from above) can be approached from any side.
+      const overlapLeft = ballRight - obstacleConfig.x;
+      const overlapRight = obstacleRight - ballLeft;
+      const overlapTop = ballBottom - obstacleConfig.y;
+      const overlapBottom = obstacleBottom - ballTop;
+      const minOverlap = Math.min(overlapLeft, overlapRight, overlapTop, overlapBottom);
+
+      if (minOverlap === overlapTop) {
+        y = obstacleConfig.y - r;
+        vy = -Math.abs(vy);
+      } else if (minOverlap === overlapBottom) {
+        y = obstacleBottom + r;
+        vy = Math.abs(vy);
+      } else if (minOverlap === overlapLeft) {
+        x = obstacleConfig.x - r;
+        vx = -Math.abs(vx);
+      } else {
+        x = obstacleRight + r;
+        vx = Math.abs(vx);
+      }
+
+      // ADR-0015 §10: breaking requires combo >= the configured threshold at
+      // the moment of contact -- a skill reward, not a default interaction.
+      // Breaking never changes the reflection computed above ("ball
+      // reflects normally either way").
+      if (obstacleConfig.breakable && combo >= (obstacleConfig.comboThresholdToBreak ?? 0)) {
+        obstacles = obstacles.map((entry, index) => (index === i ? { ...entry, broken: true } : entry));
+      }
+    }
   }
 
   const paddleTop = config.paddleY;
@@ -241,6 +344,7 @@ function integrateSubstep(state: PongState, dtMs: number, config: PongEngineConf
     elapsedSeconds,
     status,
     floorMissCount,
+    obstacles,
   };
 }
 

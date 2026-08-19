@@ -13,8 +13,13 @@ import {
 } from '../micro-breaks/tuning';
 import type { ViewportPoint } from '../micro-breaks/components/PongCanvas';
 import { buildRoomSequence, createInitialJourneyState, stepJourney, type JourneyPhase, type JourneyState, type RoomConfig } from './roomEngine';
-import { computeRoomTransitionFlashAlpha, drawRoomTheme, resolveRoomThemeColors } from './roomTheme';
-import { ROOM_TRANSITION_FLASH_PEAK_ALPHA, ROOM_TRANSITION_SECONDS, ROOM_TRANSITION_SECONDS_REDUCED_MOTION } from './tuning';
+import { computeObstaclePulseAlpha, computeRoomTransitionFlashAlpha, drawRoomObstacle, drawRoomTheme, resolveRoomThemeColors } from './roomTheme';
+import {
+  getObstacleBreakParticleCount,
+  ROOM_TRANSITION_FLASH_PEAK_ALPHA,
+  ROOM_TRANSITION_SECONDS,
+  ROOM_TRANSITION_SECONDS_REDUCED_MOTION,
+} from './tuning';
 
 export interface JourneyCanvasProps {
   /** Shared with the parent overlay for the entry handoff's "game start
@@ -86,14 +91,46 @@ export function JourneyCanvas({
   // on import.meta.env.DEV, the same guarantee the dev routes rely on.
   useEffect(() => {
     if (!import.meta.env.DEV) return undefined;
-    const globalWindow = window as unknown as Record<string, (() => void) | undefined>;
+    const globalWindow = window as unknown as {
+      __orbJourneyDevForceRoomGoal?: () => void;
+      __orbJourneyDevForceObstacleContact?: () => void;
+      __orbJourneyDevGetObstacleBrokenState?: () => readonly boolean[];
+    };
     globalWindow.__orbJourneyDevForceRoomGoal = () => {
       const room = roomsRef.current[journeyRef.current.roomIndex - 1];
       if (!room) return;
       journeyRef.current = { ...journeyRef.current, pong: { ...journeyRef.current.pong, combo: room.goalCombo } };
     };
+    // MB-07, ADR-0015 §10 (amendment): mirrors __orbJourneyDevForceRoomGoal's
+    // own approach exactly -- manipulates STATE INPUTS only (ball position/
+    // velocity, combo), then lets the real stepPong/integrateSubstep
+    // collision-and-break logic run unmodified on the next tick. Used by
+    // e2e/orbJourney.spec.ts to exercise the obstacle break path without
+    // replicating pongEngine.ts's trajectory math in the test script.
+    globalWindow.__orbJourneyDevForceObstacleContact = () => {
+      const room = roomsRef.current[journeyRef.current.roomIndex - 1];
+      const obstacle = room?.obstacles[0];
+      if (!room || !obstacle) return;
+      const r = room.engineConfig.ballRadius;
+      journeyRef.current = {
+        ...journeyRef.current,
+        pong: {
+          ...journeyRef.current.pong,
+          combo: Math.max(journeyRef.current.pong.combo, obstacle.comboThresholdToBreak ?? 0),
+          ball: { x: obstacle.x + obstacle.width / 2, y: obstacle.y - r },
+          ballVelocity: { x: 0, y: 300 },
+        },
+      };
+    };
+    // Read-only introspection for e2e assertions -- there is no HUD text for
+    // obstacle state (unlike room/score), so this is the only way a
+    // real-browser test can confirm "the obstacle is actually gone" without
+    // pixel-diffing the canvas.
+    globalWindow.__orbJourneyDevGetObstacleBrokenState = () => journeyRef.current.pong.obstacles.map(o => o.broken);
     return () => {
       delete globalWindow.__orbJourneyDevForceRoomGoal;
+      delete globalWindow.__orbJourneyDevForceObstacleContact;
+      delete globalWindow.__orbJourneyDevGetObstacleBrokenState;
     };
   }, []);
 
@@ -230,6 +267,17 @@ export function JourneyCanvas({
     const progress = room.goalCombo > 0 ? state.combo / room.goalCombo : 0;
     drawRoomTheme(ctx, { width: config.width, height: config.height }, room.theme, themeColors, progress);
 
+    // ADR-0015 §10 (amendment), MB-07: obstacles drawn above the decorative
+    // background but below the trail/particles/paddle/ball -- a midground
+    // gameplay layer. Skips any already broken this room instance; state
+    // and config obstacle arrays are always the same length/order (see
+    // roomEngine.ts's buildRoomConfig -- one array reference feeds both).
+    const pulseAlpha = computeObstaclePulseAlpha(now, reducedMotion);
+    room.obstacles.forEach((obstacleConfig, index) => {
+      if (state.obstacles[index]?.broken) return;
+      drawRoomObstacle(ctx, obstacleConfig, themeColors, obstacleConfig.breakable, pulseAlpha);
+    });
+
     const trail = trailRef.current;
     const maxTrail = reducedMotion ? TRAIL_LENGTH_REDUCED_MOTION : TRAIL_LENGTH;
     trail.push({ x: state.ball.x, y: state.ball.y });
@@ -328,6 +376,7 @@ export function JourneyCanvas({
       const prevRoomIndex = journeyRef.current.roomIndex;
       const prevScore = journeyRef.current.journeyScore;
       const prevPongScore = journeyRef.current.pong.score;
+      const prevObstacles = journeyRef.current.pong.obstacles;
       const next = stepJourney(journeyRef.current, dtMs, roomsRef.current);
       journeyRef.current = next;
 
@@ -336,6 +385,32 @@ export function JourneyCanvas({
         const particleCount = getParticleCountForMotionPreference(reducedMotionRef.current);
         if (particleCount > 0) {
           particlesRef.current.push(...createHitParticles(next.pong.ball.x, next.pong.ball.y, particleCount, performance.now()));
+        }
+      }
+
+      // ADR-0015 §10 (amendment), MB-07: break VFX. Only checked when still
+      // in the SAME room this tick (a room transition already replaces
+      // `pong` with the NEXT room's fresh state, whose obstacles can't be
+      // meaningfully diffed against the PREVIOUS room's) -- geometrically
+      // a break and a room-clearing paddle hit can't occur in the same
+      // substep anyway (the obstacle sits far from the paddle band), so this
+      // guard is a correctness safeguard, not a workaround for something
+      // observed to actually happen.
+      if (next.roomIndex === prevRoomIndex) {
+        const currentRoom = roomsRef.current[next.roomIndex - 1];
+        if (currentRoom) {
+          next.pong.obstacles.forEach((obstacleState, index) => {
+            const prevObstacleState = prevObstacles[index];
+            if (!obstacleState.broken || !prevObstacleState || prevObstacleState.broken) return;
+            const obstacleConfig = currentRoom.obstacles[index];
+            if (!obstacleConfig) return;
+            const burstCount = getObstacleBreakParticleCount(reducedMotionRef.current);
+            if (burstCount > 0) {
+              const centerX = obstacleConfig.x + obstacleConfig.width / 2;
+              const centerY = obstacleConfig.y + obstacleConfig.height / 2;
+              particlesRef.current.push(...createHitParticles(centerX, centerY, burstCount, performance.now()));
+            }
+          });
         }
       }
 

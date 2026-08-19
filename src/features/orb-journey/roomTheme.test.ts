@@ -20,7 +20,8 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { computeRoomTransitionFlashAlpha, resolveRoomThemeColors } from './roomTheme';
+import { computeObstaclePulseAlpha, computeRoomTransitionFlashAlpha, resolveRoomThemeColors } from './roomTheme';
+import { getObstacleBreakParticleCount } from './tuning';
 
 const roomThemeSource = readFileSync(path.resolve(process.cwd(), 'src', 'features', 'orb-journey', 'roomTheme.ts'), 'utf-8');
 
@@ -74,6 +75,44 @@ describe('roomTheme: computeRoomTransitionFlashAlpha (MB-06 -- proves the transi
 
     const samplesOut = [250, 300, 350, 400, 450, 500].map(ms => computeRoomTransitionFlashAlpha(ms, 500, 0.35));
     for (let i = 1; i < samplesOut.length; i++) expect(samplesOut[i]).toBeLessThan(samplesOut[i - 1]);
+  });
+});
+
+describe('roomTheme: computeObstaclePulseAlpha (MB-07, ADR-0015 §10 -- the breakable-vs-solid visual tell)', () => {
+  it('under normal motion, oscillates over time (not a static value) -- proves this is an animated pulse, not a fixed border', () => {
+    const samples = [0, 100, 200, 300, 400, 500].map(ms => computeObstaclePulseAlpha(ms, false));
+    const distinctValues = new Set(samples.map(v => v.toFixed(3)));
+    expect(distinctValues.size).toBeGreaterThan(1);
+    for (const value of samples) {
+      expect(value).toBeGreaterThanOrEqual(0);
+      expect(value).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('under reduced motion, is a FIXED value regardless of time -- the pulse animation itself is suppressed, matching this project\'s reduced-motion convention', () => {
+    const samples = [0, 100, 200, 300, 400, 500].map(ms => computeObstaclePulseAlpha(ms, true));
+    expect(new Set(samples).size).toBe(1);
+    // Still a real, non-zero value -- the obstacle must stay visually
+    // distinguishable (ADR-0015 §10's fairness requirement) EVEN under
+    // reduced motion, just without animating.
+    expect(samples[0]).toBeGreaterThan(0);
+  });
+});
+
+describe('roomTheme/tuning: obstacle break VFX is reduced-motion-gated, but obstacle REMOVAL never is (ADR-0015 §10)', () => {
+  it('getObstacleBreakParticleCount returns 0 under reduced motion, and a real positive count otherwise', () => {
+    expect(getObstacleBreakParticleCount(true)).toBe(0);
+    expect(getObstacleBreakParticleCount(false)).toBeGreaterThan(0);
+  });
+
+  it('obstacle-breaking itself (pongEngine.ts/roomEngine.ts) takes no reducedMotion parameter anywhere -- structurally, the removal cannot be gated by it (the burst above is the ONLY reduced-motion-aware part of this feature)', () => {
+    const pongEngineSource = readFileSync(
+      path.resolve(process.cwd(), 'src', 'features', 'micro-breaks', 'engine', 'pongEngine.ts'),
+      'utf-8',
+    );
+    const roomEngineSource = readFileSync(path.resolve(process.cwd(), 'src', 'features', 'orb-journey', 'roomEngine.ts'), 'utf-8');
+    expect(pongEngineSource).not.toMatch(/reducedMotion/i);
+    expect(roomEngineSource).not.toMatch(/reducedMotion/i);
   });
 });
 

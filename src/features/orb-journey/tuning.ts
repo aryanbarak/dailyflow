@@ -37,3 +37,26 @@ export const ROOM_TRANSITION_SECONDS_REDUCED_MOTION = 0; // instant, per Build 4
  *  (was an inline magic number in JourneyCanvas.tsx) so the whole transition
  *  "recipe" lives in one place. */
 export const ROOM_TRANSITION_FLASH_PEAK_ALPHA = 0.35;
+
+// ── Breakable obstacles (ADR-0015 §10 amendment, MB-07 -- Room 2 only) ──
+/** Obstacle width as a fraction of board width. */
+export const OBSTACLE_WIDTH_RATIO = 0.42;
+/** Obstacle height as a fraction of board height. */
+export const OBSTACLE_HEIGHT_RATIO = 0.055;
+/** Obstacle top edge, as a fraction of board height -- clear of the
+ *  decorative Focus/Tasks background cards (roughly the top half of the
+ *  board) and well above the paddle band. */
+export const OBSTACLE_Y_RATIO = 0.6;
+/** Combo required, AT THE MOMENT OF CONTACT, to break a breakable obstacle
+ *  -- a skill reward, not a default interaction (ADR-0015 §10). */
+export const OBSTACLE_COMBO_THRESHOLD_TO_BREAK = 3;
+/** "Stronger-than-normal" break VFX vs. a plain paddle hit's
+ *  PARTICLE_COUNT_PER_HIT (6, in micro-breaks/tuning.ts). */
+export const OBSTACLE_BREAK_PARTICLE_COUNT = 18;
+/** ADR-0015 §10: the break VFX burst is suppressed under reduced motion --
+ *  the obstacle REMOVAL itself is not (that's gameplay, not decoration; see
+ *  roomEngine.ts's pongEngine integration, which has no reduced-motion
+ *  awareness at all -- correctly, since it's a pure physics/state concern). */
+export function getObstacleBreakParticleCount(reducedMotion: boolean): number {
+  return reducedMotion ? 0 : OBSTACLE_BREAK_PARTICLE_COUNT;
+}

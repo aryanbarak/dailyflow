@@ -33,6 +33,40 @@ async function forceRoomGoal(page: import('@playwright/test').Page) {
   });
 }
 
+// MB-07, ADR-0015 §10 (amendment): mirrors forceRoomGoal's own reasoning --
+// positions the ball at Room 2's obstacle and raises combo to its break
+// threshold, then lets the REAL stepPong/integrateSubstep collision-and-
+// break logic run on the next tick. Does not shortcut the actual break path.
+async function forceObstacleContact(page: import('@playwright/test').Page) {
+  await page.evaluate(() => {
+    (window as unknown as { __orbJourneyDevForceObstacleContact?: () => void }).__orbJourneyDevForceObstacleContact?.();
+  });
+}
+
+// There is no HUD text for obstacle state (unlike room/score) -- this
+// dev-only getter is the only way to confirm "the obstacle is actually
+// gone" from a real-browser test without pixel-diffing the canvas.
+async function getObstacleBrokenState(page: import('@playwright/test').Page) {
+  return page.evaluate(
+    () => (window as unknown as { __orbJourneyDevGetObstacleBrokenState?: () => readonly boolean[] }).__orbJourneyDevGetObstacleBrokenState?.(),
+  );
+}
+
+async function canvasHasNonZeroPixels(page: import('@playwright/test').Page): Promise<boolean> {
+  const result = await page.evaluate(() => {
+    const canvas = document.querySelector('canvas');
+    if (!canvas) return { found: false, nonZeroPixels: 0 };
+    const ctx = canvas.getContext('2d')!;
+    const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    let nonZeroPixels = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i] !== 0 || data[i + 1] !== 0 || data[i + 2] !== 0 || data[i + 3] !== 0) nonZeroPixels++;
+    }
+    return { found: true, nonZeroPixels };
+  });
+  return result.found && result.nonZeroPixels > 0;
+}
+
 test.describe('Orb Journey (MB-05, ADR-0015)', () => {
   test('choice screen -> Orb Journey -> Room 1 -> complete -> Room 2 (harder) -> Esc exits cleanly', async ({ page }) => {
     const pageErrors: string[] = [];
@@ -173,6 +207,73 @@ test.describe('Orb Journey (MB-05, ADR-0015)', () => {
     });
     expect(canvasInfo.found).toBe(true);
     expect(canvasInfo.nonZeroPixels).toBeGreaterThan(0);
+
+    await page.keyboard.press('Escape');
+    await expect(dialog).not.toBeVisible();
+    await expect(page.locator(START_BUTTON)).toBeEnabled();
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  test('breakable obstacle (MB-07, ADR-0015 §10): Room 1 has none, Room 2s obstacle breaks on a sufficiently-combod hit and stays gone', async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on('pageerror', err => pageErrors.push(err.message));
+
+    await openJourney(page);
+    await expect(page.getByText('Room 1')).toBeVisible();
+    expect(await getObstacleBrokenState(page)).toEqual([]); // Room 1: obstacle-free by design (ADR-0015 §7/§10)
+
+    await forceRoomGoal(page);
+    await expect(page.getByText('Room 2')).toBeVisible();
+    expect(await getObstacleBrokenState(page)).toEqual([false]); // Room 2: exactly one obstacle, intact
+
+    await forceObstacleContact(page);
+    await page.waitForTimeout(300); // let the next tick's real collision-and-break logic run
+    expect(await getObstacleBrokenState(page)).toEqual([true]);
+
+    // Rendering continues fine post-break -- no crash, the canvas still draws.
+    expect(await canvasHasNonZeroPixels(page)).toBe(true);
+
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).not.toBeVisible();
+    await expect(page.locator(START_BUTTON)).toBeEnabled();
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  test('crash-guard covers Room 2s NEW obstacle-drawing code path (verified, not assumed, per the MB-02b/MB-03-FIX fault-injection pattern)', async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on('pageerror', err => pageErrors.push(err.message));
+
+    await openJourney(page);
+    await forceRoomGoal(page); // Room 1 -> Room 2, where the obstacle actually exists
+    await expect(page.getByText('Room 2')).toBeVisible();
+
+    // Injected AFTER reaching Room 2 (not via addInitScript at load, unlike
+    // the earlier crash test) so the very next roundRect() call is
+    // guaranteed to occur inside a renderFrame() invocation that ALSO draws
+    // Room 2's obstacle (drawRoomTheme's decorative cards and
+    // drawRoomObstacle both call roundRect within the same synchronous
+    // render pass) -- this exercises the crash guard against a frame where
+    // this slice's new rendering code is actually part of the call stack,
+    // not just the pre-existing ball/theme draw calls the MB-02b/MB-03-FIX
+    // and earlier Journey crash tests already cover.
+    await page.evaluate(() => {
+      const proto = CanvasRenderingContext2D.prototype;
+      const original = proto.roundRect;
+      let thrown = false;
+      proto.roundRect = function (...args: Parameters<typeof original>) {
+        if (!thrown) {
+          thrown = true;
+          throw new Error('MB-07 test-injected obstacle-draw failure');
+        }
+        return original.apply(this, args);
+      };
+    });
+
+    const dialog = page.getByRole('dialog');
+    await expect(page.getByText('Something went wrong with the game')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Close micro break' })).toBeVisible();
 
     await page.keyboard.press('Escape');
     await expect(dialog).not.toBeVisible();

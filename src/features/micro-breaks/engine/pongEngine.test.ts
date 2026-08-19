@@ -10,11 +10,35 @@ import {
   setPaddleX,
   stepPong,
   type PongEngineConfig,
+  type PongObstacleConfig,
   type PongState,
 } from './pongEngine';
 
 // Deterministic config: no ramp/cap noise for tests that don't need it.
 const CONFIG: PongEngineConfig = { ...DEFAULT_PONG_CONFIG, speedRampPerHit: 1, durationSeconds: 90 };
+
+// MB-07, ADR-0015 §10 (amendment): a single breakable obstacle placed well
+// clear of the paddle band (paddleY=560) and the top wall, spanning
+// x:[150,250], y:[250,270] on the 400x600 default board.
+const TEST_OBSTACLE: PongObstacleConfig = { id: 'obs1', x: 150, y: 250, width: 100, height: 20, breakable: true, comboThresholdToBreak: 3 };
+const CONFIG_WITH_OBSTACLE: PongEngineConfig = { ...CONFIG, obstacles: [TEST_OBSTACLE] };
+
+// Builds combo to exactly `count` via consecutive paddle hits, then returns
+// the resulting state (obstacle-free trajectory -- paddle is at the
+// board's bottom, obstacle is mid-board, so these never interact).
+function buildCombo(config: PongEngineConfig, count: number): PongState {
+  let state = createInitialPongState(config);
+  for (let hit = 0; hit < count; hit++) {
+    state = { ...state, ball: { x: state.paddleX, y: config.paddleY - 10 }, ballVelocity: { x: 0, y: 300 } };
+    state = stepPong(state, 16, config);
+  }
+  return state;
+}
+
+// Positions the ball to descend into TEST_OBSTACLE's top face on the next step.
+function obstacleApproachState(state: PongState): PongState {
+  return { ...state, ball: { x: 200, y: 248 }, ballVelocity: { x: 0, y: 300 } };
+}
 
 function straightDownState(overrides: Partial<PongState> = {}): PongState {
   const base = createInitialPongState(CONFIG);
@@ -384,6 +408,61 @@ describe('pongEngine: timer end condition', () => {
     const stillState = state;
     expect(stillState).toBe(state);
     expect(stillState.elapsedSeconds).toBe(0);
+  });
+});
+
+describe('pongEngine: obstacles (MB-07, ADR-0015 §10 amendment)', () => {
+  it('Quick Break config (no obstacles) produces an empty obstacles array, and physics are unaffected by the field existing', () => {
+    const state = createInitialPongState(CONFIG);
+    expect(state.obstacles).toEqual([]);
+    const next = stepPong(straightDownState({ ball: { x: 200, y: CONFIG.paddleY - 10 } }), 16, CONFIG);
+    expect(next.obstacles).toEqual([]);
+  });
+
+  it('a ball hitting a breakable obstacle BELOW the combo threshold bounces off but does NOT break it', () => {
+    const state = obstacleApproachState(buildCombo(CONFIG_WITH_OBSTACLE, TEST_OBSTACLE.comboThresholdToBreak! - 1));
+    expect(state.combo).toBe(TEST_OBSTACLE.comboThresholdToBreak! - 1);
+
+    const next = stepPong(state, 16, CONFIG_WITH_OBSTACLE);
+
+    expect(next.ballVelocity.y).toBeLessThan(0); // bounced upward off the top face
+    expect(next.obstacles).toEqual([{ id: 'obs1', broken: false }]);
+  });
+
+  it('a ball hitting a breakable obstacle AT the combo threshold breaks it, WITHOUT changing the reflection (same trajectory as an otherwise-identical non-breakable hit)', () => {
+    const stateAtThreshold = obstacleApproachState(buildCombo(CONFIG_WITH_OBSTACLE, TEST_OBSTACLE.comboThresholdToBreak!));
+    expect(stateAtThreshold.combo).toBe(TEST_OBSTACLE.comboThresholdToBreak);
+
+    const breakableNext = stepPong(stateAtThreshold, 16, CONFIG_WITH_OBSTACLE);
+    expect(breakableNext.obstacles).toEqual([{ id: 'obs1', broken: true }]);
+
+    // Same geometry/combo, but the obstacle is configured non-breakable --
+    // ADR-0015 §10: "ball reflects normally either way," so the resulting
+    // ball position/velocity must be IDENTICAL regardless of whether the
+    // hit broke the obstacle.
+    const nonBreakableConfig: PongEngineConfig = { ...CONFIG, obstacles: [{ ...TEST_OBSTACLE, breakable: false }] };
+    const stateAtThresholdNonBreakable = obstacleApproachState(buildCombo(nonBreakableConfig, TEST_OBSTACLE.comboThresholdToBreak!));
+    const nonBreakableNext = stepPong(stateAtThresholdNonBreakable, 16, nonBreakableConfig);
+
+    expect(breakableNext.ball).toEqual(nonBreakableNext.ball);
+    expect(breakableNext.ballVelocity).toEqual(nonBreakableNext.ballVelocity);
+    expect(nonBreakableNext.obstacles).toEqual([{ id: 'obs1', broken: false }]); // never breaks -- not marked breakable
+  });
+
+  it('once broken, an obstacle no longer collides -- a later ball on the same path passes through instead of bouncing', () => {
+    const brokenState: PongState = {
+      ...obstacleApproachState(createInitialPongState(CONFIG_WITH_OBSTACLE)),
+      obstacles: [{ id: 'obs1', broken: true }],
+    };
+
+    const next = stepPong(brokenState, 16, CONFIG_WITH_OBSTACLE);
+
+    // No bounce: velocity keeps its original downward sign, and the ball's
+    // y position lands wherever unobstructed motion would put it (inside/
+    // past the former obstacle rect), not clamped to its top edge.
+    expect(next.ballVelocity.y).toBeGreaterThan(0);
+    expect(next.ball.y).toBeCloseTo(248 + 300 * 0.016, 5);
+    expect(next.obstacles).toEqual([{ id: 'obs1', broken: true }]);
   });
 });
 

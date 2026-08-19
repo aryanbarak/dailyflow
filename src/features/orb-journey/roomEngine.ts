@@ -6,8 +6,12 @@
 // field, which this module consumes to detect "a miss just happened"
 // unambiguously (see that field's own comment for why `combo` resetting to
 // 0 alone is not a sufficient signal).
-import { createInitialPongState, stepPong, type PongEngineConfig, type PongState } from '../micro-breaks/engine/pongEngine';
+import { createInitialPongState, stepPong, type PongEngineConfig, type PongObstacleConfig, type PongState } from '../micro-breaks/engine/pongEngine';
 import {
+  OBSTACLE_COMBO_THRESHOLD_TO_BREAK,
+  OBSTACLE_HEIGHT_RATIO,
+  OBSTACLE_WIDTH_RATIO,
+  OBSTACLE_Y_RATIO,
   ROOM_1_GOAL_COMBO,
   ROOM_DIFFICULTY_PADDLE_SHRINK_STEP,
   ROOM_DIFFICULTY_SPEED_STEP,
@@ -22,7 +26,46 @@ export interface RoomConfig {
   readonly roomIndex: number; // 1-based
   readonly theme: RoomThemeId;
   readonly goalCombo: number;
+  /** MB-07, ADR-0015 §10 (amendment): empty for Room 1 by design (§7's
+   *  "intro, forgiving" framing, PO-confirmed) -- this slice ships exactly
+   *  one breakable obstacle, in Room 2 only. The SAME array reference is
+   *  also set on `engineConfig.obstacles` (see buildRoomConfig) so there is
+   *  exactly one source of truth for obstacle geometry, not two that could
+   *  drift apart. */
+  readonly obstacles: readonly PongObstacleConfig[];
   readonly engineConfig: PongEngineConfig;
+}
+
+// MB-07, ADR-0015 §10 (amendment): Room 2's single breakable obstacle.
+// Positioned well clear of the decorative Focus/Tasks background cards
+// (roomTheme.ts's drawFocusTasksTheme occupies roughly the top half of the
+// board) and well above the paddle band, so it reads as a distinct,
+// physical mid-board hazard rather than part of the background. Geometry is
+// derived from the room's OWN engineConfig dimensions (post-resize-safe --
+// this is called fresh every time buildRoomConfig runs, including on a
+// board resize), never a fixed pixel size.
+//
+// FUTURE TIE-IN (not implemented here, out of this slice's scope per the
+// task brief): a constellation/meta-progression layer could eventually
+// track "obstacles broken across a Journey session" as a new signal --
+// this function is the natural place such a system would read obstacle
+// IDs/positions from, but nothing here calls out to it.
+export function buildRoomObstacles(roomIndex: number, engineConfig: PongEngineConfig): readonly PongObstacleConfig[] {
+  if (roomIndex !== 2) return []; // Room 1 stays obstacle-free by design (ADR-0015 §7/§10)
+
+  const width = engineConfig.width * OBSTACLE_WIDTH_RATIO;
+  const height = engineConfig.height * OBSTACLE_HEIGHT_RATIO;
+  return [
+    {
+      id: 'room-2-obstacle-1',
+      x: (engineConfig.width - width) / 2,
+      y: engineConfig.height * OBSTACLE_Y_RATIO,
+      width,
+      height,
+      breakable: true,
+      comboThresholdToBreak: OBSTACLE_COMBO_THRESHOLD_TO_BREAK,
+    },
+  ];
 }
 
 // ADR-0015 §4: base difficulty scales with room index ONLY -- adaptive
@@ -48,11 +91,14 @@ export function deriveRoomEngineConfig(roomIndex: number, base: PongEngineConfig
 }
 
 export function buildRoomConfig(roomIndex: number, theme: RoomThemeId, boardConfig: PongEngineConfig): RoomConfig {
+  const engineConfig = deriveRoomEngineConfig(roomIndex, boardConfig);
+  const obstacles = buildRoomObstacles(roomIndex, engineConfig);
   return {
     roomIndex,
     theme,
     goalCombo: ROOM_1_GOAL_COMBO + (roomIndex - 1) * ROOM_GOAL_COMBO_STEP_PER_ROOM,
-    engineConfig: deriveRoomEngineConfig(roomIndex, boardConfig),
+    obstacles,
+    engineConfig: { ...engineConfig, obstacles },
   };
 }
 

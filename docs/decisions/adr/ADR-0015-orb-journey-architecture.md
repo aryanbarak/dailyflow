@@ -52,9 +52,10 @@ overdue work. This slice ships exactly ONE theme family: Focus/Tasks-inspired
 abstract shapes (checkmark-like forms, list lines, no real text).
 
 ### 6. Scope explicitly deferred (future slices, not this one)
-Breakable obstacles, target-orb sequences, path branching, constellation
-meta-progression, checkpoint persistence (Supabase — Tier-1, requires
-explicit PO "برو"), adaptive-performance-correction difficulty.
+Target-orb sequences, path branching, constellation meta-progression,
+checkpoint persistence (Supabase — Tier-1, requires explicit PO "برو"),
+adaptive-performance-correction difficulty. Breakable obstacles are no
+longer deferred — see §10 (Amendment, post-MB-06).
 
 ### 7. This slice's content
 Exactly 2 rooms, same theme family, ricochet-only mechanics (no targets, no
@@ -73,6 +74,21 @@ None this slice. Journey progress (room reached, score) lives only in memory
 and is lost on close — identical pattern to Quick Break Slice 1. Checkpoint
 persistence (room-index only, not frame state) is a separate future Tier-1
 slice per the concept doc.
+
+### 10. Breakable obstacles (Amendment, post-MB-06)
+Some obstacles in a room may be marked breakable. Breaking one requires a
+charged hit: the existing combo counter (already built, ADR-0014-era) must
+be at or above a tuning-configurable threshold at the moment of contact —
+this is a skill reward, not a default interaction. On break: a stronger-than-
+normal particle burst (reusing the existing particle system, ADR-0014 §11)
+plays, and the obstacle is permanently removed for the remainder of that room
+instance (not the whole Journey — it reappears if the room restarts after a
+floor miss, consistent with §3's "failure restarts the current room").
+Under prefers-reduced-motion: the obstacle is still removed on a qualifying
+hit (this is gameplay, not decoration), but without the particle burst.
+Scope for this slice: Room 2 only. Room 1 remains obstacle-free by design
+(§7's "intro, forgiving" room). A future slice may extend this to additional
+rooms once room 2's breakable obstacle is proven in real play.
 
 ## Consequences
 + One engine serves both session types; no physics duplication; trust
