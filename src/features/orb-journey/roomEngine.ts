@@ -21,10 +21,6 @@ import {
   DRIFTING_ORB_REWARD_SPEED_MULTIPLIER,
   DRIFTING_ORB_SPAWN_INTERVAL_MS,
   DRIFTING_ORB_SPEED_MULTIPLIER_DURATION_SECONDS,
-  OBSTACLE_COMBO_THRESHOLD_TO_BREAK,
-  OBSTACLE_HEIGHT_RATIO,
-  OBSTACLE_WIDTH_RATIO,
-  OBSTACLE_Y_RATIO,
   ROOM_1_GOAL_COMBO,
   ROOM_DIFFICULTY_PADDLE_SHRINK_STEP,
   ROOM_DIFFICULTY_SPEED_STEP,
@@ -55,36 +51,23 @@ export interface RoomConfig {
   readonly engineConfig: PongEngineConfig;
 }
 
-// MB-07, ADR-0015 §10 (amendment): Room 2's single breakable obstacle.
-// Positioned well clear of the decorative Focus/Tasks background cards
-// (roomTheme.ts's drawFocusTasksTheme occupies roughly the top half of the
-// board) and well above the paddle band, so it reads as a distinct,
-// physical mid-board hazard rather than part of the background. Geometry is
-// derived from the room's OWN engineConfig dimensions (post-resize-safe --
-// this is called fresh every time buildRoomConfig runs, including on a
-// board resize), never a fixed pixel size.
-//
-// FUTURE TIE-IN (not implemented here, out of this slice's scope per the
-// task brief): a constellation/meta-progression layer could eventually
-// track "obstacles broken across a Journey session" as a new signal --
-// this function is the natural place such a system would read obstacle
-// IDs/positions from, but nothing here calls out to it.
+// MB-09, ADR-0015 §10 (retirement note): the static breakable obstacle
+// this function used to author into Room 2 was removed by explicit PO
+// decision after playing Room 2 with both the obstacle and MB-08's drifting
+// speed-orbs together -- the obstacle no longer added value alongside that
+// mechanic. This function is kept, unused by any room right now, as the
+// generic, documented entry point for a FUTURE room that wants an authored
+// breakable obstacle: the engine-level capability (PongObstacleConfig/
+// PongObstacleState/collision code in pongEngine.ts) was deliberately not
+// removed. Both rooms are now symmetric on `obstacles` -- always [].
 export function buildRoomObstacles(roomIndex: number, engineConfig: PongEngineConfig): readonly PongObstacleConfig[] {
   if (roomIndex !== 2) return []; // Room 1 stays obstacle-free by design (ADR-0015 §7/§10)
 
-  const width = engineConfig.width * OBSTACLE_WIDTH_RATIO;
-  const height = engineConfig.height * OBSTACLE_HEIGHT_RATIO;
-  return [
-    {
-      id: 'room-2-obstacle-1',
-      x: (engineConfig.width - width) / 2,
-      y: engineConfig.height * OBSTACLE_Y_RATIO,
-      width,
-      height,
-      breakable: true,
-      comboThresholdToBreak: OBSTACLE_COMBO_THRESHOLD_TO_BREAK,
-    },
-  ];
+  // MB-09: Room 2 authors zero obstacles too now (ADR-0015 §10 retirement
+  // note). `engineConfig` stays an unused parameter here, same as it
+  // already was for Room 1's early return above -- kept so a future room
+  // can be given obstacle geometry without changing this signature again.
+  return [];
 }
 
 // MB-08, ADR-0015 §11 (amendment): Room 2's drifting-orb spawn recipe.

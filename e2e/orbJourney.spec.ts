@@ -235,7 +235,14 @@ test.describe('Orb Journey (MB-05, ADR-0015)', () => {
     expect(pageErrors).toEqual([]);
   });
 
-  test('breakable obstacle (MB-07, ADR-0015 §10): Room 1 has none, Room 2s obstacle breaks on a sufficiently-combod hit and stays gone', async ({ page }) => {
+  // MB-09, ADR-0015 §10 (retirement note): the static breakable obstacle is
+  // now retired from Room 2's authored content -- Room 1 and Room 2 are
+  // symmetric (both obstacle-free). The MB-07 dev hooks stay wired (the
+  // engine-level capability is kept, not deleted) but now have nothing to
+  // act on; this test replaces the old "Room 2's obstacle breaks" MB-07
+  // test with a proof that the retirement is real AND that the now-inert
+  // hook degrades to a safe no-op instead of throwing.
+  test('breakable obstacle retirement (MB-09, ADR-0015 §10 retirement note): Room 2 no longer has one, mirroring Room 1 -- the MB-07 dev hook is now a safe no-op', async ({ page }) => {
     const pageErrors: string[] = [];
     page.on('pageerror', err => pageErrors.push(err.message));
 
@@ -245,13 +252,13 @@ test.describe('Orb Journey (MB-05, ADR-0015)', () => {
 
     await forceRoomGoal(page);
     await expect(page.getByText('Room 2')).toBeVisible();
-    expect(await getObstacleBrokenState(page)).toEqual([false]); // Room 2: exactly one obstacle, intact
+    expect(await getObstacleBrokenState(page)).toEqual([]); // MB-09: Room 2 is now ALSO obstacle-free
 
-    await forceObstacleContact(page);
-    await page.waitForTimeout(300); // let the next tick's real collision-and-break logic run
-    expect(await getObstacleBrokenState(page)).toEqual([true]);
+    await forceObstacleContact(page); // no obstacle to contact -- must no-op, not throw
+    await page.waitForTimeout(300);
+    expect(await getObstacleBrokenState(page)).toEqual([]);
 
-    // Rendering continues fine post-break -- no crash, the canvas still draws.
+    // Rendering continues fine with zero obstacles -- no crash, canvas still draws.
     expect(await canvasHasNonZeroPixels(page)).toBe(true);
 
     await page.keyboard.press('Escape');
@@ -261,46 +268,19 @@ test.describe('Orb Journey (MB-05, ADR-0015)', () => {
     expect(pageErrors).toEqual([]);
   });
 
-  test('crash-guard covers Room 2s NEW obstacle-drawing code path (verified, not assumed, per the MB-02b/MB-03-FIX fault-injection pattern)', async ({ page }) => {
-    const pageErrors: string[] = [];
-    page.on('pageerror', err => pageErrors.push(err.message));
-
-    await openJourney(page);
-    await forceRoomGoal(page); // Room 1 -> Room 2, where the obstacle actually exists
-    await expect(page.getByText('Room 2')).toBeVisible();
-
-    // Injected AFTER reaching Room 2 (not via addInitScript at load, unlike
-    // the earlier crash test) so the very next roundRect() call is
-    // guaranteed to occur inside a renderFrame() invocation that ALSO draws
-    // Room 2's obstacle (drawRoomTheme's decorative cards and
-    // drawRoomObstacle both call roundRect within the same synchronous
-    // render pass) -- this exercises the crash guard against a frame where
-    // this slice's new rendering code is actually part of the call stack,
-    // not just the pre-existing ball/theme draw calls the MB-02b/MB-03-FIX
-    // and earlier Journey crash tests already cover.
-    await page.evaluate(() => {
-      const proto = CanvasRenderingContext2D.prototype;
-      const original = proto.roundRect;
-      let thrown = false;
-      proto.roundRect = function (...args: Parameters<typeof original>) {
-        if (!thrown) {
-          thrown = true;
-          throw new Error('MB-07 test-injected obstacle-draw failure');
-        }
-        return original.apply(this, args);
-      };
-    });
-
-    const dialog = page.getByRole('dialog');
-    await expect(page.getByText('Something went wrong with the game')).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Close micro break' })).toBeVisible();
-
-    await page.keyboard.press('Escape');
-    await expect(dialog).not.toBeVisible();
-    await expect(page.locator(START_BUTTON)).toBeEnabled();
-
-    expect(pageErrors).toEqual([]);
-  });
+  // MB-09: the MB-07 "crash-guard covers Room 2's NEW obstacle-drawing code
+  // path" test is REMOVED (not merely updated) -- its whole premise was
+  // roundRect() being called from BOTH the decorative theme cards AND
+  // drawRoomObstacle() within the same render pass, guaranteeing the new
+  // obstacle-drawing code was on the call stack. With Room 2's obstacle list
+  // now empty, drawRoomObstacle() is never invoked in real gameplay, so that
+  // guarantee no longer holds -- keeping the test would only be re-proving
+  // the PRE-EXISTING theme-card crash guard, already covered by this file's
+  // earlier "crash path in the Journey context" test, under a misleading
+  // "NEW obstacle-drawing" name. Crash-guard coverage of Room 2's actual
+  // CURRENT new render code is provided by the drifting-orb crash-guard test
+  // below (setLineDash is exclusive to drawDriftingOrbIdle, a cleaner
+  // isolation than roundRect ever was).
 
   test('drifting speed-orbs (MB-08, ADR-0015 §11): catching Haste measurably increases ball speed, catching Calm measurably decreases it', async ({ page }) => {
     const pageErrors: string[] = [];

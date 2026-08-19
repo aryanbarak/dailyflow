@@ -76,6 +76,16 @@ persistence (room-index only, not frame state) is a separate future Tier-1
 slice per the concept doc.
 
 ### 10. Breakable obstacles (Amendment, post-MB-06)
+**Retired for Room 2, post-MB-08 (PO decision).** After playing Room 2 with
+both the static breakable obstacle (this section) and the drifting speed-
+orbs (§11) together, the PO found the static obstacle no longer added value
+alongside the drifting-orb mechanic and asked for its removal. Room 2's
+authored content no longer includes a breakable obstacle — see MB-09. The
+engine-level capability described below is NOT removed: it remains generic,
+additive infrastructure (PongObstacleConfig/PongObstacleState in
+pongEngine.ts) available to any future room that wants it. The design
+rationale below is kept for that future use, not as current Room 2 behavior.
+
 Some obstacles in a room may be marked breakable. Breaking one requires a
 charged hit: the existing combo counter (already built, ADR-0014-era) must
 be at or above a tuning-configurable threshold at the moment of contact —

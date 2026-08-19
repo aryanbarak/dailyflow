@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { createInitialPongState, DEFAULT_PONG_CONFIG, stepPong, type PongEngineConfig, type PongState } from '../micro-breaks/engine/pongEngine';
+import {
+  createInitialPongState,
+  DEFAULT_PONG_CONFIG,
+  stepPong,
+  type PongEngineConfig,
+  type PongObstacleConfig,
+  type PongState,
+} from '../micro-breaks/engine/pongEngine';
 import {
   buildRoomConfig,
   buildRoomSequence,
@@ -227,29 +234,43 @@ describe('roomEngine: stepJourney -- a miss restarts the CURRENT room only (ADR-
     expect(journey.pong.combo).toBe(0);
   });
 
-  it('room-restart correctness (MB-07, ADR-0015 §10): breaking Room 2s obstacle, then missing, resets the obstacle to intact -- the SAME room-local restart path, no separate reset code', () => {
+  // MB-09, ADR-0015 §10 (retirement note): Room 2 no longer authors a
+  // breakable obstacle (see the "breakable obstacles" describe block below),
+  // so this proof can no longer drive itself off buildRoomSequence's real
+  // output. The room-restart RESET MECHANISM itself is explicitly kept as
+  // generic, additive infrastructure for a future room -- so it's still
+  // worth proving that mechanism works, via a hand-built RoomConfig with a
+  // synthetic obstacle (mirrors pongEngine.test.ts's own CONFIG_WITH_OBSTACLE
+  // pattern), rather than deleting this coverage outright.
+  it('room-restart correctness: breaking a room-authored obstacle, then missing, resets the obstacle to intact -- the SAME room-local restart path, no separate reset code (proven via a synthetic obstacle since no shipped room authors one post-MB-09)', () => {
     const rooms = buildRoomSequence(BOARD_CONFIG);
     const room2 = rooms[1];
-    expect(room2.obstacles).toHaveLength(1); // sanity: this test is meaningless without a real obstacle to break
+    const syntheticObstacle: PongObstacleConfig = { id: 'synthetic-1', x: 10, y: 10, width: 50, height: 10, breakable: true, comboThresholdToBreak: 2 };
+    const roomWithObstacle: RoomConfig = {
+      ...room2,
+      obstacles: [syntheticObstacle],
+      engineConfig: { ...room2.engineConfig, obstacles: [syntheticObstacle] },
+    };
+    const roomsWithObstacle = [rooms[0], roomWithObstacle];
 
-    let journey: JourneyState = { roomIndex: 2, pong: createInitialPongState(room2.engineConfig), journeyScore: 0, phase: 'playing' };
+    let journey: JourneyState = { roomIndex: 2, pong: createInitialPongState(roomWithObstacle.engineConfig), journeyScore: 0, phase: 'playing' };
 
     // Build combo to the break threshold via paddle hits, then hit the obstacle.
-    for (let hit = 0; hit < room2.obstacles[0].comboThresholdToBreak!; hit++) {
-      journey = hitState(journey, room2);
-      journey = stepJourney(journey, 16, rooms);
+    for (let hit = 0; hit < syntheticObstacle.comboThresholdToBreak!; hit++) {
+      journey = hitState(journey, roomWithObstacle);
+      journey = stepJourney(journey, 16, roomsWithObstacle);
     }
-    journey = obstacleHitState(journey, room2);
-    journey = stepJourney(journey, 16, rooms);
-    expect(journey.pong.obstacles).toEqual([{ id: room2.obstacles[0].id, broken: true }]); // confirms the break actually happened -- otherwise the reset assertion below would be trivially true
+    journey = obstacleHitState(journey, roomWithObstacle);
+    journey = stepJourney(journey, 16, roomsWithObstacle);
+    expect(journey.pong.obstacles).toEqual([{ id: syntheticObstacle.id, broken: true }]); // confirms the break actually happened -- otherwise the reset assertion below would be trivially true
 
     // Now miss (room-local restart) -- still Room 2, same obstacle config,
     // but a FRESH pong state.
-    journey = missState(journey, room2);
-    journey = stepJourney(journey, 16, rooms);
+    journey = missState(journey, roomWithObstacle);
+    journey = stepJourney(journey, 16, roomsWithObstacle);
 
     expect(journey.roomIndex).toBe(2); // still the same room, not the whole journey restarting
-    expect(journey.pong.obstacles).toEqual([{ id: room2.obstacles[0].id, broken: false }]);
+    expect(journey.pong.obstacles).toEqual([{ id: syntheticObstacle.id, broken: false }]);
   });
 });
 
@@ -339,39 +360,28 @@ describe('roomEngine: buildRoomConfig', () => {
   });
 });
 
-describe('roomEngine: breakable obstacles (MB-07, ADR-0015 §10 amendment)', () => {
-  it('Room 1 has ZERO obstacles -- regression guard against an accidental copy-paste into the intro room (ADR-0015 §7/§10: Room 1 stays obstacle-free by design)', () => {
+describe('roomEngine: breakable obstacles (MB-07, ADR-0015 §10 amendment; retired for Room 2 by MB-09, ADR-0015 §10 retirement note)', () => {
+  // MB-09: Room 1 and Room 2 are now symmetric on `obstacles` -- both empty.
+  // Combined into ONE test with a contrasting pair of assertions (same fix
+  // already applied in MB-08's own report for an analogous "both sides
+  // undefined" risk) rather than two separate tests: a lone
+  // `toEqual([])` per room is NOT trivial on its own here (a full revert of
+  // roomEngine.ts would put a real obstacle back into Room 2's array, so the
+  // assertion genuinely depends on the real change), but keeping both rooms'
+  // checks in one test still directly documents the new symmetry as a single
+  // fact, matching the drifting-orb block's "Room 1 has NO ... while Room 2
+  // DOES" contrast pattern one test up.
+  it('Room 1 AND Room 2 both author ZERO obstacles now -- symmetric (ADR-0015 §10 retirement note; §7 Room 1 was already obstacle-free by design)', () => {
     const rooms = buildRoomSequence(BOARD_CONFIG);
     expect(rooms[0].obstacles).toEqual([]);
     expect(rooms[0].engineConfig.obstacles).toEqual([]);
+    expect(rooms[1].obstacles).toEqual([]);
+    expect(rooms[1].engineConfig.obstacles).toEqual([]);
   });
 
-  it('Room 2 has exactly ONE breakable obstacle, positioned fully within the board bounds', () => {
+  it('RoomConfig.obstacles and engineConfig.obstacles are the SAME array reference even though both are now empty -- one source of truth, no drift risk', () => {
     const rooms = buildRoomSequence(BOARD_CONFIG);
-    const room2 = rooms[1];
-    expect(room2.obstacles).toHaveLength(1);
-
-    const obstacle = room2.obstacles[0];
-    expect(obstacle.breakable).toBe(true);
-    expect(obstacle.comboThresholdToBreak).toBeGreaterThan(0);
-    expect(obstacle.x).toBeGreaterThanOrEqual(0);
-    expect(obstacle.y).toBeGreaterThanOrEqual(0);
-    expect(obstacle.x + obstacle.width).toBeLessThanOrEqual(room2.engineConfig.width);
-    expect(obstacle.y + obstacle.height).toBeLessThanOrEqual(room2.engineConfig.height);
-  });
-
-  it('RoomConfig.obstacles and engineConfig.obstacles are the SAME array reference -- one source of truth, no drift risk', () => {
-    const rooms = buildRoomSequence(BOARD_CONFIG);
-    expect(rooms[1].obstacles).toHaveLength(1); // guards against this passing trivially on undefined === undefined
     expect(rooms[1].obstacles).toBe(rooms[1].engineConfig.obstacles);
-  });
-
-  it('obstacle geometry rebuilds proportionally to board size, not a fixed pixel size (mirrors paddle/ball scaling)', () => {
-    const smallBoard: PongEngineConfig = { ...BOARD_CONFIG, width: 240, height: 240 / (BOARD_CONFIG.width / BOARD_CONFIG.height) };
-    const largeBoard: PongEngineConfig = { ...BOARD_CONFIG, width: 480, height: 480 / (BOARD_CONFIG.width / BOARD_CONFIG.height) };
-    const smallRoom2 = buildRoomConfig(2, 'focus-tasks', smallBoard);
-    const largeRoom2 = buildRoomConfig(2, 'focus-tasks', largeBoard);
-
-    expect(largeRoom2.obstacles[0].width).toBeGreaterThan(smallRoom2.obstacles[0].width);
+    expect(rooms[0].obstacles).toBe(rooms[0].engineConfig.obstacles);
   });
 });
