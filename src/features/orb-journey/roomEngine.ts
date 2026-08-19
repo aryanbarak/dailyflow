@@ -6,8 +6,21 @@
 // field, which this module consumes to detect "a miss just happened"
 // unambiguously (see that field's own comment for why `combo` resetting to
 // 0 alone is not a sufficient signal).
-import { createInitialPongState, stepPong, type PongEngineConfig, type PongObstacleConfig, type PongState } from '../micro-breaks/engine/pongEngine';
 import {
+  createInitialPongState,
+  stepPong,
+  type PongDriftingOrbConfig,
+  type PongEngineConfig,
+  type PongObstacleConfig,
+  type PongState,
+} from '../micro-breaks/engine/pongEngine';
+import {
+  DRIFTING_ORB_DRIFT_SPEED_PX_PER_SECOND,
+  DRIFTING_ORB_PENALTY_SPEED_MULTIPLIER,
+  DRIFTING_ORB_RADIUS_RATIO,
+  DRIFTING_ORB_REWARD_SPEED_MULTIPLIER,
+  DRIFTING_ORB_SPAWN_INTERVAL_MS,
+  DRIFTING_ORB_SPEED_MULTIPLIER_DURATION_SECONDS,
   OBSTACLE_COMBO_THRESHOLD_TO_BREAK,
   OBSTACLE_HEIGHT_RATIO,
   OBSTACLE_WIDTH_RATIO,
@@ -33,6 +46,12 @@ export interface RoomConfig {
    *  exactly one source of truth for obstacle geometry, not two that could
    *  drift apart. */
   readonly obstacles: readonly PongObstacleConfig[];
+  /** MB-08, ADR-0015 §11 (amendment): undefined for Room 1 by design (§7's
+   *  "intro, forgiving" framing) -- this slice's drifting-orb spawning
+   *  ships in Room 2 only, additive alongside §10's static obstacle. The
+   *  SAME object reference is also set on `engineConfig.driftingOrbSpawn`
+   *  (see buildRoomConfig), one source of truth like `obstacles` above. */
+  readonly driftingOrbSpawn: PongDriftingOrbConfig | undefined;
   readonly engineConfig: PongEngineConfig;
 }
 
@@ -68,6 +87,25 @@ export function buildRoomObstacles(roomIndex: number, engineConfig: PongEngineCo
   ];
 }
 
+// MB-08, ADR-0015 §11 (amendment): Room 2's drifting-orb spawn recipe.
+// Radius scales with the room's own engineConfig.width (post-resize-safe,
+// like buildRoomObstacles above); drift speed is a flat px/s value, NOT
+// rescaled by board size -- matching this codebase's existing precedent for
+// baseSpeed/maxSpeed (computeBoardConfig only rescales DIMENSIONAL fields,
+// see that function's own comment), not a new inconsistency introduced here.
+export function buildDriftingOrbSpawnConfig(roomIndex: number, engineConfig: PongEngineConfig): PongDriftingOrbConfig | undefined {
+  if (roomIndex !== 2) return undefined; // Room 1 stays free of drifting orbs by design (ADR-0015 §7/§11)
+
+  return {
+    spawnIntervalMs: DRIFTING_ORB_SPAWN_INTERVAL_MS,
+    driftSpeedPxPerSecond: DRIFTING_ORB_DRIFT_SPEED_PX_PER_SECOND,
+    radius: engineConfig.width * DRIFTING_ORB_RADIUS_RATIO,
+    rewardSpeedMultiplier: DRIFTING_ORB_REWARD_SPEED_MULTIPLIER,
+    penaltySpeedMultiplier: DRIFTING_ORB_PENALTY_SPEED_MULTIPLIER,
+    speedMultiplierDurationSeconds: DRIFTING_ORB_SPEED_MULTIPLIER_DURATION_SECONDS,
+  };
+}
+
 // ADR-0015 §4: base difficulty scales with room index ONLY -- adaptive
 // correction from recent performance is explicitly deferred (do not
 // implement it here). Every OTHER engine field (durationSeconds, combo cap,
@@ -93,12 +131,14 @@ export function deriveRoomEngineConfig(roomIndex: number, base: PongEngineConfig
 export function buildRoomConfig(roomIndex: number, theme: RoomThemeId, boardConfig: PongEngineConfig): RoomConfig {
   const engineConfig = deriveRoomEngineConfig(roomIndex, boardConfig);
   const obstacles = buildRoomObstacles(roomIndex, engineConfig);
+  const driftingOrbSpawn = buildDriftingOrbSpawnConfig(roomIndex, engineConfig);
   return {
     roomIndex,
     theme,
     goalCombo: ROOM_1_GOAL_COMBO + (roomIndex - 1) * ROOM_GOAL_COMBO_STEP_PER_ROOM,
     obstacles,
-    engineConfig: { ...engineConfig, obstacles },
+    driftingOrbSpawn,
+    engineConfig: { ...engineConfig, obstacles, driftingOrbSpawn },
   };
 }
 
@@ -154,9 +194,14 @@ function getRoom(journey: JourneyState, rooms: readonly RoomConfig[]): RoomConfi
 // JourneyPhase's own comment) with no hard reload -- the caller (a Journey-
 // aware canvas) is expected to render a short, reduced-motion-aware
 // transition around this state change, not this pure function's concern.
-export function stepJourney(journey: JourneyState, dtMs: number, rooms: readonly RoomConfig[]): JourneyState {
+export function stepJourney(
+  journey: JourneyState,
+  dtMs: number,
+  rooms: readonly RoomConfig[],
+  random: () => number = Math.random,
+): JourneyState {
   const currentRoom = getRoom(journey, rooms);
-  const stepped = stepPong(journey.pong, dtMs, currentRoom.engineConfig);
+  const stepped = stepPong(journey.pong, dtMs, currentRoom.engineConfig, random);
 
   // Score accumulates from the engine's own combo-formula delta for this
   // step -- reused, not recomputed, so Journey never duplicates Quick

@@ -60,3 +60,48 @@ export const OBSTACLE_BREAK_PARTICLE_COUNT = 18;
 export function getObstacleBreakParticleCount(reducedMotion: boolean): number {
   return reducedMotion ? 0 : OBSTACLE_BREAK_PARTICLE_COUNT;
 }
+
+// ── Drifting speed-orbs (ADR-0015 §11 amendment, MB-08 -- Room 2 only) ──
+export const DRIFTING_ORB_SPAWN_INTERVAL_MS = 4000;
+export const DRIFTING_ORB_DRIFT_SPEED_PX_PER_SECOND = 70;
+/** Orb radius as a fraction of board width -- scales proportionally like
+ *  ball/paddle sizing, never a fixed px value. */
+export const DRIFTING_ORB_RADIUS_RATIO = 0.03;
+/** Calm: multiplies ball speed DOWN on contact. */
+export const DRIFTING_ORB_REWARD_SPEED_MULTIPLIER = 0.6;
+/** Haste: multiplies ball speed UP on contact -- still clamped by the
+ *  engine's existing maxSpeed ceiling regardless of role (ADR-0015 §11). */
+export const DRIFTING_ORB_PENALTY_SPEED_MULTIPLIER = 1.6;
+export const DRIFTING_ORB_SPEED_MULTIPLIER_DURATION_SECONDS = 6;
+
+// ── Idle rim appearance (ADR-0015 §11: visible pre-contact, NEVER
+//    reduced-motion-gated -- a static shape, not animation) ─────────────
+export const DRIFTING_ORB_RIM_LINE_WIDTH = 2;
+/** Notched/dashed rim -- Haste (penalty). Calm's rim is smooth/continuous,
+ *  expressed as an empty dash array at the call site (no separate constant
+ *  needed for "no dash"). */
+export const DRIFTING_ORB_PENALTY_RIM_DASH: readonly number[] = [4, 3];
+
+// ── Absorb (Calm/reward) reaction -- converging particles + a single
+//    smooth brightening pulse. Reduced-motion suppresses the particles
+//    (motion) but NEVER the pulse (a color/brightness cue, ADR-0015 §11) ─
+export const DRIFTING_ORB_ABSORB_PARTICLE_COUNT = 10;
+export const DRIFTING_ORB_ABSORB_PARTICLE_ARRIVAL_MS = 260;
+export const DRIFTING_ORB_ABSORB_PULSE_DURATION_MS = 260;
+export const DRIFTING_ORB_ABSORB_PULSE_PEAK_ALPHA = 0.5;
+export function getDriftingOrbAbsorbParticleCount(reducedMotion: boolean): number {
+  return reducedMotion ? 0 : DRIFTING_ORB_ABSORB_PARTICLE_COUNT;
+}
+
+// ── Jolt (Haste/penalty) reaction -- outward particle burst + sharp
+//    double-flash + a small bounded shake. Reduced-motion suppresses the
+//    particles AND the shake (both motion) but NEVER the flash (a
+//    color/brightness cue, ADR-0015 §11) ─────────────────────────────────
+export const DRIFTING_ORB_JOLT_PARTICLE_COUNT = 14;
+export const DRIFTING_ORB_JOLT_FLASH_DURATION_MS = 260;
+export const DRIFTING_ORB_JOLT_FLASH_PEAK_ALPHA = 0.6;
+export const DRIFTING_ORB_JOLT_SHAKE_DURATION_MS = 220;
+export const DRIFTING_ORB_JOLT_SHAKE_MAGNITUDE_PX = 4;
+export function getDriftingOrbJoltParticleCount(reducedMotion: boolean): number {
+  return reducedMotion ? 0 : DRIFTING_ORB_JOLT_PARTICLE_COUNT;
+}

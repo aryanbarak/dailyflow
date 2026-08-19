@@ -253,6 +253,65 @@ describe('roomEngine: stepJourney -- a miss restarts the CURRENT room only (ADR-
   });
 });
 
+describe('roomEngine: drifting speed-orbs (MB-08, ADR-0015 §11 amendment)', () => {
+  it('Room 1 has NO drifting-orb spawn config while Room 2 DOES -- regression guard against an accidental copy-paste into the intro room (ADR-0015 §7/§11)', () => {
+    const rooms = buildRoomSequence(BOARD_CONFIG);
+    expect(rooms[0].driftingOrbSpawn).toBeUndefined();
+    expect(rooms[0].engineConfig.driftingOrbSpawn).toBeUndefined();
+    // Contrasted against Room 2 in the SAME test -- an "absent" assertion
+    // alone can't be disproven by full reversion (undefined === undefined
+    // either way); pairing it with "Room 2 IS defined" means this test
+    // actually depends on the real implementation existing.
+    expect(rooms[1].driftingOrbSpawn).toBeDefined();
+  });
+
+  it('Room 2 has a sane drifting-orb spawn config: positive cadence/speed/radius, reward < 1 < penalty', () => {
+    const rooms = buildRoomSequence(BOARD_CONFIG);
+    const spawnConfig = rooms[1].driftingOrbSpawn;
+    expect(spawnConfig).toBeDefined();
+    expect(spawnConfig!.spawnIntervalMs).toBeGreaterThan(0);
+    expect(spawnConfig!.driftSpeedPxPerSecond).toBeGreaterThan(0);
+    expect(spawnConfig!.radius).toBeGreaterThan(0);
+    expect(spawnConfig!.rewardSpeedMultiplier).toBeLessThan(1);
+    expect(spawnConfig!.penaltySpeedMultiplier).toBeGreaterThan(1);
+    expect(spawnConfig!.speedMultiplierDurationSeconds).toBeGreaterThan(0);
+  });
+
+  it('RoomConfig.driftingOrbSpawn and engineConfig.driftingOrbSpawn are the SAME object reference -- one source of truth', () => {
+    const rooms = buildRoomSequence(BOARD_CONFIG);
+    expect(rooms[1].driftingOrbSpawn).toBeDefined(); // guards against this passing trivially on undefined === undefined
+    expect(rooms[1].driftingOrbSpawn).toBe(rooms[1].engineConfig.driftingOrbSpawn);
+  });
+
+  it('room-restart correctness: an active drifting-orb speed effect AND any remaining active orbs clear on room-local restart (the leak-prone case)', () => {
+    const rooms = buildRoomSequence(BOARD_CONFIG);
+    const room2 = rooms[1];
+    let journey: JourneyState = { roomIndex: 2, pong: createInitialPongState(room2.engineConfig), journeyScore: 0, phase: 'playing' };
+
+    // A drifting orb positioned exactly at the ball -- caught on the very next step (same pattern proven at the pongEngine.ts level).
+    journey = {
+      ...journey,
+      pong: { ...journey.pong, driftingOrbs: [{ id: 'test-orb', x: journey.pong.ball.x, y: journey.pong.ball.y, role: 'penalty' }] },
+    };
+    journey = stepJourney(journey, 16, rooms);
+    expect(journey.pong.driftingOrbs).toEqual([]); // caught -- confirms the catch actually happened
+    expect(journey.pong.speedMultiplier).not.toBe(1); // effect active -- otherwise the reset assertion below would be trivially true
+    expect(journey.pong.speedMultiplierExpiresAt).not.toBeNull();
+
+    // Add a SECOND, still-uncaught orb too, to prove active orbs (not just
+    // the multiplier) also clear on restart.
+    journey = { ...journey, pong: { ...journey.pong, driftingOrbs: [{ id: 'still-active', x: 50, y: 50, role: 'reward' }] } };
+
+    journey = missState(journey, room2);
+    journey = stepJourney(journey, 16, rooms);
+
+    expect(journey.roomIndex).toBe(2); // still the same room, not the whole journey restarting
+    expect(journey.pong.driftingOrbs).toEqual([]);
+    expect(journey.pong.speedMultiplier).toBe(1);
+    expect(journey.pong.speedMultiplierExpiresAt).toBeNull();
+  });
+});
+
 describe('roomEngine: no overall "game over" other than explicit close', () => {
   it('an interleaved sequence of hits and misses across a room restart never produces any "ended"/"game over" status -- pong.status stays "playing" throughout', () => {
     const rooms = buildRoomSequence(BOARD_CONFIG);

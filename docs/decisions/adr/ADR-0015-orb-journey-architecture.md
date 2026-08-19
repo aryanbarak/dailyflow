@@ -90,6 +90,41 @@ Scope for this slice: Room 2 only. Room 1 remains obstacle-free by design
 (§7's "intro, forgiving" room). A future slice may extend this to additional
 rooms once room 2's breakable obstacle is proven in real play.
 
+### 11. Drifting speed-orbs (Amendment, post-MB-07)
+A second, distinct hazard/pickup category, additive to §10's static breakable
+obstacles: small orbs (same light family as the main Orb and target orbs,
+per the Design Language table) drift downward through the room at a
+constant speed. Two variants, each with a distinct SEMANTIC ROLE, not just a
+color:
+- Calm (reward): slows the ball on contact — more breathing room.
+- Haste (penalty): speeds the ball on contact — more pressure.
+Reward and penalty must be distinguishable WITHOUT relying on color alone
+(accessibility): Calm orbs render with a smooth, continuous rim; Haste orbs
+render with a notched/dashed rim. This distinction must be visible before
+contact, not just inferred from the reaction after.
+On contact with the main ball (not the paddle):
+- Calm: "Absorb" reaction — particles converge inward toward the Orb, a
+  single smooth warm brightening pulse (reuses the existing Pulse-on-success
+  language).
+- Haste: "Jolt" reaction — particles burst outward (not converging), a sharp
+  double-flash (bright-dim-bright) instead of a smooth glow, plus a small,
+  bounded, short-duration shake of the Orb sprite.
+Both apply a temporary ball-speed multiplier for a fixed duration (Calm
+down, Haste up), clamped by the existing ADR-0014 §4 maxSpeed ceiling.
+Effects do not stack; a new contact refreshes duration, not magnitude.
+Under prefers-reduced-motion: for BOTH variants, the shake/converging-or-
+bursting particle motion is reduced/suppressed, but the flash/pulse color
+cue (a static appearance change, not motion) remains — so the reward-vs-
+penalty distinction stays legible even with reduced motion. The rim-shape
+cue (smooth vs notched) is unaffected by reduced-motion since it's not
+animation.
+If a drifting orb reaches the bottom of the room without being touched, it
+silently fades — no penalty, no reaction; missing one (of either kind) is a
+foregone opportunity/avoided risk, not a failure state.
+Spawn cadence, drift speed, and the speed-multiplier magnitude/duration are
+tuning-configurable constants (tuning.ts), not hardcoded. Room 1 remains
+free of drifting orbs this slice, consistent with §7.
+
 ## Consequences
 + One engine serves both session types; no physics duplication; trust
   boundary and crash fail-safes inherited for free from ADR-0014.

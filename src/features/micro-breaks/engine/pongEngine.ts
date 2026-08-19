@@ -57,6 +57,36 @@ export interface PongObstacleState {
   readonly broken: boolean;
 }
 
+// MB-08, ADR-0015 §11 (amendment): drifting speed-orbs. Unlike §10's
+// obstacles (a FIXED, room-authored list), drifting orbs are spawned
+// dynamically over time at randomized positions -- so there is exactly ONE
+// spawn "recipe" per room (this config), not a list of them. The task
+// brief's own naming ("PongDriftingOrbConfig[]/PongDriftingOrbState[]")
+// mirrors §10's config/state split loosely; the actual shape here is one
+// PongDriftingOrbConfig (singular, describing HOW to spawn) plus an ARRAY
+// of PongDriftingOrbState (the currently-active spawned orbs) -- documented
+// as a judgment call in the MB-08 report, not a scope deviation.
+export type DriftingOrbRole = 'reward' | 'penalty';
+
+export interface PongDriftingOrbConfig {
+  readonly spawnIntervalMs: number;
+  readonly driftSpeedPxPerSecond: number;
+  readonly radius: number;
+  /** Calm: multiplies ball speed DOWN on contact (< 1). */
+  readonly rewardSpeedMultiplier: number;
+  /** Haste: multiplies ball speed UP on contact (> 1), still clamped by
+   *  the existing config.maxSpeed ceiling like every other speed change. */
+  readonly penaltySpeedMultiplier: number;
+  readonly speedMultiplierDurationSeconds: number;
+}
+
+export interface PongDriftingOrbState {
+  readonly id: string;
+  readonly x: number;
+  readonly y: number;
+  readonly role: DriftingOrbRole;
+}
+
 export interface PongEngineConfig {
   readonly width: number;
   readonly height: number;
@@ -79,6 +109,11 @@ export interface PongEngineConfig {
    *  this field's mere existence, since every read of it below is gated on
    *  `config.obstacles && config.obstacles.length > 0`. */
   readonly obstacles?: readonly PongObstacleConfig[];
+  /** MB-08, ADR-0015 §11 (amendment): optional drifting speed-orb spawn
+   *  recipe. Undefined for Quick Break and Room 1 -- both provably
+   *  unaffected, since every read below is gated on `config.driftingOrbSpawn`
+   *  existing. */
+  readonly driftingOrbSpawn?: PongDriftingOrbConfig;
 }
 
 export const DEFAULT_PONG_CONFIG: PongEngineConfig = {
@@ -128,6 +163,25 @@ export interface PongState {
    *  after a floor miss with NO separate reset code needed. Empty for
    *  Quick Break and any room with no obstacles. */
   readonly obstacles: readonly PongObstacleState[];
+  /** MB-08, ADR-0015 §11 (amendment): currently-active drifting orbs.
+   *  Re-derived fresh (empty) every time `createInitialPongState` runs --
+   *  same free room-restart correctness as `obstacles` above. */
+  readonly driftingOrbs: readonly PongDriftingOrbState[];
+  /** Elapsed-time accumulator (ms) since the last spawn, carrying any
+   *  remainder past `driftingOrbSpawn.spawnIntervalMs` forward for accuracy
+   *  across variable substep sizes. Meaningless when there is no spawn
+   *  config. */
+  readonly driftingOrbSpawnElapsedMs: number;
+  /** Monotonic per-instance counter used to generate stable drifting-orb
+   *  ids WITHOUT any module-level mutable state (which would break purity
+   *  and could leak identity across unrelated PongState instances/tests). */
+  readonly driftingOrbSpawnCount: number;
+  /** Currently-active ball-speed multiplier from a drifting-orb contact.
+   *  1 = no active effect. */
+  readonly speedMultiplier: number;
+  /** `elapsedSeconds` threshold at which the active multiplier reverts.
+   *  null = no active effect. */
+  readonly speedMultiplierExpiresAt: number | null;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -155,6 +209,11 @@ export function createInitialPongState(config: PongEngineConfig = DEFAULT_PONG_C
     status: 'playing',
     floorMissCount: 0,
     obstacles: (config.obstacles ?? []).map(obstacle => ({ id: obstacle.id, broken: false })),
+    driftingOrbs: [],
+    driftingOrbSpawnElapsedMs: 0,
+    driftingOrbSpawnCount: 0,
+    speedMultiplier: 1,
+    speedMultiplierExpiresAt: null,
   };
 }
 
@@ -194,7 +253,7 @@ export function isFinalWave(state: PongState, config: PongEngineConfig): boolean
 const MAX_SUBSTEP_MS = 16;
 const MAX_TOTAL_STEP_MS = 250;
 
-function integrateSubstep(state: PongState, dtMs: number, config: PongEngineConfig): PongState {
+function integrateSubstep(state: PongState, dtMs: number, config: PongEngineConfig, random: () => number): PongState {
   const dt = dtMs / 1000;
   let x = state.ball.x + state.ballVelocity.x * dt;
   let y = state.ball.y + state.ballVelocity.y * dt;
@@ -204,6 +263,8 @@ function integrateSubstep(state: PongState, dtMs: number, config: PongEngineConf
   let combo = state.combo;
   let floorMissCount = state.floorMissCount;
   let obstacles = state.obstacles;
+  let speedMultiplier = state.speedMultiplier;
+  let speedMultiplierExpiresAt = state.speedMultiplierExpiresAt;
 
   const r = config.ballRadius;
 
@@ -218,6 +279,27 @@ function integrateSubstep(state: PongState, dtMs: number, config: PongEngineConf
   if (y - r < 0) {
     y = r;
     vy = Math.abs(vy);
+  }
+
+  // MB-08, ADR-0015 §11 (amendment): expire the temporary drifting-orb
+  // speed effect BEFORE any collision math this substep (so a paddle-hit
+  // ramp later in the SAME substep uses the correct, already-reverted
+  // baseline), by dividing the multiplier back out of the current velocity.
+  // Documented simplification: if maxSpeed clamping ALSO happened while the
+  // effect was active, this revert is approximate (slightly under-reverts,
+  // since the clamp already reduced what the multiplier actually achieved)
+  // -- acceptable for a break-game feel mechanic, not a precision physics
+  // requirement.
+  if (speedMultiplierExpiresAt !== null && state.elapsedSeconds >= speedMultiplierExpiresAt) {
+    const speed = magnitude(vx, vy);
+    if (speed > 0 && speedMultiplier !== 1) {
+      const revertedSpeed = speed / speedMultiplier;
+      const scale = revertedSpeed / speed;
+      vx *= scale;
+      vy *= scale;
+    }
+    speedMultiplier = 1;
+    speedMultiplierExpiresAt = null;
   }
 
   // MB-07, ADR-0015 §10 (amendment): obstacle collision, resolved BEFORE the
@@ -275,6 +357,61 @@ function integrateSubstep(state: PongState, dtMs: number, config: PongEngineConf
       if (obstacleConfig.breakable && combo >= (obstacleConfig.comboThresholdToBreak ?? 0)) {
         obstacles = obstacles.map((entry, index) => (index === i ? { ...entry, broken: true } : entry));
       }
+    }
+  }
+
+  // MB-08, ADR-0015 §11 (amendment): drifting speed-orbs -- advance, check
+  // ball contact (circle-circle, deliberately NOT §10's AABB code -- these
+  // are small and round), drop any caught orb or any that drifted past the
+  // bottom uncaught (silently, no state/score change per §11), then spawn
+  // on a simple elapsed-time cadence. Gated on config.driftingOrbSpawn
+  // existing, so Quick Break and Room 1 never enter this branch.
+  let driftingOrbs = state.driftingOrbs;
+  let driftingOrbSpawnElapsedMs = state.driftingOrbSpawnElapsedMs;
+  let driftingOrbSpawnCount = state.driftingOrbSpawnCount;
+  if (config.driftingOrbSpawn) {
+    const spawnConfig = config.driftingOrbSpawn;
+
+    const advanced = driftingOrbs.map(orb => ({ ...orb, y: orb.y + spawnConfig.driftSpeedPxPerSecond * dt }));
+
+    let caughtOrbId: string | null = null;
+    for (const orb of advanced) {
+      const distance = magnitude(x - orb.x, y - orb.y);
+      if (distance >= r + spawnConfig.radius) continue;
+
+      caughtOrbId = orb.id;
+      const targetMultiplier = orb.role === 'reward' ? spawnConfig.rewardSpeedMultiplier : spawnConfig.penaltySpeedMultiplier;
+      const alreadyActiveSameEffect = speedMultiplierExpiresAt !== null && speedMultiplier === targetMultiplier;
+
+      // ADR-0015 §11: "effects do not stack; a new contact refreshes
+      // duration, not magnitude" -- if a DIFFERENT effect is currently
+      // active, first divide it back out (same revert math as the expiry
+      // branch above) before applying the new target multiplier, so the
+      // ball is never scaled by two multipliers at once.
+      if (!alreadyActiveSameEffect) {
+        const speed = magnitude(vx, vy);
+        if (speed > 0) {
+          const baseSpeed = speedMultiplierExpiresAt !== null ? speed / speedMultiplier : speed;
+          const appliedSpeed = Math.min(baseSpeed * targetMultiplier, config.maxSpeed);
+          const scale = appliedSpeed / speed;
+          vx *= scale;
+          vy *= scale;
+        }
+        speedMultiplier = targetMultiplier;
+      }
+      speedMultiplierExpiresAt = state.elapsedSeconds + spawnConfig.speedMultiplierDurationSeconds;
+      break; // at most one drifting-orb contact resolved per substep
+    }
+
+    driftingOrbs = advanced.filter(orb => orb.id !== caughtOrbId && orb.y - spawnConfig.radius <= config.height);
+
+    driftingOrbSpawnElapsedMs += dtMs;
+    if (driftingOrbSpawnElapsedMs >= spawnConfig.spawnIntervalMs) {
+      driftingOrbSpawnElapsedMs -= spawnConfig.spawnIntervalMs;
+      const spawnX = spawnConfig.radius + random() * Math.max(0, config.width - spawnConfig.radius * 2);
+      const role: DriftingOrbRole = random() < 0.5 ? 'reward' : 'penalty';
+      driftingOrbSpawnCount += 1;
+      driftingOrbs = [...driftingOrbs, { id: `drifting-orb-${driftingOrbSpawnCount}`, x: spawnX, y: spawnConfig.radius, role }];
     }
   }
 
@@ -345,10 +482,20 @@ function integrateSubstep(state: PongState, dtMs: number, config: PongEngineConf
     status,
     floorMissCount,
     obstacles,
+    driftingOrbs,
+    driftingOrbSpawnElapsedMs,
+    driftingOrbSpawnCount,
+    speedMultiplier,
+    speedMultiplierExpiresAt,
   };
 }
 
-export function stepPong(state: PongState, rawDtMs: number, config: PongEngineConfig = DEFAULT_PONG_CONFIG): PongState {
+export function stepPong(
+  state: PongState,
+  rawDtMs: number,
+  config: PongEngineConfig = DEFAULT_PONG_CONFIG,
+  random: () => number = Math.random,
+): PongState {
   if (state.status === 'ended' || rawDtMs <= 0) return state;
 
   const clampedTotalMs = Math.min(rawDtMs, MAX_TOTAL_STEP_MS);
@@ -357,7 +504,7 @@ export function stepPong(state: PongState, rawDtMs: number, config: PongEngineCo
 
   while (remainingMs > 0 && current.status === 'playing') {
     const subMs = Math.min(remainingMs, MAX_SUBSTEP_MS);
-    current = integrateSubstep(current, subMs, config);
+    current = integrateSubstep(current, subMs, config, random);
     remainingMs -= subMs;
   }
 

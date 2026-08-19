@@ -189,6 +189,107 @@ export function drawRoomObstacle(
   ctx.restore();
 }
 
+// MB-08, ADR-0015 §11 (amendment): drifting orbs render in the SAME light
+// family as the main Orb ("same light family... per the Design Language
+// table"), so this accepts the SHAPE of micro-breaks/orbTokens.ts's
+// OrbCanvasColors WITHOUT importing that module -- structurally compatible
+// (core: string, glow: alpha => string), so the caller's already-resolved
+// colors object satisfies this directly. Preserves roomTheme.ts's closed
+// import list (colorNormalization.ts / roomEngine.ts only -- see this
+// file's own header comment and roomTheme.test.ts's static-boundary proof).
+export interface DriftingOrbColors {
+  readonly core: string;
+  readonly glow: (alpha: number) => string;
+}
+
+export interface DriftingOrbRimStyle {
+  readonly lineWidth: number;
+  /** Applied only when role === 'penalty' -- reward's rim is always smooth
+   *  (an empty dash array), so there is no separate "reward dash" constant. */
+  readonly penaltyDash: readonly number[];
+}
+
+// ADR-0015 §11: idle (pre-contact) appearance. Reward (Calm) gets a smooth,
+// continuous rim; penalty (Haste) gets a notched/dashed rim -- a
+// distinction that must be visible BEFORE contact and is NEVER gated by
+// reduced motion (it's a static shape, not animation). `rimStyle` bundles
+// named tuning constants supplied by the caller (orb-journey/tuning.ts),
+// not inline literals here -- keeps this module's import list unchanged
+// (no new import needed) while still satisfying "named constants, not
+// inline values."
+export function drawDriftingOrbIdle(
+  ctx: CanvasRenderingContext2D,
+  center: { readonly x: number; readonly y: number },
+  radius: number,
+  role: 'reward' | 'penalty',
+  colors: DriftingOrbColors,
+  rimStyle: DriftingOrbRimStyle,
+): void {
+  const { x, y } = center;
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, Math.PI * 2);
+  ctx.fillStyle = colors.glow(0.5);
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.arc(x, y, radius * 0.55, 0, Math.PI * 2);
+  ctx.fillStyle = colors.core;
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, Math.PI * 2);
+  ctx.lineWidth = rimStyle.lineWidth;
+  ctx.setLineDash(role === 'penalty' ? [...rimStyle.penaltyDash] : []);
+  ctx.strokeStyle = colors.core;
+  ctx.stroke();
+  ctx.setLineDash([]); // reset -- subsequent draw calls (obstacles, theme cards) must not inherit this
+  ctx.restore();
+}
+
+// ADR-0015 §11: Jolt (Haste) "sharp double-flash (bright-dim-bright)" --
+// pure so the SHAPE is unit-testable without a canvas, mirroring
+// computeRoomTransitionFlashAlpha/computeObstaclePulseAlpha's own
+// rationale. NEVER gated by reduced motion at this layer -- it's a
+// color/brightness cue, not motion (ADR-0015 §11's own distinction); the
+// caller decides whether to render it, but the math itself doesn't change.
+export function computeJoltFlashIntensity(elapsedMs: number, totalMs: number): number {
+  if (totalMs <= 0) return 0;
+  const progress = Math.min(1, Math.max(0, elapsedMs / totalMs));
+  return Math.abs(Math.cos(Math.PI * progress));
+}
+
+// ADR-0015 §11: Absorb (Calm) "single smooth warm brightening pulse" --
+// deliberately a plain fade-out (not a dip-shaped curve like Jolt's flash),
+// so the two reactions read as visually distinct shapes, not just different
+// colors. Also never gated by reduced motion at this layer.
+export function computeAbsorbPulseAlpha(elapsedMs: number, totalMs: number, peakAlpha: number): number {
+  if (totalMs <= 0) return 0;
+  const progress = Math.min(1, Math.max(0, elapsedMs / totalMs));
+  return peakAlpha * (1 - progress);
+}
+
+// ADR-0015 §11: Jolt's "small, bounded, short-duration shake." Deterministic
+// (no RNG -- decaying sine/cosine jitter), bounded (decays linearly to
+// zero), and reduced-motion-gated AT THE CALL SITE via the `reducedMotion`
+// parameter (returns {0,0} immediately) rather than baked into the motion
+// math itself, so the underlying curve stays independently testable from
+// the gating decision.
+export function computeJoltShakeOffset(
+  nowMs: number,
+  elapsedMs: number,
+  totalMs: number,
+  magnitudePx: number,
+  reducedMotion: boolean,
+): { readonly dx: number; readonly dy: number } {
+  if (reducedMotion || totalMs <= 0 || elapsedMs < 0 || elapsedMs > totalMs) return { dx: 0, dy: 0 };
+  const decay = 1 - elapsedMs / totalMs;
+  return {
+    dx: Math.sin(nowMs * 0.08) * magnitudePx * decay,
+    dy: Math.cos(nowMs * 0.11) * magnitudePx * decay,
+  };
+}
+
 export function drawRoomTheme(
   ctx: CanvasRenderingContext2D,
   geometry: RoomThemeGeometry,

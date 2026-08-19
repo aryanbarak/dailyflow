@@ -3,7 +3,7 @@ import { useVisibilityAwareGameLoop } from '../micro-breaks/engine/useVisibility
 import { computeBoardConfig, DEFAULT_PONG_CONFIG, rescalePongState, setPaddleX, type PongEngineConfig } from '../micro-breaks/engine/pongEngine';
 import { ORB_GRADIENT_STOPS, resolveOrbCanvasColors, useOrbVisualTokens } from '../micro-breaks/orbTokens';
 import { setLastPointerPosition } from '../micro-breaks/pointerPositionRef';
-import { createHitParticles, type Particle } from '../micro-breaks/particles';
+import { createConvergingParticles, createHitParticles, type Particle } from '../micro-breaks/particles';
 import {
   getParticleCountForMotionPreference,
   PARTICLE_LIFETIME_MS,
@@ -13,8 +13,29 @@ import {
 } from '../micro-breaks/tuning';
 import type { ViewportPoint } from '../micro-breaks/components/PongCanvas';
 import { buildRoomSequence, createInitialJourneyState, stepJourney, type JourneyPhase, type JourneyState, type RoomConfig } from './roomEngine';
-import { computeObstaclePulseAlpha, computeRoomTransitionFlashAlpha, drawRoomObstacle, drawRoomTheme, resolveRoomThemeColors } from './roomTheme';
 import {
+  computeAbsorbPulseAlpha,
+  computeJoltFlashIntensity,
+  computeJoltShakeOffset,
+  computeObstaclePulseAlpha,
+  computeRoomTransitionFlashAlpha,
+  drawDriftingOrbIdle,
+  drawRoomObstacle,
+  drawRoomTheme,
+  resolveRoomThemeColors,
+} from './roomTheme';
+import {
+  DRIFTING_ORB_ABSORB_PARTICLE_ARRIVAL_MS,
+  DRIFTING_ORB_ABSORB_PULSE_DURATION_MS,
+  DRIFTING_ORB_ABSORB_PULSE_PEAK_ALPHA,
+  DRIFTING_ORB_JOLT_FLASH_DURATION_MS,
+  DRIFTING_ORB_JOLT_FLASH_PEAK_ALPHA,
+  DRIFTING_ORB_JOLT_SHAKE_DURATION_MS,
+  DRIFTING_ORB_JOLT_SHAKE_MAGNITUDE_PX,
+  DRIFTING_ORB_PENALTY_RIM_DASH,
+  DRIFTING_ORB_RIM_LINE_WIDTH,
+  getDriftingOrbAbsorbParticleCount,
+  getDriftingOrbJoltParticleCount,
   getObstacleBreakParticleCount,
   ROOM_TRANSITION_FLASH_PEAK_ALPHA,
   ROOM_TRANSITION_SECONDS,
@@ -68,6 +89,13 @@ export function JourneyCanvas({
   const lastPhaseRef = useRef<JourneyPhase>('playing');
   const squashUntilRef = useRef(0);
   const transitionUntilRef = useRef(0);
+  // MB-08, ADR-0015 §11 (amendment): the drifting-orb contact reaction
+  // (Absorb/Jolt) is tracked as a single until-timestamp + role, mirroring
+  // squashUntilRef/transitionUntilRef's own pattern -- the two reactions
+  // are mutually exclusive (one contact resolved per substep, see
+  // pongEngine.ts) so there is never a need to track both simultaneously.
+  const driftingOrbReactionUntilRef = useRef(0);
+  const driftingOrbReactionRoleRef = useRef<'reward' | 'penalty'>('reward');
   const reducedMotionRef = useRef(false);
   const crashedRef = useRef(false);
   const onRenderErrorRef = useRef(onRenderError);
@@ -95,6 +123,9 @@ export function JourneyCanvas({
       __orbJourneyDevForceRoomGoal?: () => void;
       __orbJourneyDevForceObstacleContact?: () => void;
       __orbJourneyDevGetObstacleBrokenState?: () => readonly boolean[];
+      __orbJourneyDevSpawnDriftingOrb?: (role: 'reward' | 'penalty') => void;
+      __orbJourneyDevForceDriftingOrbContact?: () => void;
+      __orbJourneyDevGetBallSpeed?: () => number;
     };
     globalWindow.__orbJourneyDevForceRoomGoal = () => {
       const room = roomsRef.current[journeyRef.current.roomIndex - 1];
@@ -127,10 +158,53 @@ export function JourneyCanvas({
     // real-browser test can confirm "the obstacle is actually gone" without
     // pixel-diffing the canvas.
     globalWindow.__orbJourneyDevGetObstacleBrokenState = () => journeyRef.current.pong.obstacles.map(o => o.broken);
+    // MB-08, ADR-0015 §11 (amendment): injects a drifting orb at a FIXED
+    // position deliberately AWAY from the ball (near the top, where orbs
+    // naturally spawn -- see roomEngine.ts's buildDriftingOrbSpawnConfig),
+    // so it renders in its IDLE state for at least one real frame before
+    // ever being caught -- unlike __orbJourneyDevForceObstacleContact's
+    // "place it exactly at the contact point" approach, spawning AND
+    // catching are deliberately split into two separate hooks here so a
+    // test can observe idle rendering independent of the catch.
+    globalWindow.__orbJourneyDevSpawnDriftingOrb = role => {
+      const room = roomsRef.current[journeyRef.current.roomIndex - 1];
+      const spawnConfig = room?.driftingOrbSpawn;
+      if (!room || !spawnConfig) return;
+      journeyRef.current = {
+        ...journeyRef.current,
+        pong: {
+          ...journeyRef.current.pong,
+          driftingOrbs: [
+            ...journeyRef.current.pong.driftingOrbs,
+            { id: 'dev-spawned-orb', x: room.engineConfig.width * 0.5, y: spawnConfig.radius, role },
+          ],
+        },
+      };
+    };
+    // Same "manipulate state inputs, let real physics run" methodology as
+    // __orbJourneyDevForceObstacleContact -- teleports the ball onto the
+    // FIRST currently-active drifting orb so the next tick's real
+    // integrateSubstep contact-and-multiplier logic resolves it unmodified.
+    globalWindow.__orbJourneyDevForceDriftingOrbContact = () => {
+      const orb = journeyRef.current.pong.driftingOrbs[0];
+      if (!orb) return;
+      // Only the POSITION is teleported -- velocity is left exactly as the
+      // ball's real, currently-in-flight speed, so the resulting
+      // speed-multiplier effect is measured against a realistic baseline,
+      // not an artificially near-zero one.
+      journeyRef.current = { ...journeyRef.current, pong: { ...journeyRef.current.pong, ball: { x: orb.x, y: orb.y } } };
+    };
+    // Read-only introspection -- "catching Haste measurably increases ball
+    // speed... Calm measurably decreases it" needs a numeric speed reading
+    // a real-browser test can before/after-compare.
+    globalWindow.__orbJourneyDevGetBallSpeed = () => Math.hypot(journeyRef.current.pong.ballVelocity.x, journeyRef.current.pong.ballVelocity.y);
     return () => {
       delete globalWindow.__orbJourneyDevForceRoomGoal;
       delete globalWindow.__orbJourneyDevForceObstacleContact;
       delete globalWindow.__orbJourneyDevGetObstacleBrokenState;
+      delete globalWindow.__orbJourneyDevSpawnDriftingOrb;
+      delete globalWindow.__orbJourneyDevForceDriftingOrbContact;
+      delete globalWindow.__orbJourneyDevGetBallSpeed;
     };
   }, []);
 
@@ -278,6 +352,22 @@ export function JourneyCanvas({
       drawRoomObstacle(ctx, obstacleConfig, themeColors, obstacleConfig.breakable, pulseAlpha);
     });
 
+    // ADR-0015 §11 (amendment), MB-08: drifting orbs -- idle (pre-contact)
+    // appearance ONLY here; the reaction (Absorb/Jolt) is drawn later,
+    // layered with the ball, since it visually happens AT the ball once the
+    // orb is caught and removed from state.driftingOrbs. The rim-shape
+    // distinction (smooth vs notched) is NEVER gated by reduced motion --
+    // it's a static shape, not animation.
+    if (room.driftingOrbSpawn) {
+      const orbRadius = room.driftingOrbSpawn.radius;
+      state.driftingOrbs.forEach(orb => {
+        drawDriftingOrbIdle(ctx, { x: orb.x, y: orb.y }, orbRadius, orb.role, colors, {
+          lineWidth: DRIFTING_ORB_RIM_LINE_WIDTH,
+          penaltyDash: DRIFTING_ORB_PENALTY_RIM_DASH,
+        });
+      });
+    }
+
     const trail = trailRef.current;
     const maxTrail = reducedMotion ? TRAIL_LENGTH_REDUCED_MOTION : TRAIL_LENGTH;
     trail.push({ x: state.ball.x, y: state.ball.y });
@@ -321,8 +411,21 @@ export function JourneyCanvas({
     const scaleX = squashing ? 1.3 : 1;
     const scaleY = squashing ? 0.7 : 1;
 
+    // ADR-0015 §11 (amendment), MB-08: Jolt's small, bounded, short-duration
+    // shake -- reduced-motion-gated (returns {0,0} when reducedMotion is
+    // true), applied only to the DRAWN position, never the real physics
+    // position. Absorb has no shake at all (only Jolt/penalty does).
+    const inReactionWindow = now < driftingOrbReactionUntilRef.current;
+    const reactionRole = driftingOrbReactionRoleRef.current;
+    const reactionTotalMs = reactionRole === 'reward' ? DRIFTING_ORB_ABSORB_PULSE_DURATION_MS : DRIFTING_ORB_JOLT_FLASH_DURATION_MS;
+    const reactionElapsedMs = inReactionWindow ? reactionTotalMs - (driftingOrbReactionUntilRef.current - now) : 0;
+    const shake =
+      inReactionWindow && reactionRole === 'penalty'
+        ? computeJoltShakeOffset(now, reactionElapsedMs, DRIFTING_ORB_JOLT_SHAKE_DURATION_MS, DRIFTING_ORB_JOLT_SHAKE_MAGNITUDE_PX, reducedMotion)
+        : { dx: 0, dy: 0 };
+
     ctx.save();
-    ctx.translate(state.ball.x, state.ball.y);
+    ctx.translate(state.ball.x + shake.dx, state.ball.y + shake.dy);
     ctx.scale(scaleX, scaleY);
 
     const glowRadius = config.ballRadius * 2.2;
@@ -340,6 +443,26 @@ export function JourneyCanvas({
     ctx.beginPath();
     ctx.arc(0, 0, config.ballRadius, 0, Math.PI * 2);
     ctx.fill();
+
+    // ADR-0015 §11 (amendment), MB-08: the flash/pulse color cue -- NEVER
+    // gated by reduced motion (a static brightness change, not motion),
+    // unlike the particles/shake above. Absorb: a single smooth fade-out.
+    // Jolt: a sharp bright-dim-bright double-flash -- deliberately a
+    // different curve shape, not just a different color, so the two
+    // reactions are distinguishable even if color perception varies.
+    if (inReactionWindow) {
+      const reactionAlpha =
+        reactionRole === 'reward'
+          ? computeAbsorbPulseAlpha(reactionElapsedMs, reactionTotalMs, DRIFTING_ORB_ABSORB_PULSE_PEAK_ALPHA)
+          : computeJoltFlashIntensity(reactionElapsedMs, reactionTotalMs) * DRIFTING_ORB_JOLT_FLASH_PEAK_ALPHA;
+      if (reactionAlpha > 0) {
+        ctx.beginPath();
+        ctx.fillStyle = colors.glow(reactionAlpha);
+        ctx.arc(0, 0, glowRadius * 1.3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
     ctx.restore();
 
     // ADR-0015 §2/Build 4: short, reduced-motion-aware room-transition
@@ -377,6 +500,7 @@ export function JourneyCanvas({
       const prevScore = journeyRef.current.journeyScore;
       const prevPongScore = journeyRef.current.pong.score;
       const prevObstacles = journeyRef.current.pong.obstacles;
+      const prevSpeedMultiplierExpiresAt = journeyRef.current.pong.speedMultiplierExpiresAt;
       const next = stepJourney(journeyRef.current, dtMs, roomsRef.current);
       journeyRef.current = next;
 
@@ -411,6 +535,45 @@ export function JourneyCanvas({
               particlesRef.current.push(...createHitParticles(centerX, centerY, burstCount, performance.now()));
             }
           });
+        }
+      }
+
+      // ADR-0015 §11 (amendment), MB-08: drifting-orb contact reaction
+      // (Absorb/Jolt). A NEW or REFRESHED speed-multiplier effect is the
+      // unambiguous "a catch happened this tick" signal -- expiry (the
+      // effect wearing off) transitions speedMultiplierExpiresAt TO null,
+      // which this condition deliberately excludes, so wearing off never
+      // fires a reaction. Role is read from `next.pong.speedMultiplier`
+      // itself (matched against the room's own reward/penalty constants)
+      // rather than tracking which specific orb vanished -- simpler and
+      // exactly as reliable, since the multiplier value fully encodes which
+      // effect is now active. Position uses the ball's own current
+      // location: for a small circle-circle contact, that IS where the
+      // catch visually happened (unlike §10's obstacle, which stays fixed
+      // and separate from the ball).
+      if (next.roomIndex === prevRoomIndex && next.pong.speedMultiplierExpiresAt !== null && next.pong.speedMultiplierExpiresAt !== prevSpeedMultiplierExpiresAt) {
+        const currentRoom = roomsRef.current[next.roomIndex - 1];
+        const spawnConfig = currentRoom?.driftingOrbSpawn;
+        if (spawnConfig) {
+          const isReward = next.pong.speedMultiplier === spawnConfig.rewardSpeedMultiplier;
+          const role: 'reward' | 'penalty' = isReward ? 'reward' : 'penalty';
+          const nowMs = performance.now();
+          driftingOrbReactionRoleRef.current = role;
+          driftingOrbReactionUntilRef.current = nowMs + (isReward ? DRIFTING_ORB_ABSORB_PULSE_DURATION_MS : DRIFTING_ORB_JOLT_FLASH_DURATION_MS);
+
+          if (isReward) {
+            const count = getDriftingOrbAbsorbParticleCount(reducedMotionRef.current);
+            if (count > 0) {
+              particlesRef.current.push(
+                ...createConvergingParticles(next.pong.ball.x, next.pong.ball.y, count, nowMs, DRIFTING_ORB_ABSORB_PARTICLE_ARRIVAL_MS),
+              );
+            }
+          } else {
+            const count = getDriftingOrbJoltParticleCount(reducedMotionRef.current);
+            if (count > 0) {
+              particlesRef.current.push(...createHitParticles(next.pong.ball.x, next.pong.ball.y, count, nowMs));
+            }
+          }
         }
       }
 

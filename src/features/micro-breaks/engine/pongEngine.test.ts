@@ -9,6 +9,7 @@ import {
   rescalePongState,
   setPaddleX,
   stepPong,
+  type PongDriftingOrbConfig,
   type PongEngineConfig,
   type PongObstacleConfig,
   type PongState,
@@ -33,6 +34,37 @@ function buildCombo(config: PongEngineConfig, count: number): PongState {
     state = stepPong(state, 16, config);
   }
   return state;
+}
+
+function magnitudeOf(vec: { x: number; y: number }): number {
+  return Math.hypot(vec.x, vec.y);
+}
+
+// MB-08, ADR-0015 §11 (amendment): a drifting-orb spawn recipe with a
+// short, test-friendly duration/interval so effect-expiry and spawn-cadence
+// tests don't need huge elapsed-time loops.
+const TEST_DRIFTING_ORB_SPAWN: PongDriftingOrbConfig = {
+  spawnIntervalMs: 1000,
+  driftSpeedPxPerSecond: 50,
+  radius: 8,
+  rewardSpeedMultiplier: 0.5,
+  penaltySpeedMultiplier: 2,
+  speedMultiplierDurationSeconds: 0.5,
+};
+const CONFIG_WITH_DRIFTING_ORBS: PongEngineConfig = { ...CONFIG, driftingOrbSpawn: TEST_DRIFTING_ORB_SPAWN };
+
+// Ball and a single active drifting orb at the SAME point, moving downward
+// -- guarantees circle-circle overlap on the very next substep regardless
+// of the small drift-vs-ball delta.
+function stateWithDriftingOrb(role: 'reward' | 'penalty', overrides: Partial<PongState> = {}): PongState {
+  const base = createInitialPongState(CONFIG_WITH_DRIFTING_ORBS);
+  return {
+    ...base,
+    ball: { x: 200, y: 300 },
+    ballVelocity: { x: 0, y: 200 },
+    driftingOrbs: [{ id: 'orb1', x: 200, y: 300, role }],
+    ...overrides,
+  };
 }
 
 // Positions the ball to descend into TEST_OBSTACLE's top face on the next step.
@@ -463,6 +495,127 @@ describe('pongEngine: obstacles (MB-07, ADR-0015 §10 amendment)', () => {
     expect(next.ballVelocity.y).toBeGreaterThan(0);
     expect(next.ball.y).toBeCloseTo(248 + 300 * 0.016, 5);
     expect(next.obstacles).toEqual([{ id: 'obs1', broken: true }]);
+  });
+});
+
+describe('pongEngine: drifting speed-orbs (MB-08, ADR-0015 §11 amendment)', () => {
+  it('Quick Break config (no driftingOrbSpawn) never spawns or holds drifting orbs, and speedMultiplier never activates', () => {
+    let state = createInitialPongState(CONFIG);
+    for (let i = 0; i < 20; i++) {
+      state = stepPong(state, 16, CONFIG);
+      expect(state.driftingOrbs).toEqual([]);
+      expect(state.speedMultiplier).toBe(1);
+      expect(state.speedMultiplierExpiresAt).toBeNull();
+    }
+  });
+
+  it('contact with a "reward" orb multiplies ball speed DOWN and activates the effect', () => {
+    const state = stateWithDriftingOrb('reward');
+    const speedBefore = magnitudeOf(state.ballVelocity);
+
+    const next = stepPong(state, 16, CONFIG_WITH_DRIFTING_ORBS);
+
+    expect(next.driftingOrbs).toEqual([]); // caught -- removed
+    expect(magnitudeOf(next.ballVelocity)).toBeLessThan(speedBefore);
+    expect(next.speedMultiplier).toBe(TEST_DRIFTING_ORB_SPAWN.rewardSpeedMultiplier);
+    expect(next.speedMultiplierExpiresAt).not.toBeNull();
+  });
+
+  it('contact with a "penalty" orb multiplies ball speed UP and activates the effect', () => {
+    const state = stateWithDriftingOrb('penalty');
+    const speedBefore = magnitudeOf(state.ballVelocity);
+
+    const next = stepPong(state, 16, CONFIG_WITH_DRIFTING_ORBS);
+
+    expect(next.driftingOrbs).toEqual([]);
+    expect(magnitudeOf(next.ballVelocity)).toBeGreaterThan(speedBefore);
+    expect(next.speedMultiplier).toBe(TEST_DRIFTING_ORB_SPAWN.penaltySpeedMultiplier);
+  });
+
+  it('both roles respect the existing maxSpeed ceiling -- a penalty contact near maxSpeed never exceeds it', () => {
+    const nearCapConfig: PongEngineConfig = { ...CONFIG_WITH_DRIFTING_ORBS, maxSpeed: 500 };
+    const state = stateWithDriftingOrb('penalty', { ballVelocity: { x: 0, y: 480 } }); // 480 * penaltyMultiplier(2) = 960, well past the 500 cap
+
+    const next = stepPong(state, 16, nearCapConfig);
+
+    expect(magnitudeOf(next.ballVelocity)).toBeLessThanOrEqual(nearCapConfig.maxSpeed + 1e-6);
+  });
+
+  it('the effect expires after speedMultiplierDurationSeconds and reverts the ball to its pre-effect speed', () => {
+    let state = stepPong(stateWithDriftingOrb('penalty'), 16, CONFIG_WITH_DRIFTING_ORBS);
+    expect(state.speedMultiplier).toBe(TEST_DRIFTING_ORB_SPAWN.penaltySpeedMultiplier);
+    const boostedSpeed = magnitudeOf(state.ballVelocity);
+    const preEffectSpeed = boostedSpeed / TEST_DRIFTING_ORB_SPAWN.penaltySpeedMultiplier;
+
+    // Advance past speedMultiplierDurationSeconds (0.5s) -- no further
+    // paddle/wall/orb contact expected in this window (ball travels
+    // straight, far from the paddle/walls at this speed/duration).
+    for (let i = 0; i < 40 && state.speedMultiplierExpiresAt !== null; i++) {
+      state = stepPong(state, 16, CONFIG_WITH_DRIFTING_ORBS);
+    }
+
+    expect(state.speedMultiplier).toBe(1);
+    expect(state.speedMultiplierExpiresAt).toBeNull();
+    expect(magnitudeOf(state.ballVelocity)).toBeCloseTo(preEffectSpeed, 1);
+  });
+
+  it('a second contact of the SAME role before expiry refreshes duration WITHOUT stacking magnitude', () => {
+    let state = stepPong(stateWithDriftingOrb('penalty'), 16, CONFIG_WITH_DRIFTING_ORBS);
+    const speedAfterFirstContact = magnitudeOf(state.ballVelocity);
+    const expiresAtAfterFirstContact = state.speedMultiplierExpiresAt;
+    expect(expiresAtAfterFirstContact).not.toBeNull();
+
+    // A second penalty orb, positioned at the ball's NEW location, contacted immediately after.
+    state = { ...state, driftingOrbs: [{ id: 'orb2', x: state.ball.x, y: state.ball.y, role: 'penalty' }] };
+    const next = stepPong(state, 16, CONFIG_WITH_DRIFTING_ORBS);
+
+    // NOT multiplied again (no stacking) -- speed stays at the SAME
+    // already-boosted level, not boosted a second time.
+    expect(magnitudeOf(next.ballVelocity)).toBeCloseTo(speedAfterFirstContact, 0);
+    expect(next.speedMultiplier).toBe(TEST_DRIFTING_ORB_SPAWN.penaltySpeedMultiplier);
+    // Duration IS refreshed -- expiry is further in the future than before.
+    expect(next.speedMultiplierExpiresAt!).toBeGreaterThan(expiresAtAfterFirstContact!);
+  });
+
+  it('an uncaught orb reaching the bottom of the room is removed silently -- no score/speedMultiplier change', () => {
+    // Positioned so its TOP EDGE (y - radius) is just inside the bottom
+    // boundary -- one substep's worth of drift (0.8px at 50px/s over 16ms)
+    // pushes it fully past config.height, matching the removal condition
+    // exactly ("y - radius > height", the orb's whole body must have
+    // exited, not just its center).
+    const radius = TEST_DRIFTING_ORB_SPAWN.radius;
+    const state: PongState = {
+      ...createInitialPongState(CONFIG_WITH_DRIFTING_ORBS),
+      ball: { x: 10, y: 10 }, // far from the orb, never contacts it
+      ballVelocity: { x: 0, y: 0 },
+      driftingOrbs: [{ id: 'falling-orb', x: 300, y: CONFIG_WITH_DRIFTING_ORBS.height + radius - 0.5, role: 'penalty' }],
+    };
+    const scoreBefore = state.score;
+
+    const next = stepPong(state, 16, CONFIG_WITH_DRIFTING_ORBS);
+
+    expect(next.driftingOrbs).toEqual([]); // fell past the bottom, removed
+    expect(next.score).toBe(scoreBefore);
+    expect(next.speedMultiplier).toBe(1);
+    expect(next.speedMultiplierExpiresAt).toBeNull();
+  });
+
+  it('spawns a new orb once spawnIntervalMs elapses, using the injected random function for role and position (deterministic, not Math.random)', () => {
+    const spawnTestConfig: PongEngineConfig = { ...CONFIG, driftingOrbSpawn: { ...TEST_DRIFTING_ORB_SPAWN, spawnIntervalMs: 100 } };
+    const state = createInitialPongState(spawnTestConfig);
+    const fixedRandom = () => 0.5; // x fraction = 0.5 (center); role: 0.5 < 0.5 is false -> 'penalty'
+
+    const next = stepPong(state, 150, spawnTestConfig, fixedRandom);
+
+    expect(next.driftingOrbs).toHaveLength(1);
+    expect(next.driftingOrbs[0].role).toBe('penalty');
+    const expectedX = spawnTestConfig.driftingOrbSpawn!.radius + 0.5 * (spawnTestConfig.width - spawnTestConfig.driftingOrbSpawn!.radius * 2);
+    expect(next.driftingOrbs[0].x).toBeCloseTo(expectedX, 5);
+    // y has drifted a little since the spawn moment (spawn fires partway
+    // through this call, then the remaining substeps advance it) -- a
+    // loose bound proves "near the top, not teleported elsewhere."
+    expect(next.driftingOrbs[0].y).toBeGreaterThanOrEqual(spawnTestConfig.driftingOrbSpawn!.radius);
+    expect(next.driftingOrbs[0].y).toBeLessThan(spawnTestConfig.driftingOrbSpawn!.radius + 5);
   });
 });
 

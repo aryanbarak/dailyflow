@@ -52,6 +52,26 @@ async function getObstacleBrokenState(page: import('@playwright/test').Page) {
   );
 }
 
+// MB-08, ADR-0015 §11 (amendment): spawns AWAY from the ball (near the
+// top), so it renders idle for at least one real frame before ever being
+// caught -- see JourneyCanvas.tsx's own comment on why spawning and
+// catching are deliberately split into two hooks.
+async function spawnDriftingOrb(page: import('@playwright/test').Page, role: 'reward' | 'penalty') {
+  await page.evaluate(orbRole => {
+    (window as unknown as { __orbJourneyDevSpawnDriftingOrb?: (role: 'reward' | 'penalty') => void }).__orbJourneyDevSpawnDriftingOrb?.(orbRole);
+  }, role);
+}
+
+async function forceDriftingOrbContact(page: import('@playwright/test').Page) {
+  await page.evaluate(() => {
+    (window as unknown as { __orbJourneyDevForceDriftingOrbContact?: () => void }).__orbJourneyDevForceDriftingOrbContact?.();
+  });
+}
+
+async function getBallSpeed(page: import('@playwright/test').Page): Promise<number> {
+  return page.evaluate(() => (window as unknown as { __orbJourneyDevGetBallSpeed?: () => number }).__orbJourneyDevGetBallSpeed?.() ?? 0);
+}
+
 async function canvasHasNonZeroPixels(page: import('@playwright/test').Page): Promise<boolean> {
   const result = await page.evaluate(() => {
     const canvas = document.querySelector('canvas');
@@ -266,6 +286,135 @@ test.describe('Orb Journey (MB-05, ADR-0015)', () => {
         if (!thrown) {
           thrown = true;
           throw new Error('MB-07 test-injected obstacle-draw failure');
+        }
+        return original.apply(this, args);
+      };
+    });
+
+    const dialog = page.getByRole('dialog');
+    await expect(page.getByText('Something went wrong with the game')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Close micro break' })).toBeVisible();
+
+    await page.keyboard.press('Escape');
+    await expect(dialog).not.toBeVisible();
+    await expect(page.locator(START_BUTTON)).toBeEnabled();
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  test('drifting speed-orbs (MB-08, ADR-0015 §11): catching Haste measurably increases ball speed, catching Calm measurably decreases it', async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on('pageerror', err => pageErrors.push(err.message));
+
+    await openJourney(page);
+    await forceRoomGoal(page); // Room 1 -> Room 2, where drifting orbs exist
+    await expect(page.getByText('Room 2')).toBeVisible();
+
+    const baselineSpeed = await getBallSpeed(page);
+    expect(baselineSpeed).toBeGreaterThan(0);
+
+    await spawnDriftingOrb(page, 'penalty');
+    await forceDriftingOrbContact(page);
+    await page.waitForTimeout(200); // let the next tick's real contact-and-multiplier logic run
+    const speedAfterHaste = await getBallSpeed(page);
+    expect(speedAfterHaste).toBeGreaterThan(baselineSpeed);
+
+    // A Calm catch right after -- per ADR-0015 §11 "effects do not stack; a
+    // new contact refreshes duration, not magnitude," a DIFFERENT-role
+    // contact replaces the active effect rather than stacking on top of it,
+    // so this is still a valid, measurable comparison regardless of the
+    // still-active Haste window.
+    await spawnDriftingOrb(page, 'reward');
+    await forceDriftingOrbContact(page);
+    await page.waitForTimeout(200);
+    const speedAfterCalm = await getBallSpeed(page);
+    expect(speedAfterCalm).toBeLessThan(speedAfterHaste);
+    expect(speedAfterCalm).toBeLessThan(baselineSpeed);
+
+    expect(await canvasHasNonZeroPixels(page)).toBe(true);
+
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).not.toBeVisible();
+    await expect(page.locator(START_BUTTON)).toBeEnabled();
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  test('drifting-orb idle rim distinguishes role via a real, non-color canvas cue (setLineDash) -- reward always smooth, penalty at least sometimes dashed (ADR-0015 §11)', async ({ page }) => {
+    await openJourney(page);
+    await forceRoomGoal(page);
+    await expect(page.getByText('Room 2')).toBeVisible();
+
+    await page.evaluate(() => {
+      (window as unknown as { __dashCalls: number[][] }).__dashCalls = [];
+      const proto = CanvasRenderingContext2D.prototype;
+      const original = proto.setLineDash;
+      proto.setLineDash = function (segments: number[]) {
+        (window as unknown as { __dashCalls: number[][] }).__dashCalls.push([...segments]);
+        return original.call(this, segments);
+      };
+    });
+
+    await spawnDriftingOrb(page, 'reward');
+    await page.waitForTimeout(200);
+    const rewardDashCalls = await page.evaluate(() => (window as unknown as { __dashCalls: number[][] }).__dashCalls);
+    expect(rewardDashCalls.length).toBeGreaterThan(0);
+    expect(rewardDashCalls.every(call => call.length === 0)).toBe(true); // reward: always a smooth, undashed rim
+
+    await page.evaluate(() => {
+      (window as unknown as { __dashCalls: number[][] }).__dashCalls = [];
+    });
+    await spawnDriftingOrb(page, 'penalty');
+    await page.waitForTimeout(200);
+    const penaltyDashCalls = await page.evaluate(() => (window as unknown as { __dashCalls: number[][] }).__dashCalls);
+    expect(penaltyDashCalls.some(call => call.length > 0)).toBe(true); // penalty: at least one call uses a real dash pattern
+
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).not.toBeVisible();
+  });
+
+  test('the rim-shape role distinction is UNAFFECTED by reduced motion (a static shape, not animation -- ADR-0015 §11)', async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await openJourney(page);
+    await forceRoomGoal(page);
+    await expect(page.getByText('Room 2')).toBeVisible();
+
+    await page.evaluate(() => {
+      (window as unknown as { __dashCalls: number[][] }).__dashCalls = [];
+      const proto = CanvasRenderingContext2D.prototype;
+      const original = proto.setLineDash;
+      proto.setLineDash = function (segments: number[]) {
+        (window as unknown as { __dashCalls: number[][] }).__dashCalls.push([...segments]);
+        return original.call(this, segments);
+      };
+    });
+
+    await spawnDriftingOrb(page, 'penalty');
+    await page.waitForTimeout(200);
+    const penaltyDashCalls = await page.evaluate(() => (window as unknown as { __dashCalls: number[][] }).__dashCalls);
+    expect(penaltyDashCalls.some(call => call.length > 0)).toBe(true); // still dashed, even under reduced motion
+
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).not.toBeVisible();
+  });
+
+  test('crash-guard covers Room 2s NEW drifting-orb rendering code path (setLineDash is exclusive to drifting-orb drawing -- a cleanly isolated proof, verified not assumed)', async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on('pageerror', err => pageErrors.push(err.message));
+
+    await openJourney(page);
+    await forceRoomGoal(page);
+    await expect(page.getByText('Room 2')).toBeVisible();
+    await spawnDriftingOrb(page, 'reward');
+
+    await page.evaluate(() => {
+      const proto = CanvasRenderingContext2D.prototype;
+      const original = proto.setLineDash;
+      let thrown = false;
+      proto.setLineDash = function (...args: Parameters<typeof original>) {
+        if (!thrown) {
+          thrown = true;
+          throw new Error('MB-08 test-injected drifting-orb draw failure');
         }
         return original.apply(this, args);
       };

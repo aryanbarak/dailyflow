@@ -20,8 +20,15 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { computeObstaclePulseAlpha, computeRoomTransitionFlashAlpha, resolveRoomThemeColors } from './roomTheme';
-import { getObstacleBreakParticleCount } from './tuning';
+import {
+  computeAbsorbPulseAlpha,
+  computeJoltFlashIntensity,
+  computeJoltShakeOffset,
+  computeObstaclePulseAlpha,
+  computeRoomTransitionFlashAlpha,
+  resolveRoomThemeColors,
+} from './roomTheme';
+import { getDriftingOrbAbsorbParticleCount, getDriftingOrbJoltParticleCount, getObstacleBreakParticleCount } from './tuning';
 
 const roomThemeSource = readFileSync(path.resolve(process.cwd(), 'src', 'features', 'orb-journey', 'roomTheme.ts'), 'utf-8');
 
@@ -96,6 +103,79 @@ describe('roomTheme: computeObstaclePulseAlpha (MB-07, ADR-0015 §10 -- the brea
     // distinguishable (ADR-0015 §10's fairness requirement) EVEN under
     // reduced motion, just without animating.
     expect(samples[0]).toBeGreaterThan(0);
+  });
+});
+
+describe('roomTheme: computeJoltFlashIntensity (MB-08, ADR-0015 §11 -- Haste "sharp double-flash: bright-dim-bright")', () => {
+  it('is bright at the start, dims to zero at the midpoint, and is bright again at the end -- a dip shape, not a fade', () => {
+    expect(computeJoltFlashIntensity(0, 260)).toBeCloseTo(1, 5);
+    expect(computeJoltFlashIntensity(130, 260)).toBeCloseTo(0, 5);
+    expect(computeJoltFlashIntensity(260, 260)).toBeCloseTo(1, 5);
+  });
+
+  it('stays within [0, 1] and is symmetric around the midpoint', () => {
+    const samples = [0, 40, 80, 130, 180, 220, 260].map(ms => computeJoltFlashIntensity(ms, 260));
+    for (const value of samples) {
+      expect(value).toBeGreaterThanOrEqual(0);
+      expect(value).toBeLessThanOrEqual(1);
+    }
+    expect(computeJoltFlashIntensity(80, 260)).toBeCloseTo(computeJoltFlashIntensity(180, 260), 5);
+  });
+});
+
+describe('roomTheme: computeAbsorbPulseAlpha (MB-08, ADR-0015 §11 -- Calm "single smooth brightening pulse")', () => {
+  it('starts at the configured peak and fades smoothly/monotonically to zero -- a DIFFERENT shape from Jolts dip curve, not just a different color', () => {
+    const peak = 0.5;
+    expect(computeAbsorbPulseAlpha(0, 260, peak)).toBeCloseTo(peak, 5);
+    expect(computeAbsorbPulseAlpha(260, 260, peak)).toBeCloseTo(0, 5);
+    const samples = [0, 50, 100, 150, 200, 260].map(ms => computeAbsorbPulseAlpha(ms, 260, peak));
+    for (let i = 1; i < samples.length; i++) expect(samples[i]).toBeLessThanOrEqual(samples[i - 1]); // monotonic fade, no mid-dip
+  });
+});
+
+describe('roomTheme/tuning: the flash/pulse color cue is NEVER reduced-motion-gated -- neither function even accepts a reducedMotion parameter, so a real, non-zero cue always renders for both roles (ADR-0015 §11)', () => {
+  it('computeJoltFlashIntensity and computeAbsorbPulseAlpha both produce a real, non-zero value mid-reaction, with no reducedMotion input possible', () => {
+    expect(computeJoltFlashIntensity(60, 260)).toBeGreaterThan(0);
+    expect(computeAbsorbPulseAlpha(60, 260, 0.5)).toBeGreaterThan(0);
+    // Structural: neither function's signature has room for a reducedMotion
+    // argument (2 and 3 params respectively) -- confirmed via arity, since
+    // TypeScript's own type erasure means this is the only runtime-checkable
+    // proxy for "this can't be gated by a parameter it doesn't accept."
+    expect(computeJoltFlashIntensity).toHaveLength(2);
+    expect(computeAbsorbPulseAlpha).toHaveLength(3);
+  });
+});
+
+describe('roomTheme: computeJoltShakeOffset (MB-08, ADR-0015 §11 -- Haste "small, bounded, short-duration shake")', () => {
+  it('is bounded by magnitudePx at every point in the window, under normal motion', () => {
+    const magnitude = 4;
+    for (let elapsedMs = 0; elapsedMs <= 220; elapsedMs += 20) {
+      const { dx, dy } = computeJoltShakeOffset(1000 + elapsedMs, elapsedMs, 220, magnitude, false);
+      expect(Math.abs(dx)).toBeLessThanOrEqual(magnitude + 1e-9);
+      expect(Math.abs(dy)).toBeLessThanOrEqual(magnitude + 1e-9);
+    }
+  });
+
+  it('decays toward zero as the window elapses (bounded AND short-duration, not a constant-amplitude jitter)', () => {
+    const early = computeJoltShakeOffset(1000, 5, 220, 4, false);
+    const late = computeJoltShakeOffset(1000, 215, 220, 4, false);
+    expect(Math.hypot(late.dx, late.dy)).toBeLessThan(Math.hypot(early.dx, early.dy));
+  });
+
+  it('is ALWAYS {0,0} under reduced motion, regardless of elapsed time or magnitude -- the nuanced reduced-motion split: shake (motion) is suppressed, unlike the flash/pulse above', () => {
+    for (const elapsedMs of [0, 50, 110, 219]) {
+      const offset = computeJoltShakeOffset(1000 + elapsedMs, elapsedMs, 220, 4, true);
+      expect(offset).toEqual({ dx: 0, dy: 0 });
+    }
+  });
+});
+
+describe('roomTheme/tuning: drifting-orb reaction particle bursts are reduced-motion-gated for BOTH roles (ADR-0015 §11)', () => {
+  it('getDriftingOrbAbsorbParticleCount and getDriftingOrbJoltParticleCount both return 0 under reduced motion, and a real positive count otherwise', () => {
+    expect(getDriftingOrbAbsorbParticleCount(true)).toBe(0);
+    expect(getDriftingOrbAbsorbParticleCount(false)).toBeGreaterThan(0);
+    expect(getDriftingOrbJoltParticleCount(true)).toBe(0);
+    expect(getDriftingOrbJoltParticleCount(false)).toBeGreaterThan(0);
   });
 });
 

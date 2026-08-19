@@ -61,3 +61,9 @@ export function getParticleCountForMotionPreference(reducedMotion: boolean): num
 // ── Handoff transition (unchanged from Slice 1) ─────────────────────────
 export const HANDOFF_TRANSITION_SECONDS = 0.28;
 export const HANDOFF_EASE = [0.22, 1, 0.36, 1] as const;
+
+// ── Converging particles (MB-08, ADR-0015 §11 amendment -- Orb Journey's
+//    drifting-orb "Absorb" reaction; the geometric inverse of the outward
+//    burst above) ────────────────────────────────────────────────────────
+/** Ring radius (px) particles start at before converging toward the target. */
+export const CONVERGING_PARTICLE_RING_RADIUS_PX = 26;
