@@ -23,6 +23,12 @@ export const FINAL_WAVE_GLOW_BLUR_BOOST = 1.5;
 // ── Physics defaults (unchanged from Slice 1, gathered here now) ───────
 export const BASE_SPEED_PX_PER_SECOND = 220;
 export const MAX_SPEED_PX_PER_SECOND = 640;
+/** MB-10, ADR-0015 §11 (revision): symmetric floor to MAX_SPEED_PX_PER_SECOND
+ *  -- required so a drifting-orb penalty (or a run of them) can never drive
+ *  the ball to a near-zero, degenerate speed. Inert for Quick Break (no
+ *  drifting orbs ever apply it), well below BASE_SPEED_PX_PER_SECOND so it
+ *  never interferes with normal Orb Journey ramping either. */
+export const MIN_SPEED_PX_PER_SECOND = 90;
 export const SPEED_RAMP_PER_HIT = 1.045;
 export const MAX_BOUNCE_ANGLE_DEGREES = 60;
 

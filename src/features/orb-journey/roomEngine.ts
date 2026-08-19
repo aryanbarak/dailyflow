@@ -16,11 +16,10 @@ import {
 } from '../micro-breaks/engine/pongEngine';
 import {
   DRIFTING_ORB_DRIFT_SPEED_PX_PER_SECOND,
-  DRIFTING_ORB_PENALTY_SPEED_MULTIPLIER,
+  DRIFTING_ORB_PENALTY_SPEED_STEP,
   DRIFTING_ORB_RADIUS_RATIO,
-  DRIFTING_ORB_REWARD_SPEED_MULTIPLIER,
+  DRIFTING_ORB_REWARD_SPEED_STEP,
   DRIFTING_ORB_SPAWN_INTERVAL_MS,
-  DRIFTING_ORB_SPEED_MULTIPLIER_DURATION_SECONDS,
   ROOM_1_GOAL_COMBO,
   ROOM_DIFFICULTY_PADDLE_SHRINK_STEP,
   ROOM_DIFFICULTY_SPEED_STEP,
@@ -83,9 +82,8 @@ export function buildDriftingOrbSpawnConfig(roomIndex: number, engineConfig: Pon
     spawnIntervalMs: DRIFTING_ORB_SPAWN_INTERVAL_MS,
     driftSpeedPxPerSecond: DRIFTING_ORB_DRIFT_SPEED_PX_PER_SECOND,
     radius: engineConfig.width * DRIFTING_ORB_RADIUS_RATIO,
-    rewardSpeedMultiplier: DRIFTING_ORB_REWARD_SPEED_MULTIPLIER,
-    penaltySpeedMultiplier: DRIFTING_ORB_PENALTY_SPEED_MULTIPLIER,
-    speedMultiplierDurationSeconds: DRIFTING_ORB_SPEED_MULTIPLIER_DURATION_SECONDS,
+    rewardSpeedStep: DRIFTING_ORB_REWARD_SPEED_STEP,
+    penaltySpeedStep: DRIFTING_ORB_PENALTY_SPEED_STEP,
   };
 }
 
@@ -107,6 +105,11 @@ export function deriveRoomEngineConfig(roomIndex: number, base: PongEngineConfig
     ...base,
     baseSpeed: base.baseSpeed * speedMultiplier,
     maxSpeed: base.maxSpeed * speedMultiplier,
+    // MB-10, ADR-0015 §11 (revision): scaled the SAME way as maxSpeed --
+    // symmetric ceiling/floor, so a later room's harder baseSpeed doesn't
+    // leave the floor representing a much smaller relative fraction of it
+    // than Room 1 has.
+    minSpeed: base.minSpeed * speedMultiplier,
     paddleWidth: base.paddleWidth * paddleShrinkMultiplier,
   };
 }

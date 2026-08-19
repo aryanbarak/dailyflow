@@ -67,12 +67,19 @@ export const DRIFTING_ORB_DRIFT_SPEED_PX_PER_SECOND = 70;
 /** Orb radius as a fraction of board width -- scales proportionally like
  *  ball/paddle sizing, never a fixed px value. */
 export const DRIFTING_ORB_RADIUS_RATIO = 0.03;
-/** Calm: multiplies ball speed DOWN on contact. */
-export const DRIFTING_ORB_REWARD_SPEED_MULTIPLIER = 0.6;
-/** Haste: multiplies ball speed UP on contact -- still clamped by the
- *  engine's existing maxSpeed ceiling regardless of role (ADR-0015 §11). */
-export const DRIFTING_ORB_PENALTY_SPEED_MULTIPLIER = 1.6;
-export const DRIFTING_ORB_SPEED_MULTIPLIER_DURATION_SECONDS = 6;
+// MB-10, ADR-0015 §11 (revision): post-MB-09 playtesting flipped the
+// reward/penalty speed mapping -- speeding UP now reads as the reward
+// (exciting), slowing DOWN as the penalty. Effects are no longer timed;
+// they persist (compounding on repeat contact) until the next event or a
+// room-local restart. Deliberately NOT mathematical inverses of each other
+// (1 / 1.35 ~= 0.74, not 0.7) -- independently PO-tunable, per the task's
+// own explicit instruction not to assume symmetry.
+/** Reward: multiplies CURRENT ball speed UP on contact, clamped by the
+ *  engine's existing maxSpeed ceiling. */
+export const DRIFTING_ORB_REWARD_SPEED_STEP = 1.35;
+/** Penalty: multiplies CURRENT ball speed DOWN on contact, clamped by the
+ *  NEW minSpeed floor (micro-breaks/tuning.ts's MIN_SPEED_PX_PER_SECOND). */
+export const DRIFTING_ORB_PENALTY_SPEED_STEP = 0.7;
 
 // ── Idle rim appearance (ADR-0015 §11: visible pre-contact, NEVER
 //    reduced-motion-gated -- a static shape, not animation) ─────────────
@@ -104,4 +111,21 @@ export const DRIFTING_ORB_JOLT_SHAKE_DURATION_MS = 220;
 export const DRIFTING_ORB_JOLT_SHAKE_MAGNITUDE_PX = 4;
 export function getDriftingOrbJoltParticleCount(reducedMotion: boolean): number {
   return reducedMotion ? 0 : DRIFTING_ORB_JOLT_PARTICLE_COUNT;
+}
+
+// ── NEW, MB-10, ADR-0015 §11 (revision): penalty-role paddle-catch --
+// a successful defensive block. Deliberately a THIRD, minimal, distinct
+// cue -- neither Absorb's inward-converge nor Jolt's outward-burst+shake --
+// a small puff AT THE PADDLE (not the ball) reusing the existing outward-
+// particle primitive at low cost, plus a brief static pulse ring so the
+// cue survives reduced motion too (same split as Absorb/Jolt: the burst,
+// motion, is suppressed; a static brightness cue is not, consistent with
+// this feature's established reduced-motion convention -- a successful
+// block is gameplay feedback, not decoration). Deliberately fewer
+// particles than Jolt's burst -- "low cost," per the task brief. ─────────
+export const DRIFTING_ORB_PADDLE_CATCH_PARTICLE_COUNT = 6;
+export const DRIFTING_ORB_PADDLE_CATCH_PULSE_DURATION_MS = 220;
+export const DRIFTING_ORB_PADDLE_CATCH_PULSE_PEAK_ALPHA = 0.4;
+export function getDriftingOrbPaddleCatchParticleCount(reducedMotion: boolean): number {
+  return reducedMotion ? 0 : DRIFTING_ORB_PADDLE_CATCH_PARTICLE_COUNT;
 }

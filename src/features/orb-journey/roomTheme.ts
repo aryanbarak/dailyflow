@@ -290,6 +290,20 @@ export function computeJoltShakeOffset(
   };
 }
 
+// NEW, MB-10, ADR-0015 §11 (revision): penalty-role paddle-catch -- a
+// successful defensive block. A symmetric rise-then-fall (half-sine) bump,
+// deliberately a THIRD distinct curve shape from both Jolt's bright-dim-
+// bright dip and Absorb's plain monotonic fade, so all three drifting-orb
+// reactions read as visually distinct even before considering position
+// (this one draws at the PADDLE, not the ball) or particle direction.
+// Never gated by reduced motion at this layer, matching Absorb/Jolt's own
+// convention -- a successful block is gameplay feedback, not decoration.
+export function computePaddleCatchPulseAlpha(elapsedMs: number, totalMs: number, peakAlpha: number): number {
+  if (totalMs <= 0) return 0;
+  const progress = Math.min(1, Math.max(0, elapsedMs / totalMs));
+  return peakAlpha * Math.sin(Math.PI * progress);
+}
+
 export function drawRoomTheme(
   ctx: CanvasRenderingContext2D,
   geometry: RoomThemeGeometry,

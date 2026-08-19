@@ -18,6 +18,7 @@ import {
   computeJoltFlashIntensity,
   computeJoltShakeOffset,
   computeObstaclePulseAlpha,
+  computePaddleCatchPulseAlpha,
   computeRoomTransitionFlashAlpha,
   drawDriftingOrbIdle,
   drawRoomObstacle,
@@ -32,10 +33,13 @@ import {
   DRIFTING_ORB_JOLT_FLASH_PEAK_ALPHA,
   DRIFTING_ORB_JOLT_SHAKE_DURATION_MS,
   DRIFTING_ORB_JOLT_SHAKE_MAGNITUDE_PX,
+  DRIFTING_ORB_PADDLE_CATCH_PULSE_DURATION_MS,
+  DRIFTING_ORB_PADDLE_CATCH_PULSE_PEAK_ALPHA,
   DRIFTING_ORB_PENALTY_RIM_DASH,
   DRIFTING_ORB_RIM_LINE_WIDTH,
   getDriftingOrbAbsorbParticleCount,
   getDriftingOrbJoltParticleCount,
+  getDriftingOrbPaddleCatchParticleCount,
   getObstacleBreakParticleCount,
   ROOM_TRANSITION_FLASH_PEAK_ALPHA,
   ROOM_TRANSITION_SECONDS,
@@ -96,6 +100,14 @@ export function JourneyCanvas({
   // pongEngine.ts) so there is never a need to track both simultaneously.
   const driftingOrbReactionUntilRef = useRef(0);
   const driftingOrbReactionRoleRef = useRef<'reward' | 'penalty'>('reward');
+  // NEW, MB-10, ADR-0015 §11 (revision): the penalty-role paddle-catch cue
+  // (a successful defensive block) is tracked SEPARATELY from the
+  // ball-contact Absorb/Jolt reaction above -- unlike those two (mutually
+  // exclusive, drawn AT THE BALL), a paddle-catch can in principle occur in
+  // the SAME tick as a different orb's ball contact (two independent orbs),
+  // and it draws at a DIFFERENT screen location (the paddle), so it needs
+  // its own until-timestamp rather than sharing driftingOrbReactionUntilRef.
+  const paddleCatchReactionUntilRef = useRef(0);
   const reducedMotionRef = useRef(false);
   const crashedRef = useRef(false);
   const onRenderErrorRef = useRef(onRenderError);
@@ -125,7 +137,10 @@ export function JourneyCanvas({
       __orbJourneyDevGetObstacleBrokenState?: () => readonly boolean[];
       __orbJourneyDevSpawnDriftingOrb?: (role: 'reward' | 'penalty') => void;
       __orbJourneyDevForceDriftingOrbContact?: () => void;
+      __orbJourneyDevForcePaddleOrbCatch?: () => void;
+      __orbJourneyDevForceOrbBottomMiss?: () => void;
       __orbJourneyDevGetBallSpeed?: () => number;
+      __orbJourneyDevGetDriftingOrbCount?: () => number;
     };
     globalWindow.__orbJourneyDevForceRoomGoal = () => {
       const room = roomsRef.current[journeyRef.current.roomIndex - 1];
@@ -194,17 +209,69 @@ export function JourneyCanvas({
       // not an artificially near-zero one.
       journeyRef.current = { ...journeyRef.current, pong: { ...journeyRef.current.pong, ball: { x: orb.x, y: orb.y } } };
     };
-    // Read-only introspection -- "catching Haste measurably increases ball
-    // speed... Calm measurably decreases it" needs a numeric speed reading
-    // a real-browser test can before/after-compare.
+    // NEW, MB-10, ADR-0015 §11 (revision): teleports the FIRST active
+    // drifting orb onto the paddle (not the ball) so the next tick's real
+    // circle-vs-paddle-rect contact logic resolves it unmodified -- same
+    // "manipulate state inputs, let real physics run" methodology as the
+    // ball-contact hook above. Used by e2e to prove a penalty-role orb
+    // caught by the paddle causes NO speed change.
+    globalWindow.__orbJourneyDevForcePaddleOrbCatch = () => {
+      const room = roomsRef.current[journeyRef.current.roomIndex - 1];
+      const orb = journeyRef.current.pong.driftingOrbs[0];
+      if (!room || !orb) return;
+      journeyRef.current = {
+        ...journeyRef.current,
+        pong: {
+          ...journeyRef.current.pong,
+          driftingOrbs: journeyRef.current.pong.driftingOrbs.map(o =>
+            o.id === orb.id ? { ...o, x: journeyRef.current.pong.paddleX, y: room.engineConfig.paddleY } : o,
+          ),
+        },
+      };
+    };
+    // NEW, MB-10, ADR-0015 §11 (revision): teleports the FIRST active
+    // drifting orb to well past the bottom edge (definitively past the
+    // `orb.y - radius > config.height` removal condition already on the
+    // very next substep, not just barely crossing it -- avoids relying on
+    // one substep's small drift increment to cross a boundary, which would
+    // be flakier in a real-browser test) so the next tick's real
+    // bottom-miss logic resolves it unmodified.
+    globalWindow.__orbJourneyDevForceOrbBottomMiss = () => {
+      const room = roomsRef.current[journeyRef.current.roomIndex - 1];
+      const orb = journeyRef.current.pong.driftingOrbs[0];
+      const spawnConfig = room?.driftingOrbSpawn;
+      if (!room || !orb || !spawnConfig) return;
+      journeyRef.current = {
+        ...journeyRef.current,
+        pong: {
+          ...journeyRef.current.pong,
+          driftingOrbs: journeyRef.current.pong.driftingOrbs.map(o =>
+            o.id === orb.id ? { ...o, y: room.engineConfig.height + spawnConfig.radius + 10 } : o,
+          ),
+        },
+      };
+    };
+    // Read-only introspection -- "catching a reward orb measurably increases
+    // ball speed... a penalty orb measurably decreases it" needs a numeric
+    // speed reading a real-browser test can before/after-compare.
     globalWindow.__orbJourneyDevGetBallSpeed = () => Math.hypot(journeyRef.current.pong.ballVelocity.x, journeyRef.current.pong.ballVelocity.y);
+    // MB-10: needed so e2e's "paddle-catch causes NO speed change" test can
+    // ALSO confirm the orb was actually removed -- an unchanged-speed
+    // assertion alone can't be disproven by reverting the implementation
+    // (a completely inert forcePaddleOrbCatch hook would ALSO leave speed
+    // unchanged, passing trivially); pairing it with "the orb is gone" (a
+    // fact that requires the real contact logic to have run) closes that gap.
+    globalWindow.__orbJourneyDevGetDriftingOrbCount = () => journeyRef.current.pong.driftingOrbs.length;
     return () => {
       delete globalWindow.__orbJourneyDevForceRoomGoal;
       delete globalWindow.__orbJourneyDevForceObstacleContact;
       delete globalWindow.__orbJourneyDevGetObstacleBrokenState;
       delete globalWindow.__orbJourneyDevSpawnDriftingOrb;
       delete globalWindow.__orbJourneyDevForceDriftingOrbContact;
+      delete globalWindow.__orbJourneyDevForcePaddleOrbCatch;
+      delete globalWindow.__orbJourneyDevForceOrbBottomMiss;
       delete globalWindow.__orbJourneyDevGetBallSpeed;
+      delete globalWindow.__orbJourneyDevGetDriftingOrbCount;
     };
   }, []);
 
@@ -407,6 +474,25 @@ export function JourneyCanvas({
     ctx.fill();
     ctx.restore();
 
+    // NEW, MB-10, ADR-0015 §11 (revision): penalty-role paddle-catch cue --
+    // a minimal glow ring at the paddle, distinct from Absorb/Jolt (which
+    // both draw AT THE BALL). Never gated by reduced motion at this layer,
+    // same convention as the flash/pulse color cues below.
+    if (now < paddleCatchReactionUntilRef.current) {
+      const paddleCatchElapsedMs = DRIFTING_ORB_PADDLE_CATCH_PULSE_DURATION_MS - (paddleCatchReactionUntilRef.current - now);
+      const paddleCatchAlpha = computePaddleCatchPulseAlpha(
+        paddleCatchElapsedMs,
+        DRIFTING_ORB_PADDLE_CATCH_PULSE_DURATION_MS,
+        DRIFTING_ORB_PADDLE_CATCH_PULSE_PEAK_ALPHA,
+      );
+      if (paddleCatchAlpha > 0) {
+        ctx.beginPath();
+        ctx.fillStyle = colors.glow(paddleCatchAlpha);
+        ctx.arc(state.paddleX, config.paddleY + config.paddleHeight / 2, config.paddleHeight * 1.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
     const squashing = !reducedMotion && now < squashUntilRef.current;
     const scaleX = squashing ? 1.3 : 1;
     const scaleY = squashing ? 0.7 : 1;
@@ -500,7 +586,10 @@ export function JourneyCanvas({
       const prevScore = journeyRef.current.journeyScore;
       const prevPongScore = journeyRef.current.pong.score;
       const prevObstacles = journeyRef.current.pong.obstacles;
-      const prevSpeedMultiplierExpiresAt = journeyRef.current.pong.speedMultiplierExpiresAt;
+      const prevRewardContactCount = journeyRef.current.pong.rewardContactCount;
+      const prevPenaltyBallContactCount = journeyRef.current.pong.penaltyBallContactCount;
+      const prevPenaltyPaddleCatchCount = journeyRef.current.pong.penaltyPaddleCatchCount;
+      const prevPenaltyBottomMissCount = journeyRef.current.pong.penaltyBottomMissCount;
       const next = stepJourney(journeyRef.current, dtMs, roomsRef.current);
       journeyRef.current = next;
 
@@ -538,30 +627,41 @@ export function JourneyCanvas({
         }
       }
 
-      // ADR-0015 §11 (amendment), MB-08: drifting-orb contact reaction
-      // (Absorb/Jolt). A NEW or REFRESHED speed-multiplier effect is the
-      // unambiguous "a catch happened this tick" signal -- expiry (the
-      // effect wearing off) transitions speedMultiplierExpiresAt TO null,
-      // which this condition deliberately excludes, so wearing off never
-      // fires a reaction. Role is read from `next.pong.speedMultiplier`
-      // itself (matched against the room's own reward/penalty constants)
-      // rather than tracking which specific orb vanished -- simpler and
-      // exactly as reliable, since the multiplier value fully encodes which
-      // effect is now active. Position uses the ball's own current
-      // location: for a small circle-circle contact, that IS where the
-      // catch visually happened (unlike §10's obstacle, which stays fixed
-      // and separate from the ball).
-      if (next.roomIndex === prevRoomIndex && next.pong.speedMultiplierExpiresAt !== null && next.pong.speedMultiplierExpiresAt !== prevSpeedMultiplierExpiresAt) {
-        const currentRoom = roomsRef.current[next.roomIndex - 1];
-        const spawnConfig = currentRoom?.driftingOrbSpawn;
-        if (spawnConfig) {
-          const isReward = next.pong.speedMultiplier === spawnConfig.rewardSpeedMultiplier;
-          const role: 'reward' | 'penalty' = isReward ? 'reward' : 'penalty';
-          const nowMs = performance.now();
-          driftingOrbReactionRoleRef.current = role;
-          driftingOrbReactionUntilRef.current = nowMs + (isReward ? DRIFTING_ORB_ABSORB_PULSE_DURATION_MS : DRIFTING_ORB_JOLT_FLASH_DURATION_MS);
+      // MB-10, ADR-0015 §11 (revision): drifting-orb reactions. Detected via
+      // the 4 monotonic counters (pongEngine.ts), each diffed independently
+      // -- replaces MB-08's single speedMultiplierExpiresAt-diff, which no
+      // longer exists (effects aren't timed anymore, so "expiry" as a
+      // concept is gone). Reward and the two ball-position penalty outcomes
+      // (direct ball contact, bottom-miss) all share the SAME ball-centered
+      // Absorb/Jolt visual (driftingOrbReactionUntilRef) -- the paddle-catch
+      // outcome is entirely separate (paddleCatchReactionUntilRef), drawn at
+      // the paddle, and carries no speed change at all.
+      if (next.roomIndex === prevRoomIndex) {
+        const rewardHappened = next.pong.rewardContactCount > prevRewardContactCount;
+        const penaltyBallHappened = next.pong.penaltyBallContactCount > prevPenaltyBallContactCount;
+        const penaltyBottomMissHappened = next.pong.penaltyBottomMissCount > prevPenaltyBottomMissCount;
+        const paddleCatchHappened = next.pong.penaltyPaddleCatchCount > prevPenaltyPaddleCatchCount;
+        const nowMs = performance.now();
 
-          if (isReward) {
+        // NOTE (flagged per the task brief): a bottom-miss penalty reuses
+        // the Jolt reaction but is deliberately centered on the BALL'S
+        // CURRENT position, not the now-removed orb's position at the
+        // bottom of the room -- the orb is gone by the time this reaction
+        // fires, so there is nothing meaningful left to center it on there.
+        if (rewardHappened || penaltyBallHappened || penaltyBottomMissHappened) {
+          // Edge case (deliberately not guarded further): if a reward AND a
+          // penalty event both land in the SAME tick (two different orbs),
+          // only one reaction visual plays -- reward wins the display, same
+          // "one reaction shown at a time" simplification precedent as
+          // MB-08's own "at most one drifting-orb contact resolved per
+          // substep." The underlying speed/counter effects are NOT
+          // affected by this -- both still apply correctly; only which
+          // ONE gets a visible reaction this tick is approximate.
+          const role: 'reward' | 'penalty' = rewardHappened ? 'reward' : 'penalty';
+          driftingOrbReactionRoleRef.current = role;
+          driftingOrbReactionUntilRef.current = nowMs + (role === 'reward' ? DRIFTING_ORB_ABSORB_PULSE_DURATION_MS : DRIFTING_ORB_JOLT_FLASH_DURATION_MS);
+
+          if (role === 'reward') {
             const count = getDriftingOrbAbsorbParticleCount(reducedMotionRef.current);
             if (count > 0) {
               particlesRef.current.push(
@@ -572,6 +672,20 @@ export function JourneyCanvas({
             const count = getDriftingOrbJoltParticleCount(reducedMotionRef.current);
             if (count > 0) {
               particlesRef.current.push(...createHitParticles(next.pong.ball.x, next.pong.ball.y, count, nowMs));
+            }
+          }
+        }
+
+        // NEW, MB-10: penalty-role paddle-catch -- a successful defensive
+        // block, no speed change. A distinct, minimal cue at the PADDLE,
+        // not the ball.
+        if (paddleCatchHappened) {
+          paddleCatchReactionUntilRef.current = nowMs + DRIFTING_ORB_PADDLE_CATCH_PULSE_DURATION_MS;
+          const count = getDriftingOrbPaddleCatchParticleCount(reducedMotionRef.current);
+          if (count > 0) {
+            const currentRoom = roomsRef.current[next.roomIndex - 1];
+            if (currentRoom) {
+              particlesRef.current.push(...createHitParticles(next.pong.paddleX, currentRoom.engineConfig.paddleY, count, nowMs));
             }
           }
         }

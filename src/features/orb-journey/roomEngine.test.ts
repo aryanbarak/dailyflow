@@ -286,16 +286,17 @@ describe('roomEngine: drifting speed-orbs (MB-08, ADR-0015 §11 amendment)', () 
     expect(rooms[1].driftingOrbSpawn).toBeDefined();
   });
 
-  it('Room 2 has a sane drifting-orb spawn config: positive cadence/speed/radius, reward < 1 < penalty', () => {
+  it('Room 2 has a sane drifting-orb spawn config: positive cadence/speed/radius; reward > 1 (speeds up) > penalty (slows down) -- MB-10s revised mapping', () => {
     const rooms = buildRoomSequence(BOARD_CONFIG);
     const spawnConfig = rooms[1].driftingOrbSpawn;
     expect(spawnConfig).toBeDefined();
     expect(spawnConfig!.spawnIntervalMs).toBeGreaterThan(0);
     expect(spawnConfig!.driftSpeedPxPerSecond).toBeGreaterThan(0);
     expect(spawnConfig!.radius).toBeGreaterThan(0);
-    expect(spawnConfig!.rewardSpeedMultiplier).toBeLessThan(1);
-    expect(spawnConfig!.penaltySpeedMultiplier).toBeGreaterThan(1);
-    expect(spawnConfig!.speedMultiplierDurationSeconds).toBeGreaterThan(0);
+    expect(spawnConfig!.rewardSpeedStep).toBeGreaterThan(1);
+    expect(spawnConfig!.penaltySpeedStep).toBeLessThan(1);
+    // MB-10: NOT assumed to be mathematical inverses -- independently PO-tunable.
+    expect(spawnConfig!.rewardSpeedStep).not.toBeCloseTo(1 / spawnConfig!.penaltySpeedStep, 5);
   });
 
   it('RoomConfig.driftingOrbSpawn and engineConfig.driftingOrbSpawn are the SAME object reference -- one source of truth', () => {
@@ -304,23 +305,30 @@ describe('roomEngine: drifting speed-orbs (MB-08, ADR-0015 §11 amendment)', () 
     expect(rooms[1].driftingOrbSpawn).toBe(rooms[1].engineConfig.driftingOrbSpawn);
   });
 
-  it('room-restart correctness: an active drifting-orb speed effect AND any remaining active orbs clear on room-local restart (the leak-prone case)', () => {
+  it('room-restart correctness: ball speed resets to the ROOM BASE speed after a sequence of reward/penalty events, and any remaining active orbs clear too (the leak-prone case, MB-10 revision of MB-08s own test)', () => {
     const rooms = buildRoomSequence(BOARD_CONFIG);
     const room2 = rooms[1];
+    const baseSpeed = Math.hypot(createInitialPongState(room2.engineConfig).ballVelocity.x, createInitialPongState(room2.engineConfig).ballVelocity.y);
     let journey: JourneyState = { roomIndex: 2, pong: createInitialPongState(room2.engineConfig), journeyScore: 0, phase: 'playing' };
 
-    // A drifting orb positioned exactly at the ball -- caught on the very next step (same pattern proven at the pongEngine.ts level).
-    journey = {
-      ...journey,
-      pong: { ...journey.pong, driftingOrbs: [{ id: 'test-orb', x: journey.pong.ball.x, y: journey.pong.ball.y, role: 'penalty' }] },
-    };
-    journey = stepJourney(journey, 16, rooms);
-    expect(journey.pong.driftingOrbs).toEqual([]); // caught -- confirms the catch actually happened
-    expect(journey.pong.speedMultiplier).not.toBe(1); // effect active -- otherwise the reset assertion below would be trivially true
-    expect(journey.pong.speedMultiplierExpiresAt).not.toBeNull();
+    // Two reward catches in a row, positioned exactly at the ball each time
+    // -- caught on the very next step (same pattern proven at the
+    // pongEngine.ts level). MB-10: effects COMPOUND, so this leaves ball
+    // speed well above the room's base speed going into the restart --
+    // otherwise the reset assertion below would be trivially true (nothing
+    // to reset FROM).
+    for (let i = 0; i < 2; i++) {
+      journey = {
+        ...journey,
+        pong: { ...journey.pong, driftingOrbs: [{ id: `reward-${i}`, x: journey.pong.ball.x, y: journey.pong.ball.y, role: 'reward' }] },
+      };
+      journey = stepJourney(journey, 16, rooms);
+    }
+    expect(journey.pong.driftingOrbs).toEqual([]); // both caught -- confirms the catches actually happened
+    const speedBeforeRestart = Math.hypot(journey.pong.ballVelocity.x, journey.pong.ballVelocity.y);
+    expect(speedBeforeRestart).toBeGreaterThan(baseSpeed * 1.5); // meaningfully elevated, not a rounding coincidence
 
-    // Add a SECOND, still-uncaught orb too, to prove active orbs (not just
-    // the multiplier) also clear on restart.
+    // Add a SECOND, still-uncaught orb too, to prove active orbs also clear on restart.
     journey = { ...journey, pong: { ...journey.pong, driftingOrbs: [{ id: 'still-active', x: 50, y: 50, role: 'reward' }] } };
 
     journey = missState(journey, room2);
@@ -328,8 +336,8 @@ describe('roomEngine: drifting speed-orbs (MB-08, ADR-0015 §11 amendment)', () 
 
     expect(journey.roomIndex).toBe(2); // still the same room, not the whole journey restarting
     expect(journey.pong.driftingOrbs).toEqual([]);
-    expect(journey.pong.speedMultiplier).toBe(1);
-    expect(journey.pong.speedMultiplierExpiresAt).toBeNull();
+    const speedAfterRestart = Math.hypot(journey.pong.ballVelocity.x, journey.pong.ballVelocity.y);
+    expect(speedAfterRestart).toBeCloseTo(baseSpeed, 5); // reset to the room's own base speed, not just "lower than before"
   });
 });
 

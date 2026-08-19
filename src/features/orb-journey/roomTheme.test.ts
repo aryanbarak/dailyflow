@@ -25,10 +25,16 @@ import {
   computeJoltFlashIntensity,
   computeJoltShakeOffset,
   computeObstaclePulseAlpha,
+  computePaddleCatchPulseAlpha,
   computeRoomTransitionFlashAlpha,
   resolveRoomThemeColors,
 } from './roomTheme';
-import { getDriftingOrbAbsorbParticleCount, getDriftingOrbJoltParticleCount, getObstacleBreakParticleCount } from './tuning';
+import {
+  getDriftingOrbAbsorbParticleCount,
+  getDriftingOrbJoltParticleCount,
+  getDriftingOrbPaddleCatchParticleCount,
+  getObstacleBreakParticleCount,
+} from './tuning';
 
 const roomThemeSource = readFileSync(path.resolve(process.cwd(), 'src', 'features', 'orb-journey', 'roomTheme.ts'), 'utf-8');
 
@@ -133,16 +139,37 @@ describe('roomTheme: computeAbsorbPulseAlpha (MB-08, ADR-0015 §11 -- Calm "sing
   });
 });
 
-describe('roomTheme/tuning: the flash/pulse color cue is NEVER reduced-motion-gated -- neither function even accepts a reducedMotion parameter, so a real, non-zero cue always renders for both roles (ADR-0015 §11)', () => {
-  it('computeJoltFlashIntensity and computeAbsorbPulseAlpha both produce a real, non-zero value mid-reaction, with no reducedMotion input possible', () => {
+describe('roomTheme: computePaddleCatchPulseAlpha (MB-10, ADR-0015 §11 revision -- the NEW penalty-role paddle-catch "successful block" cue)', () => {
+  it('rises from zero, peaks at the configured value around the midpoint, and falls back to zero -- a rise-then-fall bump, a THIRD distinct shape from both Jolts dip and Absorbs monotonic fade', () => {
+    const peak = 0.4;
+    expect(computePaddleCatchPulseAlpha(0, 220, peak)).toBeCloseTo(0, 5);
+    expect(computePaddleCatchPulseAlpha(110, 220, peak)).toBeCloseTo(peak, 5);
+    expect(computePaddleCatchPulseAlpha(220, 220, peak)).toBeCloseTo(0, 5);
+  });
+
+  it('stays within [0, peakAlpha] throughout the window', () => {
+    const peak = 0.4;
+    for (let elapsedMs = 0; elapsedMs <= 220; elapsedMs += 20) {
+      const alpha = computePaddleCatchPulseAlpha(elapsedMs, 220, peak);
+      expect(alpha).toBeGreaterThanOrEqual(0);
+      expect(alpha).toBeLessThanOrEqual(peak + 1e-9);
+    }
+  });
+});
+
+describe('roomTheme/tuning: the flash/pulse color cue is NEVER reduced-motion-gated -- neither function even accepts a reducedMotion parameter, so a real, non-zero cue always renders (ADR-0015 §11, extended to the NEW paddle-catch cue by MB-10)', () => {
+  it('computeJoltFlashIntensity, computeAbsorbPulseAlpha, and computePaddleCatchPulseAlpha all produce a real, non-zero value mid-reaction, with no reducedMotion input possible', () => {
     expect(computeJoltFlashIntensity(60, 260)).toBeGreaterThan(0);
     expect(computeAbsorbPulseAlpha(60, 260, 0.5)).toBeGreaterThan(0);
-    // Structural: neither function's signature has room for a reducedMotion
-    // argument (2 and 3 params respectively) -- confirmed via arity, since
-    // TypeScript's own type erasure means this is the only runtime-checkable
-    // proxy for "this can't be gated by a parameter it doesn't accept."
+    expect(computePaddleCatchPulseAlpha(60, 220, 0.4)).toBeGreaterThan(0);
+    // Structural: none of the three functions' signatures have room for a
+    // reducedMotion argument (2, 3, and 3 params respectively) -- confirmed
+    // via arity, since TypeScript's own type erasure means this is the only
+    // runtime-checkable proxy for "this can't be gated by a parameter it
+    // doesn't accept."
     expect(computeJoltFlashIntensity).toHaveLength(2);
     expect(computeAbsorbPulseAlpha).toHaveLength(3);
+    expect(computePaddleCatchPulseAlpha).toHaveLength(3);
   });
 });
 
@@ -170,12 +197,14 @@ describe('roomTheme: computeJoltShakeOffset (MB-08, ADR-0015 §11 -- Haste "smal
   });
 });
 
-describe('roomTheme/tuning: drifting-orb reaction particle bursts are reduced-motion-gated for BOTH roles (ADR-0015 §11)', () => {
-  it('getDriftingOrbAbsorbParticleCount and getDriftingOrbJoltParticleCount both return 0 under reduced motion, and a real positive count otherwise', () => {
+describe('roomTheme/tuning: drifting-orb reaction particle bursts are reduced-motion-gated for ALL THREE outcomes (ADR-0015 §11, extended to the NEW paddle-catch outcome by MB-10)', () => {
+  it('getDriftingOrbAbsorbParticleCount, getDriftingOrbJoltParticleCount, and getDriftingOrbPaddleCatchParticleCount all return 0 under reduced motion, and a real positive count otherwise', () => {
     expect(getDriftingOrbAbsorbParticleCount(true)).toBe(0);
     expect(getDriftingOrbAbsorbParticleCount(false)).toBeGreaterThan(0);
     expect(getDriftingOrbJoltParticleCount(true)).toBe(0);
     expect(getDriftingOrbJoltParticleCount(false)).toBeGreaterThan(0);
+    expect(getDriftingOrbPaddleCatchParticleCount(true)).toBe(0);
+    expect(getDriftingOrbPaddleCatchParticleCount(false)).toBeGreaterThan(0);
   });
 });
 

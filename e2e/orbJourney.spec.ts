@@ -68,8 +68,32 @@ async function forceDriftingOrbContact(page: import('@playwright/test').Page) {
   });
 }
 
+// MB-10, ADR-0015 §11 (revision): mirrors forceDriftingOrbContact's own
+// approach -- teleports the orb onto the paddle (not the ball) and lets the
+// REAL circle-vs-paddle-rect contact logic resolve it on the next tick.
+async function forcePaddleOrbCatch(page: import('@playwright/test').Page) {
+  await page.evaluate(() => {
+    (window as unknown as { __orbJourneyDevForcePaddleOrbCatch?: () => void }).__orbJourneyDevForcePaddleOrbCatch?.();
+  });
+}
+
+// MB-10, ADR-0015 §11 (revision): teleports the orb well past the bottom
+// edge and lets the REAL bottom-miss logic resolve it on the next tick.
+async function forceOrbBottomMiss(page: import('@playwright/test').Page) {
+  await page.evaluate(() => {
+    (window as unknown as { __orbJourneyDevForceOrbBottomMiss?: () => void }).__orbJourneyDevForceOrbBottomMiss?.();
+  });
+}
+
 async function getBallSpeed(page: import('@playwright/test').Page): Promise<number> {
   return page.evaluate(() => (window as unknown as { __orbJourneyDevGetBallSpeed?: () => number }).__orbJourneyDevGetBallSpeed?.() ?? 0);
+}
+
+// MB-10: read-only, used to confirm a forced contact actually happened (the
+// orb is gone) alongside a speed-change assertion -- see the paddle-catch
+// test's own comment for why a bare "speed unchanged" check isn't enough.
+async function getDriftingOrbCount(page: import('@playwright/test').Page): Promise<number> {
+  return page.evaluate(() => (window as unknown as { __orbJourneyDevGetDriftingOrbCount?: () => number }).__orbJourneyDevGetDriftingOrbCount?.() ?? -1);
 }
 
 async function canvasHasNonZeroPixels(page: import('@playwright/test').Page): Promise<boolean> {
@@ -282,7 +306,7 @@ test.describe('Orb Journey (MB-05, ADR-0015)', () => {
   // below (setLineDash is exclusive to drawDriftingOrbIdle, a cleaner
   // isolation than roundRect ever was).
 
-  test('drifting speed-orbs (MB-08, ADR-0015 §11): catching Haste measurably increases ball speed, catching Calm measurably decreases it', async ({ page }) => {
+  test('drifting speed-orbs (MB-08, ADR-0015 §11; contact behavior REVISED by MB-10): a SEQUENCE of reward catches cumulatively/compoundingly increases ball speed, not just a one-time bump', async ({ page }) => {
     const pageErrors: string[] = [];
     page.on('pageerror', err => pageErrors.push(err.message));
 
@@ -293,23 +317,75 @@ test.describe('Orb Journey (MB-05, ADR-0015)', () => {
     const baselineSpeed = await getBallSpeed(page);
     expect(baselineSpeed).toBeGreaterThan(0);
 
-    await spawnDriftingOrb(page, 'penalty');
+    await spawnDriftingOrb(page, 'reward');
     await forceDriftingOrbContact(page);
-    await page.waitForTimeout(200); // let the next tick's real contact-and-multiplier logic run
-    const speedAfterHaste = await getBallSpeed(page);
-    expect(speedAfterHaste).toBeGreaterThan(baselineSpeed);
+    await page.waitForTimeout(200); // let the next tick's real contact-and-speed-step logic run
+    const speedAfterFirstReward = await getBallSpeed(page);
+    expect(speedAfterFirstReward).toBeGreaterThan(baselineSpeed);
 
-    // A Calm catch right after -- per ADR-0015 §11 "effects do not stack; a
-    // new contact refreshes duration, not magnitude," a DIFFERENT-role
-    // contact replaces the active effect rather than stacking on top of it,
-    // so this is still a valid, measurable comparison regardless of the
-    // still-active Haste window.
+    // MB-10: effects COMPOUND (the opposite of MB-08's retired "refresh,
+    // don't stack" rule) -- a SECOND reward catch must push speed higher
+    // STILL, proving this isn't a one-time bump that plateaus.
     await spawnDriftingOrb(page, 'reward');
     await forceDriftingOrbContact(page);
     await page.waitForTimeout(200);
-    const speedAfterCalm = await getBallSpeed(page);
-    expect(speedAfterCalm).toBeLessThan(speedAfterHaste);
-    expect(speedAfterCalm).toBeLessThan(baselineSpeed);
+    const speedAfterSecondReward = await getBallSpeed(page);
+    expect(speedAfterSecondReward).toBeGreaterThan(speedAfterFirstReward);
+
+    expect(await canvasHasNonZeroPixels(page)).toBe(true);
+
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).not.toBeVisible();
+    await expect(page.locator(START_BUTTON)).toBeEnabled();
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  test('drifting speed-orbs (MB-10, ADR-0015 §11 revision): a penalty-role orb caught by the PADDLE causes NO speed change (a successful defensive block)', async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on('pageerror', err => pageErrors.push(err.message));
+
+    await openJourney(page);
+    await forceRoomGoal(page);
+    await expect(page.getByText('Room 2')).toBeVisible();
+
+    const speedBefore = await getBallSpeed(page);
+    expect(speedBefore).toBeGreaterThan(0);
+
+    await spawnDriftingOrb(page, 'penalty');
+    expect(await getDriftingOrbCount(page)).toBe(1); // sanity: a real orb exists to be caught
+    await forcePaddleOrbCatch(page);
+    await page.waitForTimeout(200); // let the next tick's real paddle-contact logic run
+    // Paired assertion, deliberately: "speed unchanged" ALONE can't be
+    // disproven by an inert/no-op hook (nothing happening also leaves speed
+    // unchanged) -- pairing it with "the orb is actually gone" requires the
+    // real paddle-contact code to have run.
+    expect(await getDriftingOrbCount(page)).toBe(0);
+    const speedAfter = await getBallSpeed(page);
+    expect(speedAfter).toBeCloseTo(speedBefore, 0);
+
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).not.toBeVisible();
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  test('drifting speed-orbs (MB-10, ADR-0015 §11 revision): a penalty-role orb reaching the bottom UNCAUGHT measurably decreases ball speed, same as a direct hit', async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on('pageerror', err => pageErrors.push(err.message));
+
+    await openJourney(page);
+    await forceRoomGoal(page);
+    await expect(page.getByText('Room 2')).toBeVisible();
+
+    const speedBefore = await getBallSpeed(page);
+    expect(speedBefore).toBeGreaterThan(0);
+
+    await spawnDriftingOrb(page, 'penalty');
+    await forceOrbBottomMiss(page);
+    await page.waitForTimeout(200); // let the next tick's real bottom-miss logic run
+    const speedAfter = await getBallSpeed(page);
+    expect(speedAfter).toBeLessThan(speedBefore);
 
     expect(await canvasHasNonZeroPixels(page)).toBe(true);
 
@@ -395,6 +471,59 @@ test.describe('Orb Journey (MB-05, ADR-0015)', () => {
         if (!thrown) {
           thrown = true;
           throw new Error('MB-08 test-injected drifting-orb draw failure');
+        }
+        return original.apply(this, args);
+      };
+    });
+
+    const dialog = page.getByRole('dialog');
+    await expect(page.getByText('Something went wrong with the game')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Close micro break' })).toBeVisible();
+
+    await page.keyboard.press('Escape');
+    await expect(dialog).not.toBeVisible();
+    await expect(page.locator(START_BUTTON)).toBeEnabled();
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  test('crash-guard covers the NEW paddle-catch reaction rendering code path (MB-10, ADR-0015 §11 revision -- verified, not assumed)', async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on('pageerror', err => pageErrors.push(err.message));
+
+    await openJourney(page);
+    await forceRoomGoal(page);
+    await expect(page.getByText('Room 2')).toBeVisible();
+
+    // Triggers the REAL paddle-catch path first (spawn a penalty orb, force
+    // it onto the paddle, let one real tick resolve it) so the paddle-catch
+    // pulse's render branch (`now < paddleCatchReactionUntilRef.current` in
+    // JourneyCanvas.tsx) is GUARANTEED active before the fault is injected
+    // -- the new code is provably on the call stack for the frame that
+    // fails, not just theoretically reachable. `ctx.arc` is shared with
+    // the ball/trail/particles (unlike setLineDash's clean isolation for
+    // the idle-rim test above), so this mirrors MB-07's own
+    // timing-guaranteed-overlap pattern rather than MB-08's exclusive-API
+    // pattern.
+    await spawnDriftingOrb(page, 'penalty');
+    await forcePaddleOrbCatch(page);
+    await page.waitForTimeout(200);
+    // Confirms the real paddle-catch actually happened (not an inert hook)
+    // BEFORE injecting the fault -- ctx.arc is shared with the ball/trail/
+    // particles, so an error overlay appearing below is not on its own proof
+    // the NEW code was active; this orb-count check is what makes that claim
+    // non-trivial (it would fail immediately on a reverted implementation,
+    // before the fault-injection half of the test even runs).
+    expect(await getDriftingOrbCount(page)).toBe(0);
+
+    await page.evaluate(() => {
+      const proto = CanvasRenderingContext2D.prototype;
+      const original = proto.arc;
+      let thrown = false;
+      proto.arc = function (...args: Parameters<typeof original>) {
+        if (!thrown) {
+          thrown = true;
+          throw new Error('MB-10 test-injected paddle-catch-reaction draw failure');
         }
         return original.apply(this, args);
       };

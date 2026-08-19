@@ -17,6 +17,7 @@ import {
   FINAL_WAVE_WINDOW_SECONDS,
   MAX_BOUNCE_ANGLE_DEGREES,
   MAX_SPEED_PX_PER_SECOND,
+  MIN_SPEED_PX_PER_SECOND,
   PADDLE_BOTTOM_MARGIN_RATIO,
   PADDLE_HEIGHT_RATIO,
   PADDLE_WIDTH_RATIO,
@@ -72,12 +73,16 @@ export interface PongDriftingOrbConfig {
   readonly spawnIntervalMs: number;
   readonly driftSpeedPxPerSecond: number;
   readonly radius: number;
-  /** Calm: multiplies ball speed DOWN on contact (< 1). */
-  readonly rewardSpeedMultiplier: number;
-  /** Haste: multiplies ball speed UP on contact (> 1), still clamped by
-   *  the existing config.maxSpeed ceiling like every other speed change. */
-  readonly penaltySpeedMultiplier: number;
-  readonly speedMultiplierDurationSeconds: number;
+  /** MB-10, ADR-0015 §11 (revision): multiplies CURRENT ball speed UP on
+   *  reward-role contact (> 1 -- post-MB-09 playtesting: speeding up reads
+   *  as exciting, not punishing), clamped by config.maxSpeed. No longer
+   *  temporary -- persists (compounding on repeat contact) until the next
+   *  speed-changing event or a room-local restart. */
+  readonly rewardSpeedStep: number;
+  /** Multiplies CURRENT ball speed DOWN on penalty-role contact (< 1),
+   *  clamped by the NEW config.minSpeed floor. Independently PO-tunable
+   *  from rewardSpeedStep -- NOT assumed to be its mathematical inverse. */
+  readonly penaltySpeedStep: number;
 }
 
 export interface PongDriftingOrbState {
@@ -96,6 +101,10 @@ export interface PongEngineConfig {
   readonly ballRadius: number;
   readonly baseSpeed: number; // px/s at game start
   readonly maxSpeed: number; // px/s hard cap (progressive speed ceiling, unaffected by the final-wave ramp boost)
+  /** MB-10, ADR-0015 §11 (revision): px/s hard floor, symmetric to maxSpeed.
+   *  Inert for Quick Break and Room 1 (nothing ever applies it there) --
+   *  only a penalty-role drifting-orb contact in Room 2 reads this. */
+  readonly minSpeed: number;
   readonly speedRampPerHit: number; // multiplier applied to speed on each paddle hit
   readonly maxBounceAngleRad: number; // degenerate-angle prevention bound -- must stay < Math.PI / 2
   readonly durationSeconds: MicroBreakDurationSeconds;
@@ -125,6 +134,7 @@ export const DEFAULT_PONG_CONFIG: PongEngineConfig = {
   ballRadius: 8,
   baseSpeed: BASE_SPEED_PX_PER_SECOND,
   maxSpeed: MAX_SPEED_PX_PER_SECOND,
+  minSpeed: MIN_SPEED_PX_PER_SECOND,
   speedRampPerHit: SPEED_RAMP_PER_HIT,
   maxBounceAngleRad: (MAX_BOUNCE_ANGLE_DEGREES * Math.PI) / 180,
   durationSeconds: DEFAULT_MICRO_BREAK_DURATION_SECONDS,
@@ -176,12 +186,23 @@ export interface PongState {
    *  ids WITHOUT any module-level mutable state (which would break purity
    *  and could leak identity across unrelated PongState instances/tests). */
   readonly driftingOrbSpawnCount: number;
-  /** Currently-active ball-speed multiplier from a drifting-orb contact.
-   *  1 = no active effect. */
-  readonly speedMultiplier: number;
-  /** `elapsedSeconds` threshold at which the active multiplier reverts.
-   *  null = no active effect. */
-  readonly speedMultiplierExpiresAt: number | null;
+  /** MB-10, ADR-0015 §11 (revision): monotonic counters, one per distinct
+   *  drifting-orb outcome -- mirrors floorMissCount's own "counter, not a
+   *  boolean" idiom, so a caller (JourneyCanvas.tsx) can detect "did THIS
+   *  SPECIFIC outcome happen this tick" unambiguously via a before/after
+   *  diff. Replaces the retired speedMultiplier/speedMultiplierExpiresAt
+   *  fields, which could only ever encode ONE active effect and gave no
+   *  "an event just happened" signal independent of expiry -- now moot
+   *  anyway, since effects are no longer timed. Reward orbs only ever
+   *  produce a ball contact (paddle interaction and bottom-miss penalty are
+   *  penalty-only per the ADR revision), so reward gets exactly one
+   *  counter; penalty gets three, one per distinct outcome, since each
+   *  needs a DIFFERENT visual reaction (Jolt at the ball, a neutral cue at
+   *  the paddle, Jolt at the ball again for a bottom-miss). */
+  readonly rewardContactCount: number;
+  readonly penaltyBallContactCount: number;
+  readonly penaltyPaddleCatchCount: number;
+  readonly penaltyBottomMissCount: number;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -212,8 +233,10 @@ export function createInitialPongState(config: PongEngineConfig = DEFAULT_PONG_C
     driftingOrbs: [],
     driftingOrbSpawnElapsedMs: 0,
     driftingOrbSpawnCount: 0,
-    speedMultiplier: 1,
-    speedMultiplierExpiresAt: null,
+    rewardContactCount: 0,
+    penaltyBallContactCount: 0,
+    penaltyPaddleCatchCount: 0,
+    penaltyBottomMissCount: 0,
   };
 }
 
@@ -263,8 +286,6 @@ function integrateSubstep(state: PongState, dtMs: number, config: PongEngineConf
   let combo = state.combo;
   let floorMissCount = state.floorMissCount;
   let obstacles = state.obstacles;
-  let speedMultiplier = state.speedMultiplier;
-  let speedMultiplierExpiresAt = state.speedMultiplierExpiresAt;
 
   const r = config.ballRadius;
 
@@ -279,27 +300,6 @@ function integrateSubstep(state: PongState, dtMs: number, config: PongEngineConf
   if (y - r < 0) {
     y = r;
     vy = Math.abs(vy);
-  }
-
-  // MB-08, ADR-0015 §11 (amendment): expire the temporary drifting-orb
-  // speed effect BEFORE any collision math this substep (so a paddle-hit
-  // ramp later in the SAME substep uses the correct, already-reverted
-  // baseline), by dividing the multiplier back out of the current velocity.
-  // Documented simplification: if maxSpeed clamping ALSO happened while the
-  // effect was active, this revert is approximate (slightly under-reverts,
-  // since the clamp already reduced what the multiplier actually achieved)
-  // -- acceptable for a break-game feel mechanic, not a precision physics
-  // requirement.
-  if (speedMultiplierExpiresAt !== null && state.elapsedSeconds >= speedMultiplierExpiresAt) {
-    const speed = magnitude(vx, vy);
-    if (speed > 0 && speedMultiplier !== 1) {
-      const revertedSpeed = speed / speedMultiplier;
-      const scale = revertedSpeed / speed;
-      vx *= scale;
-      vy *= scale;
-    }
-    speedMultiplier = 1;
-    speedMultiplierExpiresAt = null;
   }
 
   // MB-07, ADR-0015 §10 (amendment): obstacle collision, resolved BEFORE the
@@ -360,50 +360,97 @@ function integrateSubstep(state: PongState, dtMs: number, config: PongEngineConf
     }
   }
 
-  // MB-08, ADR-0015 §11 (amendment): drifting speed-orbs -- advance, check
-  // ball contact (circle-circle, deliberately NOT §10's AABB code -- these
-  // are small and round), drop any caught orb or any that drifted past the
-  // bottom uncaught (silently, no state/score change per §11), then spawn
-  // on a simple elapsed-time cadence. Gated on config.driftingOrbSpawn
-  // existing, so Quick Break and Room 1 never enter this branch.
+  const paddleTop = config.paddleY;
+  const paddleBottom = config.paddleY + config.paddleHeight;
+  const paddleLeft = state.paddleX - config.paddleWidth / 2;
+  const paddleRight = state.paddleX + config.paddleWidth / 2;
+
+  // MB-08, ADR-0015 §11 (amendment/MB-10 revision): drifting speed-orbs --
+  // advance, then resolve at most THREE distinct outcomes per orb this
+  // substep: ball contact (circle-circle, deliberately NOT §10's AABB
+  // code -- these are small and round), penalty-only paddle contact
+  // (circle-vs-rect, NEW in MB-10), or falling past the bottom uncaught
+  // (reward: silent, unchanged; penalty: NEW -- applies the same penalty a
+  // direct hit would). Gated on config.driftingOrbSpawn existing, so Quick
+  // Break and Room 1 never enter this branch.
   let driftingOrbs = state.driftingOrbs;
   let driftingOrbSpawnElapsedMs = state.driftingOrbSpawnElapsedMs;
   let driftingOrbSpawnCount = state.driftingOrbSpawnCount;
+  let rewardContactCount = state.rewardContactCount;
+  let penaltyBallContactCount = state.penaltyBallContactCount;
+  let penaltyPaddleCatchCount = state.penaltyPaddleCatchCount;
+  let penaltyBottomMissCount = state.penaltyBottomMissCount;
   if (config.driftingOrbSpawn) {
     const spawnConfig = config.driftingOrbSpawn;
 
     const advanced = driftingOrbs.map(orb => ({ ...orb, y: orb.y + spawnConfig.driftSpeedPxPerSecond * dt }));
 
-    let caughtOrbId: string | null = null;
+    // MB-10, ADR-0015 §11 (revision): applies a speed STEP directly to the
+    // CURRENT velocity (no more "revert the old multiplier first" dance --
+    // that whole mechanism existed only for the now-retired timed-expiry
+    // model). Reward clamps UP to maxSpeed; penalty clamps DOWN to the NEW
+    // minSpeed floor. Effects compound: a second reward after a first
+    // multiplies the ALREADY-elevated speed, not the room's base speed --
+    // this is the ADR revision's explicit "persists... until the next such
+    // event" behavior, the opposite of MB-08's retired "refresh, don't
+    // stack" rule.
+    const applySpeedStep = (role: DriftingOrbRole) => {
+      const speed = magnitude(vx, vy);
+      if (speed <= 0) return;
+      const step = role === 'reward' ? spawnConfig.rewardSpeedStep : spawnConfig.penaltySpeedStep;
+      const rawSpeed = speed * step;
+      const appliedSpeed = role === 'reward' ? Math.min(rawSpeed, config.maxSpeed) : Math.max(rawSpeed, config.minSpeed);
+      const scale = appliedSpeed / speed;
+      vx *= scale;
+      vy *= scale;
+    };
+
+    let ballContactResolved = false; // at most one BALL contact resolved per substep, same invariant as MB-08
+    const removedOrbIds = new Set<string>();
+
     for (const orb of advanced) {
-      const distance = magnitude(x - orb.x, y - orb.y);
-      if (distance >= r + spawnConfig.radius) continue;
-
-      caughtOrbId = orb.id;
-      const targetMultiplier = orb.role === 'reward' ? spawnConfig.rewardSpeedMultiplier : spawnConfig.penaltySpeedMultiplier;
-      const alreadyActiveSameEffect = speedMultiplierExpiresAt !== null && speedMultiplier === targetMultiplier;
-
-      // ADR-0015 §11: "effects do not stack; a new contact refreshes
-      // duration, not magnitude" -- if a DIFFERENT effect is currently
-      // active, first divide it back out (same revert math as the expiry
-      // branch above) before applying the new target multiplier, so the
-      // ball is never scaled by two multipliers at once.
-      if (!alreadyActiveSameEffect) {
-        const speed = magnitude(vx, vy);
-        if (speed > 0) {
-          const baseSpeed = speedMultiplierExpiresAt !== null ? speed / speedMultiplier : speed;
-          const appliedSpeed = Math.min(baseSpeed * targetMultiplier, config.maxSpeed);
-          const scale = appliedSpeed / speed;
-          vx *= scale;
-          vy *= scale;
+      if (!ballContactResolved) {
+        const distanceToBall = magnitude(x - orb.x, y - orb.y);
+        if (distanceToBall < r + spawnConfig.radius) {
+          ballContactResolved = true;
+          removedOrbIds.add(orb.id);
+          applySpeedStep(orb.role);
+          if (orb.role === 'reward') rewardContactCount += 1;
+          else penaltyBallContactCount += 1;
+          continue;
         }
-        speedMultiplier = targetMultiplier;
       }
-      speedMultiplierExpiresAt = state.elapsedSeconds + spawnConfig.speedMultiplierDurationSeconds;
-      break; // at most one drifting-orb contact resolved per substep
+
+      // NEW, MB-10: penalty-role orbs also interact with the paddle -- a
+      // successful defensive block, removed with NO speed change. Reward
+      // orbs never check this (they have no paddle interaction at all, per
+      // the ADR revision). Proper circle-vs-rect test (closest point on the
+      // paddle rect to the orb's center), not just an AABB overlap of the
+      // orb's own bounding box.
+      if (orb.role === 'penalty') {
+        const closestX = clamp(orb.x, paddleLeft, paddleRight);
+        const closestY = clamp(orb.y, paddleTop, paddleBottom);
+        const distanceToPaddle = magnitude(orb.x - closestX, orb.y - closestY);
+        if (distanceToPaddle < spawnConfig.radius) {
+          removedOrbIds.add(orb.id);
+          penaltyPaddleCatchCount += 1;
+          continue;
+        }
+      }
+
+      if (orb.y - spawnConfig.radius > config.height) {
+        removedOrbIds.add(orb.id);
+        // NEW, MB-10: a penalty orb reaching the bottom uncaught (by ball
+        // OR paddle) still applies the penalty -- reward's bottom-miss
+        // stays silent/unchanged, per the ADR revision.
+        if (orb.role === 'penalty') {
+          penaltyBottomMissCount += 1;
+          applySpeedStep('penalty');
+        }
+      }
     }
 
-    driftingOrbs = advanced.filter(orb => orb.id !== caughtOrbId && orb.y - spawnConfig.radius <= config.height);
+    driftingOrbs = advanced.filter(orb => !removedOrbIds.has(orb.id));
 
     driftingOrbSpawnElapsedMs += dtMs;
     if (driftingOrbSpawnElapsedMs >= spawnConfig.spawnIntervalMs) {
@@ -414,11 +461,6 @@ function integrateSubstep(state: PongState, dtMs: number, config: PongEngineConf
       driftingOrbs = [...driftingOrbs, { id: `drifting-orb-${driftingOrbSpawnCount}`, x: spawnX, y: spawnConfig.radius, role }];
     }
   }
-
-  const paddleTop = config.paddleY;
-  const paddleBottom = config.paddleY + config.paddleHeight;
-  const paddleLeft = state.paddleX - config.paddleWidth / 2;
-  const paddleRight = state.paddleX + config.paddleWidth / 2;
 
   // Only checked while travelling downward into the paddle's band, so a
   // ball already reflected upward this same substep can't double-hit.
@@ -485,8 +527,10 @@ function integrateSubstep(state: PongState, dtMs: number, config: PongEngineConf
     driftingOrbs,
     driftingOrbSpawnElapsedMs,
     driftingOrbSpawnCount,
-    speedMultiplier,
-    speedMultiplierExpiresAt,
+    rewardContactCount,
+    penaltyBallContactCount,
+    penaltyPaddleCatchCount,
+    penaltyBottomMissCount,
   };
 }
 

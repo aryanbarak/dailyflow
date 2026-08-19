@@ -101,6 +101,41 @@ Scope for this slice: Room 2 only. Room 1 remains obstacle-free by design
 rooms once room 2's breakable obstacle is proven in real play.
 
 ### 11. Drifting speed-orbs (Amendment, post-MB-07)
+**Revised, post-MB-09 playtesting (PO decision).** Real play showed the
+original temporary/timed multiplier model, and the reward↔penalty speed
+mapping, did not match the actual experience: increasing speed feels
+exciting (a reward), not punishing. The design is revised as follows,
+superseding the timed-multiplier mechanics described below (kept for
+history):
+
+- Effects are no longer temporary/timed. There is no expiry. A speed change
+  from contact persists until the next such event or a room-local restart
+  (which resets speed to the room's base, as always).
+- Reward-role contact with the ball multiplies CURRENT ball speed by
+  REWARD_SPEED_STEP (>1, tuning constant), clamped by the existing
+  ADR-0014 §4 maxSpeed ceiling. Unchanged otherwise: no paddle interaction,
+  a miss (ball never touches it) fades silently, no penalty.
+- Penalty-role contact with the ball multiplies CURRENT ball speed by
+  PENALTY_SPEED_STEP (<1, tuning constant), clamped by a NEW minSpeed floor
+  (new invariant, symmetric to the existing maxSpeed ceiling — required so
+  the ball cannot be driven to a near-zero, degenerate speed by repeated
+  penalties).
+- NEW: penalty-role orbs also interact with the paddle. If the paddle
+  contacts a penalty-role orb before it reaches the ball or the bottom of
+  the room, the orb is removed with NO speed change (a successful defensive
+  block — neutral outcome, distinct from both the Absorb and Jolt
+  reactions, needs its own minimal visual cue).
+- NEW: if a penalty-role orb reaches the bottom of the room without being
+  touched by the ball AND without being caught by the paddle, the same
+  penalty (speedMultiplier via PENALTY_SPEED_STEP, clamped to the floor) is
+  applied, with the same Jolt-style reaction, even though the triggering
+  contact was not literally at the ball's position.
+- The Calm/Haste naming and the PongState speedMultiplier/
+  speedMultiplierExpiresAt fields from the original design are retired;
+  the role field (`'reward' | 'penalty'`) and the rim-shape accessibility
+  cue (smooth=reward, notched=penalty) are unchanged and remain the
+  semantic/visual source of truth.
+
 A second, distinct hazard/pickup category, additive to §10's static breakable
 obstacles: small orbs (same light family as the main Orb and target orbs,
 per the Design Language table) drift downward through the room at a
