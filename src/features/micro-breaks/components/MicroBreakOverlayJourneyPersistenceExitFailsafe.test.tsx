@@ -1,23 +1,11 @@
 // @vitest-environment jsdom
 //
-// MB-05: re-verifies the MB-03-FIX exit fail-safe (see
-// MicroBreakOverlayExitFailsafe.test.tsx) still works in the Orb Journey
-// context -- the task's own brief requires this explicitly, since Journey
-// reuses the SAME overlay exit machinery. The fail-safe timeout effect in
-// MicroBreakOverlay.tsx operates purely on `phase === 'exiting'`, with no
-// sessionType branching at all, so this is expected to pass unchanged --
-// this file exists to PROVE that, not assume it. Mirrors
-// MicroBreakOverlayExitFailsafe.test.tsx's own stuck-animation mock
-// (deliberately different from this directory's OTHER Journey test file,
-// MicroBreakOverlayJourney.test.tsx, which mocks framer-motion to complete
-// SYNCHRONOUSLY -- a stuck mock and a synchronous mock cannot coexist in one
-// file since vi.mock is file-scoped).
-//
-// JourneyCanvas itself is NOT mocked here (same choice
-// MicroBreakOverlayExitFailsafe.test.tsx makes for PongCanvas) -- jsdom's
-// canvas getContext() returns null, and JourneyCanvas's renderFrame() has
-// the same `if (!canvas || !ctx) return` guard PongCanvas does, so it mounts
-// and no-ops safely without needing a mock.
+// MB-20, ADR-0015 §14: the 4th session-end exit path -- the MB-03-FIX
+// stuck-exit fail-safe timeout. Mirrors MicroBreakOverlayJourneyExitFailsafe.test.tsx's
+// own stuck-animation mock (a NEVER-resolving framer-motion handoff),
+// deliberately in its own file since vi.mock('framer-motion', ...) is
+// file-scoped and MicroBreakOverlayJourneyPersistence.test.tsx already uses
+// a SYNCHRONOUS one for its other 3 exit-path tests.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import '@testing-library/jest-dom/vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
@@ -26,8 +14,8 @@ vi.mock('framer-motion', async () => {
   const React = await import('react');
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function MotionDivMock({ children, ...rest }: Record<string, any>) {
-    // Deliberately never calls onAnimationComplete -- simulates a handoff
-    // animation that never resolves.
+    // Deliberately never calls onAnimationComplete -- see
+    // MicroBreakOverlayJourneyExitFailsafe.test.tsx's own comment.
     delete rest.initial;
     delete rest.animate;
     delete rest.transition;
@@ -40,21 +28,21 @@ vi.mock('framer-motion', async () => {
   };
 });
 
-// MB-20: this file drives a real Journey session (via the REAL,
-// non-mocked JourneyCanvas -- see this file's own top comment) but is not
-// itself about persistence -- the module is mocked away so the session
-// never touches the real journeyPersistenceService/Supabase client.
-vi.mock('@/features/orb-journey/journeyPersistenceRuntime', () => ({
-  loadJourneyProgressOnce: vi.fn(),
-  maybeRecordRoomCompletion: vi.fn(),
-  recordJourneySessionEnd: vi.fn(),
-  useJourneyProgressCache: vi.fn(() => undefined),
-}));
-vi.mock('@/features/orb-journey/journeyPersistenceQueue', () => ({
-  flushJourneyPersistenceQueue: vi.fn(),
-  useJourneyPersistenceQueueStore: { getState: () => ({ enqueue: vi.fn() }) },
-}));
+const getJourneyProgressMock = vi.hoisted(() => vi.fn(async () => null));
+const upsertJourneyProgressIfBetterMock = vi.hoisted(() => vi.fn(async () => undefined));
+const insertJourneyRunMock = vi.hoisted(() => vi.fn(async () => undefined));
+
+// See MicroBreakOverlayJourneyPersistence.test.tsx's own comment on this
+// same mock -- the real client construction throws outside a configured env.
 vi.mock('@/integrations/supabase/client', () => ({ supabase: {} }));
+
+vi.mock('@/features/orb-journey/journeyPersistenceService', () => ({
+  journeyPersistenceService: {
+    getJourneyProgress: getJourneyProgressMock,
+    upsertJourneyProgressIfBetter: upsertJourneyProgressIfBetterMock,
+    insertJourneyRun: insertJourneyRunMock,
+  },
+}));
 
 class MemoryStorage implements Storage {
   private values = new Map<string, string>();
@@ -91,6 +79,9 @@ function resetStore() {
 beforeEach(() => {
   vi.stubGlobal('localStorage', new MemoryStorage());
   resetStore();
+  getJourneyProgressMock.mockReset().mockResolvedValue(null);
+  upsertJourneyProgressIfBetterMock.mockReset().mockResolvedValue(undefined);
+  insertJourneyRunMock.mockReset().mockResolvedValue(undefined);
   document.body.style.overflow = '';
   vi.stubGlobal(
     'matchMedia',
@@ -115,13 +106,12 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('MicroBreakOverlay Orb Journey exit fail-safe (MB-05, re-verifying MB-03-FIX)', () => {
-  it('if the handoff animation never completes during a Journey session, the SAME fail-safe timeout still tears the overlay down', async () => {
+describe('MicroBreakOverlay Orb Journey persistence: session-end write, path 4/4 -- the stuck-exit fail-safe timeout', () => {
+  it('fires the session-end write even when the handoff animation never completes and only the fail-safe timeout tears the overlay down', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     render(<MicroBreakOverlay />);
     act(() => useMicroBreaksStore.getState().startBreak());
     await vi.waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
-    expect(document.body.style.overflow).toBe('hidden');
 
     act(() => {
       fireEvent.click(screen.getByRole('button', { name: 'Orb Journey' }));
@@ -131,16 +121,15 @@ describe('MicroBreakOverlay Orb Journey exit fail-safe (MB-05, re-verifying MB-0
     act(() => {
       fireEvent.click(screen.getByRole('button', { name: 'Close micro break' }));
     });
-    // Animation mock never fires onAnimationComplete -- still stuck 'exiting'.
+    // Animation mock never fires onAnimationComplete -- still stuck 'exiting', same as MicroBreakOverlayJourneyExitFailsafe.test.tsx.
     expect(screen.getByRole('dialog')).toBeInTheDocument();
-    expect(useMicroBreaksStore.getState().gameActive).toBe(true);
+    expect(insertJourneyRunMock).not.toHaveBeenCalled(); // not yet -- proves the write is tied to finalizeClose, not the close click itself
 
-    act(() => {
+    await act(async () => {
       vi.advanceTimersByTime(2000); // well past HANDOFF_TRANSITION_SECONDS (0.28s) + the 1s safety margin
     });
 
     expect(screen.queryByRole('dialog')).toBeNull();
-    expect(document.body.style.overflow).toBe('');
-    expect(useMicroBreaksStore.getState().gameActive).toBe(false);
+    expect(insertJourneyRunMock).toHaveBeenCalledTimes(1); // the fail-safe path itself reached the same session-end write
   });
 });

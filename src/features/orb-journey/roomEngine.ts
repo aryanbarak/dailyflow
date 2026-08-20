@@ -215,10 +215,17 @@ export interface JourneyState {
   readonly missCount: number;
 }
 
-export function createInitialJourneyState(rooms: readonly RoomConfig[]): JourneyState {
+// MB-20, ADR-0015 §14: `startRoomIndex` lets "Continue Journey" begin at the
+// FIRST sub-state of the stored farthest_room -- never mid-room physics
+// state, per §14's own explicit rule. Defaults to 1 (the pre-MB-20 "New
+// Journey" behavior, unchanged for every existing caller that doesn't pass
+// it). The caller (JourneyCanvas.tsx) is responsible for clamping this to a
+// valid room index before calling -- this function trusts its input, same
+// boundary convention as getRoom()'s own out-of-range throw further below.
+export function createInitialJourneyState(rooms: readonly RoomConfig[], startRoomIndex = 1): JourneyState {
   return {
-    roomIndex: 1,
-    pong: createInitialPongState(rooms[0].engineConfig),
+    roomIndex: startRoomIndex,
+    pong: createInitialPongState(rooms[startRoomIndex - 1].engineConfig),
     journeyScore: 0,
     phase: 'playing',
     missCount: 0,

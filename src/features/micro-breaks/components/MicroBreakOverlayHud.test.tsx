@@ -28,6 +28,23 @@ vi.mock('framer-motion', async () => {
   };
 });
 
+// MB-20: see MicroBreakOverlay.test.tsx's own comment on this same mock --
+// the 'choosing' phase (reached by every session type) now fires a
+// non-blocking journey_progress read; this file only exercises Quick
+// Break's HUD and never touches persistence, so the module is mocked away
+// to stay hermetic (no real network attempt in jsdom).
+vi.mock('@/features/orb-journey/journeyPersistenceRuntime', () => ({
+  loadJourneyProgressOnce: vi.fn(),
+  maybeRecordRoomCompletion: vi.fn(),
+  recordJourneySessionEnd: vi.fn(),
+  useJourneyProgressCache: vi.fn(() => undefined),
+}));
+vi.mock('@/features/orb-journey/journeyPersistenceQueue', () => ({
+  flushJourneyPersistenceQueue: vi.fn(),
+  useJourneyPersistenceQueueStore: { getState: () => ({ enqueue: vi.fn() }) },
+}));
+vi.mock('@/integrations/supabase/client', () => ({ supabase: {} }));
+
 vi.mock('./PongCanvas', async () => {
   const React = await import('react');
   function PongCanvasMock({ onComboChange, onTimeChange }: { onComboChange: (n: number) => void; onTimeChange: (n: number) => void }) {

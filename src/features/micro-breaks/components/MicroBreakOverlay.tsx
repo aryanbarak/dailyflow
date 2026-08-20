@@ -5,8 +5,13 @@ import { useT } from '@/i18n';
 import { isolateBidiRunsInText, resolveMessageBaseDirection } from '@/lib/bidiText';
 import { cn } from '@/lib/utils';
 import { useAppearance } from '@/features/settings/appearanceStore';
+import { supabase } from '@/integrations/supabase/client';
+import { useNetworkStatus } from '@/hooks/useNetworkStatus';
 import { JourneyCanvas } from '@/features/orb-journey/JourneyCanvas';
 import type { JourneyPhase } from '@/features/orb-journey/roomEngine';
+import type { JourneyProgressCandidate, JourneyRunSummary } from '@/features/orb-journey/journeyPersistenceService';
+import { flushJourneyPersistenceQueue } from '@/features/orb-journey/journeyPersistenceQueue';
+import { loadJourneyProgressOnce, maybeRecordRoomCompletion, recordJourneySessionEnd, useJourneyProgressCache } from '@/features/orb-journey/journeyPersistenceRuntime';
 import {
   getJourneyPlayAreaMaxWidthPx,
   ROOM_TRANSITION_SECONDS,
@@ -121,6 +126,13 @@ export function MicroBreakOverlay() {
   const [journeyRoom, setJourneyRoom] = useState(1);
   const [journeyScore, setJourneyScore] = useState(0);
   const [journeyPhase, setJourneyPhase] = useState<JourneyPhase>('playing');
+  // MB-20, ADR-0015 §14: which room a Journey session's physics actually
+  // START at -- 1 for "New Journey", the stored farthest_room for "Continue
+  // Journey" (see handleContinueJourney below). Deliberately separate from
+  // `journeyRoom` (the CURRENT room, which changes throughout play): this is
+  // fixed once per session, at choice time, and only ever read by
+  // JourneyCanvas's own mount-time initial state.
+  const [journeyStartRoomIndex, setJourneyStartRoomIndex] = useState(1);
 
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -131,6 +143,17 @@ export function MicroBreakOverlay() {
   const viewportBallPositionRef = useRef<ViewportPoint | null>(null);
   const phaseRef = useRef(phase);
   phaseRef.current = phase;
+  // MB-20, ADR-0015 §14: the client-generated run id (crypto.randomUUID()),
+  // set ONCE at session start (handleChooseJourney/handleContinueJourney) --
+  // NOT at session end -- so a retry after a mid-session write failure (the
+  // localStorage queue's next flush) reuses the SAME id, matching
+  // journeyPersistenceService's own on-conflict-do-nothing idempotency
+  // contract (MB-19). null whenever no Journey session is currently open
+  // (Quick Break sessions never touch this at all).
+  const journeyRunIdRef = useRef<string | null>(null);
+  const journeyProgressSnapshot = useJourneyProgressCache(s => s.snapshot);
+  const { isOnline } = useNetworkStatus();
+  const wasOnlineRef = useRef(isOnline);
 
   // Entry: gameActive flips false -> true (an entry point called
   // startBreak()). Captures everything needed to restore the workspace on
@@ -164,11 +187,69 @@ export function MicroBreakOverlay() {
   }
 
   function handleChooseJourney() {
+    journeyRunIdRef.current = crypto.randomUUID();
     setJourneyRoom(1);
+    setJourneyStartRoomIndex(1);
     setJourneyScore(0);
     setJourneyPhase('playing');
     setSessionType('journey');
     setPhase('active');
+  }
+
+  // MB-20, ADR-0015 §14: "Continue Journey" -- starts at the FIRST sub-state
+  // of the stored farthest_room, never mid-room physics state. Falls back to
+  // room 1 if the snapshot is somehow unavailable at click time (the button
+  // itself is only rendered when a snapshot exists -- see the 'choosing'
+  // phase JSX below -- so this fallback is a defensive default, not an
+  // expected path).
+  function handleContinueJourney() {
+    const startRoom = journeyProgressSnapshot?.farthestRoom ?? 1;
+    journeyRunIdRef.current = crypto.randomUUID();
+    setJourneyRoom(startRoom);
+    setJourneyStartRoomIndex(startRoom);
+    setJourneyScore(0);
+    setJourneyPhase('playing');
+    setSessionType('journey');
+    setPhase('active');
+  }
+
+  // MB-20, ADR-0015 §14: a lightweight, non-blocking read of the user's
+  // checkpoint -- fired once the picker is reachable ('choosing' phase,
+  // which every open reaches immediately regardless of which session type
+  // is eventually picked, or none at all). loadJourneyProgressOnce is
+  // itself idempotent per app session (see its own comment), so re-opening
+  // the picker multiple times never re-fires the network read. Deliberately
+  // NOT awaited/blocking: the picker renders immediately either way (see
+  // the 'choosing' phase JSX, which only shows "Continue Journey" once
+  // journeyProgressSnapshot resolves to a non-null value).
+  useEffect(() => {
+    if (phase !== 'choosing') return;
+    loadJourneyProgressOnce(supabase);
+  }, [phase]);
+
+  // MB-20, ADR-0015 §14: "retried on next app load or the next online
+  // event" -- one flush on mount (app load), reusing useNetworkStatus's
+  // existing online/offline signal (not polling navigator.onLine) for the
+  // second trigger. Both calls are non-blocking (flushJourneyPersistenceQueue
+  // returns a Promise this effect never awaits).
+  useEffect(() => {
+    flushJourneyPersistenceQueue(supabase);
+  }, []);
+  useEffect(() => {
+    if (isOnline && !wasOnlineRef.current) flushJourneyPersistenceQueue(supabase);
+    wasOnlineRef.current = isOnline;
+  }, [isOnline]);
+
+  // MB-20, ADR-0015 §14 (Step 1): fires wherever JourneyCanvas reports a room
+  // transition -- the exact "room N completed, advancing to N+1" signal the
+  // task brief points to (see JourneyCanvas.tsx's own onTick, which only
+  // calls onRoomChange when next.roomIndex actually changes). Guarded to
+  // 'journey' sessions only; Quick Break never calls this handler at all (a
+  // separate prop). Never awaited -- maybeRecordRoomCompletion is itself
+  // fire-and-forget (see its own comment), so this stays synchronous too.
+  function handleJourneyRoomChange(roomIndex: number, score: number) {
+    setJourneyRoom(roomIndex);
+    if (sessionType === 'journey') maybeRecordRoomCompletion(supabase, roomIndex, score);
   }
 
   // MB-03, mobile/PWA acceptance: the entry handoff's "game start position"
@@ -195,7 +276,33 @@ export function MicroBreakOverlay() {
     if (phase === 'active' || phase === 'choosing') closeButtonRef.current?.focus();
   }, [phase]);
 
+  // MB-20, ADR-0015 §14 (Step 2): this is the SINGLE funnel every Journey
+  // exit path reaches -- close-button click and Esc both go through
+  // handleClose -> phase 'exiting' -> here (via the handoff animation's
+  // onAnimationComplete, OR the MB-03-FIX stuck-exit fail-safe timeout if
+  // that animation never fires); a render crash (MB-11/MB-12's 'error'
+  // phase) still reaches handleClose (see its own comment: "closable from
+  // 'error' too"), so it funnels here identically. Firing the session-end
+  // write HERE, once, rather than duplicating it at each trigger site, is
+  // exactly what makes it impossible to reproduce this feature's own past
+  // "one exit path forgotten" bug class (MB-03-FIX/MB-11/MB-12) for this
+  // specific write.
   function finalizeClose() {
+    if (sessionType === 'journey' && journeyRunIdRef.current) {
+      const run: JourneyRunSummary = { id: journeyRunIdRef.current, endedAtRoom: journeyRoom, totalScore: journeyScore };
+      // roomsDiscoveredCount = journeyRoom (the same value as farthestRoom
+      // here) -- a judgment call, flagged per the task brief's own "flag if
+      // you have to guess" instruction: Orb Journey's room sequence is
+      // strictly linear (roomEngine.ts's stepJourney only ever advances
+      // roomIndex by exactly 1, never skips), so "every room up to and
+      // including the current one has been visited" is a structural fact
+      // of this run, not a guess -- reaching room N means rooms 1..N were
+      // all discovered. maybeRecordRoomCompletion (journeyPersistenceRuntime.ts)
+      // makes the same choice for its own candidate, for the same reason.
+      const progressCandidate: JourneyProgressCandidate = { farthestRoom: journeyRoom, bestTotalScore: journeyScore, roomsDiscoveredCount: journeyRoom };
+      recordJourneySessionEnd(supabase, run, progressCandidate);
+    }
+    journeyRunIdRef.current = null;
     document.body.style.overflow = previousOverflowRef.current;
     endBreak();
     previousFocusRef.current?.focus?.();
@@ -205,6 +312,7 @@ export function MicroBreakOverlay() {
     setJourneyRoom(1);
     setJourneyScore(0);
     setJourneyPhase('playing');
+    setJourneyStartRoomIndex(1);
   }
 
   function handleHandoffComplete() {
@@ -328,6 +436,16 @@ export function MicroBreakOverlay() {
   const journeyRoomText = t('micro_breaks_journey_room_value', { room: journeyRoom });
   const journeyClearedText = t('micro_breaks_journey_cleared_label');
 
+  // MB-20, ADR-0015 §14: "if journey_progress exists for the user, the
+  // session-type picker offers 'Continue Journey'... alongside 'New
+  // Journey'." journeyProgressSnapshot is undefined until the read resolves
+  // (or never, if it's still in flight/offline) -- the picker itself never
+  // waits for it (see the loadJourneyProgressOnce effect's own comment); the
+  // button below simply appears once/if it does.
+  const continueJourneyText = journeyProgressSnapshot
+    ? t('micro_breaks_session_choice_continue_journey', { room: journeyProgressSnapshot.farthestRoom })
+    : '';
+
   // MB-14, ADR-0015 §13: Journey-only progressive play-area growth. ONE
   // computed value (keyed off journeyRoom, which itself only changes at a
   // room transition via onRoomChange -- see JourneyCanvas.tsx) drives the
@@ -400,6 +518,30 @@ export function MicroBreakOverlay() {
               <p dir={resolveMessageBaseDirection(t('micro_breaks_session_choice_title'))} className="text-sm font-medium text-muted-foreground">
                 {isolateBidiRunsInText(t('micro_breaks_session_choice_title'), 'mb-choice-title')}
               </p>
+              {/* MB-20, ADR-0015 §14: only rendered once/if journeyProgressSnapshot
+                  resolves to a real checkpoint -- absent entirely for a
+                  first-time player, and absent (not a loading spinner) while
+                  the read is still in flight, per the task brief's own
+                  "render immediately... add Continue once/if it resolves"
+                  instruction. Deliberately placed FIRST (above Quick Break/
+                  Orb Journey) -- a returning player's most likely next
+                  action. */}
+              {journeyProgressSnapshot && (
+                <button
+                  type="button"
+                  onClick={handleContinueJourney}
+                  aria-label={continueJourneyText}
+                  aria-describedby="mb-choice-continue-desc"
+                  className="flex w-full flex-col gap-0.5 rounded-lg bg-secondary/60 px-4 py-3 text-left transition-colors hover:bg-secondary"
+                >
+                  <span dir={resolveMessageBaseDirection(continueJourneyText)} className="font-medium" aria-hidden="true">
+                    {isolateBidiRunsInText(continueJourneyText, 'mb-choice-continue')}
+                  </span>
+                  <span id="mb-choice-continue-desc" className="text-xs text-muted-foreground">
+                    {t('micro_breaks_session_choice_continue_journey_desc')}
+                  </span>
+                </button>
+              )}
               <button
                 type="button"
                 onClick={handleChooseQuickBreak}
@@ -562,11 +704,12 @@ export function MicroBreakOverlay() {
             >
               <JourneyCanvas
                 containerRef={canvasContainerRef}
-                onRoomChange={setJourneyRoom}
+                onRoomChange={handleJourneyRoomChange}
                 onScoreChange={setJourneyScore}
                 onPhaseChange={setJourneyPhase}
                 viewportBallPositionRef={viewportBallPositionRef}
                 onRenderError={handleRenderError}
+                startRoomIndex={journeyStartRoomIndex}
               />
             </div>
           )}

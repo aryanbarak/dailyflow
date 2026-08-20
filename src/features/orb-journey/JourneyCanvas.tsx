@@ -52,7 +52,13 @@ export interface JourneyCanvasProps {
    *  position" measurement, same pattern as PongCanvas's containerRef --
    *  see that component's own comment. */
   readonly containerRef: RefObject<HTMLDivElement>;
-  readonly onRoomChange: (roomIndex: number) => void;
+  /** MB-20, ADR-0015 §14: `score` is the SAME journeyScore value stepJourney
+   *  just computed this tick (not a separately-read state), passed alongside
+   *  roomIndex so a room-completion persistence write (fired from this
+   *  callback in the parent overlay) never needs a second, potentially
+   *  stale read of score -- see MicroBreakOverlay.tsx's own comment on its
+   *  wrapped handler. */
+  readonly onRoomChange: (roomIndex: number, score: number) => void;
   readonly onScoreChange: (score: number) => void;
   readonly onPhaseChange: (phase: JourneyPhase) => void;
   readonly viewportBallPositionRef?: MutableRefObject<ViewportPoint | null>;
@@ -60,6 +66,15 @@ export interface JourneyCanvasProps {
    *  drawing throws. The overlay shows the SAME 'error' phase and exit path
    *  Quick Break already uses -- Journey does not get its own crash UI. */
   readonly onRenderError: (error: unknown) => void;
+  /** MB-20, ADR-0015 §14: "Continue Journey" starts at the FIRST sub-state of
+   *  the stored farthest_room, never mid-room physics -- this is the ONLY
+   *  lever that changes, everything else about a continued session (paddle,
+   *  score, missCount) is a fresh room start exactly like "New Journey"
+   *  would produce for that room. Omitted (or 1) for "New Journey", unchanged
+   *  from pre-MB-20 behavior. Clamped internally to a valid room index --
+   *  the caller (MicroBreakOverlay.tsx) passes the raw stored value through
+   *  without validating it against the current authored room count. */
+  readonly startRoomIndex?: number;
 }
 
 // ADR-0015: a SEPARATE component from PongCanvas, deliberately -- not an
@@ -82,14 +97,28 @@ export function JourneyCanvas({
   onPhaseChange,
   viewportBallPositionRef,
   onRenderError,
+  startRoomIndex,
 }: JourneyCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const boardConfigRef = useRef<PongEngineConfig>(DEFAULT_PONG_CONFIG);
-  const roomsRef = useRef<readonly RoomConfig[]>(buildRoomSequence(DEFAULT_PONG_CONFIG));
-  const journeyRef = useRef<JourneyState>(createInitialJourneyState(roomsRef.current));
+  // MB-20: `initialRooms` is a local (not roomsRef.current) so the SAME
+  // array reference clamps startRoomIndex below AND seeds roomsRef/journeyRef
+  // -- three reads of one value, not three separately-computed ones that
+  // could disagree if buildRoomSequence's room count ever changed between
+  // calls within a single render (it can't, but this keeps that invariant
+  // structural rather than incidental, same reasoning this file already
+  // applies elsewhere -- e.g. applyBoardSize's single nextRooms local).
+  const initialRooms = buildRoomSequence(DEFAULT_PONG_CONFIG);
+  const roomsRef = useRef<readonly RoomConfig[]>(initialRooms);
+  // MB-20, ADR-0015 §14: "Continue Journey" starts at the first sub-state of
+  // the stored farthest_room -- clamped to [1, initialRooms.length] here so
+  // a stale/out-of-range stored value (e.g. authored room count later
+  // shrinks) can never crash getRoom()'s own out-of-range throw.
+  const clampedStartRoomIndex = Math.min(Math.max(startRoomIndex ?? 1, 1), initialRooms.length);
+  const journeyRef = useRef<JourneyState>(createInitialJourneyState(initialRooms, clampedStartRoomIndex));
   const trailRef = useRef<ViewportPoint[]>([]);
   const particlesRef = useRef<Particle[]>([]);
-  const lastRoomIndexRef = useRef(1);
+  const lastRoomIndexRef = useRef(clampedStartRoomIndex);
   const lastScoreRef = useRef(0);
   const lastPhaseRef = useRef<JourneyPhase>('playing');
   const squashUntilRef = useRef(0);
@@ -892,7 +921,7 @@ export function JourneyCanvas({
         }
         if (next.roomIndex !== lastRoomIndexRef.current) {
           lastRoomIndexRef.current = next.roomIndex;
-          onRoomChange(next.roomIndex);
+          onRoomChange(next.roomIndex, next.journeyScore);
         }
         if (next.journeyScore !== prevScore && next.journeyScore !== lastScoreRef.current) {
           lastScoreRef.current = next.journeyScore;

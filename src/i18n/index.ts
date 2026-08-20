@@ -1061,6 +1061,10 @@ const en = {
   micro_breaks_journey_overlay_aria_label: 'Micro break: Orb Journey',
   micro_breaks_journey_room_value: 'Room {{room}}',
   micro_breaks_journey_cleared_label: 'Rooms cleared — keep playing!',
+  // MB-20, ADR-0015 §14: "Continue Journey" entry-point option, shown only
+  // once a stored checkpoint (journey_progress) exists.
+  micro_breaks_session_choice_continue_journey: 'Continue Journey (Room {{room}})',
+  micro_breaks_session_choice_continue_journey_desc: 'Pick up where you left off',
 };
 
 type TranslationDict = typeof en;
@@ -2082,6 +2086,8 @@ const de: TranslationDict = {
   micro_breaks_journey_overlay_aria_label: 'Kurze Pause: Orb-Reise',
   micro_breaks_journey_room_value: 'Raum {{room}}',
   micro_breaks_journey_cleared_label: 'Alle Räume geschafft — weiter geht’s!',
+  micro_breaks_session_choice_continue_journey: 'Reise fortsetzen (Raum {{room}})',
+  micro_breaks_session_choice_continue_journey_desc: 'Dort weitermachen, wo du aufgehört hast',
 };
 
 const fa: TranslationDict = {
@@ -3101,6 +3107,8 @@ const fa: TranslationDict = {
   micro_breaks_journey_overlay_aria_label: 'استراحت کوتاه: سفر گوی',
   micro_breaks_journey_room_value: 'اتاق {{room}}',
   micro_breaks_journey_cleared_label: 'همه اتاق‌ها تمام شد — به بازی ادامه دهید!',
+  micro_breaks_session_choice_continue_journey: 'ادامه سفر (اتاق {{room}})',
+  micro_breaks_session_choice_continue_journey_desc: 'از همان جایی که رها کردید ادامه دهید',
 };
 
 export type TranslationKey = keyof TranslationDict;

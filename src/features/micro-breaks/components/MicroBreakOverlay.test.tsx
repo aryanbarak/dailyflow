@@ -28,6 +28,28 @@ vi.mock('framer-motion', async () => {
   };
 });
 
+// MB-20: MicroBreakOverlay now reads journey_progress (a non-blocking,
+// fire-and-forget read) the instant ANY session reaches the 'choosing'
+// phase -- Quick Break included, since the picker itself is common to both
+// session types. This file never touches Journey/persistence at all, so
+// the whole module is mocked away to keep this file's tests hermetic (no
+// real network attempt against the real Supabase client in jsdom).
+vi.mock('@/features/orb-journey/journeyPersistenceRuntime', () => ({
+  loadJourneyProgressOnce: vi.fn(),
+  maybeRecordRoomCompletion: vi.fn(),
+  recordJourneySessionEnd: vi.fn(),
+  useJourneyProgressCache: vi.fn(() => undefined),
+}));
+vi.mock('@/features/orb-journey/journeyPersistenceQueue', () => ({
+  flushJourneyPersistenceQueue: vi.fn(),
+  useJourneyPersistenceQueueStore: { getState: () => ({ enqueue: vi.fn() }) },
+}));
+// MicroBreakOverlay.tsx now also imports the real `supabase` singleton
+// directly (to pass as the client argument to the two mocked modules
+// above) -- constructing the REAL client throws outside a configured env
+// (see supabaseConfig.ts), so it's mocked to an inert placeholder here too.
+vi.mock('@/integrations/supabase/client', () => ({ supabase: {} }));
+
 // MB-03: MicroBreakOverlay now imports appearanceStore (for the duration
 // preset), whose `persist` middleware resolves `localStorage` at
 // STORE-CREATION time (module evaluation), not lazily per call -- mirrors

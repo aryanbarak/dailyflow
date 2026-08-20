@@ -38,7 +38,7 @@ vi.mock('@/features/orb-journey/JourneyCanvas', async () => {
     onPhaseChange,
     onRenderError,
   }: {
-    onRoomChange: (n: number) => void;
+    onRoomChange: (n: number, score: number) => void;
     onScoreChange: (n: number) => void;
     onPhaseChange: (p: 'playing' | 'cleared') => void;
     onRenderError: (error: unknown) => void;
@@ -46,7 +46,7 @@ vi.mock('@/features/orb-journey/JourneyCanvas', async () => {
     return React.createElement(
       'div',
       { 'data-testid': 'journey-canvas-stub' },
-      React.createElement('button', { type: 'button', onClick: () => onRoomChange(2) }, 'simulate-room-2'),
+      React.createElement('button', { type: 'button', onClick: () => onRoomChange(2, 0) }, 'simulate-room-2'),
       React.createElement('button', { type: 'button', onClick: () => onScoreChange(12) }, 'simulate-score-12'),
       React.createElement('button', { type: 'button', onClick: () => onPhaseChange('cleared') }, 'simulate-cleared'),
       React.createElement('button', { type: 'button', onClick: () => onRenderError(new Error('simulated Journey draw() failure')) }, 'simulate-crash'),
@@ -54,6 +54,24 @@ vi.mock('@/features/orb-journey/JourneyCanvas', async () => {
   }
   return { JourneyCanvas: JourneyCanvasMock };
 });
+
+// MB-20: this file drives full Journey sessions (room/score changes, exit
+// paths) but is not itself about persistence -- the module is mocked away
+// so those sessions never touch the real journeyPersistenceService/Supabase
+// client (see MicroBreakOverlayJourneyPersistence.test.tsx for the
+// dedicated persistence-behavior tests, which mock at the SERVICE layer
+// instead so the runtime module's own real logic runs under test).
+vi.mock('@/features/orb-journey/journeyPersistenceRuntime', () => ({
+  loadJourneyProgressOnce: vi.fn(),
+  maybeRecordRoomCompletion: vi.fn(),
+  recordJourneySessionEnd: vi.fn(),
+  useJourneyProgressCache: vi.fn(() => undefined),
+}));
+vi.mock('@/features/orb-journey/journeyPersistenceQueue', () => ({
+  flushJourneyPersistenceQueue: vi.fn(),
+  useJourneyPersistenceQueueStore: { getState: () => ({ enqueue: vi.fn() }) },
+}));
+vi.mock('@/integrations/supabase/client', () => ({ supabase: {} }));
 
 class MemoryStorage implements Storage {
   private values = new Map<string, string>();
