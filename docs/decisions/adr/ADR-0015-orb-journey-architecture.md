@@ -252,7 +252,42 @@ mid-room), using the existing transition mechanism (§7/ADR-0014 §11's
 detach/return and room-transition patterns) so it doesn't introduce a new
 kind of jump-cut.
 
+### 14. Journey persistence (checkpoint model)
+Two tables, two distinct write patterns, per the concept doc's original
+design:
+
+**journey_progress** — one row per user, UPDATABLE (a checkpoint, not a
+history): farthest_room, best_total_score, rooms_discovered_count,
+constellation_state (jsonb), updated_at. RLS: owner-only SELECT/INSERT/
+UPDATE/DELETE (auth.uid() = user_id) — DELETE included per this project's
+standing user-data-ownership principle (ADR-0014 §6).
+
+**journey_runs** — append-only session log, id PRIMARY KEY generated
+CLIENT-SIDE (crypto.randomUUID()) for idempotent retry (insert uses
+on conflict (id) do nothing, matching ADR-0014 §6's micro_break_sessions
+idempotency pattern), user_id, ended_at_room, total_score, created_at.
+RLS: owner-only SELECT/INSERT/DELETE; NO UPDATE policy (the app never
+updates a run — same append-only trust model as micro_break_sessions).
+
+Write timing (local-first, per ADR-0014 §9 — gameplay never blocks on
+Supabase):
+- On completing a room whose index exceeds the user's current
+  farthest_room: a non-blocking upsert to journey_progress.
+- On session end (Esc/close): one journey_runs insert (this run's summary)
+  + a final journey_progress upsert if this run's score beats the stored
+  best_total_score.
+- On write failure: queued in localStorage, retried on next app load or
+  the next online event (MB-20's scope — this section documents the
+  decided design, not yet the wiring).
+
+"Continue Journey" (entry-point UI, MB-20's scope): if journey_progress
+exists for the user, the session-type picker offers "Continue Journey"
+(starts at the FIRST room of the stored farthest_room — never mid-room
+physics state, consistent with ADR-0015 §5's original checkpoint rationale)
+alongside "New Journey".
+
 ## Consequences
+
 + One engine serves both session types; no physics duplication; trust
   boundary and crash fail-safes inherited for free from ADR-0014.
 – A new state-machine layer (room sequencing) sits above the existing pure
