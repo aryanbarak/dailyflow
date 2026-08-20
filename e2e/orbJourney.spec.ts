@@ -1094,6 +1094,16 @@ test.describe('Orb Journey (MB-05, ADR-0015)', () => {
   });
 
   test('play area is visibly narrower in Room 1 than Room 3, and grows monotonically across Room 1 -> 2 -> 3 (MB-14)', async ({ page }) => {
+    // MB-17: explicit viewport, added because this test previously ran at
+    // Playwright's default (short) viewport, where `maxHeight:
+    // min(70vh, 720px)` now legitimately caps the CANVAS's growth (post-
+    // MB-17, the canvas is correctly fitted/centered rather than stretched
+    // to match the container -- see that task's report) enough to shrink
+    // the room1-to-room3 margin below this test's original +50px
+    // threshold. A tall-enough viewport (900px, matching this file's other
+    // growth tests) keeps the ceiling from binding as aggressively, so the
+    // margin this test asserts is comfortably real again.
+    await page.setViewportSize({ width: 1440, height: 900 });
     await openJourney(page);
     await expect(page.getByText('Room 1')).toBeVisible();
     await page.waitForTimeout(200);
@@ -1127,18 +1137,65 @@ test.describe('Orb Journey (MB-05, ADR-0015)', () => {
   // (JourneyCanvas.tsx's own computeBoardConfig-driven element) must always
   // agree, not just by construction (both call the same tuning.ts function)
   // but as measured live pixels.
-  test('the play-area container and the canvas it holds are ALWAYS the same width -- never two separately-drifting numbers (MB-14)', async ({ page }) => {
+  //
+  // MB-17 correction to this test's own premise: a flat "canvas width ==
+  // container width" is no longer universally true, and this is CORRECT,
+  // not a regression. Room 2's own uncapped play-area width (~551px) can
+  // exceed what `maxHeight: min(70vh, 720px)` ever allows a properly-
+  // fitted 2:3 board to reach (at most 720 * (2/3) = 480px, an ABSOLUTE
+  // ceiling no viewport height can raise) -- pre-MB-17, the canvas silently
+  // stretched to fill the wider container anyway (the ellipse bug this
+  // task fixed); post-MB-17, the canvas correctly stays at its fitted,
+  // narrower size and is centered within the container instead. So Room 1
+  // (whose 300px baseline never approaches that ceiling) still asserts
+  // exact equality -- the original invariant, still true where it was
+  // always true -- while Room 2 asserts the corrected invariant: the
+  // canvas is never WIDER than its container (no overflow/clipping) and is
+  // horizontally centered within it (proving the two elements are still
+  // wired to consistent, non-drifting values, just no longer necessarily
+  // equal).
+  test('the play-area container and the canvas it holds never drift apart -- equal when the room fits the height ceiling (Room 1), and centered/never-wider when it does not (Room 2, MB-17 correction)', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
     await openJourney(page);
+    await expect(page.getByText('Room 1')).toBeVisible();
+    await page.waitForTimeout(300);
+
+    const room1Widths = await getPlayAreaWidths(page);
+    expect(room1Widths.canvasBoxWidth).toBeCloseTo(room1Widths.containerBoxWidth, 0);
+
     await forceRoomGoal(page); // -> room 2
     await expect(page.getByText('Room 2')).toBeVisible();
     await page.waitForTimeout(600);
 
-    const widths = await getPlayAreaWidths(page);
-    expect(widths.canvasBoxWidth).toBeCloseTo(widths.containerBoxWidth, 0);
-    // Also confirms this is genuinely Room 2s GROWN width (MB-15-corrected
-    // baseline, 300px), not just Room 1s untouched cap staying trivially
-    // self-consistent with itself.
-    expect(widths.containerMaxWidthPx).toBeGreaterThan(300);
+    const room2Widths = await getPlayAreaWidths(page);
+    // Also confirms this is genuinely Room 2s GROWN container cap
+    // (MB-15-corrected baseline, 300px), not just Room 1s untouched cap
+    // staying trivially self-consistent with itself.
+    expect(room2Widths.containerMaxWidthPx).toBeGreaterThan(300);
+
+    // The corrected invariant: never wider than the container (no
+    // overflow/clipping past the boundary), and horizontally centered
+    // within it -- read directly from the live DOM, not inferred.
+    const boxes = await page.evaluate(() => {
+      const canvasEl = document.querySelector('canvas') as HTMLCanvasElement;
+      const container = canvasEl.parentElement as HTMLElement;
+      const canvasRect = canvasEl.getBoundingClientRect();
+      const containerRect = container.getBoundingClientRect();
+      return {
+        canvasLeft: canvasRect.left,
+        canvasRight: canvasRect.right,
+        containerLeft: containerRect.left,
+        containerRight: containerRect.right,
+      };
+    });
+    expect(room2Widths.canvasBoxWidth).toBeLessThanOrEqual(room2Widths.containerBoxWidth + 0.5);
+    expect(boxes.canvasLeft).toBeGreaterThanOrEqual(boxes.containerLeft - 0.5);
+    expect(boxes.canvasRight).toBeLessThanOrEqual(boxes.containerRight + 0.5);
+    const leftGap = boxes.canvasLeft - boxes.containerLeft;
+    const rightGap = boxes.containerRight - boxes.canvasRight;
+    expect(leftGap, 'canvas is horizontally centered within its container, not pinned to one edge').toBeCloseTo(rightGap, 0);
   });
 
   // MB-14, ADR-0015 §13; mobile behavior at Room 1 corrected by MB-15. On a
@@ -1205,5 +1262,194 @@ test.describe('Orb Journey (MB-05, ADR-0015)', () => {
     // not just "the canvas element's own reported width is small").
     const hasHorizontalOverflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1);
     expect(hasHorizontalOverflow).toBe(false);
+  });
+
+  // MB-17, ADR-0015 §13 (correction): proves the canvas's ON-SCREEN
+  // rendered box is never a different aspect ratio than its drawing buffer
+  // -- the exact mechanism that stretches whatever is drawn in the buffer
+  // (including the ball, drawn as a perfect circle via ctx.arc) into an
+  // ellipse on screen.
+  //
+  // Methodological note (corrected during this task -- see the MB-17
+  // report): an earlier version of this test read the ball's shape via
+  // `ctx.getImageData()` on the canvas itself. That was WRONG: getImageData
+  // always reads the drawing BUFFER's own pixels, in the buffer's own
+  // coordinate space -- it reflects nothing about how the browser then
+  // stretches that buffer onto the screen at paint time (the CSS box vs.
+  // buffer-size mismatch this bug is actually about). Proven empirically:
+  // that version's assertions kept passing even against the DELIBERATELY
+  // REVERTED (still-buggy) code, because getImageData() cannot see a
+  // compositing-time stretch at all -- a real non-tautological red flag,
+  // caught by re-running the revert-fail check with the FINAL test rather
+  // than trusting the first "it failed" result (which, on inspection, had
+  // actually failed for the wrong reason -- Room 1 pixel-quantization
+  // noise -- and short-circuited before ever reaching the Room 3
+  // assertion). The direct getBoundingClientRect() vs canvas.width/height
+  // comparison below is what a real display actually shows, is
+  // deterministic (no pixel-threshold tuning, no squash/trail contamination
+  // risk), and is provably equivalent to "is anything drawn in the buffer,
+  // ball included, uniformly scaled or stretched on screen."
+  async function getCanvasBufferVsBoxAspect(page: import('@playwright/test').Page) {
+    return page.evaluate(() => {
+      const canvas = document.querySelector('canvas') as HTMLCanvasElement;
+      const rect = canvas.getBoundingClientRect();
+      return { bufferAspect: canvas.width / canvas.height, boxAspect: rect.width / rect.height };
+    });
+  }
+
+  test('MB-17: the canvas renders on-screen at the SAME aspect ratio as its drawing buffer at Room 1, and after transitioning to Room 3 -- content (including the ball) is never non-uniformly stretched into an ellipse', async ({
+    page,
+  }) => {
+    // 1440x900: the exact viewport class the MB-17 report's own diagnostic
+    // used to reproduce the bug (the 630px `maxHeight: min(70vh, 720px)`
+    // ceiling binds before a grown room's width does).
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openJourney(page);
+    await expect(page.getByText('Room 1')).toBeVisible();
+    await page.waitForTimeout(300);
+
+    // Room 1's board (300px, MB-15 baseline) is never height-capped at this
+    // viewport (300/BOARD_ASPECT is well under the 630px ceiling), so it
+    // structurally can't exhibit this bug -- included as a sanity control,
+    // not the primary catch.
+    const room1 = await getCanvasBufferVsBoxAspect(page);
+    expect(room1.boxAspect / room1.bufferAspect, 'Room 1 box:buffer aspect ratio').toBeCloseTo(1, 1);
+
+    await forceRoomGoal(page); // -> room 2
+    await expect(page.getByText('Room 2')).toBeVisible();
+    await forceRoomGoal(page); // -> room 3 -- the widest reachable room, where the height ceiling binds hardest
+    await expect(page.getByText('Room 3')).toBeVisible();
+    await page.waitForTimeout(600); // clear the CSS max-width transition, matching this file's own established settle-wait pattern (MB-14/15)
+
+    // The pre-MB-17 bug was the STEADY-STATE render once the room's width
+    // grew past what `maxHeight: min(70vh, 720px)` allows, not a transient
+    // mid-animation artifact -- confirmed in the MB-17 report's own
+    // diagnostic (the box measured 802px wide against a 420px buffer here,
+    // a 1.91x stretch, stable well after the CSS transition completes).
+    const room3 = await getCanvasBufferVsBoxAspect(page);
+    expect(room3.boxAspect / room3.bufferAspect, 'Room 3 box:buffer aspect ratio, settled').toBeCloseTo(1, 1);
+  });
+
+  // MB-17, ADR-0014 §2 (correction): the dim/blur boundary must track the
+  // SAME growing width as the play area, not the full viewport -- outside
+  // that boundary, the workspace renders at full clarity.
+  test.describe('MB-17: dim/blur boundary scoped to the play area (Journey only)', () => {
+    test('at Room 1, the dim/blur boundary is present and width-capped, and Quick Break keeps its OWN full-viewport dim/blur unchanged (explicit regression guard, not assumed)', async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await openJourney(page);
+      await expect(page.getByText('Room 1')).toBeVisible();
+      await page.waitForTimeout(300);
+
+      const boundary = page.getByTestId('journey-play-area-boundary');
+      await expect(boundary).toBeVisible();
+      const boundaryBox = await boundary.boundingBox();
+      expect(boundaryBox).not.toBeNull();
+      // Matches Room 1's genuinely-narrow baseline (MB-15, 300px) -- the
+      // SAME number the canvas container's own max-width uses, not a
+      // separately-tuned value.
+      expect(boundaryBox!.width).toBeCloseTo(300, 0);
+
+      // The dialog root itself must NOT also carry the uniform full-
+      // viewport treatment while Journey's own scoped boundary is active --
+      // otherwise "outside the boundary is fully clear" would be false (the
+      // uniform wash would still dim everything underneath it).
+      const dialogBackdropFilter = await page.getByRole('dialog').evaluate(el => getComputedStyle(el).backdropFilter);
+      expect(dialogBackdropFilter === 'none' || dialogBackdropFilter === '').toBe(true);
+
+      // A point clearly OUTSIDE the boundary (near the left edge of a 1440px
+      // viewport, far from the ~300px centered band) must resolve to an
+      // element with NO backdrop-filter and NO dark translucent background
+      // -- genuinely full clarity, not just "less dim."
+      const outsidePointStyle = await page.evaluate(() => {
+        const el = document.elementFromPoint(20, 400);
+        if (!el) return null;
+        const style = getComputedStyle(el);
+        return { backdropFilter: style.backdropFilter, backgroundColor: style.backgroundColor };
+      });
+      expect(outsidePointStyle).not.toBeNull();
+      expect(outsidePointStyle!.backdropFilter === 'none' || outsidePointStyle!.backdropFilter === '').toBe(true);
+      expect(outsidePointStyle!.backgroundColor).not.toMatch(/rgba\(0,\s*0,\s*0,\s*0\.5\)/);
+
+      // Regression guard, SAME file: Quick Break's dim/blur is untouched --
+      // still the uniform full-viewport wash on the dialog root itself, and
+      // no Journey-only boundary element exists for this session type.
+      await page.keyboard.press('Escape');
+      await expect(page.getByRole('dialog')).not.toBeVisible();
+      await page.click(START_BUTTON);
+      await page.getByRole('button', { name: 'Quick Break' }).click();
+      await page.waitForTimeout(300);
+
+      const qbDialogBackdropFilter = await page.getByRole('dialog').evaluate(el => getComputedStyle(el).backdropFilter);
+      expect(qbDialogBackdropFilter).not.toBe('none');
+      expect(qbDialogBackdropFilter).not.toBe('');
+      await expect(page.getByTestId('journey-play-area-boundary')).toHaveCount(0);
+    });
+
+    // Room 10 (the formula's literal full-screen target, ADR-0015 §13) is
+    // not reachable through real play -- only 3 rooms are authored (MB-13),
+    // and clearing the last one enters 'cleared' without advancing the room
+    // index further (by design, ADR-0015: "no dead end"). This test proves
+    // the SAME underlying mechanism ("once the pixel cap exceeds the
+    // viewport, w-full wins and the boundary becomes exactly viewport-
+    // width") on a REACHABLE room, using the same narrow mobile viewport
+    // MB-14/15's own mobile tests use, where the cap already exceeds the
+    // viewport by Room 2 -- honest substitute for the literal room-10 case,
+    // not a claim room 10 itself was exercised live (see the MB-17 report's
+    // own manual-verification-limits section).
+    test('on a narrow mobile viewport, once a rooms pixel cap exceeds the viewport, the dim/blur boundary matches the FULL viewport width -- the same convergence the room-10 desktop case relies on', async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await openJourney(page);
+      await expect(page.getByText('Room 1')).toBeVisible();
+      await page.waitForTimeout(200);
+
+      const room1BoundaryBox = await page.getByTestId('journey-play-area-boundary').boundingBox();
+      expect(room1BoundaryBox).not.toBeNull();
+      expect(room1BoundaryBox!.width).toBeLessThan(390); // Room 1's narrow baseline still binds here (MB-15)
+
+      await forceRoomGoal(page); // -> room 2, whose pixel cap (~551px) already exceeds this 390px phone
+      await expect(page.getByText('Room 2')).toBeVisible();
+      await page.waitForTimeout(600);
+
+      const room2BoundaryBox = await page.getByTestId('journey-play-area-boundary').boundingBox();
+      expect(room2BoundaryBox).not.toBeNull();
+      expect(room2BoundaryBox!.width).toBeCloseTo(390, 0); // full viewport width -- w-full wins, same as room 10 would on desktop
+    });
+  });
+
+  // MB-17, ADR-0014 §2 (correction): "must grow in step with the room-
+  // transition timing already established... smooth, not a jump-cut" -- the
+  // dim/blur boundary and the canvas container it tracks must NEVER visibly
+  // desync (one growing ahead of the other) at any point during a
+  // transition, since both are driven by the SAME journeyMaxWidthPx value
+  // from the SAME React render.
+  test('MB-17: the dim/blur boundary and the canvas container grow in exact lockstep through a room transition -- never visibly desynced', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openJourney(page);
+    await expect(page.getByText('Room 1')).toBeVisible();
+    await page.waitForTimeout(200);
+
+    await forceRoomGoal(page); // -> room 2, triggers the CSS max-width transition on both elements
+    await expect(page.getByText('Room 2')).toBeVisible();
+
+    const cumulativeWaits = [0, 50, 100, 150, 250, 350, 500, 600];
+    let elapsed = 0;
+    for (const target of cumulativeWaits) {
+      const wait = target - elapsed;
+      if (wait > 0) await page.waitForTimeout(wait);
+      elapsed = target;
+      const widths = await page.evaluate(() => {
+        const boundary = document.querySelector('[data-testid="journey-play-area-boundary"]') as HTMLElement;
+        const canvasEl = document.querySelector('canvas') as HTMLCanvasElement;
+        const container = canvasEl.parentElement as HTMLElement;
+        return { boundaryWidth: boundary.getBoundingClientRect().width, containerWidth: container.getBoundingClientRect().width };
+      });
+      expect(widths.boundaryWidth, `at t+${target}ms`).toBeCloseTo(widths.containerWidth, 0);
+    }
   });
 });

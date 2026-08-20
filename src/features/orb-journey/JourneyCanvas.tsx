@@ -363,6 +363,34 @@ export function JourneyCanvas({
       roomsRef.current = nextRooms;
       boardConfigRef.current = nextBoardConfig;
 
+      // MB-17, ADR-0015 §13 (correction): the canvas's CSS display size is
+      // now set EXPLICITLY from the SAME nextBoardConfig numbers driving the
+      // buffer below, in the SAME place, atomically -- not inherited via
+      // `width:100%/height:100%` from the parent container. Diagnosed root
+      // cause (see the MB-17 report for the real-browser evidence): the
+      // parent container's own CSS box (`w-full max-w-[journeyMaxWidthPx]
+      // aspect-ratio maxHeight:min(70vh,720px)`) can legitimately render
+      // WIDER than a true 2:3-aspect box once maxHeight binds tighter than
+      // the width chain implies (a standard, spec-correct CSS aspect-ratio
+      // limitation -- max-width and max-height are each applied
+      // independently when width is already definite, so the box is NOT
+      // retroactively narrowed to stay 2:3). The buffer (below) was ALREADY
+      // being recalculated correctly and promptly on every resize -- it
+      // reads the container's REAL measured size and fits the more
+      // constraining axis (the same min(containerWidth, containerHeight *
+      // aspectRatio) logic computeBoardConfig always used) -- so it was
+      // never stale. The bug was that the CANVAS's own CSS box, inherited at
+      // 100%/100% from that same (possibly distorted) container, did NOT
+      // match the buffer's correctly-fitted aspect ratio -- the browser then
+      // stretched the buffer non-uniformly to fill the larger box, rendering
+      // the ball as an ellipse. Pinning the canvas's CSS width/height to the
+      // exact same nextBoardConfig numbers as the buffer makes the two
+      // impossible to diverge, regardless of the parent container's own
+      // shape; the container centers this (possibly narrower) canvas via
+      // flexbox (see MicroBreakOverlay.tsx's Journey container className).
+      canvas.style.width = `${nextBoardConfig.width}px`;
+      canvas.style.height = `${nextBoardConfig.height}px`;
+
       const dpr = window.devicePixelRatio || 1;
       canvas.width = nextBoardConfig.width * dpr;
       canvas.height = nextBoardConfig.height * dpr;
@@ -832,9 +860,23 @@ export function JourneyCanvas({
       // the paddle stays live (and the cursor stays hidden) through
       // 'cleared' automatically.
       style={{
+        // MB-17: these are only the MOUNT-TIME fallback, before the
+        // ResizeObserver's first callback (applyBoardSize, above) fires and
+        // overwrites canvas.style.width/height imperatively with the exact
+        // same pixel numbers driving the drawing buffer -- see that
+        // function's own comment for why the canvas's CSS size can no
+        // longer be a bare 100%/100% inherited from the parent container.
         width: '100%',
         height: '100%',
         display: 'block',
+        // MB-17: the parent container is now `display:flex` (centering this
+        // canvas -- see MicroBreakOverlay.tsx's own comment) -- flexShrink:0
+        // so the canvas's own explicit pixel size (set imperatively above)
+        // is never shrunk by flex layout even by a sub-pixel rounding edge
+        // case; it should never need to (the size is already fitted to be
+        // <= the container), but this makes that invariant structural rather
+        // than incidental.
+        flexShrink: 0,
         touchAction: 'none',
         userSelect: 'none',
         cursor: 'none',

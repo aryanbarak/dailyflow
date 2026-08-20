@@ -3,6 +3,7 @@ import { motion, useReducedMotion } from 'framer-motion';
 import { AlertTriangle, X } from 'lucide-react';
 import { useT } from '@/i18n';
 import { isolateBidiRunsInText, resolveMessageBaseDirection } from '@/lib/bidiText';
+import { cn } from '@/lib/utils';
 import { useAppearance } from '@/features/settings/appearanceStore';
 import { JourneyCanvas } from '@/features/orb-journey/JourneyCanvas';
 import type { JourneyPhase } from '@/features/orb-journey/roomEngine';
@@ -360,7 +361,17 @@ export function MicroBreakOverlay() {
           role="dialog"
           aria-modal="true"
           aria-label={dialogAriaLabel}
-          className="fixed inset-0 z-[100] flex select-none items-center justify-center bg-black/50 backdrop-blur-sm"
+          // MB-17, ADR-0014 §2 (correction): the uniform full-viewport dim/
+          // blur wash stays exactly as-is for Quick Break, 'choosing', and
+          // 'error' -- but is SUPPRESSED here for Journey's own 'active'
+          // phase, where a separate, width-scoped dim/blur band (rendered
+          // below, bound to the SAME journeyMaxWidthPx driving the canvas
+          // container) takes over instead. See that element's own comment
+          // for why it can't just reuse this root's uniform treatment.
+          className={cn(
+            'fixed inset-0 z-[100] flex select-none items-center justify-center',
+            !(phase === 'active' && sessionType === 'journey') && 'bg-black/50 backdrop-blur-sm',
+          )}
           // MB-03-FIX: scoped to 'active' only (not 'exiting'/'error' too) --
           // gameplay is the only phase where blocking scroll/pull-to-refresh
           // is actually needed. Narrowing this window means even a stuck
@@ -485,10 +496,40 @@ export function MicroBreakOverlay() {
             </div>
           )}
 
+          {/* MB-17, ADR-0014 §2 (correction): the dim/blur boundary itself --
+              a SEPARATE element from the canvas container below, deliberately
+              FULL HEIGHT (not aspect-ratio/maxHeight-bound like the
+              gameplay-comfort-driven canvas container) and width-capped by
+              the SAME journeyMaxWidthPx value the container's own max-width
+              uses -- reused directly, not a second computation. Full height
+              (not the canvas container's own up-to-70vh/720px-capped height)
+              is what makes this "naturally converge to full-viewport" at the
+              full-screen room, matching Quick Break's own always-full-
+              viewport dim/blur exactly -- if this instead reused the canvas
+              container's OWN (height-capped) box, the top/bottom strips of
+              the viewport would stay permanently undimmed even at room 10,
+              which would NOT match Quick Break. Rendered BEHIND the canvas
+              container (earlier in DOM order, so it paints first / below) --
+              `pointer-events-none` so it never intercepts paddle input in the
+              rare case its box is wider than the actually-rendered canvas
+              (see JourneyCanvas.tsx's own comment on why the canvas can be
+              narrower than this boundary once the height cap binds). */}
+          {phase === 'active' && sessionType === 'journey' && (
+            <div
+              aria-hidden="true"
+              data-testid="journey-play-area-boundary"
+              className="pointer-events-none absolute inset-0 mx-auto w-full bg-black/50 backdrop-blur-sm"
+              style={{
+                maxWidth: `${journeyMaxWidthPx}px`,
+                transition: `max-width ${journeyWidthTransitionSeconds}s ease`,
+              }}
+            />
+          )}
+
           {phase === 'active' && sessionType === 'journey' && (
             <div
               ref={canvasContainerRef}
-              className="relative mx-auto w-full"
+              className="relative mx-auto flex w-full items-center justify-center"
               // MB-14, ADR-0015 §13: max-width is now room-index-derived
               // (journeyMaxWidthPx) instead of the fixed `max-w-[480px]`
               // Tailwind class Quick Break's OWN container (below) still
@@ -500,6 +541,18 @@ export function MicroBreakOverlay() {
               // transition makes the growth land smoothly over the SAME
               // duration as the room-transition flash, not an instant
               // jump-cut.
+              //
+              // MB-17: `flex items-center justify-center` added -- the
+              // canvas inside is no longer guaranteed to exactly fill this
+              // box (JourneyCanvas.tsx now pins the canvas's own CSS size to
+              // its correctly-2:3-fitted computeBoardConfig output, which can
+              // be NARROWER than this container's own box once
+              // `maxHeight: min(70vh, 720px)` binds tighter than
+              // `maxWidth: journeyMaxWidthPx` implies -- a real, empirically-
+              // confirmed CSS aspect-ratio/max-height interaction, see the
+              // MB-17 report). Centering here keeps the canvas visually
+              // centered within whatever box this container ends up being,
+              // instead of pinned to its top-left corner.
               style={{
                 aspectRatio: String(BOARD_ASPECT_RATIO),
                 maxHeight: 'min(70vh, 720px)',

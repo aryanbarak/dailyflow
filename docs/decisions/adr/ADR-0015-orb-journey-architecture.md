@@ -192,6 +192,15 @@ Room 3 has no static obstacles (consistent with §10's retirement — the
 Room 2.
 
 ### 13. Progressive play-area growth (Amendment, post-MB-13, Journey-only)
+**Corrected (MB-17).** In addition to the canvas/play-area's own bounding
+width (already correct per MB-14/15), the dim/blur backdrop boundary must
+be bound to that same width — see the linked correction in ADR-0014 §2.
+Additionally: the canvas's internal drawing-buffer dimensions must be
+recalculated in lockstep with each room-transition width change, not just
+the CSS display size — a mismatch between the two causes non-uniform
+stretch-scaling (a circular ball rendering as an ellipse), which MB-17 also
+fixes.
+
 **Corrected (MB-15, coordinator error).** §13 as originally written defined
 Room 1's baseline as "the play area's current (MB-05-era) width," which was
 silently assumed to already satisfy the original product requirement (PO,

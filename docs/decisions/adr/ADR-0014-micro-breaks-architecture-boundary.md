@@ -26,6 +26,21 @@ overlay mounts in `AppLayout.tsx` as a sibling of `<SmartflowPointerFollower />`
 reads or mutates workspace data, never triggers AI, automation, or writes.
 
 ### 2. Core principle
+
+**Corrected for Orb Journey (MB-17).** §2's original "workspace remains
+visually present behind a subtle dim/blur treatment" described a uniform,
+full-viewport wash and remains accurate for Quick Break. For Orb Journey
+specifically (per ADR-0015 §13's progressive play-area growth), the dim/
+blur treatment's boundary must track the SAME growing width as the play
+area itself — not the full viewport. Outside that boundary, the workspace
+must render at full clarity: no dim, no blur, nothing suppressing legibility
+of the surrounding SmartFlow page. As the play area grows room-to-room
+toward full-screen (ADR-0015 §13), the dim/blur boundary grows with it in
+lockstep, until at the full-screen room it naturally covers the whole
+viewport like Quick Break always has. Quick Break's own dim/blur treatment
+is unaffected by this correction — it remains the original full-viewport
+wash described below.
+
 "SmartFlow does not open a game. For a short moment, SmartFlow itself becomes
 the game." No separate page. Workspace stays visually present behind a subtle
 dim treatment (blur is an implementation option, decided by measured
