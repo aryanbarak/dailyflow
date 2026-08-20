@@ -357,12 +357,25 @@ export function PongCanvas({
     <canvas
       ref={canvasRef}
       aria-hidden="true"
+      // MB-16: the paddle IS the visual pointer during gameplay -- the
+      // native OS cursor is redundant clutter overlapping/near it. Scoped
+      // to this element only (an inline style property never cascades
+      // sideways to a sibling like the close button, only down to
+      // descendants -- this canvas has none). This component is only ever
+      // mounted while the overlay's phase is 'active' (see
+      // MicroBreakOverlay.tsx's own render) -- 'choosing' and 'error' never
+      // render a <canvas> at all, so there is nothing to gate here: the
+      // element's own lifecycle already matches the phases this should
+      // apply to. A no-op on touch devices (no native cursor to hide) --
+      // does not affect pointermove-driven paddle tracking, which reads
+      // event coordinates, not cursor visuals.
       style={{
         width: '100%',
         height: '100%',
         display: 'block',
         touchAction: 'none',
         userSelect: 'none',
+        cursor: 'none',
       }}
     />
   );

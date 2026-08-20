@@ -821,12 +821,23 @@ export function JourneyCanvas({
     <canvas
       ref={canvasRef}
       aria-hidden="true"
+      // MB-16: see PongCanvas.tsx's own comment on this same property --
+      // identical reasoning applies here. This component is mounted
+      // whenever the overlay's phase is 'active' AND sessionType is
+      // 'journey', regardless of Journey's OWN internal journeyPhase
+      // ('playing' or 'cleared') -- 'cleared' never leaves the overlay's
+      // 'active' phase (see roomEngine.ts's JourneyPhase, a sub-state of
+      // 'active', not a separate overlay phase), so this element's mount
+      // lifecycle already covers both, with no extra phase-gating needed:
+      // the paddle stays live (and the cursor stays hidden) through
+      // 'cleared' automatically.
       style={{
         width: '100%',
         height: '100%',
         display: 'block',
         touchAction: 'none',
         userSelect: 'none',
+        cursor: 'none',
       }}
     />
   );

@@ -106,6 +106,77 @@ test.describe('Micro Breaks canvas rendering (MB-02b)', () => {
     expect(pageErrors).toEqual([]);
   });
 
+  // MB-16: the paddle IS the visual pointer during gameplay -- the native
+  // OS cursor is hidden, scoped strictly to the <canvas> element, only
+  // while it's actually mounted (which itself only happens during the
+  // overlay's 'active' phase -- see MicroBreakOverlay.tsx's own render).
+  test('native cursor is hidden over the canvas during active Quick Break gameplay, but normal everywhere else in the overlay (MB-16)', async ({
+    page,
+  }) => {
+    await page.goto(HARNESS_URL, { waitUntil: 'networkidle' });
+    await page.click(START_BUTTON);
+
+    // 'choosing' phase: no game running yet -- nothing should hide the
+    // cursor here. There is no <canvas> at all in this phase (confirmed by
+    // this same audit for the implementation), so the check is on the
+    // dialog root itself -- proving no GLOBAL cursor:none leaked onto the
+    // overlay shell.
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+    const choosingCursor = await dialog.evaluate(el => getComputedStyle(el).cursor);
+    expect(choosingCursor).not.toBe('none');
+
+    await page.getByRole('button', { name: 'Quick Break' }).click();
+    await page.waitForTimeout(300);
+
+    const canvas = page.locator('canvas');
+    await expect(canvas).toBeVisible();
+    const activeCanvasCursor = await canvas.evaluate(el => getComputedStyle(el).cursor);
+    expect(activeCanvasCursor).toBe('none');
+
+    // Scope-leak guard (MB-03-FIX precedent: verify the boundary, don't
+    // assume it) -- the close button sits ABOVE the canvas (z-10) and is
+    // never itself styled cursor:none, so hovering it must show a normal
+    // cursor even though it visually sits near/over the canvas bounds.
+    const closeButton = page.getByRole('button', { name: 'Close micro break' });
+    await expect(closeButton).toBeVisible();
+    const closeButtonCursor = await closeButton.evaluate(el => getComputedStyle(el).cursor);
+    expect(closeButtonCursor).not.toBe('none');
+
+    await page.keyboard.press('Escape');
+    await expect(dialog).not.toBeVisible();
+  });
+
+  test('native cursor is normal (not hidden) during the crash/error state (MB-16)', async ({ page }) => {
+    await page.addInitScript(() => {
+      const original = CanvasGradient.prototype.addColorStop;
+      let thrown = false;
+      CanvasGradient.prototype.addColorStop = function (...args) {
+        if (!thrown) {
+          thrown = true;
+          throw new Error('MB-16 test-injected draw failure');
+        }
+        return original.apply(this, args as Parameters<typeof original>);
+      };
+    });
+
+    await page.goto(HARNESS_URL, { waitUntil: 'networkidle' });
+    await page.click(START_BUTTON);
+    await page.getByRole('button', { name: 'Quick Break' }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(page.getByText('Something went wrong with the game')).toBeVisible();
+    // The canvas is unmounted immediately on crash (MB-02b's own teardown
+    // guarantee) -- confirm there is nothing left to hide a cursor over,
+    // and the error dialog itself has a normal cursor.
+    await expect(page.locator('canvas')).toHaveCount(0);
+    const errorCursor = await dialog.evaluate(el => getComputedStyle(el).cursor);
+    expect(errorCursor).not.toBe('none');
+
+    await page.keyboard.press('Escape');
+    await expect(dialog).not.toBeVisible();
+  });
+
   test('crash path via close button (not just Esc) also exits cleanly', async ({ page }) => {
     await page.addInitScript(() => {
       const original = CanvasGradient.prototype.addColorStop;

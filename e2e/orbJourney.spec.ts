@@ -260,6 +260,44 @@ test.describe('Orb Journey (MB-05, ADR-0015)', () => {
     await expect(page.getByRole('dialog')).not.toBeVisible();
   });
 
+  // MB-16: the paddle IS the visual pointer during gameplay -- native
+  // cursor hidden, scoped to the canvas element. Journey's 'cleared' phase
+  // (MB-05: physics keep running, paddle stays live) is a sub-state of the
+  // overlay's OWN 'active' phase, never a separate mount/unmount -- so the
+  // canvas element's cursor:none, applied unconditionally at mount, covers
+  // 'playing' AND 'cleared' automatically. Verified explicitly here, not
+  // assumed from the implementation's own reasoning.
+  test('native cursor is hidden over the canvas during Journey "playing" AND stays hidden through "cleared" -- normal everywhere else (MB-16)', async ({
+    page,
+  }) => {
+    await openJourney(page);
+    await expect(page.getByText('Room 1')).toBeVisible();
+    await page.waitForTimeout(300);
+
+    const canvas = page.locator('canvas');
+    const playingCursor = await canvas.evaluate(el => getComputedStyle(el).cursor);
+    expect(playingCursor).toBe('none');
+
+    // Scope-leak guard, Journey context: the close button must still show
+    // a normal cursor even while the canvas underneath it is cursor:none.
+    const closeButton = page.getByRole('button', { name: 'Close micro break' });
+    const closeButtonCursor = await closeButton.evaluate(el => getComputedStyle(el).cursor);
+    expect(closeButtonCursor).not.toBe('none');
+
+    await forceRoomGoal(page); // -> room 2
+    await expect(page.getByText('Room 2')).toBeVisible();
+    await forceRoomGoal(page); // -> room 3
+    await expect(page.getByText('Room 3')).toBeVisible();
+    await forceRoomGoal(page); // clears room 3, the LAST configured room -- enters 'cleared'
+    await expect(page.getByText('Rooms cleared — keep playing!')).toBeVisible();
+
+    const clearedCursor = await canvas.evaluate(el => getComputedStyle(el).cursor);
+    expect(clearedCursor).toBe('none'); // paddle still live in 'cleared' -- cursor stays hidden, not restored
+
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).not.toBeVisible();
+  });
+
   // MB-13, ADR-0015 §12: proves Room 3s Rhythm/Calendar theme is visibly
   // distinct from Room 1/2s Focus/Tasks theme -- not just a different
   // theme ID in state, an actually different rendered frame. Average color
