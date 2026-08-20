@@ -106,6 +106,16 @@ async function forceNextTickThrow(page: import('@playwright/test').Page) {
   });
 }
 
+// MB-12: same "manipulate state inputs, let real physics run" methodology as
+// the other hooks above -- cheaply simulates "many real minutes of
+// continuous play" by jumping the pong session's elapsedSeconds forward,
+// rather than actually waiting minutes in a real-time test.
+async function forceElapsedSeconds(page: import('@playwright/test').Page, seconds: number) {
+  await page.evaluate(s => {
+    (window as unknown as { __orbJourneyDevForceElapsedSeconds?: (seconds: number) => void }).__orbJourneyDevForceElapsedSeconds?.(s);
+  }, seconds);
+}
+
 async function canvasHasNonZeroPixels(page: import('@playwright/test').Page): Promise<boolean> {
   const result = await page.evaluate(() => {
     const canvas = document.querySelector('canvas');
@@ -696,6 +706,85 @@ test.describe('Orb Journey (MB-05, ADR-0015)', () => {
     expect(result.capturedError).toBeNull();
     expect(result.frozen).toBe(false);
     expect(result.iterations).toBeGreaterThan(100); // sanity: the loop actually ran, not a setup failure
+
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).not.toBeVisible();
+    await expect(page.locator(START_BUTTON)).toBeEnabled();
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  // MB-12: root cause was NOT an exception (MB-11's guard correctly does not
+  // fire here -- there is nothing for it to catch). pongEngine.ts's stepPong
+  // sets PongState.status to 'ended' once elapsedSeconds reaches
+  // config.durationSeconds, and permanently no-ops on every subsequent call
+  // once 'ended' -- correct, tested, load-bearing behavior for Quick Break's
+  // actually-timed sessions (see pongEngine.test.ts), but Journey rooms
+  // inherited Quick Break's 90s default with nothing to reset elapsedSeconds
+  // except a room-local restart (miss) or room transition -- neither of
+  // which ever happens again once the LAST room is cleared. Any single
+  // uninterrupted room attempt lasting 90 continuous seconds silently froze
+  // the ball/orbs/HUD forever (paddle stayed responsive -- it's set directly
+  // by the pointer handler, independent of this engine call), with no
+  // exception anywhere. Fixed by giving Journey rooms an unbounded
+  // durationSeconds (roomEngine.ts's deriveRoomEngineConfig) rather than
+  // touching stepPong's ended-state freeze itself.
+  //
+  // This test proves the FIX deterministically via the
+  // __orbJourneyDevForceElapsedSeconds dev hook (same "manipulate state
+  // inputs, let real physics run" methodology as every other dev hook in
+  // this file) -- jumping elapsedSeconds to just under, then well past, the
+  // legacy 90s boundary, and confirming the ball keeps moving across it.
+  test('sustained cleared-phase play never silently freezes past the legacy 90s session-duration boundary (MB-12)', async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on('pageerror', err => pageErrors.push(err.message));
+
+    await openJourney(page);
+    await forceRoomGoal(page); // clears room 1 -> room 2
+    await expect(page.getByText('Room 2')).toBeVisible();
+    await forceRoomGoal(page); // clears room 2, the LAST configured room -- enters 'cleared'
+    await expect(page.getByText('Rooms cleared — keep playing!')).toBeVisible();
+
+    const ballSpeedBefore = await getBallSpeed(page);
+    expect(ballSpeedBefore).toBeGreaterThan(0); // sanity: the ball is genuinely in flight, not stalled for an unrelated reason
+
+    // Jump to just under the legacy 90s boundary, then let real ticks carry
+    // it across -- this is the EXACT moment the bug fired pre-fix.
+    await forceElapsedSeconds(page, 89.5);
+
+    // Canvas pixel-hash freeze detector, MB-11's own methodology -- the
+    // decisive, render-level confirmation that the WHOLE frame (ball, orbs,
+    // trail) is still animating across the boundary, not just one numeric
+    // reading (ball speed magnitude alone is not a reliable freeze signal --
+    // see the MB-11 soak's own comment on why).
+    const sampleFrozen = () =>
+      page.evaluate(async () => {
+        const canvasEl = document.querySelector('canvas') as HTMLCanvasElement;
+        const ctx = canvasEl.getContext('2d')!;
+        const snapshot = () => {
+          const { data } = ctx.getImageData(0, 0, canvasEl.width, canvasEl.height);
+          let hash = 0;
+          for (let i = 0; i < data.length; i += 97) hash = (hash * 31 + data[i]) | 0;
+          return hash;
+        };
+        const hashes: number[] = [];
+        for (let i = 0; i < 60; i++) {
+          await new Promise(resolve => requestAnimationFrame(resolve));
+          hashes.push(snapshot());
+        }
+        return new Set(hashes).size === 1;
+      });
+
+    expect(await sampleFrozen()).toBe(false); // ~1s of real frames, straddling the 89.5s -> 90s+ crossing
+
+    // Also jump WELL past the legacy boundary (simulating genuinely many
+    // real minutes, not just barely over 90s) and confirm play still
+    // continues -- proves the fix is a real unbounded-duration change, not
+    // a slightly-larger-but-still-finite boundary shift.
+    await forceElapsedSeconds(page, 600);
+    const ballSpeedFarPastBoundary = await getBallSpeed(page);
+    expect(ballSpeedFarPastBoundary).toBeGreaterThan(0);
+    expect(await sampleFrozen()).toBe(false);
 
     await page.keyboard.press('Escape');
     await expect(page.getByRole('dialog')).not.toBeVisible();

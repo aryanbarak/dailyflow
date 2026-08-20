@@ -89,10 +89,33 @@ export function buildDriftingOrbSpawnConfig(roomIndex: number, engineConfig: Pon
 
 // ADR-0015 §4: base difficulty scales with room index ONLY -- adaptive
 // correction from recent performance is explicitly deferred (do not
-// implement it here). Every OTHER engine field (durationSeconds, combo cap,
-// final-wave fields) passes through from `base` untouched -- Journey never
-// uses durationSeconds as an end condition (see stepJourney), so it's inert
-// for this session type, kept only because PongEngineConfig requires it.
+// implement it here). Every OTHER engine field (combo cap, final-wave
+// fields) passes through from `base` untouched.
+//
+// MB-12 (fix): `durationSeconds` is deliberately NOT passed through
+// untouched, unlike those other fields -- it is overridden to
+// JOURNEY_UNBOUNDED_DURATION_SECONDS below. This comment previously (and
+// incorrectly) claimed "Journey never uses durationSeconds as an end
+// condition... so it's inert" -- true of THIS module's own code (stepJourney
+// never reads config.durationSeconds or state.status), but false of the
+// shared engine underneath it: pongEngine.ts's stepPong DOES use it, via
+// `elapsedSeconds >= config.durationSeconds`, to set state.status to
+// 'ended' -- and once 'ended', stepPong permanently no-ops on every future
+// call (by design, for Quick Break's fixed-duration session -- see that
+// function's own comment and pongEngine.test.ts's "the engine freezes state
+// after that" test). Journey rooms inherited Quick Break's 90s default
+// (DEFAULT_PONG_CONFIG.durationSeconds) with nothing to reset elapsedSeconds
+// except a room-local restart (a miss) or a room transition -- so any
+// single room attempt lasting 90 continuous seconds without either (most
+// reachable in the 'cleared' phase, where no further room transition ever
+// happens) silently and permanently stopped the ball/orbs/HUD, with the
+// paddle still responding (it's set directly by the pointer handler,
+// independent of this engine call) and no exception anywhere -- exactly the
+// MB-12 report's symptom. Confirmed via a state dump (see the MB-12 report)
+// showing stepPong returning the SAME PongState reference, unchanged, from
+// t=90s onward. Fixed at the config layer, not by touching stepPong's
+// ended-state freeze itself, since that freeze is correct, tested, load-
+// bearing behavior for Quick Break's actually-timed sessions.
 export function deriveRoomEngineConfig(roomIndex: number, base: PongEngineConfig): PongEngineConfig {
   const stepsBeyondFirst = Math.max(0, roomIndex - 1);
   const speedMultiplier = 1 + stepsBeyondFirst * ROOM_DIFFICULTY_SPEED_STEP;
@@ -111,8 +134,18 @@ export function deriveRoomEngineConfig(roomIndex: number, base: PongEngineConfig
     // than Room 1 has.
     minSpeed: base.minSpeed * speedMultiplier,
     paddleWidth: base.paddleWidth * paddleShrinkMultiplier,
+    durationSeconds: JOURNEY_UNBOUNDED_DURATION_SECONDS,
   };
 }
+
+// MB-12: see deriveRoomEngineConfig's own comment. Journey (ADR-0015 §1/§3)
+// has no duration-based end condition at all -- ends only on explicit
+// Esc/close, or (per-room) a goal-combo clear. Infinity, not just "a big
+// number," makes that structurally true rather than merely improbable to
+// hit: `elapsedSeconds >= Infinity` can never become true for any finite
+// elapsedSeconds, so stepPong's ended-state freeze (correct and load-
+// bearing for Quick Break) can never trigger for a Journey room.
+const JOURNEY_UNBOUNDED_DURATION_SECONDS = Number.POSITIVE_INFINITY;
 
 export function buildRoomConfig(roomIndex: number, theme: RoomThemeId, boardConfig: PongEngineConfig): RoomConfig {
   const engineConfig = deriveRoomEngineConfig(roomIndex, boardConfig);

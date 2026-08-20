@@ -149,6 +149,7 @@ export function JourneyCanvas({
       __orbJourneyDevGetBallSpeed?: () => number;
       __orbJourneyDevGetDriftingOrbCount?: () => number;
       __orbJourneyDevForceNextTickThrow?: () => void;
+      __orbJourneyDevForceElapsedSeconds?: (seconds: number) => void;
     };
     globalWindow.__orbJourneyDevForceRoomGoal = () => {
       const room = roomsRef.current[journeyRef.current.roomIndex - 1];
@@ -277,6 +278,14 @@ export function JourneyCanvas({
     globalWindow.__orbJourneyDevForceNextTickThrow = () => {
       forceNextTickThrowRef.current = true;
     };
+    // MB-12: same "manipulate state inputs, let real physics run" pattern as
+    // the other hooks above -- lets a real-browser test cheaply simulate
+    // "many real minutes of continuous play" (needed to reach and cross the
+    // pre-MB-12-fix 90s durationSeconds boundary, and well beyond it) without
+    // an actual multi-minute real-time wait.
+    globalWindow.__orbJourneyDevForceElapsedSeconds = seconds => {
+      journeyRef.current = { ...journeyRef.current, pong: { ...journeyRef.current.pong, elapsedSeconds: seconds } };
+    };
     return () => {
       delete globalWindow.__orbJourneyDevForceRoomGoal;
       delete globalWindow.__orbJourneyDevForceObstacleContact;
@@ -288,6 +297,7 @@ export function JourneyCanvas({
       delete globalWindow.__orbJourneyDevGetBallSpeed;
       delete globalWindow.__orbJourneyDevGetDriftingOrbCount;
       delete globalWindow.__orbJourneyDevForceNextTickThrow;
+      delete globalWindow.__orbJourneyDevForceElapsedSeconds;
     };
   }, []);
 

@@ -4,7 +4,7 @@
 // dt-clamp/combo/final-wave/resize rules are unit-testable without a canvas
 // or a browser event loop.
 
-import { DEFAULT_MICRO_BREAK_DURATION_SECONDS, type MicroBreakDurationSeconds } from '../types';
+import { DEFAULT_MICRO_BREAK_DURATION_SECONDS } from '../types';
 import {
   BALL_RADIUS_RATIO,
   BASE_SCORE_PER_HIT,
@@ -107,7 +107,14 @@ export interface PongEngineConfig {
   readonly minSpeed: number;
   readonly speedRampPerHit: number; // multiplier applied to speed on each paddle hit
   readonly maxBounceAngleRad: number; // degenerate-angle prevention bound -- must stay < Math.PI / 2
-  readonly durationSeconds: MicroBreakDurationSeconds;
+  /** Quick Break passes one of the frozen presets (MicroBreakDurationSeconds,
+   *  still assignable here -- a narrower type is always assignable to a
+   *  wider one). Widened to `number` (MB-12) so a caller with a genuinely
+   *  unbounded session (Orb Journey, via roomEngine.ts's
+   *  deriveRoomEngineConfig) can configure a value outside that frozen
+   *  preset set -- see this field's `status === 'ended'` consumer below for
+   *  why that matters: it is NOT just a cosmetic display value. */
+  readonly durationSeconds: number;
   readonly baseScorePerHit: number; // MB-03: score awarded per hit before the combo multiplier
   readonly comboCap: number; // MB-03: combo multiplier hard cap (named constant, ADR-0014 §11-12)
   readonly finalWaveWindowSeconds: number; // MB-03: last N seconds of the session
