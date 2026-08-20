@@ -80,6 +80,8 @@ import {
 import { approveWorkspaceStep } from "./approvalInteraction";
 import {
   clearWriteRuntimeRequestHistory,
+  expectedCapabilityForToolId,
+  expectedStepShapeForToolId,
   runWriteTool,
   validateApprovalBoundary,
   type WriteRuntimeRequest,
@@ -816,6 +818,27 @@ describe("writeRuntime", () => {
 
       expect(result.status).not.toBe("unsupported_tool");
       expect(result.status).toBe("success");
+    },
+  );
+
+  // Task 36e guard, ADR-0013 Slice 4: expectedCapabilityForToolId and
+  // expectedStepShapeForToolId are about to collapse their five
+  // per-registry-toolId cases into a single findWriteIntentDescriptorByToolId
+  // lookup. This asserts, directly against the two functions (not just
+  // end-to-end through runWriteTool, which the "resolves through the write
+  // runtime's tool-support lookup" test above already does), that every
+  // registry entry's capability/action/domain is exactly what these two
+  // functions return for that entry's toolId -- independent of whether the
+  // implementation is a switch or a lookup, so this stays a behavior guard
+  // across the refactor, not a reflection of either implementation's shape.
+  it.each(writeIntentRegistry.map((entry) => [entry.toolId, entry] as const))(
+    "%s: expectedCapabilityForToolId/expectedStepShapeForToolId match the registry entry",
+    (_toolId, entry) => {
+      expect(expectedCapabilityForToolId(entry.toolId)).toBe(entry.capability);
+      expect(expectedStepShapeForToolId(entry.toolId)).toEqual({
+        actionType: entry.action,
+        domain: entry.domain,
+      });
     },
   );
 

@@ -41,6 +41,7 @@ import type {
 import {
   findWriteIntentDescriptorByToolId,
   writeIntentRegistry,
+  type WriteIntentToolId,
 } from "../../../shared/writeIntentRegistry";
 
 export const WRITE_RUNTIME_VERSION = "write-runtime-v1" as const;
@@ -189,29 +190,41 @@ function isSupportedWriteToolId(toolId: string | undefined): toolId is Supported
   return SUPPORTED_WRITE_TOOL_IDS.includes(toolId as SupportedWriteToolId);
 }
 
+// The four write tool ids with no shared-registry entry (tasks.complete
+// predates the registry; the three github.* tools are outside its domain
+// scope -- see docs/adr/ADR-0013). A dedicated type guard, rather than an
+// `if (findWriteIntentDescriptorByToolId(toolId)) return ...` early return,
+// because findWriteIntentDescriptorByToolId takes `string` and so cannot
+// narrow `toolId` for the switches below it -- without this guard, TS would
+// silently lose the exhaustiveness check those switches rely on (ADR-0013
+// Slice 4 / task 36 flagged this precisely).
+type NonRegistryWriteToolId = Exclude<SupportedWriteToolId, WriteIntentToolId>;
+
+function isNonRegistryWriteToolId(toolId: SupportedWriteToolId): toolId is NonRegistryWriteToolId {
+  return toolId === "tasks.complete" ||
+    toolId === "github.issues.comment" ||
+    toolId === "github.issues.update" ||
+    toolId === "github.files.update";
+}
+
 // Each supported write tool has its own capability -- this used to be a bare
 // `tool.capability !== "complete"` check that only tasks.complete could ever
 // satisfy, silently rejecting every github write tool as "unsupported".
-// Task 23: the four task/calendar cases now read their value from the
-// shared registry (entry.capability -- e.g. calendar.create_event's
-// "schedule", matching calendarTools.ts's own capability field, an
-// asymmetry the registry preserves as data rather than normalizing) instead
-// of repeating it here; tasks.complete/github.* are outside this task's
-// scope and stay literal.
-function expectedCapabilityForToolId(toolId: SupportedWriteToolId): AgentToolCapability {
+// Task 23 first read the four task/calendar/finance values from the shared
+// registry (entry.capability -- e.g. calendar.create_event's "schedule",
+// matching calendarTools.ts's own capability field, an asymmetry the
+// registry preserves as data rather than normalizing) via one per-toolId
+// case each. ADR-0013 Slice 4 collapses those into a single lookup that
+// covers every current AND future registry entry uniformly; tasks.complete/
+// github.* remain the only hand-written cases, since they have no registry
+// entry to look up.
+export function expectedCapabilityForToolId(toolId: SupportedWriteToolId): AgentToolCapability {
+  if (!isNonRegistryWriteToolId(toolId)) {
+    return findWriteIntentDescriptorByToolId(toolId)!.capability;
+  }
   switch (toolId) {
     case "tasks.complete":
       return "complete";
-    case "tasks.create":
-      return findWriteIntentDescriptorByToolId(toolId)!.capability;
-    case "tasks.update":
-      return findWriteIntentDescriptorByToolId(toolId)!.capability;
-    case "calendar.create_event":
-      return findWriteIntentDescriptorByToolId(toolId)!.capability;
-    case "calendar.update_event":
-      return findWriteIntentDescriptorByToolId(toolId)!.capability;
-    case "finance.create_transaction":
-      return findWriteIntentDescriptorByToolId(toolId)!.capability;
     case "github.issues.comment":
       return "create";
     case "github.issues.update":
@@ -223,22 +236,18 @@ function expectedCapabilityForToolId(toolId: SupportedWriteToolId): AgentToolCap
 
 // Same shape of bug as the capability check above: the step's actionType/
 // domain combination is specific to each write tool, not just tasks.complete.
-// Task 23: the four task/calendar cases now read domain/action from the
-// shared registry.
-function expectedStepShapeForToolId(
+// ADR-0013 Slice 4: the registry-covered branch is now one lookup instead of
+// five per-toolId cases.
+export function expectedStepShapeForToolId(
   toolId: SupportedWriteToolId,
 ): { actionType: WorkspacePlanStep["actionType"]; domain: WorkspacePlanStep["domain"] } {
+  if (!isNonRegistryWriteToolId(toolId)) {
+    const entry = findWriteIntentDescriptorByToolId(toolId)!;
+    return { actionType: entry.action, domain: entry.domain };
+  }
   switch (toolId) {
     case "tasks.complete":
       return { actionType: "complete", domain: "tasks" };
-    case "tasks.create":
-    case "tasks.update":
-    case "calendar.create_event":
-    case "calendar.update_event":
-    case "finance.create_transaction": {
-      const entry = findWriteIntentDescriptorByToolId(toolId)!;
-      return { actionType: entry.action, domain: entry.domain };
-    }
     case "github.issues.comment":
       return { actionType: "create", domain: "github" };
     case "github.issues.update":
