@@ -1,14 +1,50 @@
 # ADR-0013: Write Intent Registry v2 — Closing the Post-Task-23 Duplication Gaps
 
-- **Status:** Proposed. Stays Proposed until Slice 5 (the `reasoningPrompt.ts`
-  generation change) lands and its mandatory empirical replay gate (see
-  Consequences) has been run and reviewed. Slices 0-4 may land independently
-  under this ADR without changing its status — none of them alone completes
-  the decision this ADR records.
-- **Date:** 2026-08-18
+- **Status:** Accepted (2026-08-21). Slice 5 (the `reasoningPrompt.ts`
+  generation change, task 36f) landed and its mandatory empirical replay gate
+  (see Consequences) was run and reviewed: 6/6 test inputs (Farsi finance,
+  Farsi calendar, Farsi task, the task-vs-calendar disambiguation trap, a
+  GitHub read request, and a genuinely unsupported delete request) resolved
+  to the identical `type` under the old, hand-written prompt and the new,
+  registry-generated one, via real Gemini API calls. Two minor, non-blocking
+  differences were observed and are recorded here rather than silently
+  dropped: the optional `requestedDomain` field was present in one prompt's
+  response and absent in the other's for two of the six cases (stochastic
+  variance from the reworded prompt text, not a `type` mismatch), and one
+  response's raw JSON was pretty-printed rather than single-line. Neither
+  affects any consumer, since both are valid JSON parsed identically and
+  `requestedDomain` is optional at every downstream boundary.
+- **Date:** 2026-08-18 (Slices 0-1 drafted); Slice 5 accepted 2026-08-21.
 - **Decision Makers:** Product Owner (Aryan Barakzai) - decision; Claude Code - drafting.
 - **Supersedes:** None
 - **Superseded by:** None
+- **Amendment (task 36f Part A):** this ADR's Decision item 3 justified
+  leaving `ChatPage.tsx`'s exhaustive switches hand-written (item 2) on the
+  grounds that "TypeScript's exhaustiveness checking already catches a
+  missing case there." Task 36e had already shown this repo's tsconfig
+  (`strict: false`, no `noImplicitReturns`) does not enforce switch
+  exhaustiveness in general. Task 36f Part A checked the two specific
+  `ChatPage.tsx` switches this ADR's justification refers to, empirically
+  (removed a case, ran `tsc`, restored):
+  - `isSupportedActionableProposalType` **does** catch a missing case — it
+    ends its switch with an explicit `const exhaustiveCheck: never = type`
+    assignment, which is a structural type error independent of `strict` or
+    `noImplicitReturns`. The justification holds for this switch.
+  - `intentTitleKey` does **not** — it ends with a plain `default: return
+    'agent_intent_title_unsupported'`, which silently absorbs a missing case
+    with zero compile error, the same shape of gap task 30 exploited in
+    `writeRuntime.ts` before Slice 4. The "typecheck already catches this"
+    justification does **not** hold for `intentTitleKey`.
+  This is a real, live gap, not merely a hypothetical one, and it is
+  recorded here as a **follow-up rather than silently left standing**:
+  either add an explicit `never`-check to `intentTitleKey` (mirroring
+  `isSupportedActionableProposalType`, cheap and localized), or accept the
+  gap explicitly with a runtime guard test in the style of task 36e's
+  registry-parity loop. Out of scope for task 36f itself (ChatPage.tsx's
+  switches are explicitly excluded from this ADR's derived set per Decision
+  item 3 and "What This ADR Does NOT Cover") — tracked here so a future
+  registry entry added without a matching `intentTitleKey` case does not
+  repeat task 30's failure mode silently.
 
 ---
 
