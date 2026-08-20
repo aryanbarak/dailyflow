@@ -110,6 +110,13 @@ export function JourneyCanvas({
   const paddleCatchReactionUntilRef = useRef(0);
   const reducedMotionRef = useRef(false);
   const crashedRef = useRef(false);
+  // MB-11: DEV-only fault-injection switch for the physics/update-path
+  // crash-guard test -- there is no shared browser API to monkey-patch for
+  // the physics path the way the render-path crash tests monkey-patch
+  // canvas methods (roundRect/setLineDash/arc), so this is the direct
+  // substitute: deterministically simulate "the update step threw" without
+  // fabricating a genuine engine bug. Consumed and cleared by onTick.
+  const forceNextTickThrowRef = useRef(false);
   const onRenderErrorRef = useRef(onRenderError);
   onRenderErrorRef.current = onRenderError;
   const tokens = useOrbVisualTokens();
@@ -141,6 +148,7 @@ export function JourneyCanvas({
       __orbJourneyDevForceOrbBottomMiss?: () => void;
       __orbJourneyDevGetBallSpeed?: () => number;
       __orbJourneyDevGetDriftingOrbCount?: () => number;
+      __orbJourneyDevForceNextTickThrow?: () => void;
     };
     globalWindow.__orbJourneyDevForceRoomGoal = () => {
       const room = roomsRef.current[journeyRef.current.roomIndex - 1];
@@ -262,6 +270,13 @@ export function JourneyCanvas({
     // unchanged, passing trivially); pairing it with "the orb is gone" (a
     // fact that requires the real contact logic to have run) closes that gap.
     globalWindow.__orbJourneyDevGetDriftingOrbCount = () => journeyRef.current.pong.driftingOrbs.length;
+    // MB-11: see forceNextTickThrowRef's own comment -- flips a switch
+    // consumed by the NEXT onTick call, inside its try/catch, so a test can
+    // deterministically prove the physics/update-path crash guard works
+    // without needing to fabricate or wait for a genuine engine bug.
+    globalWindow.__orbJourneyDevForceNextTickThrow = () => {
+      forceNextTickThrowRef.current = true;
+    };
     return () => {
       delete globalWindow.__orbJourneyDevForceRoomGoal;
       delete globalWindow.__orbJourneyDevForceObstacleContact;
@@ -272,6 +287,7 @@ export function JourneyCanvas({
       delete globalWindow.__orbJourneyDevForceOrbBottomMiss;
       delete globalWindow.__orbJourneyDevGetBallSpeed;
       delete globalWindow.__orbJourneyDevGetDriftingOrbCount;
+      delete globalWindow.__orbJourneyDevForceNextTickThrow;
     };
   }, []);
 
@@ -373,6 +389,16 @@ export function JourneyCanvas({
     };
   }, []);
 
+  // MB-11: single source of truth for "the game crashed, show the
+  // recoverable error state" -- both the render-path guard (draw(), below)
+  // and the physics/update-path guard (onTick's own try/catch, further
+  // down) call this SAME function on failure, rather than each doing its
+  // own crashedRef/onRenderErrorRef bookkeeping.
+  function crash(error: unknown) {
+    crashedRef.current = true;
+    onRenderErrorRef.current(error);
+  }
+
   // MB-02b/MB-03-FIX pattern, reused unchanged (see PongCanvas.tsx's own
   // comment): draw() is the ONLY thing allowed to call renderFrame(), and
   // guarantees the exception never escapes uncaught.
@@ -381,8 +407,7 @@ export function JourneyCanvas({
     try {
       renderFrame();
     } catch (error) {
-      crashedRef.current = true;
-      onRenderErrorRef.current(error);
+      crash(error);
     }
   }
 
@@ -582,130 +607,165 @@ export function JourneyCanvas({
     active: true,
     onTick: dtMs => {
       if (crashedRef.current) return;
-      const prevRoomIndex = journeyRef.current.roomIndex;
-      const prevScore = journeyRef.current.journeyScore;
-      const prevPongScore = journeyRef.current.pong.score;
-      const prevObstacles = journeyRef.current.pong.obstacles;
-      const prevRewardContactCount = journeyRef.current.pong.rewardContactCount;
-      const prevPenaltyBallContactCount = journeyRef.current.pong.penaltyBallContactCount;
-      const prevPenaltyPaddleCatchCount = journeyRef.current.pong.penaltyPaddleCatchCount;
-      const prevPenaltyBottomMissCount = journeyRef.current.pong.penaltyBottomMissCount;
-      const next = stepJourney(journeyRef.current, dtMs, roomsRef.current);
-      journeyRef.current = next;
-
-      if (next.pong.score !== prevPongScore) {
-        squashUntilRef.current = performance.now() + SQUASH_DURATION_MS;
-        const particleCount = getParticleCountForMotionPreference(reducedMotionRef.current);
-        if (particleCount > 0) {
-          particlesRef.current.push(...createHitParticles(next.pong.ball.x, next.pong.ball.y, particleCount, performance.now()));
+      // MB-11 (High-severity fix): the physics step (stepJourney) and the
+      // VFX-detection/particle-creation logic below it were PREVIOUSLY
+      // unguarded -- only draw()/renderFrame() had crash-guard coverage
+      // (the MB-02b/MB-03-FIX pattern). An uncaught exception anywhere in
+      // this block would propagate out of onTick, which
+      // useVisibilityAwareGameLoop calls with NO try/catch of its own
+      // (confirmed by reading that hook's source) -- since the exception
+      // aborts the rAF callback's synchronous execution BEFORE it reaches
+      // its own `requestAnimationFrame(tick)` call, the animation chain
+      // silently stops forever: no error overlay (draw() is never reached),
+      // while independent event listeners (pointermove for the paddle)
+      // keep firing normally, since they don't depend on the dead rAF
+      // chain. This exactly matches the reported symptom (freeze, no crash
+      // screen, paddle input still registers). See the MB-11 report for the
+      // fuzz-soak methodology used to try to reproduce a NATURAL throw
+      // (none found across ~2,500 iterations / 90s of aggressive same-tick
+      // multi-orb/forced-restart stress) -- this fix closes the structural
+      // gap regardless, since ANY future exception here (not just
+      // drifting-orb-related ones) is now covered the same way rendering
+      // already is, via the SAME crash() function -- a single source of
+      // truth, not a second, different error path.
+      try {
+        // DEV-only fault-injection switch, consumed once -- lets a test
+        // deterministically prove this guard works without needing to
+        // fabricate or wait for a genuine engine bug (see
+        // forceNextTickThrowRef's own comment).
+        if (forceNextTickThrowRef.current) {
+          forceNextTickThrowRef.current = false;
+          throw new Error('MB-11 test-injected physics/update-step failure');
         }
-      }
 
-      // ADR-0015 §10 (amendment), MB-07: break VFX. Only checked when still
-      // in the SAME room this tick (a room transition already replaces
-      // `pong` with the NEXT room's fresh state, whose obstacles can't be
-      // meaningfully diffed against the PREVIOUS room's) -- geometrically
-      // a break and a room-clearing paddle hit can't occur in the same
-      // substep anyway (the obstacle sits far from the paddle band), so this
-      // guard is a correctness safeguard, not a workaround for something
-      // observed to actually happen.
-      if (next.roomIndex === prevRoomIndex) {
-        const currentRoom = roomsRef.current[next.roomIndex - 1];
-        if (currentRoom) {
-          next.pong.obstacles.forEach((obstacleState, index) => {
-            const prevObstacleState = prevObstacles[index];
-            if (!obstacleState.broken || !prevObstacleState || prevObstacleState.broken) return;
-            const obstacleConfig = currentRoom.obstacles[index];
-            if (!obstacleConfig) return;
-            const burstCount = getObstacleBreakParticleCount(reducedMotionRef.current);
-            if (burstCount > 0) {
-              const centerX = obstacleConfig.x + obstacleConfig.width / 2;
-              const centerY = obstacleConfig.y + obstacleConfig.height / 2;
-              particlesRef.current.push(...createHitParticles(centerX, centerY, burstCount, performance.now()));
-            }
-          });
+        const prevRoomIndex = journeyRef.current.roomIndex;
+        const prevScore = journeyRef.current.journeyScore;
+        const prevPongScore = journeyRef.current.pong.score;
+        const prevObstacles = journeyRef.current.pong.obstacles;
+        const prevRewardContactCount = journeyRef.current.pong.rewardContactCount;
+        const prevPenaltyBallContactCount = journeyRef.current.pong.penaltyBallContactCount;
+        const prevPenaltyPaddleCatchCount = journeyRef.current.pong.penaltyPaddleCatchCount;
+        const prevPenaltyBottomMissCount = journeyRef.current.pong.penaltyBottomMissCount;
+        const next = stepJourney(journeyRef.current, dtMs, roomsRef.current);
+        journeyRef.current = next;
+
+        if (next.pong.score !== prevPongScore) {
+          squashUntilRef.current = performance.now() + SQUASH_DURATION_MS;
+          const particleCount = getParticleCountForMotionPreference(reducedMotionRef.current);
+          if (particleCount > 0) {
+            particlesRef.current.push(...createHitParticles(next.pong.ball.x, next.pong.ball.y, particleCount, performance.now()));
+          }
         }
-      }
 
-      // MB-10, ADR-0015 §11 (revision): drifting-orb reactions. Detected via
-      // the 4 monotonic counters (pongEngine.ts), each diffed independently
-      // -- replaces MB-08's single speedMultiplierExpiresAt-diff, which no
-      // longer exists (effects aren't timed anymore, so "expiry" as a
-      // concept is gone). Reward and the two ball-position penalty outcomes
-      // (direct ball contact, bottom-miss) all share the SAME ball-centered
-      // Absorb/Jolt visual (driftingOrbReactionUntilRef) -- the paddle-catch
-      // outcome is entirely separate (paddleCatchReactionUntilRef), drawn at
-      // the paddle, and carries no speed change at all.
-      if (next.roomIndex === prevRoomIndex) {
-        const rewardHappened = next.pong.rewardContactCount > prevRewardContactCount;
-        const penaltyBallHappened = next.pong.penaltyBallContactCount > prevPenaltyBallContactCount;
-        const penaltyBottomMissHappened = next.pong.penaltyBottomMissCount > prevPenaltyBottomMissCount;
-        const paddleCatchHappened = next.pong.penaltyPaddleCatchCount > prevPenaltyPaddleCatchCount;
-        const nowMs = performance.now();
+        // ADR-0015 §10 (amendment), MB-07: break VFX. Only checked when still
+        // in the SAME room this tick (a room transition already replaces
+        // `pong` with the NEXT room's fresh state, whose obstacles can't be
+        // meaningfully diffed against the PREVIOUS room's) -- geometrically
+        // a break and a room-clearing paddle hit can't occur in the same
+        // substep anyway (the obstacle sits far from the paddle band), so this
+        // guard is a correctness safeguard, not a workaround for something
+        // observed to actually happen.
+        if (next.roomIndex === prevRoomIndex) {
+          const currentRoom = roomsRef.current[next.roomIndex - 1];
+          if (currentRoom) {
+            next.pong.obstacles.forEach((obstacleState, index) => {
+              const prevObstacleState = prevObstacles[index];
+              if (!obstacleState.broken || !prevObstacleState || prevObstacleState.broken) return;
+              const obstacleConfig = currentRoom.obstacles[index];
+              if (!obstacleConfig) return;
+              const burstCount = getObstacleBreakParticleCount(reducedMotionRef.current);
+              if (burstCount > 0) {
+                const centerX = obstacleConfig.x + obstacleConfig.width / 2;
+                const centerY = obstacleConfig.y + obstacleConfig.height / 2;
+                particlesRef.current.push(...createHitParticles(centerX, centerY, burstCount, performance.now()));
+              }
+            });
+          }
+        }
 
-        // NOTE (flagged per the task brief): a bottom-miss penalty reuses
-        // the Jolt reaction but is deliberately centered on the BALL'S
-        // CURRENT position, not the now-removed orb's position at the
-        // bottom of the room -- the orb is gone by the time this reaction
-        // fires, so there is nothing meaningful left to center it on there.
-        if (rewardHappened || penaltyBallHappened || penaltyBottomMissHappened) {
-          // Edge case (deliberately not guarded further): if a reward AND a
-          // penalty event both land in the SAME tick (two different orbs),
-          // only one reaction visual plays -- reward wins the display, same
-          // "one reaction shown at a time" simplification precedent as
-          // MB-08's own "at most one drifting-orb contact resolved per
-          // substep." The underlying speed/counter effects are NOT
-          // affected by this -- both still apply correctly; only which
-          // ONE gets a visible reaction this tick is approximate.
-          const role: 'reward' | 'penalty' = rewardHappened ? 'reward' : 'penalty';
-          driftingOrbReactionRoleRef.current = role;
-          driftingOrbReactionUntilRef.current = nowMs + (role === 'reward' ? DRIFTING_ORB_ABSORB_PULSE_DURATION_MS : DRIFTING_ORB_JOLT_FLASH_DURATION_MS);
+        // MB-10, ADR-0015 §11 (revision): drifting-orb reactions. Detected via
+        // the 4 monotonic counters (pongEngine.ts), each diffed independently
+        // -- replaces MB-08's single speedMultiplierExpiresAt-diff, which no
+        // longer exists (effects aren't timed anymore, so "expiry" as a
+        // concept is gone). Reward and the two ball-position penalty outcomes
+        // (direct ball contact, bottom-miss) all share the SAME ball-centered
+        // Absorb/Jolt visual (driftingOrbReactionUntilRef) -- the paddle-catch
+        // outcome is entirely separate (paddleCatchReactionUntilRef), drawn at
+        // the paddle, and carries no speed change at all.
+        if (next.roomIndex === prevRoomIndex) {
+          const rewardHappened = next.pong.rewardContactCount > prevRewardContactCount;
+          const penaltyBallHappened = next.pong.penaltyBallContactCount > prevPenaltyBallContactCount;
+          const penaltyBottomMissHappened = next.pong.penaltyBottomMissCount > prevPenaltyBottomMissCount;
+          const paddleCatchHappened = next.pong.penaltyPaddleCatchCount > prevPenaltyPaddleCatchCount;
+          const nowMs = performance.now();
 
-          if (role === 'reward') {
-            const count = getDriftingOrbAbsorbParticleCount(reducedMotionRef.current);
-            if (count > 0) {
-              particlesRef.current.push(
-                ...createConvergingParticles(next.pong.ball.x, next.pong.ball.y, count, nowMs, DRIFTING_ORB_ABSORB_PARTICLE_ARRIVAL_MS),
-              );
+          // NOTE (flagged per the task brief): a bottom-miss penalty reuses
+          // the Jolt reaction but is deliberately centered on the BALL'S
+          // CURRENT position, not the now-removed orb's position at the
+          // bottom of the room -- the orb is gone by the time this reaction
+          // fires, so there is nothing meaningful left to center it on there.
+          if (rewardHappened || penaltyBallHappened || penaltyBottomMissHappened) {
+            // Edge case (deliberately not guarded further): if a reward AND a
+            // penalty event both land in the SAME tick (two different orbs),
+            // only one reaction visual plays -- reward wins the display, same
+            // "one reaction shown at a time" simplification precedent as
+            // MB-08's own "at most one drifting-orb contact resolved per
+            // substep." The underlying speed/counter effects are NOT
+            // affected by this -- both still apply correctly; only which
+            // ONE gets a visible reaction this tick is approximate.
+            const role: 'reward' | 'penalty' = rewardHappened ? 'reward' : 'penalty';
+            driftingOrbReactionRoleRef.current = role;
+            driftingOrbReactionUntilRef.current = nowMs + (role === 'reward' ? DRIFTING_ORB_ABSORB_PULSE_DURATION_MS : DRIFTING_ORB_JOLT_FLASH_DURATION_MS);
+
+            if (role === 'reward') {
+              const count = getDriftingOrbAbsorbParticleCount(reducedMotionRef.current);
+              if (count > 0) {
+                particlesRef.current.push(
+                  ...createConvergingParticles(next.pong.ball.x, next.pong.ball.y, count, nowMs, DRIFTING_ORB_ABSORB_PARTICLE_ARRIVAL_MS),
+                );
+              }
+            } else {
+              const count = getDriftingOrbJoltParticleCount(reducedMotionRef.current);
+              if (count > 0) {
+                particlesRef.current.push(...createHitParticles(next.pong.ball.x, next.pong.ball.y, count, nowMs));
+              }
             }
-          } else {
-            const count = getDriftingOrbJoltParticleCount(reducedMotionRef.current);
+          }
+
+          // NEW, MB-10: penalty-role paddle-catch -- a successful defensive
+          // block, no speed change. A distinct, minimal cue at the PADDLE,
+          // not the ball.
+          if (paddleCatchHappened) {
+            paddleCatchReactionUntilRef.current = nowMs + DRIFTING_ORB_PADDLE_CATCH_PULSE_DURATION_MS;
+            const count = getDriftingOrbPaddleCatchParticleCount(reducedMotionRef.current);
             if (count > 0) {
-              particlesRef.current.push(...createHitParticles(next.pong.ball.x, next.pong.ball.y, count, nowMs));
+              const currentRoom = roomsRef.current[next.roomIndex - 1];
+              if (currentRoom) {
+                particlesRef.current.push(...createHitParticles(next.pong.paddleX, currentRoom.engineConfig.paddleY, count, nowMs));
+              }
             }
           }
         }
 
-        // NEW, MB-10: penalty-role paddle-catch -- a successful defensive
-        // block, no speed change. A distinct, minimal cue at the PADDLE,
-        // not the ball.
-        if (paddleCatchHappened) {
-          paddleCatchReactionUntilRef.current = nowMs + DRIFTING_ORB_PADDLE_CATCH_PULSE_DURATION_MS;
-          const count = getDriftingOrbPaddleCatchParticleCount(reducedMotionRef.current);
-          if (count > 0) {
-            const currentRoom = roomsRef.current[next.roomIndex - 1];
-            if (currentRoom) {
-              particlesRef.current.push(...createHitParticles(next.pong.paddleX, currentRoom.engineConfig.paddleY, count, nowMs));
-            }
-          }
+        if (next.roomIndex !== prevRoomIndex) {
+          const transitionMs = reducedMotionRef.current ? ROOM_TRANSITION_SECONDS_REDUCED_MOTION * 1000 : ROOM_TRANSITION_SECONDS * 1000;
+          transitionUntilRef.current = performance.now() + transitionMs;
         }
-      }
-
-      if (next.roomIndex !== prevRoomIndex) {
-        const transitionMs = reducedMotionRef.current ? ROOM_TRANSITION_SECONDS_REDUCED_MOTION * 1000 : ROOM_TRANSITION_SECONDS * 1000;
-        transitionUntilRef.current = performance.now() + transitionMs;
-      }
-      if (next.roomIndex !== lastRoomIndexRef.current) {
-        lastRoomIndexRef.current = next.roomIndex;
-        onRoomChange(next.roomIndex);
-      }
-      if (next.journeyScore !== prevScore && next.journeyScore !== lastScoreRef.current) {
-        lastScoreRef.current = next.journeyScore;
-        onScoreChange(next.journeyScore);
-      }
-      if (next.phase !== lastPhaseRef.current) {
-        lastPhaseRef.current = next.phase;
-        onPhaseChange(next.phase);
+        if (next.roomIndex !== lastRoomIndexRef.current) {
+          lastRoomIndexRef.current = next.roomIndex;
+          onRoomChange(next.roomIndex);
+        }
+        if (next.journeyScore !== prevScore && next.journeyScore !== lastScoreRef.current) {
+          lastScoreRef.current = next.journeyScore;
+          onScoreChange(next.journeyScore);
+        }
+        if (next.phase !== lastPhaseRef.current) {
+          lastPhaseRef.current = next.phase;
+          onPhaseChange(next.phase);
+        }
+      } catch (error) {
+        crash(error);
+        return;
       }
 
       draw();

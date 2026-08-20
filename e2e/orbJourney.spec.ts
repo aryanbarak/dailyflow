@@ -96,6 +96,16 @@ async function getDriftingOrbCount(page: import('@playwright/test').Page): Promi
   return page.evaluate(() => (window as unknown as { __orbJourneyDevGetDriftingOrbCount?: () => number }).__orbJourneyDevGetDriftingOrbCount?.() ?? -1);
 }
 
+// MB-11: deterministically simulates "the physics/update step threw" --
+// there's no shared browser API to monkey-patch for the physics path the
+// way the render-path crash tests monkey-patch canvas methods, so this is
+// the direct substitute (see JourneyCanvas.tsx's forceNextTickThrowRef).
+async function forceNextTickThrow(page: import('@playwright/test').Page) {
+  await page.evaluate(() => {
+    (window as unknown as { __orbJourneyDevForceNextTickThrow?: () => void }).__orbJourneyDevForceNextTickThrow?.();
+  });
+}
+
 async function canvasHasNonZeroPixels(page: import('@playwright/test').Page): Promise<boolean> {
   const result = await page.evaluate(() => {
     const canvas = document.querySelector('canvas');
@@ -535,6 +545,160 @@ test.describe('Orb Journey (MB-05, ADR-0015)', () => {
 
     await page.keyboard.press('Escape');
     await expect(dialog).not.toBeVisible();
+    await expect(page.locator(START_BUTTON)).toBeEnabled();
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  // MB-11 (High-severity fix): PO reported a mid-game freeze in Room 2 --
+  // paddle still responsive, everything else static, NO error overlay
+  // (unlike MB-02b's crash-guard incident). Root cause: the physics step
+  // (stepJourney) and the VFX-detection logic in JourneyCanvas.tsx's onTick
+  // ran completely OUTSIDE any try/catch -- only draw()/renderFrame() had
+  // crash-guard coverage. An uncaught exception there kills the rAF
+  // callback's synchronous execution before it reaches its own
+  // requestAnimationFrame(tick) call, silently stopping the animation chain
+  // forever, while independent listeners (pointermove) keep working.
+  // Confirmed via extensive real-browser fuzzing (~2,500 iterations / 90s
+  // of aggressive same-tick multi-orb/forced-restart stress) that this is a
+  // structural gap, not something that reproduces from a specific known
+  // orb-event sequence -- so this test proves the FIX deterministically via
+  // fault injection (the __orbJourneyDevForceNextTickThrow dev hook),
+  // exactly mirroring how the render-path crash tests above prove their own
+  // guard via monkey-patched canvas methods, since there is no equivalent
+  // shared browser API to intercept for the physics path.
+  test('physics/update-step crash-guard (MB-11): an uncaught exception in the physics/VFX path now produces the SAME recoverable error state as a render exception', async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on('pageerror', err => pageErrors.push(err.message));
+
+    await openJourney(page);
+    await forceRoomGoal(page);
+    await expect(page.getByText('Room 2')).toBeVisible();
+
+    await forceNextTickThrow(page);
+    await page.waitForTimeout(300); // let the next tick actually run and throw
+
+    const dialog = page.getByRole('dialog');
+    await expect(page.getByText('Something went wrong with the game')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Close micro break' })).toBeVisible();
+
+    await page.keyboard.press('Escape');
+    await expect(dialog).not.toBeVisible();
+    await expect(page.locator(START_BUTTON)).toBeEnabled();
+
+    // The exception was caught INSIDE the app (same crash() path as a
+    // render error) -- it must never reach the browser as an uncaught
+    // exception. This is also what distinguishes "fixed" from "the bug":
+    // pre-fix, this same injected throw would show up here instead of
+    // producing the overlay above.
+    expect(pageErrors).toEqual([]);
+  });
+
+  // MB-11: permanent soak/fuzz regression net -- catches ANY future
+  // uncaught exception anywhere in the physics/update path automatically,
+  // not just the one incident this task investigated. Runs an in-page
+  // driver loop (avoids per-iteration Playwright round-trip latency so it
+  // can hammer many forced events per real second) for a bounded real-time
+  // duration, randomizing paddle input and firing BURSTS of 0-6 forced
+  // drifting-orb dev-hook calls per frame with NO yield in between (same-
+  // tick multi-orb resolution, the edge case MB-10's own report flagged),
+  // plus periodic forced floor-misses (room-local restarts) while orbs and
+  // reaction windows are active. Freeze detection uses a canvas pixel-hash
+  // sampled once per real animation frame -- NOT ball-speed sampling, which
+  // produces a false positive here (speed is naturally constant between
+  // paddle/orb events, since only direction changes on a wall bounce).
+  test('physics/update-path soak: extended randomized play with rapid drifting-orb events never freezes the game or throws uncaught (MB-11 regression net)', async ({
+    page,
+  }) => {
+    test.setTimeout(45000);
+    const pageErrors: string[] = [];
+    page.on('pageerror', err => pageErrors.push(err.message));
+
+    await openJourney(page);
+    await forceRoomGoal(page);
+    await expect(page.getByText('Room 2')).toBeVisible();
+
+    const canvas = page.locator('canvas');
+    const box = await canvas.boundingBox();
+    if (!box) throw new Error('no canvas bounding box -- cannot drive synthetic pointer input');
+
+    const result = await page.evaluate(
+      async ({ durationMs, paddleXBase, paddleYBase }) => {
+        type Hooks = {
+          __orbJourneyDevSpawnDriftingOrb?: (role: 'reward' | 'penalty') => void;
+          __orbJourneyDevForceDriftingOrbContact?: () => void;
+          __orbJourneyDevForcePaddleOrbCatch?: () => void;
+          __orbJourneyDevForceOrbBottomMiss?: () => void;
+        };
+        const w = window as unknown as Hooks;
+        const canvasEl = document.querySelector('canvas') as HTMLCanvasElement;
+        const ctx = canvasEl.getContext('2d')!;
+
+        let capturedError: string | null = null;
+        const onErr = (event: ErrorEvent) => {
+          capturedError = event.error?.stack ?? event.message;
+        };
+        window.addEventListener('error', onErr);
+
+        const dispatchPointer = (x: number, y: number) => {
+          canvasEl.dispatchEvent(new PointerEvent('pointermove', { clientX: x, clientY: y, bubbles: true, cancelable: true, pointerId: 1 }));
+        };
+
+        // Cheap-ish pixel hash: samples every 97th byte of the canvas
+        // buffer -- sensitive to any movement anywhere on the board
+        // without scanning the full buffer every frame.
+        const snapshot = () => {
+          const { data } = ctx.getImageData(0, 0, canvasEl.width, canvasEl.height);
+          let hash = 0;
+          for (let i = 0; i < data.length; i += 97) hash = (hash * 31 + data[i]) | 0;
+          return hash;
+        };
+
+        const start = performance.now();
+        let iterations = 0;
+        const recentHashes: number[] = [];
+        let frozen = false;
+
+        while (performance.now() - start < durationMs) {
+          iterations++;
+          const forcingMiss = iterations % 47 < 4;
+          dispatchPointer(forcingMiss ? paddleXBase - 500 : paddleXBase + (Math.random() - 0.5) * 300, paddleYBase);
+
+          const actions = Math.floor(Math.random() * 7);
+          for (let a = 0; a < actions; a++) {
+            const roll = Math.random();
+            if (roll < 0.25) w.__orbJourneyDevSpawnDriftingOrb?.(Math.random() < 0.5 ? 'reward' : 'penalty');
+            else if (roll < 0.45) w.__orbJourneyDevForceDriftingOrbContact?.();
+            else if (roll < 0.75) w.__orbJourneyDevForcePaddleOrbCatch?.();
+            else w.__orbJourneyDevForceOrbBottomMiss?.();
+          }
+          if (Math.random() < 0.6) w.__orbJourneyDevSpawnDriftingOrb?.(Math.random() < 0.5 ? 'reward' : 'penalty');
+
+          if (capturedError) break;
+          await new Promise(resolve => requestAnimationFrame(resolve));
+          if (capturedError) break;
+
+          const hash = snapshot();
+          recentHashes.push(hash);
+          if (recentHashes.length > 40) recentHashes.shift();
+          if (recentHashes.length === 40 && new Set(recentHashes).size === 1 && iterations > 80) {
+            frozen = true;
+            break;
+          }
+        }
+
+        window.removeEventListener('error', onErr);
+        return { iterations, capturedError, frozen };
+      },
+      { durationMs: 15000, paddleXBase: box.x + box.width / 2, paddleYBase: box.y + box.height - 20 },
+    );
+
+    expect(result.capturedError).toBeNull();
+    expect(result.frozen).toBe(false);
+    expect(result.iterations).toBeGreaterThan(100); // sanity: the loop actually ran, not a setup failure
+
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).not.toBeVisible();
     await expect(page.locator(START_BUTTON)).toBeEnabled();
 
     expect(pageErrors).toEqual([]);
