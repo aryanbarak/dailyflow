@@ -29,6 +29,9 @@ export interface JourneyProgressRow {
   readonly best_total_score: number;
   readonly rooms_discovered_count: number;
   readonly constellation_state: Record<string, unknown>;
+  // MB-23, ADR-0015 §14 (extended): "the score you had at your last saved
+  // room" -- distinct from best_total_score (a completed run's record).
+  readonly checkpoint_score: number;
   readonly updated_at: string;
 }
 
@@ -50,6 +53,12 @@ export interface JourneyProgressCandidate {
   /** Optional -- omitted candidates leave the stored constellation_state
    *  untouched rather than being coerced to an empty object. */
   readonly constellationState?: Record<string, unknown>;
+  /** MB-23: the live score at the moment this candidate's farthestRoom was
+   *  reached -- distinct from bestTotalScore (a completed run's record).
+   *  Optional so pre-MB-23 candidate literals keep compiling unchanged;
+   *  falls back to bestTotalScore when omitted (every real call site sets
+   *  both to the same live-score value anyway). */
+  readonly checkpointScore?: number;
 }
 
 export interface JourneyRunSummary {
@@ -101,12 +110,20 @@ export const journeyPersistenceService = {
     const improvedScore = !current || candidate.bestTotalScore > current.best_total_score;
     if (!improvedRoom && !improvedScore) return;
 
+    // MB-23: checkpoint_score is tied to farthest_room specifically (not
+    // best_total_score) -- it's written in this SAME upsert call whenever one
+    // happens, but its VALUE only advances when the room itself improved.
+    // A session-end write that only beats best_total_score (no new room)
+    // must leave checkpoint_score exactly as it was -- otherwise "Continue
+    // Journey" would resume at the old room with a score that was never
+    // actually earned by that point in the run.
     const row: Omit<JourneyProgressRow, 'updated_at'> = {
       user_id: user.id,
       farthest_room: Math.max(candidate.farthestRoom, current?.farthest_room ?? 0),
       best_total_score: Math.max(candidate.bestTotalScore, current?.best_total_score ?? 0),
       rooms_discovered_count: Math.max(candidate.roomsDiscoveredCount, current?.rooms_discovered_count ?? 0),
       constellation_state: candidate.constellationState ?? current?.constellation_state ?? {},
+      checkpoint_score: improvedRoom ? (candidate.checkpointScore ?? candidate.bestTotalScore) : (current?.checkpoint_score ?? 0),
     };
     await client.from('journey_progress').upsert(row, { onConflict: 'user_id' });
   },

@@ -166,11 +166,12 @@ describe('MicroBreakOverlay Orb Journey persistence: room-completion write (Step
       farthestRoom: 2,
       bestTotalScore: 40,
       roomsDiscoveredCount: 2,
+      checkpointScore: 40, // MB-23: the live score at this newly-reached room
     });
   });
 
   it('does NOT fire (no network attempt at all) when the cache already shows this room is not an improvement -- the exact, non-tautological claim', async () => {
-    useJourneyProgressCache.setState({ snapshot: { farthestRoom: 5, bestTotalScore: 900, roomsDiscoveredCount: 5 } });
+    useJourneyProgressCache.setState({ snapshot: { farthestRoom: 5, bestTotalScore: 900, roomsDiscoveredCount: 5, checkpointScore: 900 } });
 
     render(<MicroBreakOverlay />);
     act(() => useMicroBreaksStore.getState().startBreak());
@@ -216,7 +217,12 @@ describe('MicroBreakOverlay Orb Journey persistence: session-end write (Step 2) 
     expect(runArg.totalScore).toBe(120);
     expect(typeof runArg.id).toBe('string');
     expect(runArg.id.length).toBeGreaterThan(0);
-    expect(upsertJourneyProgressIfBetterMock).toHaveBeenCalledWith(expect.anything(), { farthestRoom: 2, bestTotalScore: 120, roomsDiscoveredCount: 2 });
+    expect(upsertJourneyProgressIfBetterMock).toHaveBeenCalledWith(expect.anything(), {
+      farthestRoom: 2,
+      bestTotalScore: 120,
+      roomsDiscoveredCount: 2,
+      checkpointScore: 120,
+    });
   });
 
   it('path 2/4: Escape key exits through the same funnel and fires the same session-end write', async () => {
@@ -307,6 +313,7 @@ describe('MicroBreakOverlay Orb Journey persistence: "Continue Journey" picker o
       best_total_score: 900,
       rooms_discovered_count: 4,
       constellation_state: {},
+      checkpoint_score: 650,
       updated_at: '2026-08-01T00:00:00.000Z',
     });
 
@@ -336,6 +343,7 @@ describe('MicroBreakOverlay Orb Journey persistence: "Continue Journey" picker o
       best_total_score: 300,
       rooms_discovered_count: 3,
       constellation_state: {},
+      checkpoint_score: 220,
       updated_at: '2026-08-01T00:00:00.000Z',
     });
 
@@ -349,5 +357,50 @@ describe('MicroBreakOverlay Orb Journey persistence: "Continue Journey" picker o
 
     expect(stub.getAttribute('data-start-room')).toBe('3');
     expect(screen.getByText('Room 3')).toBeInTheDocument(); // HUD reflects the same starting room, not a stale "Room 1"
+  });
+
+  // MB-23, ADR-0015 §14 (extended): "Continue Journey" now restores the
+  // live score from checkpoint_score, not 0 -- asserted from the FIRST
+  // rendered frame after clicking, not after any point is earned.
+  it('MB-23: clicking "Continue Journey" restores the HUD score from checkpoint_score immediately, not 0', async () => {
+    getJourneyProgressMock.mockResolvedValue({
+      user_id: 'u1',
+      farthest_room: 3,
+      best_total_score: 900, // a HIGHER past-run record -- must NOT be what gets restored
+      rooms_discovered_count: 3,
+      constellation_state: {},
+      checkpoint_score: 220, // the score AT room 3, distinct from best_total_score
+      updated_at: '2026-08-01T00:00:00.000Z',
+    });
+
+    render(<MicroBreakOverlay />);
+    act(() => useMicroBreaksStore.getState().startBreak());
+    await screen.findByRole('dialog');
+    await screen.findByText('Continue Journey (Room 3)');
+
+    fireEvent.click(screen.getByRole('button', { name: /Continue Journey/ }));
+    await screen.findByTestId('journey-canvas-stub');
+
+    expect(screen.getByText('Score: 220')).toBeInTheDocument(); // restored checkpoint_score
+    expect(screen.queryByText('Score: 0')).toBeNull(); // never flashes 0 first
+    expect(screen.queryByText('Score: 900')).toBeNull(); // never the unrelated best_total_score
+  });
+
+  // Regression guard: a brand-new player (no journey_progress row at all)
+  // must still start "New Journey" at score 0 -- MB-23 must not regress the
+  // pre-existing first-time-player path.
+  it('a brand-new Journey (no checkpoint row) still starts the HUD at score 0', async () => {
+    getJourneyProgressMock.mockResolvedValue(null);
+
+    render(<MicroBreakOverlay />);
+    act(() => useMicroBreaksStore.getState().startBreak());
+    await screen.findByRole('dialog');
+    await act(flushMicrotasks);
+    expect(screen.queryByText(/Continue Journey/)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Orb Journey' }));
+    await screen.findByTestId('journey-canvas-stub');
+
+    expect(screen.getByText('Score: 0')).toBeInTheDocument();
   });
 });

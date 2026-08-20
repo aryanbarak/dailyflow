@@ -48,13 +48,19 @@ describe('journeyPersistenceRuntime.loadJourneyProgressOnce', () => {
       best_total_score: 500,
       rooms_discovered_count: 3,
       constellation_state: {},
+      checkpoint_score: 350,
       updated_at: '2026-08-01T00:00:00.000Z',
     });
 
     loadJourneyProgressOnce(fakeClient);
     await flushMicrotasks();
 
-    expect(useJourneyProgressCache.getState().snapshot).toEqual({ farthestRoom: 3, bestTotalScore: 500, roomsDiscoveredCount: 3 });
+    expect(useJourneyProgressCache.getState().snapshot).toEqual({
+      farthestRoom: 3,
+      bestTotalScore: 500,
+      roomsDiscoveredCount: 3,
+      checkpointScore: 350,
+    });
   });
 
   it('sets the cache to null (not left undefined) when the user has no checkpoint row', async () => {
@@ -100,7 +106,7 @@ describe('journeyPersistenceRuntime.maybeRecordRoomCompletion', () => {
   });
 
   it('does NOT call the service at all when the cache already shows this room is not an improvement -- the round-trip-avoidance requirement, not just "no write"', async () => {
-    useJourneyProgressCache.setState({ snapshot: { farthestRoom: 5, bestTotalScore: 900, roomsDiscoveredCount: 5 } });
+    useJourneyProgressCache.setState({ snapshot: { farthestRoom: 5, bestTotalScore: 900, roomsDiscoveredCount: 5, checkpointScore: 900 } });
 
     maybeRecordRoomCompletion(fakeClient, 3, 200);
     await flushMicrotasks();
@@ -114,18 +120,36 @@ describe('journeyPersistenceRuntime.maybeRecordRoomCompletion', () => {
     maybeRecordRoomCompletion(fakeClient, 2, 50);
     await flushMicrotasks();
 
-    expect(upsertJourneyProgressIfBetterMock).toHaveBeenCalledWith(fakeClient, { farthestRoom: 2, bestTotalScore: 50, roomsDiscoveredCount: 2 });
+    expect(upsertJourneyProgressIfBetterMock).toHaveBeenCalledWith(fakeClient, {
+      farthestRoom: 2,
+      bestTotalScore: 50,
+      roomsDiscoveredCount: 2,
+      checkpointScore: 50,
+    });
   });
 
   it('calls the service and optimistically updates the cache when the new room genuinely improves on it', async () => {
-    useJourneyProgressCache.setState({ snapshot: { farthestRoom: 2, bestTotalScore: 100, roomsDiscoveredCount: 2 } });
+    useJourneyProgressCache.setState({ snapshot: { farthestRoom: 2, bestTotalScore: 100, roomsDiscoveredCount: 2, checkpointScore: 100 } });
     upsertJourneyProgressIfBetterMock.mockResolvedValue(undefined);
 
     maybeRecordRoomCompletion(fakeClient, 3, 80); // room improves, score is lower than stored best
     await flushMicrotasks();
 
-    expect(upsertJourneyProgressIfBetterMock).toHaveBeenCalledWith(fakeClient, { farthestRoom: 3, bestTotalScore: 80, roomsDiscoveredCount: 3 });
-    expect(useJourneyProgressCache.getState().snapshot).toEqual({ farthestRoom: 3, bestTotalScore: 100, roomsDiscoveredCount: 3 }); // bestTotalScore max-merged, not regressed
+    expect(upsertJourneyProgressIfBetterMock).toHaveBeenCalledWith(fakeClient, {
+      farthestRoom: 3,
+      bestTotalScore: 80,
+      roomsDiscoveredCount: 3,
+      checkpointScore: 80,
+    });
+    // bestTotalScore max-merged (not regressed); checkpointScore is the LIVE
+    // score at this new room, not max-merged against the old checkpoint --
+    // MB-23's "score you had at your last saved room" semantics.
+    expect(useJourneyProgressCache.getState().snapshot).toEqual({
+      farthestRoom: 3,
+      bestTotalScore: 100,
+      roomsDiscoveredCount: 3,
+      checkpointScore: 80,
+    });
   });
 
   it('enqueues the write for offline retry when the service call rejects', async () => {
@@ -134,7 +158,10 @@ describe('journeyPersistenceRuntime.maybeRecordRoomCompletion', () => {
     maybeRecordRoomCompletion(fakeClient, 2, 60);
     await flushMicrotasks();
 
-    expect(enqueueMock).toHaveBeenCalledWith({ kind: 'progress', payload: { farthestRoom: 2, bestTotalScore: 60, roomsDiscoveredCount: 2 } });
+    expect(enqueueMock).toHaveBeenCalledWith({
+      kind: 'progress',
+      payload: { farthestRoom: 2, bestTotalScore: 60, roomsDiscoveredCount: 2, checkpointScore: 60 },
+    });
   });
 });
 

@@ -26,6 +26,9 @@ export interface JourneyProgressSnapshot {
   readonly farthestRoom: number;
   readonly bestTotalScore: number;
   readonly roomsDiscoveredCount: number;
+  // MB-23, ADR-0015 §14 (extended): "the score you had at your last saved
+  // room" -- what "Continue Journey" restores the live score from, not 0.
+  readonly checkpointScore: number;
 }
 
 interface JourneyProgressCacheState {
@@ -45,7 +48,12 @@ export const useJourneyProgressCache = create<JourneyProgressCacheState>()(set =
 
 function toSnapshot(row: Awaited<ReturnType<typeof journeyPersistenceService.getJourneyProgress>>): JourneyProgressSnapshot | null {
   if (!row) return null;
-  return { farthestRoom: row.farthest_room, bestTotalScore: row.best_total_score, roomsDiscoveredCount: row.rooms_discovered_count };
+  return {
+    farthestRoom: row.farthest_room,
+    bestTotalScore: row.best_total_score,
+    roomsDiscoveredCount: row.rooms_discovered_count,
+    checkpointScore: row.checkpoint_score,
+  };
 }
 
 // MB-20: "read journey_progress... do not block the picker UI on this read;
@@ -87,7 +95,15 @@ export function maybeRecordRoomCompletion(client: JourneyPersistenceClient = def
   const { snapshot, setSnapshot } = useJourneyProgressCache.getState();
   if (snapshot && farthestRoom <= snapshot.farthestRoom) return;
 
-  const candidate: JourneyProgressCandidate = { farthestRoom, bestTotalScore: currentScore, roomsDiscoveredCount: farthestRoom };
+  // MB-23: checkpointScore is set to the live currentScore, not max-merged --
+  // it represents the score AT this newly-reached room, not the best score
+  // ever seen (that's bestTotalScore's job).
+  const candidate: JourneyProgressCandidate = {
+    farthestRoom,
+    bestTotalScore: currentScore,
+    roomsDiscoveredCount: farthestRoom,
+    checkpointScore: currentScore,
+  };
   // Optimistic local update -- the NEXT room-completion this session compares
   // against this merged value, not the session-start snapshot, so repeated
   // completions don't re-fire once a later one has already superseded an
@@ -97,6 +113,7 @@ export function maybeRecordRoomCompletion(client: JourneyPersistenceClient = def
     farthestRoom: Math.max(farthestRoom, snapshot?.farthestRoom ?? 0),
     bestTotalScore: Math.max(currentScore, snapshot?.bestTotalScore ?? 0),
     roomsDiscoveredCount: Math.max(farthestRoom, snapshot?.roomsDiscoveredCount ?? 0),
+    checkpointScore: currentScore,
   });
 
   fireAndForget(journeyPersistenceService.upsertJourneyProgressIfBetter(client, candidate), () =>

@@ -48,6 +48,7 @@ function progressRow(overrides: Partial<JourneyProgressRow> = {}): JourneyProgre
     best_total_score: 500,
     rooms_discovered_count: 3,
     constellation_state: { rooms: ['focus-tasks', 'rhythm-calendar'] },
+    checkpoint_score: 250,
     updated_at: '2026-08-01T00:00:00.000Z',
     ...overrides,
   };
@@ -109,6 +110,24 @@ describe('journeyPersistenceService.upsertJourneyProgressIfBetter', () => {
     expect(upsertCalls[0].options).toEqual({ onConflict: 'user_id' });
   });
 
+  // MB-23, ADR-0015 §14 (extended): checkpoint_score is written in the SAME
+  // upsert call as farthest_room -- not a second round-trip -- whenever the
+  // room itself improves.
+  it('MB-23: writes checkpoint_score in the SAME upsert call as farthest_room when the room improves', async () => {
+    const stored = progressRow({ farthest_room: 3, best_total_score: 500, checkpoint_score: 300 });
+    const { client, upsertCalls } = createFakeClient({ progressRow: stored });
+
+    await journeyPersistenceService.upsertJourneyProgressIfBetter(client, {
+      farthestRoom: 4,
+      bestTotalScore: 100,
+      roomsDiscoveredCount: 4,
+      checkpointScore: 150, // the live score AT room 4, not the stored best
+    });
+
+    expect(upsertCalls).toHaveLength(1); // one call, not two -- both fields present in it
+    expect(upsertCalls[0].row).toMatchObject({ farthest_room: 4, checkpoint_score: 150 });
+  });
+
   it('writes when the candidate improves best_total_score ONLY, preserving the stored farthest_room', async () => {
     const stored = progressRow({ farthest_room: 3, best_total_score: 500 });
     const { client, upsertCalls } = createFakeClient({ progressRow: stored });
@@ -121,6 +140,26 @@ describe('journeyPersistenceService.upsertJourneyProgressIfBetter', () => {
 
     expect(upsertCalls).toHaveLength(1);
     expect(upsertCalls[0].row).toMatchObject({ farthest_room: 3, best_total_score: 900 });
+  });
+
+  // MB-23: checkpoint_score tracks farthest_room specifically, NOT
+  // best_total_score -- a session-end write that only beats the best score
+  // (no new room reached) must leave checkpoint_score exactly as stored,
+  // otherwise "Continue Journey" would resume at the OLD room with a score
+  // that was never actually earned by that point.
+  it('MB-23: does NOT change checkpoint_score when only best_total_score improves (room unchanged)', async () => {
+    const stored = progressRow({ farthest_room: 3, best_total_score: 500, checkpoint_score: 300 });
+    const { client, upsertCalls } = createFakeClient({ progressRow: stored });
+
+    await journeyPersistenceService.upsertJourneyProgressIfBetter(client, {
+      farthestRoom: 2, // worse -- room did NOT improve
+      bestTotalScore: 900, // better
+      roomsDiscoveredCount: 3,
+      checkpointScore: 900, // even if the caller sends a live score, it must be ignored here
+    });
+
+    expect(upsertCalls).toHaveLength(1);
+    expect(upsertCalls[0].row).toMatchObject({ farthest_room: 3, best_total_score: 900, checkpoint_score: 300 });
   });
 
   it('always writes the FIRST checkpoint when no row exists yet, regardless of the candidate values', async () => {

@@ -200,10 +200,15 @@ export function MicroBreakOverlay() {
   // expected path).
   function handleContinueJourney() {
     const startRoom = journeyProgressSnapshot?.farthestRoom ?? 1;
+    // MB-23, ADR-0015 §14 (extended): restore the score you had at this
+    // checkpoint, not 0 -- checkpointScore is only meaningful when a
+    // snapshot exists (this button only renders once one does; see the
+    // 'choosing' phase JSX), so the ?? 0 fallback below is defensive only.
+    const startScore = journeyProgressSnapshot?.checkpointScore ?? 0;
     journeyRunIdRef.current = crypto.randomUUID();
     setJourneyRoom(startRoom);
     setJourneyStartRoomIndex(startRoom);
-    setJourneyScore(0);
+    setJourneyScore(startScore);
     setJourneyPhase('playing');
     setSessionType('journey');
     setPhase('active');
@@ -295,7 +300,16 @@ export function MicroBreakOverlay() {
       // of this run, not a guess -- reaching room N means rooms 1..N were
       // all discovered. maybeRecordRoomCompletion (journeyPersistenceRuntime.ts)
       // makes the same choice for its own candidate, for the same reason.
-      const progressCandidate: JourneyProgressCandidate = { farthestRoom: journeyRoom, bestTotalScore: journeyScore, roomsDiscoveredCount: journeyRoom };
+      const progressCandidate: JourneyProgressCandidate = {
+        farthestRoom: journeyRoom,
+        bestTotalScore: journeyScore,
+        roomsDiscoveredCount: journeyRoom,
+        // MB-23: mirrors maybeRecordRoomCompletion's own candidate -- if this
+        // session-end write is ALSO the moment farthest_room improves (e.g.
+        // Esc pressed exactly on a fresh room), checkpoint_score should be
+        // this run's live score, not left stale.
+        checkpointScore: journeyScore,
+      };
       recordJourneySessionEnd(supabase, run, progressCandidate);
     }
     journeyRunIdRef.current = null;

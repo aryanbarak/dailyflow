@@ -274,6 +274,19 @@ detach/return and room-transition patterns) so it doesn't introduce a new
 kind of jump-cut.
 
 ### 14. Journey persistence (checkpoint model)
+**Extended (MB-23).** journey_progress gains a new column,
+checkpoint_score integer not null default 0 (check (checkpoint_score >= 0)),
+updated alongside farthest_room on every room-completion write (§14's
+existing "on completing a room whose index exceeds farthest_room" trigger
+condition, unchanged — checkpoint_score is written in the SAME upsert, not
+a separate write). This is distinct from best_total_score: checkpoint_score
+represents "the score you had at your last saved room," restored verbatim
+by "Continue Journey" so a resumed run continues with both the correct room
+AND the correct score — not just the room. best_total_score remains the
+best completed RUN's total score (a record, written at session end,
+unaffected by this change). "Continue Journey" (MicroBreakOverlay.tsx) now
+initializes the resumed session's live score from checkpoint_score, not 0.
+
 Two tables, two distinct write patterns, per the concept doc's original
 design:
 
