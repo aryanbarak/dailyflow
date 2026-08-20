@@ -40,8 +40,8 @@ import {
   getDriftingOrbAbsorbParticleCount,
   getDriftingOrbJoltParticleCount,
   getDriftingOrbPaddleCatchParticleCount,
-  getJourneyPlayAreaMaxWidthPx,
   getObstacleBreakParticleCount,
+  JOURNEY_PLAY_AREA_MAX_WIDTH_PX,
   ROOM_TRANSITION_FLASH_PEAK_ALPHA,
   ROOM_TRANSITION_SECONDS,
   ROOM_TRANSITION_SECONDS_REDUCED_MOTION,
@@ -402,18 +402,14 @@ export function JourneyCanvas({
 
     const applyBoardSize = (widthPx: number, heightPx: number) => {
       if (widthPx <= 0 || heightPx <= 0) return;
-      // MB-14, ADR-0015 §13: the SAME value (getJourneyPlayAreaMaxWidthPx,
-      // keyed by the CURRENT room index) that drives the play-area
-      // container's own CSS max-width in MicroBreakOverlay.tsx -- one
-      // computed value feeding both, not two separately-tuned numbers (see
-      // that function's own comment). Reading journeyRef.current.roomIndex
-      // here (not a stale closure) means this always reflects whichever
-      // room is active AT THE MOMENT the container's real size actually
-      // changes (which happens shortly after a room transition, once React
-      // re-renders with the new CSS and the ResizeObserver below fires) --
-      // no separate room-transition-detection logic needed here.
-      const maxWidthPx = getJourneyPlayAreaMaxWidthPx(journeyRef.current.roomIndex);
-      const nextBoardConfig = computeBoardConfig(widthPx, heightPx, boardConfigRef.current, maxWidthPx);
+      // MB-22, ADR-0015 §13 (retirement): JOURNEY_PLAY_AREA_MAX_WIDTH_PX is
+      // now a fixed constant, identical for every room -- the room-index
+      // growth formula this used to call (getJourneyPlayAreaMaxWidthPx) is
+      // removed, not just unused. Still the SAME value driving BOTH this
+      // and the play-area container's own CSS max-width in
+      // MicroBreakOverlay.tsx -- one constant feeding both, not two
+      // separately-tuned numbers (see that constant's own comment).
+      const nextBoardConfig = computeBoardConfig(widthPx, heightPx, boardConfigRef.current, JOURNEY_PLAY_AREA_MAX_WIDTH_PX);
       const prevBoardConfig = boardConfigRef.current;
       if (nextBoardConfig.width === prevBoardConfig.width && nextBoardConfig.height === prevBoardConfig.height) return;
 

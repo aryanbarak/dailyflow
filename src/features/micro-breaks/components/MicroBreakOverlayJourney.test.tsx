@@ -47,6 +47,7 @@ vi.mock('@/features/orb-journey/JourneyCanvas', async () => {
       'div',
       { 'data-testid': 'journey-canvas-stub' },
       React.createElement('button', { type: 'button', onClick: () => onRoomChange(2, 0) }, 'simulate-room-2'),
+      React.createElement('button', { type: 'button', onClick: () => onRoomChange(3, 0) }, 'simulate-room-3'),
       React.createElement('button', { type: 'button', onClick: () => onScoreChange(12) }, 'simulate-score-12'),
       React.createElement('button', { type: 'button', onClick: () => onPhaseChange('cleared') }, 'simulate-cleared'),
       React.createElement('button', { type: 'button', onClick: () => onRenderError(new Error('simulated Journey draw() failure')) }, 'simulate-crash'),
@@ -99,7 +100,7 @@ vi.stubGlobal('localStorage', new MemoryStorage());
 const { MicroBreakOverlay } = await import('./MicroBreakOverlay');
 const { useMicroBreaksStore } = await import('../store/microBreaksStore');
 const { useAppearance } = await import('@/features/settings/appearanceStore');
-const { getJourneyPlayAreaMaxWidthPx } = await import('@/features/orb-journey/tuning');
+const { JOURNEY_PLAY_AREA_MAX_WIDTH_PX } = await import('@/features/orb-journey/tuning');
 
 function resetStore() {
   useMicroBreaksStore.setState({ gameActive: false, mode: 'classic', score: 0 });
@@ -216,37 +217,96 @@ describe('MicroBreakOverlay: Orb Journey exit path (ADR-0014 §3, reused unchang
   });
 });
 
-// MB-14, ADR-0015 §13: progressive play-area growth, container level. The
-// mocked JourneyCanvas's "simulate-room-2" button fires onRoomChange(2) --
-// the SAME callback the real JourneyCanvas only calls at an actual room
-// transition (see JourneyCanvas.tsx's onTick) -- so driving the container's
-// max-width off that state (not a separate timer/effect) is what makes
-// "the width change happens at room-transition time, not mid-room" true by
-// construction, and this test proves it on the real rendered DOM.
-describe('MicroBreakOverlay: Journey play-area growth (MB-14, ADR-0015 §13)', () => {
-  it('the Journey canvas containers max-width is room-index-derived (getJourneyPlayAreaMaxWidthPx), and grows ONLY when onRoomChange fires -- not before', async () => {
+// MB-22, ADR-0015 §13 (retirement): the room-index growth formula (MB-14)
+// is removed, not just unused -- the play area is now a FIXED width,
+// identical for every Journey room. The mocked JourneyCanvas's
+// "simulate-room-N" buttons fire onRoomChange(N) -- the SAME callback the
+// real JourneyCanvas only calls at an actual room transition (see
+// JourneyCanvas.tsx's onTick) -- so driving the container's max-width off
+// that state (not a separate timer/effect) is what proves the width
+// genuinely does NOT change across a real room transition, not just "was
+// never wired to change."
+describe('MicroBreakOverlay: Journey play-area is a FIXED width (MB-22, ADR-0015 §13 retirement)', () => {
+  it('the Journey canvas containers max-width is the fixed JOURNEY_PLAY_AREA_MAX_WIDTH_PX constant, IDENTICAL at Room 1, 2, and 3 -- must FAIL against the old room-index growth formula (see the MB-22 report for the revert-and-capture proof)', async () => {
     render(<MicroBreakOverlay />);
     act(() => useMicroBreaksStore.getState().startBreak());
     await chooseJourney();
 
     const container = screen.getByTestId('journey-canvas-stub').parentElement as HTMLElement;
-    expect(container.style.maxWidth).toBe(`${getJourneyPlayAreaMaxWidthPx(1)}px`);
-    const room1Width = parseFloat(container.style.maxWidth);
+    expect(container.style.maxWidth).toBe(`${JOURNEY_PLAY_AREA_MAX_WIDTH_PX}px`);
 
     fireEvent.click(screen.getByText('simulate-room-2'));
+    expect(container.style.maxWidth).toBe(`${JOURNEY_PLAY_AREA_MAX_WIDTH_PX}px`);
 
-    expect(container.style.maxWidth).toBe(`${getJourneyPlayAreaMaxWidthPx(2)}px`);
-    const room2Width = parseFloat(container.style.maxWidth);
-    expect(room2Width).toBeGreaterThan(room1Width); // measurable growth, not a no-op re-render
+    fireEvent.click(screen.getByText('simulate-room-3'));
+    expect(container.style.maxWidth).toBe(`${JOURNEY_PLAY_AREA_MAX_WIDTH_PX}px`);
   });
 
-  it('the container has a max-width CSS transition (smooth growth, not an instant jump-cut) -- same duration as the room-transition flash', async () => {
+  it('the container no longer carries a max-width CSS transition -- dead code once the width never changes (MB-14s room-transition-timed growth animation is removed)', async () => {
     render(<MicroBreakOverlay />);
     act(() => useMicroBreaksStore.getState().startBreak());
     await chooseJourney();
 
     const container = screen.getByTestId('journey-canvas-stub').parentElement as HTMLElement;
-    expect(container.style.transition).toContain('max-width');
+    expect(container.style.transition).toBe('');
+
+    const boundary = screen.getByTestId('journey-play-area-boundary');
+    expect(boundary.style.transition).toBe('');
+  });
+
+  it('the play-area boundary is also the fixed 500px width, matching the canvas container exactly (the single-source-of-truth invariant, still holding with no per-room input left to drift)', async () => {
+    render(<MicroBreakOverlay />);
+    act(() => useMicroBreaksStore.getState().startBreak());
+    await chooseJourney();
+
+    const boundary = screen.getByTestId('journey-play-area-boundary');
+    expect(boundary.style.maxWidth).toBe(`${JOURNEY_PLAY_AREA_MAX_WIDTH_PX}px`);
+  });
+});
+
+// MB-22, ADR-0014 §2 (updated): the HUD (room/score) used to be a sibling
+// of the play-area boundary/canvas container, positioned against the FULL
+// VIEWPORT -- outside the boundary MB-17 correctly cleared to full
+// brightness, which is exactly the legibility regression this task fixes.
+// jsdom has no real layout engine (getBoundingClientRect() always reports
+// zero-boxes), so a genuine pixel-geometry "is the HUD's box contained
+// within the boundary's box" proof belongs in the Playwright suite (real
+// browser layout) -- see e2e/orbJourney.spec.ts's own HUD containment test.
+// What IS meaningful here, in jsdom, is DOM ancestry: the HUD must be a
+// DESCENDANT of the same play-area container the boundary is sized to, not
+// a sibling of it positioned against the dialog root.
+describe('MicroBreakOverlay: Journey HUD relocated inside the play-area boundary (MB-22, ADR-0014 §2 update)', () => {
+  it('the HUD (room number + score) is a DOM descendant of the play-area canvas container -- NOT a sibling positioned against the outer dialog root', async () => {
+    render(<MicroBreakOverlay />);
+    act(() => useMicroBreaksStore.getState().startBreak());
+    await chooseJourney();
+
+    const canvasContainer = screen.getByTestId('journey-canvas-stub').parentElement as HTMLElement;
+    const roomLabel = screen.getByText('Room 1');
+    // .contains() includes the element itself; roomLabel is a <span> nested
+    // inside the HUD div, itself nested inside canvasContainer -- a real,
+    // multi-level ancestry check, not just "somewhere in the document."
+    expect(canvasContainer.contains(roomLabel)).toBe(true);
+
+    // The dialog root itself (the OLD anchor, pre-MB-22) must NOT be the
+    // roomLabel's immediate positioning context anymore -- i.e. the HUD's
+    // own wrapper div is not a direct child of the dialog root.
+    const dialog = screen.getByRole('dialog');
+    const hudWrapper = roomLabel.closest('[class*="absolute"]') as HTMLElement;
+    expect(hudWrapper.parentElement).not.toBe(dialog);
+    expect(hudWrapper.parentElement).toBe(canvasContainer);
+  });
+
+  it('score and cleared-state text still render correctly from inside the new location (content/behavior unchanged, only position moved)', async () => {
+    render(<MicroBreakOverlay />);
+    act(() => useMicroBreaksStore.getState().startBreak());
+    await chooseJourney();
+
+    fireEvent.click(screen.getByText('simulate-score-12'));
+    expect(screen.getByText('Score: 12')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('simulate-cleared'));
+    expect(screen.getByText('Rooms cleared — keep playing!')).toBeInTheDocument();
   });
 });
 

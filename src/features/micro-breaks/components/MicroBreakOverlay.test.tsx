@@ -287,3 +287,43 @@ describe('MicroBreakOverlay: Quick Break play-area sizing is UNAFFECTED by MB-14
     expect(container.style.transition).toBe('');
   });
 });
+
+// MB-22, ADR-0014 §2 (updated): Journey's HUD moved INSIDE its play-area
+// container this task, because MB-17's (correct) dim/blur scoping left the
+// OLD outside-the-boundary HUD position illegible against the now-bright
+// dashboard. Quick Break's dim/blur has always been full-viewport (ADR-0014
+// §2's original wash) -- its HUD was therefore NEVER over an undimmed area,
+// so it has no equivalent regression to fix and must stay exactly where it
+// was, byte-for-byte. Verified here on the real rendered DOM, not assumed
+// from "Quick Break's render branch wasn't edited."
+describe('MicroBreakOverlay: Quick Break HUD position is UNCHANGED by MB-22 (Journey-only HUD relocation)', () => {
+  it('the Quick Break HUD (score/time) is a SIBLING of the canvas container, positioned against the dialog root -- NOT relocated inside the container the way Journeys was', async () => {
+    render(<MicroBreakOverlay />);
+    act(() => {
+      useMicroBreaksStore.getState().startBreak();
+    });
+    const dialog = await chooseQuickBreak();
+
+    const scoreLabel = await screen.findByText('Score: 0');
+    const canvas = dialog.querySelector('canvas') as HTMLCanvasElement;
+    const canvasContainer = canvas.parentElement as HTMLElement;
+
+    // Still a descendant of the dialog (never removed from the tree)...
+    expect(dialog.contains(scoreLabel)).toBe(true);
+    // ...but NOT a descendant of the canvas container -- this is the actual
+    // "unrelocated" claim: Journey's HUD (see MicroBreakOverlayJourney.test.tsx)
+    // is now INSIDE its own canvas container; Quick Break's must not be.
+    expect(canvasContainer.contains(scoreLabel)).toBe(false);
+
+    const hudWrapper = scoreLabel.closest('[class*="absolute"]') as HTMLElement;
+    expect(hudWrapper.parentElement).toBe(dialog);
+    expect(hudWrapper.parentElement).not.toBe(canvasContainer);
+
+    // The exact same styling contract as before this task -- safe-area-
+    // anchored top-left, semi-transparent card background, z-10 above the
+    // canvas -- byte-for-byte, not just "still renders somewhere."
+    expect(hudWrapper.className).toContain('absolute');
+    expect(hudWrapper.className).toContain('z-10');
+    expect(hudWrapper.className).toContain('bg-card/80');
+  });
+});

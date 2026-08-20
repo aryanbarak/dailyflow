@@ -27,6 +27,16 @@ reads or mutates workspace data, never triggers AI, automation, or writes.
 
 ### 2. Core principle
 
+**Updated (MB-22).** Journey's dim/blur boundary scoping (dashboard fully
+clear outside the play area) remains exactly as MB-17 built it, now at a
+fixed 500px width instead of a per-room growing value. This task also
+relocates Journey's HUD (room/score) to render INSIDE that boundary — MB-17
+correctly cleared everything outside it, which incidentally left the HUD
+(previously positioned outside) illegible against the now-bright dashboard;
+this corrects that placement rather than reverting MB-17's scoping fix.
+Quick Break's original full-viewport wash, and its own HUD placement, are
+unaffected.
+
 **Corrected for Orb Journey (MB-17).** §2's original "workspace remains
 visually present behind a subtle dim/blur treatment" described a uniform,
 full-viewport wash and remains accurate for Quick Break. For Orb Journey

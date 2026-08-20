@@ -12,11 +12,7 @@ import type { JourneyPhase } from '@/features/orb-journey/roomEngine';
 import type { JourneyProgressCandidate, JourneyRunSummary } from '@/features/orb-journey/journeyPersistenceService';
 import { flushJourneyPersistenceQueue } from '@/features/orb-journey/journeyPersistenceQueue';
 import { loadJourneyProgressOnce, maybeRecordRoomCompletion, recordJourneySessionEnd, useJourneyProgressCache } from '@/features/orb-journey/journeyPersistenceRuntime';
-import {
-  getJourneyPlayAreaMaxWidthPx,
-  ROOM_TRANSITION_SECONDS,
-  ROOM_TRANSITION_SECONDS_REDUCED_MOTION,
-} from '@/features/orb-journey/tuning';
+import { JOURNEY_PLAY_AREA_MAX_WIDTH_PX } from '@/features/orb-journey/tuning';
 import { useMicroBreaksStore } from '../store/microBreaksStore';
 import { useOrbVisualTokens, type OrbVisualTokens } from '../orbTokens';
 import { getLastPointerPosition } from '../pointerPositionRef';
@@ -446,22 +442,6 @@ export function MicroBreakOverlay() {
     ? t('micro_breaks_session_choice_continue_journey', { room: journeyProgressSnapshot.farthestRoom })
     : '';
 
-  // MB-14, ADR-0015 §13: Journey-only progressive play-area growth. ONE
-  // computed value (keyed off journeyRoom, which itself only changes at a
-  // room transition via onRoomChange -- see JourneyCanvas.tsx) drives the
-  // play-area container's max-width below -- the SAME value
-  // JourneyCanvas.tsx's own resize handler passes to computeBoardConfig, so
-  // the container and the canvas it holds can never drift apart (see
-  // getJourneyPlayAreaMaxWidthPx's own comment). Quick Break reads NONE of
-  // this -- its container below keeps the exact pre-MB-14 max-w-[480px]
-  // class, untouched.
-  const journeyMaxWidthPx = getJourneyPlayAreaMaxWidthPx(journeyRoom);
-  // Smooth, room-transition-timed growth (not a jarring instant resize) --
-  // reuses the SAME transition duration as the canvas's own room-transition
-  // flash (roomTheme.ts/JourneyCanvas.tsx), instant under reduced motion,
-  // consistent with this feature's existing reduced-motion convention.
-  const journeyWidthTransitionSeconds = reducedMotion ? ROOM_TRANSITION_SECONDS_REDUCED_MOTION : ROOM_TRANSITION_SECONDS;
-
   // ADR-0015 §8: the choice screen is still "a micro break" generically;
   // once a session type is picked, its own specific label takes over.
   const dialogAriaLabel =
@@ -597,28 +577,6 @@ export function MicroBreakOverlay() {
             </div>
           )}
 
-          {/* ADR-0015 §6: room number + running score, deliberately NO timer
-              display -- the key visual difference from Quick Break's
-              countdown, since Journey is untimed. */}
-          {phase === 'active' && sessionType === 'journey' && (
-            <div
-              className="absolute z-10 flex flex-col gap-1 rounded-xl bg-card/80 px-4 py-2 text-sm shadow-lg"
-              style={{ ...SAFE_AREA_TOP, ...SAFE_AREA_LEFT }}
-            >
-              <span dir={resolveMessageBaseDirection(journeyRoomText)} className="font-medium">
-                {isolateBidiRunsInText(journeyRoomText, 'mb-journey-room')}
-              </span>
-              <span dir={resolveMessageBaseDirection(journeyScoreText)} className="text-muted-foreground">
-                {isolateBidiRunsInText(journeyScoreText, 'mb-journey-score')}
-              </span>
-              {journeyPhase === 'cleared' && (
-                <span dir={resolveMessageBaseDirection(journeyClearedText)} className="font-medium text-primary">
-                  {isolateBidiRunsInText(journeyClearedText, 'mb-journey-cleared')}
-                </span>
-              )}
-            </div>
-          )}
-
           {phase === 'active' && sessionType === 'quick-break' && (
             <div
               ref={canvasContainerRef}
@@ -638,33 +596,33 @@ export function MicroBreakOverlay() {
             </div>
           )}
 
-          {/* MB-17, ADR-0014 §2 (correction): the dim/blur boundary itself --
-              a SEPARATE element from the canvas container below, deliberately
-              FULL HEIGHT (not aspect-ratio/maxHeight-bound like the
-              gameplay-comfort-driven canvas container) and width-capped by
-              the SAME journeyMaxWidthPx value the container's own max-width
-              uses -- reused directly, not a second computation. Full height
-              (not the canvas container's own up-to-70vh/720px-capped height)
-              is what makes this "naturally converge to full-viewport" at the
-              full-screen room, matching Quick Break's own always-full-
-              viewport dim/blur exactly -- if this instead reused the canvas
+          {/* MB-17, ADR-0014 §2 (correction); MB-22: the dim/blur boundary
+              itself -- a SEPARATE element from the canvas container below,
+              deliberately FULL HEIGHT (not aspect-ratio/maxHeight-bound like
+              the gameplay-comfort-driven canvas container) and width-capped
+              by the SAME JOURNEY_PLAY_AREA_MAX_WIDTH_PX constant the
+              container's own max-width uses -- reused directly, not a
+              second computation. MB-22 retired the per-room growth this
+              boundary used to track (ADR-0015 §13) -- now a fixed width,
+              no CSS transition (nothing to animate between rooms anymore).
+              Full height (not the canvas container's own up-to-70vh/720px-
+              capped height) is what makes this converge with Quick Break's
+              own always-full-viewport dim/blur once the fixed width exceeds
+              the viewport (mobile) -- if this instead reused the canvas
               container's OWN (height-capped) box, the top/bottom strips of
-              the viewport would stay permanently undimmed even at room 10,
-              which would NOT match Quick Break. Rendered BEHIND the canvas
-              container (earlier in DOM order, so it paints first / below) --
-              `pointer-events-none` so it never intercepts paddle input in the
-              rare case its box is wider than the actually-rendered canvas
-              (see JourneyCanvas.tsx's own comment on why the canvas can be
-              narrower than this boundary once the height cap binds). */}
+              the viewport would stay permanently undimmed. Rendered BEHIND
+              the canvas container (earlier in DOM order, so it paints first
+              / below) -- `pointer-events-none` so it never intercepts
+              paddle input in the rare case its box is wider than the
+              actually-rendered canvas (see JourneyCanvas.tsx's own comment
+              on why the canvas can be narrower than this boundary once the
+              height cap binds). */}
           {phase === 'active' && sessionType === 'journey' && (
             <div
               aria-hidden="true"
               data-testid="journey-play-area-boundary"
               className="pointer-events-none absolute inset-0 mx-auto w-full bg-black/50 backdrop-blur-sm"
-              style={{
-                maxWidth: `${journeyMaxWidthPx}px`,
-                transition: `max-width ${journeyWidthTransitionSeconds}s ease`,
-              }}
+              style={{ maxWidth: `${JOURNEY_PLAY_AREA_MAX_WIDTH_PX}px` }}
             />
           )}
 
@@ -672,36 +630,70 @@ export function MicroBreakOverlay() {
             <div
               ref={canvasContainerRef}
               className="relative mx-auto flex w-full items-center justify-center"
-              // MB-14, ADR-0015 §13: max-width is now room-index-derived
-              // (journeyMaxWidthPx) instead of the fixed `max-w-[480px]`
-              // Tailwind class Quick Break's OWN container (below) still
-              // uses unchanged -- `w-full` is preserved, so on any viewport
-              // narrower than journeyMaxWidthPx (virtually all phones,
-              // through several rooms), 100% still wins exactly as it does
-              // today; see getJourneyPlayAreaMaxWidthPx's own comment for
-              // why this composition is what makes mobile correct. The CSS
-              // transition makes the growth land smoothly over the SAME
-              // duration as the room-transition flash, not an instant
-              // jump-cut.
+              // MB-22, ADR-0015 §13 (retirement): max-width is now the fixed
+              // JOURNEY_PLAY_AREA_MAX_WIDTH_PX constant (500px), identical
+              // for every room -- no more room-index-derived growth, no CSS
+              // transition (there is nothing left to animate between
+              // rooms). Quick Break's OWN container (above) still uses its
+              // unrelated fixed `max-w-[480px]` Tailwind class, untouched.
+              // `w-full` is preserved, so on any viewport narrower than
+              // JOURNEY_PLAY_AREA_MAX_WIDTH_PX (most phones), 100% still
+              // wins, same mobile composition as before.
               //
-              // MB-17: `flex items-center justify-center` added -- the
-              // canvas inside is no longer guaranteed to exactly fill this
-              // box (JourneyCanvas.tsx now pins the canvas's own CSS size to
-              // its correctly-2:3-fitted computeBoardConfig output, which can
-              // be NARROWER than this container's own box once
-              // `maxHeight: min(70vh, 720px)` binds tighter than
-              // `maxWidth: journeyMaxWidthPx` implies -- a real, empirically-
-              // confirmed CSS aspect-ratio/max-height interaction, see the
-              // MB-17 report). Centering here keeps the canvas visually
-              // centered within whatever box this container ends up being,
-              // instead of pinned to its top-left corner.
+              // MB-17: `flex items-center justify-center` -- the canvas
+              // inside is not guaranteed to exactly fill this box
+              // (JourneyCanvas.tsx pins the canvas's own CSS size to its
+              // correctly-2:3-fitted computeBoardConfig output, which can be
+              // NARROWER than this container's own box once `maxHeight:
+              // min(70vh, 720px)` binds tighter than `maxWidth:
+              // JOURNEY_PLAY_AREA_MAX_WIDTH_PX` implies -- a real,
+              // empirically-confirmed CSS aspect-ratio/max-height
+              // interaction, see the MB-17 report). Centering here keeps the
+              // canvas visually centered within whatever box this container
+              // ends up being, instead of pinned to its top-left corner.
               style={{
                 aspectRatio: String(BOARD_ASPECT_RATIO),
                 maxHeight: 'min(70vh, 720px)',
-                maxWidth: `${journeyMaxWidthPx}px`,
-                transition: `max-width ${journeyWidthTransitionSeconds}s ease`,
+                maxWidth: `${JOURNEY_PLAY_AREA_MAX_WIDTH_PX}px`,
               }}
             >
+              {/* ADR-0015 §6: room number + running score, deliberately NO
+                  timer display -- the key visual difference from Quick
+                  Break's countdown, since Journey is untimed.
+                  MB-22, ADR-0014 §2 (updated): relocated from the overlay's
+                  own top-left corner (a sibling of this container, anchored
+                  to the FULL VIEWPORT via SAFE_AREA_TOP/LEFT) to HERE --
+                  MB-17 correctly cleared everything outside the play-area
+                  boundary above, which left this HUD (previously outside
+                  it) sitting on full-brightness dashboard content once that
+                  fix shipped. Positioned `absolute` against THIS container
+                  (which has `position: relative`, so SAFE_AREA_TOP/LEFT now
+                  resolve to ITS top-left corner, not the viewport's) --
+                  same box the dim/blur boundary above is sized to, so the
+                  HUD sits on the dim backdrop as originally intended. z-10
+                  keeps it above the canvas (a sibling later in this same
+                  stacking context); not aria-hidden (the boundary div above
+                  is decorative-only and correctly aria-hidden, but this HUD
+                  carries real room/score information a screen reader user
+                  needs, so it must NOT inherit that treatment by being
+                  nested inside the boundary element -- kept as its own,
+                  separate, non-hidden node instead). */}
+              <div
+                className="absolute z-10 flex flex-col gap-1 rounded-xl bg-card/80 px-4 py-2 text-sm shadow-lg"
+                style={{ ...SAFE_AREA_TOP, ...SAFE_AREA_LEFT }}
+              >
+                <span dir={resolveMessageBaseDirection(journeyRoomText)} className="font-medium">
+                  {isolateBidiRunsInText(journeyRoomText, 'mb-journey-room')}
+                </span>
+                <span dir={resolveMessageBaseDirection(journeyScoreText)} className="text-muted-foreground">
+                  {isolateBidiRunsInText(journeyScoreText, 'mb-journey-score')}
+                </span>
+                {journeyPhase === 'cleared' && (
+                  <span dir={resolveMessageBaseDirection(journeyClearedText)} className="font-medium text-primary">
+                    {isolateBidiRunsInText(journeyClearedText, 'mb-journey-cleared')}
+                  </span>
+                )}
+              </div>
               <JourneyCanvas
                 containerRef={canvasContainerRef}
                 onRoomChange={handleJourneyRoomChange}

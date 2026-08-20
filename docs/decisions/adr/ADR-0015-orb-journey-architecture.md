@@ -209,6 +209,27 @@ Room 3 has no static obstacles (consistent with §10's retirement — the
 Room 2.
 
 ### 13. Progressive play-area growth (Amendment, post-MB-13, Journey-only)
+**Retired (MB-22, PO decision, post-playtesting).** After real play across
+Rooms 1-3, the PO found that growing the play-area boundary room-to-room
+broke focus rather than reinforcing progression — a larger frame with the
+same-size gameplay inside it (per the aspect-ratio/height-cap limitation
+MB-17 already exposed) read as visually disorganized, not as escalation.
+Room-to-room progression is fully carried by existing signals instead
+(theme changes, room-index difficulty scaling, drifting-orb spawn cadence)
+— see ADR-0015 §4/§12. The play area is now a FIXED width for every Journey
+room: 500px, permanently. The formula, room-10 full-screen target, and
+room-transition width-change animation described below are removed, not
+just unused.
+
+**Baseline value, finalized after further playtesting (same task):**
+MB-15 calibrated 300px specifically for "dashboard clearly visible on both
+sides." A first revision proposed 400px as a balance. After actually
+playing at that comfort level, the PO settled on 500px — wider than even
+the original pre-MB-14 480px default, explicitly prioritizing comfortable
+gameplay over maximal narrowness. Margin per side remains ~33-37% on
+common desktop viewports — still a clearly bounded, non-full-viewport play
+area, just no longer the tightest possible one.
+
 **Corrected (MB-17).** In addition to the canvas/play-area's own bounding
 width (already correct per MB-14/15), the dim/blur backdrop boundary must
 be bound to that same width — see the linked correction in ADR-0014 §2.
