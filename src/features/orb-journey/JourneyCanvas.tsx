@@ -40,6 +40,7 @@ import {
   getDriftingOrbAbsorbParticleCount,
   getDriftingOrbJoltParticleCount,
   getDriftingOrbPaddleCatchParticleCount,
+  getJourneyPlayAreaMaxWidthPx,
   getObstacleBreakParticleCount,
   ROOM_TRANSITION_FLASH_PEAK_ALPHA,
   ROOM_TRANSITION_SECONDS,
@@ -335,7 +336,18 @@ export function JourneyCanvas({
 
     const applyBoardSize = (widthPx: number, heightPx: number) => {
       if (widthPx <= 0 || heightPx <= 0) return;
-      const nextBoardConfig = computeBoardConfig(widthPx, heightPx, boardConfigRef.current);
+      // MB-14, ADR-0015 §13: the SAME value (getJourneyPlayAreaMaxWidthPx,
+      // keyed by the CURRENT room index) that drives the play-area
+      // container's own CSS max-width in MicroBreakOverlay.tsx -- one
+      // computed value feeding both, not two separately-tuned numbers (see
+      // that function's own comment). Reading journeyRef.current.roomIndex
+      // here (not a stale closure) means this always reflects whichever
+      // room is active AT THE MOMENT the container's real size actually
+      // changes (which happens shortly after a room transition, once React
+      // re-renders with the new CSS and the ResizeObserver below fires) --
+      // no separate room-transition-detection logic needed here.
+      const maxWidthPx = getJourneyPlayAreaMaxWidthPx(journeyRef.current.roomIndex);
+      const nextBoardConfig = computeBoardConfig(widthPx, heightPx, boardConfigRef.current, maxWidthPx);
       const prevBoardConfig = boardConfigRef.current;
       if (nextBoardConfig.width === prevBoardConfig.width && nextBoardConfig.height === prevBoardConfig.height) return;
 

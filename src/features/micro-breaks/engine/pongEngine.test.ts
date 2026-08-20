@@ -446,6 +446,46 @@ describe('pongEngine: computeBoardConfig (MB-03, mobile/PWA acceptance)', () => 
     expect(config.baseSpeed).toBe(CONFIG.baseSpeed);
     expect(config.comboCap).toBe(CONFIG.comboCap);
   });
+
+  // MB-14, ADR-0015 §13: Quick Break regression guard -- Quick Break's call
+  // site (PongCanvas.tsx) passes only 3 args, so the NEW 4th `maxWidthPx`
+  // parameter must default to producing IDENTICAL output to before this
+  // slice, for realistic container sizes across the whole small/typical/
+  // large range this function's own tests above already cover -- not just
+  // "no Quick Break files changed" by omission, an actual computed-output
+  // proof.
+  it('MB-14: calling with the OLD 3-arg signature (as Quick Break/PongCanvas.tsx does) produces BYTE-IDENTICAL output to explicitly passing BOARD_MAX_WIDTH_PX as the 4th arg -- the new maxWidthPx param is provably inert for any caller that omits it', () => {
+    const cases: ReadonlyArray<readonly [number, number]> = [
+      [120, 200], // clamps to BOARD_MIN_WIDTH_PX
+      [360, 700], // typical mobile portrait
+      [800, 400], // landscape, height-constrained
+      [2000, 2000], // clamps to BOARD_MAX_WIDTH_PX
+    ];
+    for (const [w, h] of cases) {
+      const withoutParam = computeBoardConfig(w, h, CONFIG);
+      const withExplicitDefault = computeBoardConfig(w, h, CONFIG, BOARD_MAX_WIDTH_PX);
+      expect(withoutParam).toEqual(withExplicitDefault);
+    }
+  });
+
+  // MB-14: the NEW param only has any effect when a caller (Journey) opts
+  // in by actually passing a larger value -- proves the override is real
+  // (not silently ignored) while staying additive to the existing MIN/fit
+  // constraints, not a replacement for them.
+  it('MB-14: a maxWidthPx override LARGER than BOARD_MAX_WIDTH_PX lets the board grow past the old ceiling, still bounded by the container itself and BOARD_MIN_WIDTH_PX', () => {
+    const grown = computeBoardConfig(2000, 2000, CONFIG, 900);
+    expect(grown.width).toBe(900); // past the old 480px ceiling, per the override
+    expect(grown.width).toBeGreaterThan(BOARD_MAX_WIDTH_PX);
+
+    // The override can never make the board BIGGER than the container
+    // itself actually allows -- a narrow container still wins.
+    const stillContainerBound = computeBoardConfig(300, 700, CONFIG, 900);
+    expect(stillContainerBound.width).toBeLessThanOrEqual(300);
+
+    // BOARD_MIN_WIDTH_PX floor still applies regardless of the override.
+    const stillFloored = computeBoardConfig(50, 100, CONFIG, 900);
+    expect(stillFloored.width).toBe(BOARD_MIN_WIDTH_PX);
+  });
 });
 
 describe('pongEngine: timer end condition', () => {

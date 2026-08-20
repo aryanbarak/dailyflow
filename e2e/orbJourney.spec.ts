@@ -937,6 +937,10 @@ test.describe('Orb Journey (MB-05, ADR-0015)', () => {
     await expect(page.getByText('Room 2')).toBeVisible();
     await forceRoomGoal(page); // -> room 3
     await expect(page.getByText('Room 3')).toBeVisible();
+    // MB-14: let the play-area growth transition settle first, so this is
+    // genuinely proving the fixes hold with the RESIZED (Room 3, wider)
+    // play area, not the pre-transition Room-1-sized one.
+    await page.waitForTimeout(600);
 
     // MB-12 check first (non-destructive to the crash guard check below):
     // jump elapsedSeconds past the legacy 90s boundary and confirm the
@@ -974,5 +978,120 @@ test.describe('Orb Journey (MB-05, ADR-0015)', () => {
     await expect(page.locator(START_BUTTON)).toBeEnabled();
 
     expect(pageErrors).toEqual([]);
+  });
+
+  // MB-14, ADR-0015 §13: progressive play-area growth. Reads the REAL
+  // rendered DOM (the container's inline max-width style, set by
+  // MicroBreakOverlay.tsx from getJourneyPlayAreaMaxWidthPx, and the
+  // canvas's own bounding box, sized by JourneyCanvas.tsx's
+  // computeBoardConfig call using the SAME function) -- the pure formula
+  // itself is already unit-tested precisely (orb-journey/tuning.test.ts);
+  // this test's job is proving the LIVE browser actually reflects it, not
+  // re-proving the math.
+  async function getPlayAreaWidths(page: import('@playwright/test').Page) {
+    return page.evaluate(() => {
+      const canvasEl = document.querySelector('canvas') as HTMLCanvasElement;
+      const container = canvasEl.parentElement as HTMLElement;
+      return {
+        containerMaxWidthPx: parseFloat(container.style.maxWidth),
+        containerBoxWidth: container.getBoundingClientRect().width,
+        canvasBoxWidth: canvasEl.getBoundingClientRect().width,
+      };
+    });
+  }
+
+  test('play area is visibly narrower in Room 1 than Room 3, and grows monotonically across Room 1 -> 2 -> 3 (MB-14)', async ({ page }) => {
+    await openJourney(page);
+    await expect(page.getByText('Room 1')).toBeVisible();
+    await page.waitForTimeout(200);
+    const room1 = await getPlayAreaWidths(page);
+
+    await forceRoomGoal(page); // -> room 2
+    await expect(page.getByText('Room 2')).toBeVisible();
+    await page.waitForTimeout(600); // clear the CSS max-width transition (ROOM_TRANSITION_SECONDS)
+    const room2 = await getPlayAreaWidths(page);
+
+    await forceRoomGoal(page); // -> room 3
+    await expect(page.getByText('Room 3')).toBeVisible();
+    await page.waitForTimeout(600);
+    const room3 = await getPlayAreaWidths(page);
+
+    // Room 1 matches todays exact pre-MB-14 fixed cap (480px) -- the
+    // formula's own baseline guarantee, now confirmed live.
+    expect(room1.containerMaxWidthPx).toBeCloseTo(480, 0);
+
+    expect(room2.containerMaxWidthPx).toBeGreaterThan(room1.containerMaxWidthPx);
+    expect(room3.containerMaxWidthPx).toBeGreaterThan(room2.containerMaxWidthPx);
+    // Real, visible growth (not a rounding-noise difference) -- Room 3s
+    // rendered canvas is measurably wider on screen than Room 1s.
+    expect(room3.canvasBoxWidth).toBeGreaterThan(room1.canvasBoxWidth + 50);
+  });
+
+  // MB-14: the exact "two separately-tuned numbers that could drift apart"
+  // class of bug the task brief flagged -- the container (the bounded
+  // region MicroBreakOverlay.tsx sizes) and the canvas it holds
+  // (JourneyCanvas.tsx's own computeBoardConfig-driven element) must always
+  // agree, not just by construction (both call the same tuning.ts function)
+  // but as measured live pixels.
+  test('the play-area container and the canvas it holds are ALWAYS the same width -- never two separately-drifting numbers (MB-14)', async ({ page }) => {
+    await openJourney(page);
+    await forceRoomGoal(page); // -> room 2
+    await expect(page.getByText('Room 2')).toBeVisible();
+    await page.waitForTimeout(600);
+
+    const widths = await getPlayAreaWidths(page);
+    expect(widths.canvasBoxWidth).toBeCloseTo(widths.containerBoxWidth, 0);
+    // Also confirms this is genuinely Room 2s GROWN width, not just Room 1s
+    // untouched 480px cap staying trivially self-consistent with itself.
+    expect(widths.containerMaxWidthPx).toBeGreaterThan(480);
+  });
+
+  // MB-14, ADR-0015 §13: mobile/PWA reconciliation. On a narrow phone
+  // viewport, `w-full` (100%) still wins over the room-index pixel cap for
+  // Room 1 through several rooms -- exactly reproducing today's pre-MB-14
+  // mobile behavior (see getJourneyPlayAreaMaxWidthPx's own comment). This
+  // proves the composition produces a SANE on-screen size, not overflow or
+  // an absurdly tiny canvas, on both a narrow phone AND after growth to
+  // Room 3.
+  test('mobile viewport: the play area is a sane, non-overflowing size at Room 1 AND after growing to Room 3 (MB-14 mobile/PWA reconciliation)', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 }); // portrait phone, same as microBreaksMobileAcceptance.spec.ts
+    await openJourney(page);
+    await expect(page.getByText('Room 1')).toBeVisible();
+    await page.waitForTimeout(200);
+
+    const room1 = await getPlayAreaWidths(page);
+    // On a 390px-wide phone, `w-full` wins over the (480px) room-1 pixel
+    // cap -- effectively full viewport width, matching todays pre-MB-14
+    // mobile behavior exactly (no shrinkage from the new formula).
+    expect(room1.canvasBoxWidth).toBeLessThanOrEqual(390);
+    expect(room1.canvasBoxWidth).toBeGreaterThan(350); // not clipped down to some tiny fraction
+
+    await forceRoomGoal(page); // -> room 2
+    await expect(page.getByText('Room 2')).toBeVisible();
+    await forceRoomGoal(page); // -> room 3
+    await expect(page.getByText('Room 3')).toBeVisible();
+    await page.waitForTimeout(600);
+
+    const room3 = await getPlayAreaWidths(page);
+    // Still no overflow past the viewport at Room 3, on the SAME narrow
+    // phone -- `w-full` still wins even though the room-index pixel cap
+    // has grown well past 390px by now.
+    expect(room3.canvasBoxWidth).toBeLessThanOrEqual(390);
+    expect(room3.containerBoxWidth).toBeLessThanOrEqual(390);
+    // The growth formula is still genuinely RUNNING under the hood on
+    // mobile (its pixel-cap output keeps climbing per room, same as
+    // desktop) -- it's only the RENDERED box that stays capped at 100% by
+    // `w-full`, per this formula's own documented mobile/desktop
+    // composition. Proves the two constraints compose correctly rather
+    // than one silently disabling the other.
+    expect(room3.containerMaxWidthPx).toBeGreaterThan(room1.containerMaxWidthPx);
+
+    // No horizontal page overflow -- the dialog/canvas never pushes the
+    // document wider than the viewport (a real clipping/overflow check,
+    // not just "the canvas element's own reported width is small").
+    const hasHorizontalOverflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1);
+    expect(hasHorizontalOverflow).toBe(false);
   });
 });

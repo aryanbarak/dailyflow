@@ -4,6 +4,80 @@
 // playtesting -- flagged in the MB-05 report as a judgment call, same as
 // MB-03's tuning.ts was.
 
+import { BOARD_MAX_WIDTH_PX } from '../micro-breaks/tuning';
+
+// ── Progressive play-area growth (ADR-0015 §13, MB-14, Journey-only) ────
+// Room 1's baseline is today's (MB-05-era) FIXED pixel cap, BOARD_MAX_WIDTH_PX
+// (480) -- reused, not duplicated, so Room 1 stays byte-identical to
+// pre-MB-14 behavior on every device (see JOURNEY_PLAY_AREA_BASELINE_RATIO's
+// own comment for why this matters more than it might look).
+//
+// The growth formula returns a RATIO (0..1), per the task brief's own
+// contract -- but a ratio applied DIRECTLY as a fraction of the LIVE
+// viewport width (e.g. `ratio * 100vw`) cannot simultaneously reproduce
+// "480px on desktop" (a small fraction, ~20-30%, of a typical desktop
+// screen) AND "effectively 100% on mobile" (today's actual behavior, since
+// `min(100%, 480px)` = 100% on any phone narrower than 480px) -- the SAME
+// small fraction applied to a narrow phone would make Room 1 render at a
+// fraction of the phone's own screen, dramatically SMALLER than today. This
+// is the mobile/desktop conflict the task brief explicitly asked to be
+// flagged rather than silently resolved (see this feature's MB-14 report).
+//
+// Resolution: the ratio is calibrated against a fixed REFERENCE viewport
+// width (generously large -- above the vast majority of real desktop/laptop
+// screens), not the live one. The resulting PIXEL cap
+// (ratio * REFERENCE_WIDTH_PX) is then combined with the SAME `min(100%, ...)`
+// hybrid this codebase already uses today (`w-full max-w-[Npx]`), so:
+// - On any device narrower than the pixel cap (virtually all phones, at
+//   least through several rooms) -- 100% wins, UNCHANGED from today.
+// - On typical desktop/laptop widths -- the pixel cap wins once it exceeds
+//   BOARD_MAX_WIDTH_PX, growing per room exactly as ADR-0015 §13 specifies.
+// - At room 10 (ratio 1.0), the pixel cap equals the reference width itself
+//   -- comfortably wider than the vast majority of real screens, so 100%
+//   wins there too: TRUE full-viewport coverage for virtually all users.
+//   Flagged limitation: a monitor wider than JOURNEY_PLAY_AREA_REFERENCE_WIDTH_PX
+//   would be capped just short of literal 100vw at room 10 -- an edge case
+//   affecting only ultra-wide displays, not a regression from today (which
+//   has no growth at all), and not silently pretended away.
+export const JOURNEY_PLAY_AREA_REFERENCE_WIDTH_PX = 2560;
+/** Room 1's ratio, BY CONSTRUCTION, reproduces today's exact 480px cap when
+ *  multiplied back out by JOURNEY_PLAY_AREA_REFERENCE_WIDTH_PX -- see this
+ *  section's own header comment. */
+export const JOURNEY_PLAY_AREA_BASELINE_RATIO = BOARD_MAX_WIDTH_PX / JOURNEY_PLAY_AREA_REFERENCE_WIDTH_PX;
+/** Per PO direction: growth is gradual, full-screen reached AROUND room 10,
+ *  not sooner (ADR-0015 §13). */
+export const JOURNEY_PLAY_AREA_FULL_SCREEN_ROOM_INDEX = 10;
+/** Linear step size, derived (not a magic number) so the two endpoints the
+ *  task brief actually specifies land exactly: ratio(1) ==
+ *  JOURNEY_PLAY_AREA_BASELINE_RATIO, and ratio(JOURNEY_PLAY_AREA_FULL_SCREEN_ROOM_INDEX)
+ *  == 1.0. Solving baseline + (targetRoom - 1) * step = 1 for step:
+ *  step = (1 - baseline) / (targetRoom - 1). */
+export const JOURNEY_PLAY_AREA_GROWTH_STEP =
+  (1 - JOURNEY_PLAY_AREA_BASELINE_RATIO) / (JOURNEY_PLAY_AREA_FULL_SCREEN_ROOM_INDEX - 1);
+
+/** Pure: room index -> play-area width as a ratio (0..1) of the REFERENCE
+ *  viewport width (see this section's header comment -- NOT the live
+ *  viewport, which is what makes the mobile/desktop composition work).
+ *  Monotonically increasing, linear, clamped at 1.0 from room
+ *  JOURNEY_PLAY_AREA_FULL_SCREEN_ROOM_INDEX onward. Independent of gameplay
+ *  difficulty (§4) -- reads nothing from, and is read by nothing in,
+ *  deriveRoomEngineConfig's speed/paddle-width formula. */
+export function getJourneyPlayAreaWidthRatio(roomIndex: number): number {
+  const raw = JOURNEY_PLAY_AREA_BASELINE_RATIO + (roomIndex - 1) * JOURNEY_PLAY_AREA_GROWTH_STEP;
+  return Math.min(1, Math.max(JOURNEY_PLAY_AREA_BASELINE_RATIO, raw));
+}
+
+/** Pure: room index -> play-area max-width in PIXELS, against the
+ *  REFERENCE viewport. The SINGLE value fed to BOTH the play-area
+ *  container's CSS max-width (MicroBreakOverlay.tsx) and
+ *  computeBoardConfig's new maxWidthPx override (JourneyCanvas.tsx) -- one
+ *  computed value, not two separately-tuned numbers that could drift apart
+ *  (see this section's header comment and the MB-14 report's consistency
+ *  test). */
+export function getJourneyPlayAreaMaxWidthPx(roomIndex: number): number {
+  return getJourneyPlayAreaWidthRatio(roomIndex) * JOURNEY_PLAY_AREA_REFERENCE_WIDTH_PX;
+}
+
 // ── Room goal (ADR-0015 §2/§7: ricochet-only, ~15-25s to complete) ──────
 /** Room 1's goal: reach this many consecutive hits (combo) to clear it. */
 export const ROOM_1_GOAL_COMBO = 8;

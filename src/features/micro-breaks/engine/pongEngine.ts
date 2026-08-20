@@ -604,10 +604,22 @@ export function rescalePongState(state: PongState, oldConfig: PongEngineConfig, 
 // caller (PongCanvas's ResizeObserver handler) measures the real container
 // and is responsible for calling rescalePongState alongside this so the
 // running ball/paddle position tracks the new board without teleporting.
+//
+// MB-14, ADR-0015 §13: `maxWidthPx` is a NEW, OPTIONAL 4th parameter,
+// defaulting to BOARD_MAX_WIDTH_PX -- Quick Break's call site (PongCanvas.tsx)
+// passes only 3 args, so it is byte-for-byte unaffected (see this function's
+// own unit test proving identical output with/without the param, and the
+// MB-14 report's Quick Break regression proof). Orb Journey's call site
+// (JourneyCanvas.tsx) passes a room-index-derived ceiling
+// (orb-journey/tuning.ts's getJourneyPlayAreaMaxWidthPx) as an ADDITIONAL
+// constraint feeding this SAME existing sizing pipeline -- not a parallel
+// system: the container's own measured width (containerWidthPx) is still
+// what actually binds on narrow viewports, exactly as it always has.
 export function computeBoardConfig(
   containerWidthPx: number,
   containerHeightPx: number,
   base: PongEngineConfig = DEFAULT_PONG_CONFIG,
+  maxWidthPx: number = BOARD_MAX_WIDTH_PX,
 ): PongEngineConfig {
   // Fits inside whichever container axis is more constraining, then clamps
   // to the tuned [MIN, MAX] range. BOARD_MIN_WIDTH_PX assumes a realistic
@@ -617,7 +629,7 @@ export function computeBoardConfig(
   // an unplayably tiny board.
   const widthFromHeight = containerHeightPx * BOARD_ASPECT_RATIO;
   const fitWidth = Math.min(containerWidthPx, widthFromHeight);
-  const width = clamp(fitWidth, BOARD_MIN_WIDTH_PX, BOARD_MAX_WIDTH_PX);
+  const width = clamp(fitWidth, BOARD_MIN_WIDTH_PX, maxWidthPx);
   const height = width / BOARD_ASPECT_RATIO;
   const paddleHeight = height * PADDLE_HEIGHT_RATIO;
 

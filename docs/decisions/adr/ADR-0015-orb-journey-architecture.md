@@ -191,6 +191,26 @@ Room 3 has no static obstacles (consistent with §10's retirement — the
 §11). The 'cleared' phase (§7/MB-05) now triggers after Room 3 instead of
 Room 2.
 
+### 13. Progressive play-area growth (Amendment, post-MB-13, Journey-only)
+The visual width of Orb Journey's play area (the bounded region containing
+the canvas and its dim/blur backdrop treatment, per ADR-0014 §2) grows with
+room index, reinforcing progression without any HUD/numeric indicator. Room
+1 uses the play area's current (MB-05-era) width as its baseline. Each
+subsequent room's width is baseline + (roomIndex * GROWTH_STEP), a formula
+—not per-room authored values—so it generalizes automatically to any future
+room without additional design work, consistent with the existing room-
+index difficulty formula (§4). Width is clamped at 100% of the viewport
+(full-screen, dashboard no longer visible even blurred) once reached, and
+stays there for any further room. Per PO direction, growth is gradual: full-
+screen is reached around room 10, not sooner. This applies to Orb Journey
+ONLY — Quick Break's fixed play-area size (ADR-0014 §2-§4) is unchanged.
+Play-area width and gameplay difficulty (§4) are independent systems; this
+section does not alter difficulty math, and difficulty does not alter play-
+area sizing. The width change happens at room-transition time (not
+mid-room), using the existing transition mechanism (§7/ADR-0014 §11's
+detach/return and room-transition patterns) so it doesn't introduce a new
+kind of jump-cut.
+
 ## Consequences
 + One engine serves both session types; no physics duplication; trust
   boundary and crash fail-safes inherited for free from ADR-0014.

@@ -6,6 +6,11 @@ import { isolateBidiRunsInText, resolveMessageBaseDirection } from '@/lib/bidiTe
 import { useAppearance } from '@/features/settings/appearanceStore';
 import { JourneyCanvas } from '@/features/orb-journey/JourneyCanvas';
 import type { JourneyPhase } from '@/features/orb-journey/roomEngine';
+import {
+  getJourneyPlayAreaMaxWidthPx,
+  ROOM_TRANSITION_SECONDS,
+  ROOM_TRANSITION_SECONDS_REDUCED_MOTION,
+} from '@/features/orb-journey/tuning';
 import { useMicroBreaksStore } from '../store/microBreaksStore';
 import { useOrbVisualTokens, type OrbVisualTokens } from '../orbTokens';
 import { getLastPointerPosition } from '../pointerPositionRef';
@@ -322,6 +327,22 @@ export function MicroBreakOverlay() {
   const journeyRoomText = t('micro_breaks_journey_room_value', { room: journeyRoom });
   const journeyClearedText = t('micro_breaks_journey_cleared_label');
 
+  // MB-14, ADR-0015 §13: Journey-only progressive play-area growth. ONE
+  // computed value (keyed off journeyRoom, which itself only changes at a
+  // room transition via onRoomChange -- see JourneyCanvas.tsx) drives the
+  // play-area container's max-width below -- the SAME value
+  // JourneyCanvas.tsx's own resize handler passes to computeBoardConfig, so
+  // the container and the canvas it holds can never drift apart (see
+  // getJourneyPlayAreaMaxWidthPx's own comment). Quick Break reads NONE of
+  // this -- its container below keeps the exact pre-MB-14 max-w-[480px]
+  // class, untouched.
+  const journeyMaxWidthPx = getJourneyPlayAreaMaxWidthPx(journeyRoom);
+  // Smooth, room-transition-timed growth (not a jarring instant resize) --
+  // reuses the SAME transition duration as the canvas's own room-transition
+  // flash (roomTheme.ts/JourneyCanvas.tsx), instant under reduced motion,
+  // consistent with this feature's existing reduced-motion convention.
+  const journeyWidthTransitionSeconds = reducedMotion ? ROOM_TRANSITION_SECONDS_REDUCED_MOTION : ROOM_TRANSITION_SECONDS;
+
   // ADR-0015 §8: the choice screen is still "a micro break" generically;
   // once a session type is picked, its own specific label takes over.
   const dialogAriaLabel =
@@ -467,8 +488,24 @@ export function MicroBreakOverlay() {
           {phase === 'active' && sessionType === 'journey' && (
             <div
               ref={canvasContainerRef}
-              className="relative mx-auto w-full max-w-[480px]"
-              style={{ aspectRatio: String(BOARD_ASPECT_RATIO), maxHeight: 'min(70vh, 720px)' }}
+              className="relative mx-auto w-full"
+              // MB-14, ADR-0015 §13: max-width is now room-index-derived
+              // (journeyMaxWidthPx) instead of the fixed `max-w-[480px]`
+              // Tailwind class Quick Break's OWN container (below) still
+              // uses unchanged -- `w-full` is preserved, so on any viewport
+              // narrower than journeyMaxWidthPx (virtually all phones,
+              // through several rooms), 100% still wins exactly as it does
+              // today; see getJourneyPlayAreaMaxWidthPx's own comment for
+              // why this composition is what makes mobile correct. The CSS
+              // transition makes the growth land smoothly over the SAME
+              // duration as the room-transition flash, not an instant
+              // jump-cut.
+              style={{
+                aspectRatio: String(BOARD_ASPECT_RATIO),
+                maxHeight: 'min(70vh, 720px)',
+                maxWidth: `${journeyMaxWidthPx}px`,
+                transition: `max-width ${journeyWidthTransitionSeconds}s ease`,
+              }}
             >
               <JourneyCanvas
                 containerRef={canvasContainerRef}

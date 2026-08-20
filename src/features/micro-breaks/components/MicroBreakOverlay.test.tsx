@@ -236,3 +236,32 @@ describe('MicroBreakOverlay focus containment (ADR-0014 §3)', () => {
     fireEvent.keyDown(document, { key: 'Escape' });
   });
 });
+
+// MB-14, ADR-0015 §13: Quick Break regression guard. The growth formula
+// (getJourneyPlayAreaMaxWidthPx) and the room-index-derived inline
+// max-width/transition style it feeds are Journey-only additions to
+// MicroBreakOverlay.tsx's render -- this proves it on the ACTUAL rendered
+// DOM output for a real Quick Break session (this file keeps the REAL
+// PongCanvas, per its own header comment), not just "no Quick Break files
+// changed" by omission.
+describe('MicroBreakOverlay: Quick Break play-area sizing is UNAFFECTED by MB-14 (ADR-0015 §13, Journey-only)', () => {
+  it('the Quick Break canvas container keeps its exact pre-MB-14 max-w-[480px] class, with NO room-index-derived inline max-width or transition style', async () => {
+    render(<MicroBreakOverlay />);
+    act(() => {
+      useMicroBreaksStore.getState().startBreak();
+    });
+    const dialog = await chooseQuickBreak();
+
+    const canvas = dialog.querySelector('canvas');
+    expect(canvas).not.toBeNull();
+    const container = canvas!.parentElement as HTMLElement;
+
+    expect(container.className).toContain('max-w-[480px]');
+    // The Journey container's inline style sets BOTH of these (see
+    // MicroBreakOverlay.tsx's own render) -- their absence here is the
+    // actual, checkable proof Quick Break's sizing pipeline was never
+    // touched, not an assumption.
+    expect(container.style.maxWidth).toBe('');
+    expect(container.style.transition).toBe('');
+  });
+});

@@ -81,6 +81,7 @@ vi.stubGlobal('localStorage', new MemoryStorage());
 const { MicroBreakOverlay } = await import('./MicroBreakOverlay');
 const { useMicroBreaksStore } = await import('../store/microBreaksStore');
 const { useAppearance } = await import('@/features/settings/appearanceStore');
+const { getJourneyPlayAreaMaxWidthPx } = await import('@/features/orb-journey/tuning');
 
 function resetStore() {
   useMicroBreaksStore.setState({ gameActive: false, mode: 'classic', score: 0 });
@@ -194,6 +195,40 @@ describe('MicroBreakOverlay: Orb Journey exit path (ADR-0014 §3, reused unchang
     await chooseJourney();
     expect(screen.getByText('Room 1')).toBeInTheDocument();
     expect(screen.getByText('Score: 0')).toBeInTheDocument();
+  });
+});
+
+// MB-14, ADR-0015 §13: progressive play-area growth, container level. The
+// mocked JourneyCanvas's "simulate-room-2" button fires onRoomChange(2) --
+// the SAME callback the real JourneyCanvas only calls at an actual room
+// transition (see JourneyCanvas.tsx's onTick) -- so driving the container's
+// max-width off that state (not a separate timer/effect) is what makes
+// "the width change happens at room-transition time, not mid-room" true by
+// construction, and this test proves it on the real rendered DOM.
+describe('MicroBreakOverlay: Journey play-area growth (MB-14, ADR-0015 §13)', () => {
+  it('the Journey canvas containers max-width is room-index-derived (getJourneyPlayAreaMaxWidthPx), and grows ONLY when onRoomChange fires -- not before', async () => {
+    render(<MicroBreakOverlay />);
+    act(() => useMicroBreaksStore.getState().startBreak());
+    await chooseJourney();
+
+    const container = screen.getByTestId('journey-canvas-stub').parentElement as HTMLElement;
+    expect(container.style.maxWidth).toBe(`${getJourneyPlayAreaMaxWidthPx(1)}px`);
+    const room1Width = parseFloat(container.style.maxWidth);
+
+    fireEvent.click(screen.getByText('simulate-room-2'));
+
+    expect(container.style.maxWidth).toBe(`${getJourneyPlayAreaMaxWidthPx(2)}px`);
+    const room2Width = parseFloat(container.style.maxWidth);
+    expect(room2Width).toBeGreaterThan(room1Width); // measurable growth, not a no-op re-render
+  });
+
+  it('the container has a max-width CSS transition (smooth growth, not an instant jump-cut) -- same duration as the room-transition flash', async () => {
+    render(<MicroBreakOverlay />);
+    act(() => useMicroBreaksStore.getState().startBreak());
+    await chooseJourney();
+
+    const container = screen.getByTestId('journey-canvas-stub').parentElement as HTMLElement;
+    expect(container.style.transition).toContain('max-width');
   });
 });
 
