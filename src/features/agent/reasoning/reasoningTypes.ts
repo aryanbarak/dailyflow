@@ -5,7 +5,11 @@ import type {
   ExecutionLearningProgressSnapshot,
 } from "../executionTypes";
 import type { Workspace } from "@/features/workspace/workspaceTypes";
-import type { WriteIntentType } from "../../../../shared/writeIntentRegistry";
+import type {
+  WriteIntentDomain,
+  WriteIntentToolId,
+  WriteIntentType,
+} from "../../../../shared/writeIntentRegistry";
 
 export const AGENT_INTENT_SCHEMA_VERSION = 1 as const;
 
@@ -33,10 +37,15 @@ export type AgentIntentType =
   | "unsupported";
 
 export type AgentIntentConfidence = "low" | "medium" | "high";
+// Task 36d, ADR-0013 Slice 1 (item 1): the three write-domain members
+// ('tasks' | 'calendar' | 'finance') now come from the shared registry's
+// WriteIntentDomain instead of being listed here a second time -- same
+// pattern AgentIntentType above already uses for WriteIntentType. The
+// remaining three ('learning' | 'workspace' | 'github') have no registry
+// entry (they're read-only/GitHub-write domains, out of the registry's
+// tasks+calendar+finance write scope) and stay hand-written literals here.
 export type AgentIntentDomain =
-  | "tasks"
-  | "calendar"
-  | "finance"
+  | WriteIntentDomain
   | "learning"
   | "workspace"
   | "github";
@@ -154,7 +163,14 @@ export type AgentLlmReasoningCaller = (
 
 export interface AgentReasoningValidationResult {
   proposal: AgentIntentProposal;
-  toolId?: "tasks.list" | "calendar.list_today" | "learning.get_progress" | "workspace.get_context" | "github.repositories.list" | "github.issues.list" | "github.epics.list" | "github.pulls.list" | "github.workflow_runs.list" | "tasks.complete" | "tasks.create" | "tasks.update" | "calendar.create_event" | "calendar.update_event" | "finance.create_transaction" | "github.issues.comment" | "github.issues.update";
+  // Task 36d, ADR-0013 Slice 1 (item 1): the five registry write-tool ids
+  // (tasks.create/tasks.update/calendar.create_event/calendar.update_event/
+  // finance.create_transaction) now come from WriteIntentToolId instead of
+  // being re-typed here a second time -- same derivation pattern as
+  // AgentIntentType/AgentIntentDomain above. The remaining 9 read-tool ids
+  // plus tasks.complete/github.issues.comment/github.issues.update (12
+  // non-registry ids total) have no registry entry and stay hand-written.
+  toolId?: "tasks.list" | "calendar.list_today" | "learning.get_progress" | "workspace.get_context" | "github.repositories.list" | "github.issues.list" | "github.epics.list" | "github.pulls.list" | "github.workflow_runs.list" | "tasks.complete" | WriteIntentToolId | "github.issues.comment" | "github.issues.update";
   validationReasons: string[];
 }
 
