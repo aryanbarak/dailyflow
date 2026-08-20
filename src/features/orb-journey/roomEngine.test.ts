@@ -54,6 +54,20 @@ function missState(journey: JourneyState, room: RoomConfig): JourneyState {
   };
 }
 
+// MB-18, ADR-0015 §3 (correction): drives a room instance through BOTH
+// misses of the two-strike rule -- the 1st (grace) re-serves the ball back
+// to center, so the 2nd miss needs its OWN missState repositioning before
+// stepping again. A single missState+stepJourney call now only reaches the
+// grace path (see the describe block below) -- this is what actually
+// reaches the full-restart path post-MB-18.
+function missTwice(journey: JourneyState, room: RoomConfig, rooms: readonly RoomConfig[]): JourneyState {
+  journey = missState(journey, room);
+  journey = stepJourney(journey, 16, rooms);
+  journey = missState(journey, room);
+  journey = stepJourney(journey, 16, rooms);
+  return journey;
+}
+
 describe('roomEngine: deriveRoomEngineConfig (ADR-0015 §4, room-index-only difficulty)', () => {
   it('room 1 is unchanged from the base config (no difficulty step applied yet)', () => {
     const config = deriveRoomEngineConfig(1, BOARD_CONFIG);
@@ -221,7 +235,11 @@ describe('roomEngine: stepJourney -- room complete transitions to the next room 
   // condition that changed when Room 3 was added.
   it('clearing room 2 now advances to room 3, "playing" -- room 2 is no longer the last configured room', () => {
     const rooms = buildRoomSequence(BOARD_CONFIG);
-    let journey: JourneyState = { roomIndex: 2, pong: createInitialPongState(rooms[1].engineConfig), journeyScore: 100, phase: 'playing' };
+    // MB-18: initialized with a NONZERO missCount (as if one grace miss had
+    // already happened this room instance) -- proves clearing the room's
+    // goal resets it to 0 for Room 3, not just that a fresh journey starts
+    // at 0 trivially.
+    let journey: JourneyState = { roomIndex: 2, pong: createInitialPongState(rooms[1].engineConfig), journeyScore: 100, phase: 'playing', missCount: 1 };
 
     for (let hit = 0; hit < rooms[1].goalCombo; hit++) {
       journey = hitState(journey, rooms[1]);
@@ -231,11 +249,12 @@ describe('roomEngine: stepJourney -- room complete transitions to the next room 
     expect(journey.roomIndex).toBe(3);
     expect(journey.phase).toBe('playing');
     expect(journey.pong.combo).toBe(0); // fresh Room 3 state
+    expect(journey.missCount).toBe(0); // MB-18: reset by the room transition
   });
 
   it('clearing the LAST configured room (room 3, as of MB-13) sets phase to "cleared" without advancing past it', () => {
     const rooms = buildRoomSequence(BOARD_CONFIG);
-    let journey: JourneyState = { roomIndex: 3, pong: createInitialPongState(rooms[2].engineConfig), journeyScore: 100, phase: 'playing' };
+    let journey: JourneyState = { roomIndex: 3, pong: createInitialPongState(rooms[2].engineConfig), journeyScore: 100, phase: 'playing', missCount: 1 };
 
     for (let hit = 0; hit < rooms[2].goalCombo; hit++) {
       journey = hitState(journey, rooms[2]);
@@ -244,34 +263,141 @@ describe('roomEngine: stepJourney -- room complete transitions to the next room 
 
     expect(journey.roomIndex).toBe(3);
     expect(journey.phase).toBe('cleared');
+    expect(journey.missCount).toBe(0); // MB-18: reset even on the "cleared" (no further room) path
   });
 });
 
-describe('roomEngine: stepJourney -- a miss restarts the CURRENT room only (ADR-0015 §3)', () => {
-  it('a floor miss resets the room-local ball/combo to a fresh room-start state, WITHOUT touching roomIndex or journeyScore', () => {
+describe('roomEngine: stepJourney -- MB-18, ADR-0015 §3 (correction): two-strike rule, 1st miss is a "grace" re-serve', () => {
+  it('the 1st floor miss this room instance re-serves the ball, but does NOT reset combo, ball speed (incl. drifting-orb multipliers), or active drifting orbs -- and does not touch roomIndex/journeyScore', () => {
+    const rooms = buildRoomSequence(BOARD_CONFIG);
+    const room2 = rooms[1]; // drifting orbs only exist from Room 2 onward
+    let journey: JourneyState = { roomIndex: 2, pong: createInitialPongState(room2.engineConfig), journeyScore: 0, phase: 'playing', missCount: 0 };
+
+    // Build combo, and elevate ball speed via a reward-orb catch, and leave
+    // an ACTIVE (uncaught) orb in play -- so there is something real to
+    // prove stays unchanged (an already-zero/empty state would make the
+    // "unchanged" assertions below trivially true).
+    for (let hit = 0; hit < 3; hit++) {
+      journey = hitState(journey, room2);
+      journey = stepJourney(journey, 16, rooms);
+    }
+    journey = { ...journey, pong: { ...journey.pong, driftingOrbs: [{ id: 'reward-1', x: journey.pong.ball.x, y: journey.pong.ball.y, role: 'reward' }] } };
+    journey = stepJourney(journey, 16, rooms);
+    expect(journey.pong.driftingOrbs).toEqual([]); // caught -- confirms the speed bump actually happened
+    const comboBeforeMiss = journey.pong.combo;
+    expect(comboBeforeMiss).toBeGreaterThan(0); // something real to preserve
+    const speedBeforeMiss = Math.hypot(journey.pong.ballVelocity.x, journey.pong.ballVelocity.y);
+    const baseSpeed = Math.hypot(
+      createInitialPongState(room2.engineConfig).ballVelocity.x,
+      createInitialPongState(room2.engineConfig).ballVelocity.y,
+    );
+    expect(speedBeforeMiss).toBeGreaterThan(baseSpeed * 1.1); // meaningfully elevated, not rounding noise
+    const scoreBeforeMiss = journey.journeyScore;
+
+    // Leave a SECOND, still-active orb in play to prove active orbs survive too.
+    // Positioned near the floor to force a miss on the next step -- but,
+    // UNLIKE the generic missState() helper (which sets a FIXED test
+    // velocity), this preserves the just-captured ELEVATED speed so the
+    // grace-reserve assertion below is actually proving something: it
+    // would trivially pass if the miss setup itself reset the speed first.
+    journey = {
+      ...journey,
+      pong: {
+        ...journey.pong,
+        ball: { x: 10, y: room2.engineConfig.height - 2 },
+        paddleX: room2.engineConfig.width - 5,
+        ballVelocity: { x: 0, y: speedBeforeMiss },
+        driftingOrbs: [{ id: 'still-active', x: 50, y: 50, role: 'reward' }],
+      },
+    };
+
+    journey = stepJourney(journey, 16, rooms);
+
+    expect(journey.missCount).toBe(1); // 1st strike recorded
+    expect(journey.roomIndex).toBe(2); // same room
+    expect(journey.journeyScore).toBe(scoreBeforeMiss); // untouched, same as the full-restart path always guaranteed
+    // The ball IS re-served (this is not a no-op) -- back at center.
+    expect(journey.pong.ball.x).toBeCloseTo(room2.engineConfig.width / 2, 5);
+    expect(journey.pong.ball.y).toBeCloseTo(room2.engineConfig.height / 2, 5);
+    // But everything else the ADR correction promises stays UNCHANGED:
+    expect(journey.pong.combo).toBe(comboBeforeMiss); // NOT reset to 0
+    const speedAfterGrace = Math.hypot(journey.pong.ballVelocity.x, journey.pong.ballVelocity.y);
+    expect(speedAfterGrace).toBeCloseTo(speedBeforeMiss, 5); // NOT reset to base speed
+    // NOT cleared -- still present, same identity/role. Its y moves by the
+    // normal per-step drift delta (integrateSubstep advances every active
+    // orb's own position each substep, independent of the ball's floor-miss
+    // branch -- expected, unrelated physics, not something MB-18 should
+    // suppress), so this checks presence/identity/role rather than an exact
+    // frozen position.
+    expect(journey.pong.driftingOrbs).toHaveLength(1);
+    expect(journey.pong.driftingOrbs[0].id).toBe('still-active');
+    expect(journey.pong.driftingOrbs[0].role).toBe('reward');
+    expect(journey.pong.driftingOrbs[0].x).toBe(50);
+  });
+
+  it('a 2nd floor miss (no goal reached between) triggers the full restart -- identical end-state to the original single-miss restart behavior, just one miss later', () => {
     const rooms = buildRoomSequence(BOARD_CONFIG);
     let journey = createInitialJourneyState(rooms);
 
-    // Build up some combo/score first.
     for (let hit = 0; hit < 3; hit++) {
       journey = hitState(journey, rooms[0]);
       journey = stepJourney(journey, 16, rooms);
     }
     expect(journey.pong.combo).toBe(3);
-    const scoreBeforeMiss = journey.journeyScore;
-    const roomIndexBeforeMiss = journey.roomIndex;
+    const scoreBeforeMisses = journey.journeyScore;
+    const roomIndexBeforeMisses = journey.roomIndex;
 
+    // 1st miss -- grace (regression guard within this same test: NOT yet a
+    // restart, otherwise the "2nd miss" framing below would be vacuous).
+    journey = missState(journey, rooms[0]);
+    journey = stepJourney(journey, 16, rooms);
+    expect(journey.missCount).toBe(1);
+    expect(journey.pong.combo).toBe(3); // still the grace path, not yet reset
+
+    // 2nd miss -- the ORIGINAL full-restart end-state (regression guard:
+    // this is byte-for-byte what a single miss used to produce pre-MB-18).
     journey = missState(journey, rooms[0]);
     journey = stepJourney(journey, 16, rooms);
 
-    expect(journey.roomIndex).toBe(roomIndexBeforeMiss); // still the SAME room, not the whole journey restarting
-    expect(journey.journeyScore).toBe(scoreBeforeMiss); // global progress untouched -- ADR-0015 §3's whole rationale
+    expect(journey.roomIndex).toBe(roomIndexBeforeMisses); // still the SAME room, not the whole journey restarting
+    expect(journey.journeyScore).toBe(scoreBeforeMisses); // global progress untouched -- ADR-0015 §3's whole rationale
     expect(journey.pong.combo).toBe(0);
+    expect(journey.missCount).toBe(0); // reset by the full restart
     // Room-local ball position reset to the room's own fresh start (center X).
     expect(journey.pong.ball.x).toBeCloseTo(rooms[0].engineConfig.width / 2, 5);
   });
 
-  it('a miss BEFORE any hit this room (combo already 0) still restarts the room -- the floorMissCount signal, not combo, is what detects this', () => {
+  it('reaching the room goal BETWEEN two misses resets missCount -- a miss after a completed rooms transition does not inherit the previous rooms count', () => {
+    const rooms = buildRoomSequence(BOARD_CONFIG);
+    let journey = createInitialJourneyState(rooms);
+
+    // 1st miss in Room 1 -- grace, missCount now 1.
+    journey = missState(journey, rooms[0]);
+    journey = stepJourney(journey, 16, rooms);
+    expect(journey.missCount).toBe(1);
+    expect(journey.roomIndex).toBe(1);
+
+    // Clear Room 1's goal WITHOUT a 2nd miss -- the room transition should
+    // reset missCount, per the ADR correction's own "reaching the room's
+    // goal resets the miss count" rule.
+    for (let hit = 0; hit < rooms[0].goalCombo; hit++) {
+      journey = hitState(journey, rooms[0]);
+      journey = stepJourney(journey, 16, rooms);
+    }
+    expect(journey.roomIndex).toBe(2);
+    expect(journey.missCount).toBe(0);
+
+    // A single miss in the NEW room (Room 2) must be treated as a FRESH
+    // 1st miss (grace), not as "the 2nd miss" carried over from Room 1 --
+    // if the old count had leaked through, this would incorrectly trigger
+    // a full restart instead.
+    journey = missState(journey, rooms[1]);
+    journey = stepJourney(journey, 16, rooms);
+    expect(journey.missCount).toBe(1); // fresh 1st strike, not a leaked 2nd
+    expect(journey.pong.ball.x).toBeCloseTo(rooms[1].engineConfig.width / 2, 5); // grace re-serve, not a fresh-room coincidence
+  });
+
+  it('a miss BEFORE any hit this room (combo already 0) still counts as the 1st grace strike -- the floorMissCount signal, not combo, is what detects this', () => {
     const rooms = buildRoomSequence(BOARD_CONFIG);
     let journey = createInitialJourneyState(rooms);
     expect(journey.pong.combo).toBe(0); // nothing has happened yet
@@ -286,18 +412,19 @@ describe('roomEngine: stepJourney -- a miss restarts the CURRENT room only (ADR-
 
     expect(stepped.pong.ball.x).toBeCloseTo(rooms[0].engineConfig.width / 2, 5);
     expect(stepped.roomIndex).toBe(1);
+    expect(stepped.missCount).toBe(1);
   });
 
-  it('a miss while phase is "cleared" still resets that room, without leaving "cleared" or touching journeyScore', () => {
+  it('a miss while phase is "cleared" still counts a strike in that room, without leaving "cleared" or touching journeyScore -- and the 2nd such miss still fully restarts it', () => {
     const rooms = buildRoomSequence(BOARD_CONFIG);
-    let journey: JourneyState = { roomIndex: 2, pong: { ...createInitialPongState(rooms[1].engineConfig), combo: 5 }, journeyScore: 250, phase: 'cleared' };
+    let journey: JourneyState = { roomIndex: 2, pong: { ...createInitialPongState(rooms[1].engineConfig), combo: 5 }, journeyScore: 250, phase: 'cleared', missCount: 0 };
 
-    journey = missState(journey, rooms[1]);
-    journey = stepJourney(journey, 16, rooms);
+    journey = missTwice(journey, rooms[1], rooms);
 
     expect(journey.phase).toBe('cleared');
     expect(journey.journeyScore).toBe(250);
     expect(journey.pong.combo).toBe(0);
+    expect(journey.missCount).toBe(0);
   });
 
   // MB-09, ADR-0015 §10 (retirement note): Room 2 no longer authors a
@@ -308,7 +435,7 @@ describe('roomEngine: stepJourney -- a miss restarts the CURRENT room only (ADR-
   // worth proving that mechanism works, via a hand-built RoomConfig with a
   // synthetic obstacle (mirrors pongEngine.test.ts's own CONFIG_WITH_OBSTACLE
   // pattern), rather than deleting this coverage outright.
-  it('room-restart correctness: breaking a room-authored obstacle, then missing, resets the obstacle to intact -- the SAME room-local restart path, no separate reset code (proven via a synthetic obstacle since no shipped room authors one post-MB-09)', () => {
+  it('room-restart correctness: breaking a room-authored obstacle, then missing TWICE, resets the obstacle to intact -- the SAME room-local restart path, no separate reset code (proven via a synthetic obstacle since no shipped room authors one post-MB-09)', () => {
     const rooms = buildRoomSequence(BOARD_CONFIG);
     const room2 = rooms[1];
     const syntheticObstacle: PongObstacleConfig = { id: 'synthetic-1', x: 10, y: 10, width: 50, height: 10, breakable: true, comboThresholdToBreak: 2 };
@@ -319,7 +446,7 @@ describe('roomEngine: stepJourney -- a miss restarts the CURRENT room only (ADR-
     };
     const roomsWithObstacle = [rooms[0], roomWithObstacle];
 
-    let journey: JourneyState = { roomIndex: 2, pong: createInitialPongState(roomWithObstacle.engineConfig), journeyScore: 0, phase: 'playing' };
+    let journey: JourneyState = { roomIndex: 2, pong: createInitialPongState(roomWithObstacle.engineConfig), journeyScore: 0, phase: 'playing', missCount: 0 };
 
     // Build combo to the break threshold via paddle hits, then hit the obstacle.
     for (let hit = 0; hit < syntheticObstacle.comboThresholdToBreak!; hit++) {
@@ -330,10 +457,9 @@ describe('roomEngine: stepJourney -- a miss restarts the CURRENT room only (ADR-
     journey = stepJourney(journey, 16, roomsWithObstacle);
     expect(journey.pong.obstacles).toEqual([{ id: syntheticObstacle.id, broken: true }]); // confirms the break actually happened -- otherwise the reset assertion below would be trivially true
 
-    // Now miss (room-local restart) -- still Room 2, same obstacle config,
-    // but a FRESH pong state.
-    journey = missState(journey, roomWithObstacle);
-    journey = stepJourney(journey, 16, roomsWithObstacle);
+    // Miss TWICE (room-local FULL restart, post-MB-18) -- still Room 2,
+    // same obstacle config, but a FRESH pong state.
+    journey = missTwice(journey, roomWithObstacle, roomsWithObstacle);
 
     expect(journey.roomIndex).toBe(2); // still the same room, not the whole journey restarting
     expect(journey.pong.obstacles).toEqual([{ id: syntheticObstacle.id, broken: false }]);
@@ -375,7 +501,7 @@ describe('roomEngine: drifting speed-orbs (MB-08, ADR-0015 §11 amendment)', () 
     const rooms = buildRoomSequence(BOARD_CONFIG);
     const room2 = rooms[1];
     const baseSpeed = Math.hypot(createInitialPongState(room2.engineConfig).ballVelocity.x, createInitialPongState(room2.engineConfig).ballVelocity.y);
-    let journey: JourneyState = { roomIndex: 2, pong: createInitialPongState(room2.engineConfig), journeyScore: 0, phase: 'playing' };
+    let journey: JourneyState = { roomIndex: 2, pong: createInitialPongState(room2.engineConfig), journeyScore: 0, phase: 'playing', missCount: 0 };
 
     // Two reward catches in a row, positioned exactly at the ball each time
     // -- caught on the very next step (same pattern proven at the
@@ -397,8 +523,11 @@ describe('roomEngine: drifting speed-orbs (MB-08, ADR-0015 §11 amendment)', () 
     // Add a SECOND, still-uncaught orb too, to prove active orbs also clear on restart.
     journey = { ...journey, pong: { ...journey.pong, driftingOrbs: [{ id: 'still-active', x: 50, y: 50, role: 'reward' }] } };
 
-    journey = missState(journey, room2);
-    journey = stepJourney(journey, 16, rooms);
+    // MB-18: TWO misses now needed to reach the full-restart path -- a
+    // single miss would only be the grace re-serve, which explicitly must
+    // NOT reset speed/orbs (see the dedicated grace-miss describe block),
+    // so it would make the "reset to base speed" assertion below false.
+    journey = missTwice(journey, room2, rooms);
 
     expect(journey.roomIndex).toBe(2); // still the same room, not the whole journey restarting
     expect(journey.pong.driftingOrbs).toEqual([]);
@@ -414,7 +543,7 @@ describe('roomEngine: drifting speed-orbs (MB-08, ADR-0015 §11 amendment)', () 
     const rooms = buildRoomSequence(BOARD_CONFIG);
     const room3 = rooms[2];
     const baseSpeed = Math.hypot(createInitialPongState(room3.engineConfig).ballVelocity.x, createInitialPongState(room3.engineConfig).ballVelocity.y);
-    let journey: JourneyState = { roomIndex: 3, pong: createInitialPongState(room3.engineConfig), journeyScore: 0, phase: 'playing' };
+    let journey: JourneyState = { roomIndex: 3, pong: createInitialPongState(room3.engineConfig), journeyScore: 0, phase: 'playing', missCount: 0 };
 
     for (let i = 0; i < 2; i++) {
       journey = {
@@ -429,8 +558,9 @@ describe('roomEngine: drifting speed-orbs (MB-08, ADR-0015 §11 amendment)', () 
 
     journey = { ...journey, pong: { ...journey.pong, driftingOrbs: [{ id: 'still-active', x: 50, y: 50, role: 'reward' }] } };
 
-    journey = missState(journey, room3);
-    journey = stepJourney(journey, 16, rooms);
+    // MB-18: two misses needed to reach the full-restart path -- see the
+    // Room 2 test's own comment above for why.
+    journey = missTwice(journey, room3, rooms);
 
     expect(journey.roomIndex).toBe(3); // still the same room, not the whole journey restarting
     expect(journey.pong.driftingOrbs).toEqual([]);

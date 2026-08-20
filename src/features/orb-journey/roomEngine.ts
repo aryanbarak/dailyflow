@@ -204,6 +204,15 @@ export interface JourneyState {
    *  persistence this slice). */
   readonly journeyScore: number;
   readonly phase: JourneyPhase;
+  /** MB-18, ADR-0015 §3 (correction): room-local two-strike counter --
+   *  0 or 1 while "in grace" (one miss already spent this room instance),
+   *  reset to 0 on entering a new room OR after a full restart (the 2nd
+   *  miss). Deliberately NOT part of PongState: it is a Journey-only
+   *  concept layered on top of the shared engine's own `floorMissCount`
+   *  (a monotonic, never-reset-except-by-createInitialPongState signal),
+   *  the same "state inputs only, physics engine stays generic" boundary
+   *  every other Journey-specific mechanic in this file already respects. */
+  readonly missCount: number;
 }
 
 export function createInitialJourneyState(rooms: readonly RoomConfig[]): JourneyState {
@@ -212,6 +221,37 @@ export function createInitialJourneyState(rooms: readonly RoomConfig[]): Journey
     pong: createInitialPongState(rooms[0].engineConfig),
     journeyScore: 0,
     phase: 'playing',
+    missCount: 0,
+  };
+}
+
+// MB-18, ADR-0015 §3 (correction): the "grace" 1st-miss re-serve -- a NEW,
+// LIGHTER reset path, distinct from the full restart below. Re-serves the
+// ball via the SAME standard-serve angle formula createInitialPongState
+// uses, but at the ball's CURRENT (post drifting-orb-multiplier) speed
+// magnitude rather than the room's base speed -- per the ADR correction's
+// explicit "speed (including any accumulated reward/penalty
+// multipliers)... UNCHANGED" requirement. `combo` is restored to its
+// PRE-miss value: the shared engine's own floor-miss branch
+// (pongEngine.ts's integrateSubstep -- Quick Break's own correct, unrelated
+// "a miss resets the combo streak" rule) already zeroed `stepped.combo`
+// before this function ever sees it; restoring it here is what makes the
+// grace miss cost no goal progress, without touching that shared branch.
+// Every OTHER field on `stepped` (score, obstacles, driftingOrbs, paddleX,
+// elapsedSeconds/status, floorMissCount) is already exactly what the
+// floor-miss branch leaves untouched -- nothing else needs restoring.
+const GRACE_SERVE_ANGLE_RAD = Math.PI / 6; // matches createInitialPongState's own standard serve angle
+
+function applyGraceReServe(preMissState: PongState, stepped: PongState, config: PongEngineConfig): PongState {
+  const speed = Math.hypot(stepped.ballVelocity.x, stepped.ballVelocity.y);
+  return {
+    ...stepped,
+    ball: { x: config.width / 2, y: config.height / 2 },
+    ballVelocity: {
+      x: speed * Math.sin(GRACE_SERVE_ANGLE_RAD),
+      y: -speed * Math.cos(GRACE_SERVE_ANGLE_RAD),
+    },
+    combo: preMissState.combo,
   };
 }
 
@@ -221,9 +261,11 @@ function getRoom(journey: JourneyState, rooms: readonly RoomConfig[]): RoomConfi
   return room;
 }
 
-// ADR-0015 §3: a miss (floor contact) restarts the CURRENT room only --
-// never the whole Journey, never a life system. §9: journeyScore is
-// untouched by a restart; only the room-local physics state resets.
+// ADR-0015 §3 (corrected MB-18): a miss (floor contact) restarts the
+// CURRENT room only -- never the whole Journey, never a life system -- but
+// only on the 2nd miss this room instance; the 1st is a lighter "grace"
+// re-serve (applyGraceReServe, above). §9: journeyScore is untouched by
+// either path; only room-local physics state resets/re-serves.
 // ADR-0015 §2: a room-complete transition swaps to the NEXT room's engine
 // config (or, on the final configured room, enters 'cleared' -- see
 // JourneyPhase's own comment) with no hard reload -- the caller (a Journey-
@@ -245,10 +287,23 @@ export function stepJourney(
 
   const missedThisStep = stepped.floorMissCount > journey.pong.floorMissCount;
   if (missedThisStep) {
+    const nextMissCount = journey.missCount + 1;
+    if (nextMissCount < 2) {
+      // MB-18: 1st miss this room instance -- grace re-serve, not a restart.
+      return {
+        ...journey,
+        pong: applyGraceReServe(journey.pong, stepped, currentRoom.engineConfig),
+        journeyScore,
+        missCount: nextMissCount,
+      };
+    }
+    // MB-18: 2nd miss -- the ORIGINAL, unchanged full-restart path, just
+    // reached one miss later than before.
     return {
       ...journey,
       pong: createInitialPongState(currentRoom.engineConfig),
       journeyScore,
+      missCount: 0,
     };
   }
 
@@ -256,7 +311,7 @@ export function stepJourney(
   if (roomCleared) {
     const isLastRoom = journey.roomIndex >= rooms.length;
     if (isLastRoom) {
-      return { ...journey, pong: stepped, journeyScore, phase: 'cleared' };
+      return { ...journey, pong: stepped, journeyScore, phase: 'cleared', missCount: 0 };
     }
     const nextRoomIndex = journey.roomIndex + 1;
     const nextRoom = getRoom({ ...journey, roomIndex: nextRoomIndex }, rooms);
@@ -265,6 +320,7 @@ export function stepJourney(
       pong: createInitialPongState(nextRoom.engineConfig),
       journeyScore,
       phase: 'playing',
+      missCount: 0,
     };
   }
 

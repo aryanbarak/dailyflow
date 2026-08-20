@@ -31,6 +31,23 @@ complete. Completing a Room auto-transitions (short, reduced-motion-aware
 transition, no hard reload) to the next Room.
 
 ### 3. Failure within a Room
+
+**Corrected (MB-18, PO decision — final, frozen before Journey persistence).**
+A single floor miss no longer triggers an immediate full room restart. Each
+room instance tracks a local miss count (reset to 0 on entering a new room
+or after a full restart):
+- 1st floor miss: a "grace" reserve — the ball is re-served from center;
+  ball speed (including any accumulated reward/penalty multipliers from
+  drifting-orb contacts), the room's goal-progress (combo), and any active
+  drifting orbs are UNCHANGED. This is not a restart.
+- 2nd floor miss (without reaching the room's goal in between): triggers
+  the full room restart as originally specified below (all room-local state
+  — speed, combo, orbs — resets to the room's start values).
+Reaching the room's goal resets the miss count to 0 for the next room. This
+remains entirely room-local — no Journey-level "lives" or end condition are
+introduced; a full restart still only costs room-local time, never global
+progress, consistent with this section's original principle below.
+
 Missing (floor contact) restarts the CURRENT room only — never the whole
 Journey, never a life system. No "game over" except explicit Esc/close. This
 is a deliberate reversal of the earlier "no lives" debate: Journey has no

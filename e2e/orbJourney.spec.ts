@@ -126,6 +126,27 @@ async function getDriftingOrbSpawnCount(page: import('@playwright/test').Page): 
   );
 }
 
+// MB-18, ADR-0015 §3 (correction): same "manipulate state inputs, let real
+// physics run" methodology as forceOrbBottomMiss -- positions the ball
+// definitively past the floor with a downward velocity so the next tick's
+// REAL floor-miss branch resolves it, then lets stepJourney's own
+// grace/full-restart branching run unmodified.
+async function forceFloorMiss(page: import('@playwright/test').Page) {
+  await page.evaluate(() => {
+    (window as unknown as { __orbJourneyDevForceFloorMiss?: () => void }).__orbJourneyDevForceFloorMiss?.();
+  });
+}
+
+async function getMissCount(page: import('@playwright/test').Page): Promise<number> {
+  return page.evaluate(() => (window as unknown as { __orbJourneyDevGetMissCount?: () => number }).__orbJourneyDevGetMissCount?.() ?? -1);
+}
+
+async function isReactionActive(page: import('@playwright/test').Page): Promise<boolean> {
+  return page.evaluate(
+    () => (window as unknown as { __orbJourneyDevIsReactionActive?: () => boolean }).__orbJourneyDevIsReactionActive?.() ?? false,
+  );
+}
+
 // MB-13: average canvas color across the WHOLE frame -- a room's theme
 // (background, drawn first and covering most of the board) dominates this
 // average far more than the small ball/paddle/orbs, so a meaningfully
@@ -1451,5 +1472,127 @@ test.describe('Orb Journey (MB-05, ADR-0015)', () => {
       });
       expect(widths.boundaryWidth, `at t+${target}ms`).toBeCloseTo(widths.containerWidth, 0);
     }
+  });
+
+  // MB-18, ADR-0015 §3 (correction): real-browser smoke for the two-strike
+  // rule. The pure-logic proof (grace preserves combo/speed/orbs; the 2nd
+  // miss reaches the SAME full-restart end-state) already lives in
+  // roomEngine.test.ts -- this test's job is confirming the real browser
+  // wiring (JourneyCanvas.tsx's dev hooks, stepJourney's own state machine)
+  // actually reflects that live, not re-proving the math.
+  test('MB-18: a full two-miss sequence is visible in a real browser -- 1st floor miss is a grace strike (same room, missCount 1), 2nd fully restarts (missCount back to 0)', async ({
+    page,
+  }) => {
+    const pageErrors: string[] = [];
+    page.on('pageerror', err => pageErrors.push(err.message));
+
+    await openJourney(page);
+    await expect(page.getByText('Room 1')).toBeVisible();
+    await page.waitForTimeout(200);
+
+    expect(await getMissCount(page)).toBe(0);
+
+    // 1st floor miss -- grace.
+    await forceFloorMiss(page);
+    await page.waitForTimeout(100);
+    expect(await getMissCount(page)).toBe(1);
+    await expect(page.getByText('Room 1')).toBeVisible(); // still Room 1, dialog still open, no restart yet
+    await expect(page.getByRole('dialog')).toBeVisible();
+
+    // 2nd floor miss -- full restart.
+    await forceFloorMiss(page);
+    await page.waitForTimeout(100);
+    expect(await getMissCount(page)).toBe(0); // reset by the full restart
+    await expect(page.getByText('Room 1')).toBeVisible(); // still the SAME room -- room-local only, never the whole Journey
+
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).not.toBeVisible();
+    expect(pageErrors).toEqual([]);
+  });
+
+  // MB-18: the grace-miss re-serve must have SOME visible distinction from
+  // a normal serve (task brief: "don't leave it silent/indistinguishable").
+  // Reuses the existing Jolt reaction primitive (JourneyCanvas.tsx) --
+  // proven via the SAME shared trigger state (driftingOrbReactionUntilRef)
+  // that Room 2+'s penalty-role drifting-orb catch already uses and already
+  // renders correctly (existing coverage). This test's job is proving the
+  // grace-miss path actually REACHES that same trigger, not re-proving the
+  // Jolt drawing routine itself -- Room 1 has no drifting orbs at all, so
+  // if the reaction is active there, a grace miss is the only possible
+  // cause (no ambiguity with a real orb catch).
+  test('MB-18: the grace-miss re-serve triggers the SAME visible reaction cue Room 2+s penalty-orb catch uses, not a silent teleport', async ({
+    page,
+  }) => {
+    await openJourney(page);
+    await expect(page.getByText('Room 1')).toBeVisible();
+    await page.waitForTimeout(300);
+
+    expect(await isReactionActive(page)).toBe(false); // no reaction active yet -- otherwise the next assertion would be trivially true
+
+    await forceFloorMiss(page);
+    await page.waitForTimeout(50); // within the Jolt flash's own window (DRIFTING_ORB_JOLT_FLASH_DURATION_MS, 260ms)
+
+    expect(await getMissCount(page)).toBe(1); // confirms the grace path was actually taken
+    expect(await isReactionActive(page)).toBe(true);
+
+    // And it fades -- not a permanently-stuck cue.
+    await page.waitForTimeout(400);
+    expect(await isReactionActive(page)).toBe(false);
+  });
+
+  // MB-18: confirms MB-11's crash guard and MB-12's 90s-freeze fix both
+  // still hold once room-local misses go through the NEW two-strike state
+  // machine, not just the original single-miss restart path they were
+  // originally proven against.
+  test('MB-18 regression check: MB-11s crash guard and MB-12s 90s-freeze fix both still hold under the new two-strike miss state machine', async ({
+    page,
+  }) => {
+    const pageErrors: string[] = [];
+    page.on('pageerror', err => pageErrors.push(err.message));
+
+    await openJourney(page);
+    await expect(page.getByText('Room 1')).toBeVisible();
+
+    // Push near the legacy 90s boundary, THEN drive a full two-miss cycle
+    // (grace, then full restart) across it -- the exact combination that
+    // never existed before MB-18 (a room-local restart used to be reached
+    // in one miss).
+    await forceElapsedSeconds(page, 89.5);
+    await forceFloorMiss(page); // grace
+    await page.waitForTimeout(50);
+    expect(await getMissCount(page)).toBe(1);
+    await forceFloorMiss(page); // full restart, crossing the 90s boundary along the way
+    await page.waitForTimeout(50);
+    expect(await getMissCount(page)).toBe(0);
+
+    const sampleFrozen = () =>
+      page.evaluate(async () => {
+        const canvasEl = document.querySelector('canvas') as HTMLCanvasElement;
+        const ctx = canvasEl.getContext('2d')!;
+        const snapshot = () => {
+          const { data } = ctx.getImageData(0, 0, canvasEl.width, canvasEl.height);
+          let hash = 0;
+          for (let i = 0; i < data.length; i += 97) hash = (hash * 31 + data[i]) | 0;
+          return hash;
+        };
+        const hashes: number[] = [];
+        for (let i = 0; i < 60; i++) {
+          await new Promise(resolve => requestAnimationFrame(resolve));
+          hashes.push(snapshot());
+        }
+        return new Set(hashes).size === 1;
+      });
+    expect(await sampleFrozen()).toBe(false); // still animating, not frozen
+
+    // Crash guard: force the physics/update-step throw (MB-11) immediately
+    // after that same two-miss cycle -- confirms the try/catch coverage
+    // wasn't accidentally narrowed by the new missCount branching.
+    await forceNextTickThrow(page);
+    await page.waitForTimeout(300); // let the next tick actually run and throw
+    await expect(page.getByText('Something went wrong with the game')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).not.toBeVisible();
+
+    expect(pageErrors).toEqual([]);
   });
 });

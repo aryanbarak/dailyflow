@@ -153,6 +153,9 @@ export function JourneyCanvas({
       __orbJourneyDevForceElapsedSeconds?: (seconds: number) => void;
       __orbJourneyDevGetDriftingOrbSpawnCount?: () => number;
       __orbJourneyDevGetBallFraction?: () => { x: number; y: number };
+      __orbJourneyDevForceFloorMiss?: () => void;
+      __orbJourneyDevGetMissCount?: () => number;
+      __orbJourneyDevIsReactionActive?: () => boolean;
     };
     globalWindow.__orbJourneyDevForceRoomGoal = () => {
       const room = roomsRef.current[journeyRef.current.roomIndex - 1];
@@ -308,6 +311,37 @@ export function JourneyCanvas({
       if (!room) return { x: 0.5, y: 0.5 };
       return { x: journeyRef.current.pong.ball.x / room.engineConfig.width, y: journeyRef.current.pong.ball.y / room.engineConfig.height };
     };
+    // MB-18, ADR-0015 §3 (correction): same "manipulate state inputs, let
+    // real physics run" methodology as __orbJourneyDevForceOrbBottomMiss --
+    // positions the ball definitively PAST the floor (not just barely
+    // crossing it, so this doesn't depend on one substep's small drift
+    // increment) with a downward velocity, so the next tick's REAL
+    // integrateSubstep floor-miss branch (pongEngine.ts) resolves it
+    // unmodified -- this does not shortcut or duplicate stepJourney's own
+    // grace/full-restart branching. Positioned well below paddleBottom too,
+    // so `hitPaddle`'s own y-band check can never accidentally intercept it
+    // regardless of where the paddle currently is.
+    globalWindow.__orbJourneyDevForceFloorMiss = () => {
+      const room = roomsRef.current[journeyRef.current.roomIndex - 1];
+      if (!room) return;
+      const config = room.engineConfig;
+      journeyRef.current = {
+        ...journeyRef.current,
+        pong: { ...journeyRef.current.pong, ball: { x: config.width * 0.5, y: config.height + config.ballRadius + 5 }, ballVelocity: { x: 0, y: 300 } },
+      };
+    };
+    // Read-only introspection -- MB-18's own room-local two-strike counter,
+    // not otherwise observable from outside (no HUD text for it, by
+    // design -- see the MB-18 report's own manual-verification section).
+    globalWindow.__orbJourneyDevGetMissCount = () => journeyRef.current.missCount;
+    // MB-18: read-only introspection -- lets a test verify the grace-miss
+    // visual cue's underlying TRIGGER actually fired (driftingOrbReactionUntilRef/
+    // RoleRef, the SAME shared reaction state the existing penalty-role
+    // drifting-orb Jolt reaction already uses and already renders correctly
+    // -- this hook proves the grace path reuses/reaches that same code, not
+    // that the Jolt drawing routine itself is correct, which is already
+    // covered by existing drifting-orb reaction coverage).
+    globalWindow.__orbJourneyDevIsReactionActive = () => performance.now() < driftingOrbReactionUntilRef.current;
     return () => {
       delete globalWindow.__orbJourneyDevForceRoomGoal;
       delete globalWindow.__orbJourneyDevForceObstacleContact;
@@ -322,6 +356,9 @@ export function JourneyCanvas({
       delete globalWindow.__orbJourneyDevForceElapsedSeconds;
       delete globalWindow.__orbJourneyDevGetDriftingOrbSpawnCount;
       delete globalWindow.__orbJourneyDevGetBallFraction;
+      delete globalWindow.__orbJourneyDevForceFloorMiss;
+      delete globalWindow.__orbJourneyDevGetMissCount;
+      delete globalWindow.__orbJourneyDevIsReactionActive;
     };
   }, []);
 
@@ -719,6 +756,10 @@ export function JourneyCanvas({
         const prevPenaltyBallContactCount = journeyRef.current.pong.penaltyBallContactCount;
         const prevPenaltyPaddleCatchCount = journeyRef.current.pong.penaltyPaddleCatchCount;
         const prevPenaltyBottomMissCount = journeyRef.current.pong.penaltyBottomMissCount;
+        // MB-18, ADR-0015 §3 (correction): needed to detect "the 1st,
+        // grace-path miss just happened THIS tick" -- see the reaction block
+        // below.
+        const prevMissCount = journeyRef.current.missCount;
         const next = stepJourney(journeyRef.current, dtMs, roomsRef.current);
         journeyRef.current = next;
 
@@ -816,6 +857,31 @@ export function JourneyCanvas({
               if (currentRoom) {
                 particlesRef.current.push(...createHitParticles(next.pong.paddleX, currentRoom.engineConfig.paddleY, count, nowMs));
               }
+            }
+          }
+
+          // NEW, MB-18, ADR-0015 §3 (correction): the 1st-miss "grace"
+          // re-serve needs SOME visible distinction from a normal serve, per
+          // the task brief -- "don't leave it silent/indistinguishable."
+          // Reuses the EXISTING penalty-role Jolt reaction primitive
+          // (flash+shake+particles, already drawn at the ball in
+          // renderFrame via driftingOrbReactionUntilRef/RoleRef) rather than
+          // building a new visual -- a floor miss is negative feedback, the
+          // same semantic category Jolt already represents. missCount going
+          // from 0 to 1 WITHIN the same room (a room transition/full-restart
+          // both reset missCount too, so this diff alone is ambiguous
+          // without the same-room guard already established by this whole
+          // block) is exactly "the grace path was just taken this tick."
+          // Note: on the rare chance a drifting-orb reaction ALSO resolves
+          // in this same tick, only one Jolt/Absorb plays -- the same "one
+          // reaction shown at a time" simplification already precedented
+          // above for a reward/penalty collision, not a new limitation.
+          if (next.missCount === 1 && prevMissCount === 0) {
+            driftingOrbReactionRoleRef.current = 'penalty';
+            driftingOrbReactionUntilRef.current = nowMs + DRIFTING_ORB_JOLT_FLASH_DURATION_MS;
+            const count = getDriftingOrbJoltParticleCount(reducedMotionRef.current);
+            if (count > 0) {
+              particlesRef.current.push(...createHitParticles(next.pong.ball.x, next.pong.ball.y, count, nowMs));
             }
           }
         }
