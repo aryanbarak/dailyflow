@@ -21,14 +21,16 @@ import {
   DRIFTING_ORB_REWARD_SPEED_STEP,
   DRIFTING_ORB_SPAWN_INTERVAL_MS,
   ROOM_1_GOAL_COMBO,
+  ROOM_3_DRIFTING_ORB_SPAWN_INTERVAL_MS,
   ROOM_DIFFICULTY_PADDLE_SHRINK_STEP,
   ROOM_DIFFICULTY_SPEED_STEP,
   ROOM_GOAL_COMBO_STEP_PER_ROOM,
   ROOM_MIN_PADDLE_WIDTH_RATIO,
 } from './tuning';
 
-// ADR-0015 §7: exactly one theme family ships this slice.
-export type RoomThemeId = 'focus-tasks';
+// ADR-0015 §7/§12: two theme families ship as of MB-13 -- Focus/Tasks
+// (Rooms 1-2, unchanged) and Rhythm/Calendar (Room 3, new).
+export type RoomThemeId = 'focus-tasks' | 'rhythm-calendar';
 
 export interface RoomConfig {
   readonly roomIndex: number; // 1-based
@@ -69,17 +71,21 @@ export function buildRoomObstacles(roomIndex: number, engineConfig: PongEngineCo
   return [];
 }
 
-// MB-08, ADR-0015 §11 (amendment): Room 2's drifting-orb spawn recipe.
-// Radius scales with the room's own engineConfig.width (post-resize-safe,
-// like buildRoomObstacles above); drift speed is a flat px/s value, NOT
-// rescaled by board size -- matching this codebase's existing precedent for
-// baseSpeed/maxSpeed (computeBoardConfig only rescales DIMENSIONAL fields,
-// see that function's own comment), not a new inconsistency introduced here.
+// MB-08, ADR-0015 §11 (amendment); MB-13, ADR-0015 §12: Rooms 2 and 3's
+// drifting-orb spawn recipe. Radius scales with the room's own
+// engineConfig.width (post-resize-safe, like buildRoomObstacles above);
+// drift speed is a flat px/s value, NOT rescaled by board size -- matching
+// this codebase's existing precedent for baseSpeed/maxSpeed
+// (computeBoardConfig only rescales DIMENSIONAL fields, see that function's
+// own comment), not a new inconsistency introduced here. Room 3's ONLY
+// difference from Room 2 is spawn cadence (ROOM_3_DRIFTING_ORB_SPAWN_INTERVAL_MS,
+// a tuning constant, not a new mechanic) -- same roles, effects, radius,
+// drift speed, paddle/miss behavior.
 export function buildDriftingOrbSpawnConfig(roomIndex: number, engineConfig: PongEngineConfig): PongDriftingOrbConfig | undefined {
-  if (roomIndex !== 2) return undefined; // Room 1 stays free of drifting orbs by design (ADR-0015 §7/§11)
+  if (roomIndex < 2) return undefined; // Room 1 stays free of drifting orbs by design (ADR-0015 §7/§11)
 
   return {
-    spawnIntervalMs: DRIFTING_ORB_SPAWN_INTERVAL_MS,
+    spawnIntervalMs: roomIndex >= 3 ? ROOM_3_DRIFTING_ORB_SPAWN_INTERVAL_MS : DRIFTING_ORB_SPAWN_INTERVAL_MS,
     driftSpeedPxPerSecond: DRIFTING_ORB_DRIFT_SPEED_PX_PER_SECOND,
     radius: engineConfig.width * DRIFTING_ORB_RADIUS_RATIO,
     rewardSpeedStep: DRIFTING_ORB_REWARD_SPEED_STEP,
@@ -161,21 +167,31 @@ export function buildRoomConfig(roomIndex: number, theme: RoomThemeId, boardConf
   };
 }
 
-// ADR-0015 §7: exactly 2 rooms this slice, same theme family. Room 2 is a
-// harder variant via room-index difficulty ONLY -- no new mechanic, no
-// second theme.
+// ADR-0015 §7/§12: 3 rooms as of MB-13 (was exactly 2 pre-MB-13). Room 2 is
+// a harder variant of Room 1 via room-index difficulty ONLY -- no new
+// mechanic, no second theme. Room 3 introduces the SECOND (and, this slice,
+// last) theme family, Rhythm/Calendar (§12) -- still no new mechanic; its
+// only content lever is a faster drifting-orb spawn cadence (tuning.ts).
 export function buildRoomSequence(boardConfig: PongEngineConfig): readonly RoomConfig[] {
-  return [buildRoomConfig(1, 'focus-tasks', boardConfig), buildRoomConfig(2, 'focus-tasks', boardConfig)];
+  return [
+    buildRoomConfig(1, 'focus-tasks', boardConfig),
+    buildRoomConfig(2, 'focus-tasks', boardConfig),
+    buildRoomConfig(3, 'rhythm-calendar', boardConfig),
+  ];
 }
 
-// 'cleared': the LAST configured room's goal was reached. ADR-0015 §1/§3:
-// Journey has no "game over" except explicit Esc/close, and this slice ships
-// exactly 2 rooms (no room 3 to author) -- rather than inventing further
-// content or looping the sequence (out of scope either way), clearing the
-// final room simply stops advancing: the room's own physics keep running
-// (the ball keeps playing, still scorable) and the HUD acknowledges
-// completion instead of transitioning again. See this module's own report
-// section for this judgment call.
+// 'cleared': the LAST configured room's goal was reached (rooms.length,
+// generalized -- see stepJourney's own isLastRoom check below, which reads
+// rooms.length rather than a hardcoded room count, so this ALREADY
+// generalized to 3 rooms with no code change needed here; verified
+// explicitly by MB-13's own boundary test, not assumed). ADR-0015 §1/§3:
+// Journey has no "game over" except explicit Esc/close -- rather than
+// inventing further content or looping the sequence past the last authored
+// room (out of scope either way), clearing the final room simply stops
+// advancing: the room's own physics keep running (the ball keeps playing,
+// still scorable) and the HUD acknowledges completion instead of
+// transitioning again. See this module's own report section for this
+// judgment call.
 export type JourneyPhase = 'playing' | 'cleared';
 
 export interface JourneyState {

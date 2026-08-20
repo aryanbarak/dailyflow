@@ -9,6 +9,13 @@
 // This slice ships exactly ONE theme family (ADR-0015 §7): Focus/Tasks-
 // inspired abstract shapes -- rounded "card" rectangles with a checkmark-
 // like glyph or list-line marks, no real text anywhere.
+//
+// MB-13, ADR-0015 §12: a SECOND theme family, Rhythm/Calendar (Room 3) --
+// grid lines and horizontal bar shapes, same "abstract, token-sourced,
+// never real data" rule, same closed import list (see this file's own
+// header above and roomTheme.test.ts's static-boundary proof, which covers
+// BOTH theme functions since it checks the whole file's imports, not a
+// per-function allowlist).
 import { toCanvasColor } from '../micro-breaks/colorNormalization';
 import type { RoomThemeId } from './roomEngine';
 
@@ -26,11 +33,22 @@ interface RoomThemeCssVars {
 
 // Every value here is an EXISTING design-token custom property name (see
 // src/styles/flow-tokens.css) -- no new tokens added, no literal hex values.
+// MB-13, ADR-0015 §12: Rhythm/Calendar (Room 3) deliberately uses a
+// DIFFERENT token family (blue) from Focus/Tasks' violet
+// (--flow-primary/--flow-surface-2/--flow-border-soft) -- both an
+// intentional per-module-family visual distinction (ADR-0015 §5) and what
+// makes Room 3 read as visibly distinct from Rooms 1/2 at a glance, not
+// just via shape.
 const ROOM_THEME_CSS_VARS: Record<RoomThemeId, RoomThemeCssVars> = {
   'focus-tasks': {
     accent: '--flow-primary',
     cardFill: '--flow-surface-2',
     cardBorder: '--flow-border-soft',
+  },
+  'rhythm-calendar': {
+    accent: '--flow-blue',
+    cardFill: '--flow-surface-3',
+    cardBorder: '--flow-border',
   },
 };
 
@@ -125,6 +143,78 @@ export function drawFocusTasksTheme(
     ctx.lineTo(lineEndX, glyphY);
     ctx.stroke();
   }
+  ctx.restore();
+}
+
+// MB-13, ADR-0015 §12: Rhythm/Calendar theme -- grid lines (a calendar-grid
+// abstraction: evenly spaced horizontal "day rows" and vertical "hour
+// columns") plus a few horizontal bar shapes across some of those rows (an
+// abstract "event block" -- a plain rectangle, no rounded corners and no
+// glyph, deliberately a DIFFERENT shape language from Focus/Tasks' rounded
+// checkmark cards above, so the two themes read as visually distinct even
+// in a single still frame, not just via color). Never real dates, times, or
+// event text -- same rule as drawFocusTasksTheme. Drawn BEHIND the ball/
+// paddle/trail, same layering contract as drawFocusTasksTheme. `progress`
+// brightens the accent the same way (closer to the room's own goal), for
+// parity with Focus/Tasks' behavior.
+export function drawRhythmCalendarTheme(
+  ctx: CanvasRenderingContext2D,
+  geometry: RoomThemeGeometry,
+  colors: RoomThemeColors,
+  progress: number,
+): void {
+  const { width, height } = geometry;
+  const clampedProgress = Math.min(1, Math.max(0, progress));
+
+  ctx.save();
+
+  // Grid: a handful of "day row" horizontal lines and "hour column"
+  // vertical lines, evenly spaced, low-alpha -- a calendar-grid silhouette,
+  // not a functional grid (no labels, no real time values).
+  const rowCount = 6;
+  const columnCount = 4;
+  ctx.strokeStyle = colors.cardBorder(0.35);
+  ctx.lineWidth = 1;
+  for (let row = 1; row < rowCount; row++) {
+    const y = (height * row) / rowCount;
+    ctx.beginPath();
+    ctx.moveTo(width * 0.06, y);
+    ctx.lineTo(width * 0.94, y);
+    ctx.stroke();
+  }
+  for (let col = 1; col < columnCount; col++) {
+    const x = (width * col) / columnCount;
+    ctx.beginPath();
+    ctx.moveTo(x, height * 0.08);
+    ctx.lineTo(x, height * 0.92);
+    ctx.stroke();
+  }
+
+  // Horizontal "event" bars -- flat rectangles spanning one or more grid
+  // columns, aligned to grid rows. The FIRST (the "current goal", mirroring
+  // drawFocusTasksTheme's own leftmost-card convention) brightens toward the
+  // accent color as room progress nears the goal; the rest stay a plain,
+  // static card-fill tone.
+  const barHeight = (height / rowCount) * 0.5;
+  const barSpecs = [
+    { row: 1, startCol: 0, spanCols: 3 },
+    { row: 3, startCol: 1, spanCols: 2 },
+    { row: 4, startCol: 0, spanCols: 2 },
+  ];
+  barSpecs.forEach((spec, index) => {
+    const barX = width * 0.06 + (spec.startCol * (width * 0.88)) / columnCount;
+    const barWidth = (spec.spanCols * (width * 0.88)) / columnCount;
+    const barY = (height * spec.row) / rowCount - barHeight / 2;
+
+    ctx.beginPath();
+    ctx.rect(barX, barY, barWidth, barHeight);
+    ctx.fillStyle = index === 0 ? colors.accent(0.25 + clampedProgress * 0.45) : colors.cardFill(0.6);
+    ctx.fill();
+    ctx.strokeStyle = colors.cardBorder(0.7);
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  });
+
   ctx.restore();
 }
 
@@ -314,6 +404,9 @@ export function drawRoomTheme(
   switch (theme) {
     case 'focus-tasks':
       drawFocusTasksTheme(ctx, geometry, colors, progress);
+      break;
+    case 'rhythm-calendar':
+      drawRhythmCalendarTheme(ctx, geometry, colors, progress);
       break;
   }
 }

@@ -131,17 +131,65 @@ describe('roomEngine: difficulty tuning respects the ADR-0014 §4 hard ceilings 
   });
 });
 
-describe('roomEngine: buildRoomSequence (ADR-0015 §7, exactly 2 rooms)', () => {
-  it('produces exactly 2 rooms, both the focus-tasks theme family', () => {
+describe('roomEngine: buildRoomSequence (ADR-0015 §7/§12, 3 rooms as of MB-13)', () => {
+  it('produces exactly 3 rooms: focus-tasks, focus-tasks, rhythm-calendar', () => {
     const rooms = buildRoomSequence(BOARD_CONFIG);
-    expect(rooms).toHaveLength(2);
+    expect(rooms).toHaveLength(3);
     expect(rooms[0].theme).toBe('focus-tasks');
     expect(rooms[1].theme).toBe('focus-tasks');
+    expect(rooms[2].theme).toBe('rhythm-calendar');
   });
 
-  it('room 2 has a higher combo goal than room 1 (room-index-only difficulty)', () => {
+  it('room 2 has a higher combo goal than room 1, and room 3 higher still (room-index-only difficulty)', () => {
     const rooms = buildRoomSequence(BOARD_CONFIG);
     expect(rooms[1].goalCombo).toBeGreaterThan(rooms[0].goalCombo);
+    expect(rooms[2].goalCombo).toBeGreaterThan(rooms[1].goalCombo);
+  });
+
+  // MB-13, ADR-0015 §12: Rooms 1 and 2 must come out of buildRoomSequence
+  // byte-for-byte identical to before this slice -- a regression guard
+  // against Room 3's addition accidentally perturbing the existing rooms
+  // (e.g. via a shared-array or off-by-one mistake in the new 3rd entry).
+  it('Rooms 1 and 2 are BYTE-FOR-BYTE unchanged by Room 3s addition', () => {
+    const rooms = buildRoomSequence(BOARD_CONFIG);
+    const room1Alone = buildRoomConfig(1, 'focus-tasks', BOARD_CONFIG);
+    const room2Alone = buildRoomConfig(2, 'focus-tasks', BOARD_CONFIG);
+    expect(rooms[0]).toEqual(room1Alone);
+    expect(rooms[1]).toEqual(room2Alone);
+  });
+
+  // MB-13, ADR-0015 §12: Room 3's one content lever -- a faster
+  // drifting-orb spawn cadence than Room 2's, same everything else.
+  it('Room 3 has a drifting-orb spawn config with a SHORTER interval than Room 2s, everything else identical', () => {
+    const rooms = buildRoomSequence(BOARD_CONFIG);
+    const room2Spawn = rooms[1].driftingOrbSpawn;
+    const room3Spawn = rooms[2].driftingOrbSpawn;
+    expect(room2Spawn).toBeDefined();
+    expect(room3Spawn).toBeDefined();
+    expect(room3Spawn!.spawnIntervalMs).toBeLessThan(room2Spawn!.spawnIntervalMs);
+    expect(room3Spawn!.driftSpeedPxPerSecond).toBe(room2Spawn!.driftSpeedPxPerSecond);
+    expect(room3Spawn!.rewardSpeedStep).toBe(room2Spawn!.rewardSpeedStep);
+    expect(room3Spawn!.penaltySpeedStep).toBe(room2Spawn!.penaltySpeedStep);
+  });
+
+  it('Room 3 authors zero static obstacles, consistent with §10s retirement note', () => {
+    const rooms = buildRoomSequence(BOARD_CONFIG);
+    expect(rooms[2].obstacles).toEqual([]);
+    expect(rooms[2].engineConfig.obstacles).toEqual([]);
+  });
+
+  // MB-13, ADR-0015 §4/§12: room-index-only difficulty must keep scaling
+  // through Room 3 -- confirms deriveRoomEngineConfig's existing formula
+  // naturally produces a harder-than-Room-2 result (no hand-tuned new
+  // constant needed for Room 3s difficulty).
+  it('Room 3 is measurably harder than Room 2: faster base speed, narrower paddle, both still within the existing hard bounds', () => {
+    const rooms = buildRoomSequence(BOARD_CONFIG);
+    const room2 = rooms[1].engineConfig;
+    const room3 = rooms[2].engineConfig;
+    expect(room3.baseSpeed).toBeGreaterThan(room2.baseSpeed);
+    expect(room3.paddleWidth).toBeLessThan(room2.paddleWidth);
+    expect(room3.baseSpeed).toBeLessThanOrEqual(room3.maxSpeed);
+    expect(room3.paddleWidth).toBeGreaterThanOrEqual(BOARD_CONFIG.paddleWidth * 0.55); // ROOM_MIN_PADDLE_WIDTH_RATIO floor, not clipped to it
   });
 });
 
@@ -167,7 +215,11 @@ describe('roomEngine: stepJourney -- room complete transitions to the next room 
     expect(journey.journeyScore).toBeGreaterThan(0); // NOT reset by the room transition
   });
 
-  it('clearing the LAST configured room sets phase to "cleared" without advancing past it (no room 3 authored this slice)', () => {
+  // MB-13, ADR-0015 §12 boundary test: clearing Room 2 (no longer the last
+  // configured room) must advance to Room 3, 'playing' -- NOT enter
+  // 'cleared'. Explicit, not assumed -- this is exactly the boundary
+  // condition that changed when Room 3 was added.
+  it('clearing room 2 now advances to room 3, "playing" -- room 2 is no longer the last configured room', () => {
     const rooms = buildRoomSequence(BOARD_CONFIG);
     let journey: JourneyState = { roomIndex: 2, pong: createInitialPongState(rooms[1].engineConfig), journeyScore: 100, phase: 'playing' };
 
@@ -176,7 +228,21 @@ describe('roomEngine: stepJourney -- room complete transitions to the next room 
       journey = stepJourney(journey, 16, rooms);
     }
 
-    expect(journey.roomIndex).toBe(2);
+    expect(journey.roomIndex).toBe(3);
+    expect(journey.phase).toBe('playing');
+    expect(journey.pong.combo).toBe(0); // fresh Room 3 state
+  });
+
+  it('clearing the LAST configured room (room 3, as of MB-13) sets phase to "cleared" without advancing past it', () => {
+    const rooms = buildRoomSequence(BOARD_CONFIG);
+    let journey: JourneyState = { roomIndex: 3, pong: createInitialPongState(rooms[2].engineConfig), journeyScore: 100, phase: 'playing' };
+
+    for (let hit = 0; hit < rooms[2].goalCombo; hit++) {
+      journey = hitState(journey, rooms[2]);
+      journey = stepJourney(journey, 16, rooms);
+    }
+
+    expect(journey.roomIndex).toBe(3);
     expect(journey.phase).toBe('cleared');
   });
 });
@@ -338,6 +404,38 @@ describe('roomEngine: drifting speed-orbs (MB-08, ADR-0015 §11 amendment)', () 
     expect(journey.pong.driftingOrbs).toEqual([]);
     const speedAfterRestart = Math.hypot(journey.pong.ballVelocity.x, journey.pong.ballVelocity.y);
     expect(speedAfterRestart).toBeCloseTo(baseSpeed, 5); // reset to the room's own base speed, not just "lower than before"
+  });
+
+  // MB-13, ADR-0015 §12: the SAME leak-prone case as Room 2's own test
+  // above, proven again for Room 3 explicitly (per the task brief -- "same
+  // leak-prone class flagged in every prior slice," not assumed to transfer
+  // automatically just because the code path is shared).
+  it('Room 3 room-restart correctness: ball speed resets to Room 3s OWN base speed after reward/penalty events, and active orbs clear too', () => {
+    const rooms = buildRoomSequence(BOARD_CONFIG);
+    const room3 = rooms[2];
+    const baseSpeed = Math.hypot(createInitialPongState(room3.engineConfig).ballVelocity.x, createInitialPongState(room3.engineConfig).ballVelocity.y);
+    let journey: JourneyState = { roomIndex: 3, pong: createInitialPongState(room3.engineConfig), journeyScore: 0, phase: 'playing' };
+
+    for (let i = 0; i < 2; i++) {
+      journey = {
+        ...journey,
+        pong: { ...journey.pong, driftingOrbs: [{ id: `reward-${i}`, x: journey.pong.ball.x, y: journey.pong.ball.y, role: 'reward' }] },
+      };
+      journey = stepJourney(journey, 16, rooms);
+    }
+    expect(journey.pong.driftingOrbs).toEqual([]); // both caught -- confirms the catches actually happened
+    const speedBeforeRestart = Math.hypot(journey.pong.ballVelocity.x, journey.pong.ballVelocity.y);
+    expect(speedBeforeRestart).toBeGreaterThan(baseSpeed * 1.5); // meaningfully elevated, not a rounding coincidence
+
+    journey = { ...journey, pong: { ...journey.pong, driftingOrbs: [{ id: 'still-active', x: 50, y: 50, role: 'reward' }] } };
+
+    journey = missState(journey, room3);
+    journey = stepJourney(journey, 16, rooms);
+
+    expect(journey.roomIndex).toBe(3); // still the same room, not the whole journey restarting
+    expect(journey.pong.driftingOrbs).toEqual([]);
+    const speedAfterRestart = Math.hypot(journey.pong.ballVelocity.x, journey.pong.ballVelocity.y);
+    expect(speedAfterRestart).toBeCloseTo(baseSpeed, 5); // reset to Room 3s OWN base speed (harder than Room 2s), not just "lower than before"
   });
 });
 

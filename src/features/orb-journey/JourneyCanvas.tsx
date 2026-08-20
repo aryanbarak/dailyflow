@@ -150,6 +150,8 @@ export function JourneyCanvas({
       __orbJourneyDevGetDriftingOrbCount?: () => number;
       __orbJourneyDevForceNextTickThrow?: () => void;
       __orbJourneyDevForceElapsedSeconds?: (seconds: number) => void;
+      __orbJourneyDevGetDriftingOrbSpawnCount?: () => number;
+      __orbJourneyDevGetBallFraction?: () => { x: number; y: number };
     };
     globalWindow.__orbJourneyDevForceRoomGoal = () => {
       const room = roomsRef.current[journeyRef.current.roomIndex - 1];
@@ -286,6 +288,25 @@ export function JourneyCanvas({
     globalWindow.__orbJourneyDevForceElapsedSeconds = seconds => {
       journeyRef.current = { ...journeyRef.current, pong: { ...journeyRef.current.pong, elapsedSeconds: seconds } };
     };
+    // MB-13, ADR-0015 §12: read-only introspection -- "Room 3's drifting
+    // orbs spawn measurably more frequently than Room 2's" needs a
+    // CUMULATIVE, monotonic reading (pongEngine.ts's own
+    // driftingOrbSpawnCount, unaffected by orbs later being caught/removed)
+    // rather than the current active-orb count (__orbJourneyDevGetDriftingOrbCount
+    // above), which fluctuates with removals and would make a spawn-rate
+    // comparison flaky.
+    globalWindow.__orbJourneyDevGetDriftingOrbSpawnCount = () => journeyRef.current.pong.driftingOrbSpawnCount;
+    // MB-13: read-only introspection -- returns the ball's position as a
+    // FRACTION (0..1) of the current room's board width/height, so a
+    // real-browser test can drive real pointer input that tracks the ball
+    // (keeping the room in play, avoiding restart-driven resets of
+    // driftingOrbSpawnElapsedMs) WITHOUT needing to separately know
+    // engineConfig.width/height, which isn't otherwise exposed.
+    globalWindow.__orbJourneyDevGetBallFraction = () => {
+      const room = roomsRef.current[journeyRef.current.roomIndex - 1];
+      if (!room) return { x: 0.5, y: 0.5 };
+      return { x: journeyRef.current.pong.ball.x / room.engineConfig.width, y: journeyRef.current.pong.ball.y / room.engineConfig.height };
+    };
     return () => {
       delete globalWindow.__orbJourneyDevForceRoomGoal;
       delete globalWindow.__orbJourneyDevForceObstacleContact;
@@ -298,6 +319,8 @@ export function JourneyCanvas({
       delete globalWindow.__orbJourneyDevGetDriftingOrbCount;
       delete globalWindow.__orbJourneyDevForceNextTickThrow;
       delete globalWindow.__orbJourneyDevForceElapsedSeconds;
+      delete globalWindow.__orbJourneyDevGetDriftingOrbSpawnCount;
+      delete globalWindow.__orbJourneyDevGetBallFraction;
     };
   }, []);
 

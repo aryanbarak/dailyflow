@@ -81,6 +81,13 @@ export const DRIFTING_ORB_REWARD_SPEED_STEP = 1.35;
  *  NEW minSpeed floor (micro-breaks/tuning.ts's MIN_SPEED_PX_PER_SECOND). */
 export const DRIFTING_ORB_PENALTY_SPEED_STEP = 0.7;
 
+// MB-13, ADR-0015 §12: Room 3's one content lever -- a faster drifting-orb
+// spawn cadence than Room 2's, reusing the exact same reward/penalty roles/
+// effects/paddle/miss behavior (buildDriftingOrbSpawnConfig only swaps this
+// one field in for Room 3; everything else is Room 2's recipe, unchanged).
+// Smaller interval, not a new mechanic.
+export const ROOM_3_DRIFTING_ORB_SPAWN_INTERVAL_MS = 2500;
+
 // ── Idle rim appearance (ADR-0015 §11: visible pre-contact, NEVER
 //    reduced-motion-gated -- a static shape, not animation) ─────────────
 export const DRIFTING_ORB_RIM_LINE_WIDTH = 2;

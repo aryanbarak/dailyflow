@@ -116,6 +116,40 @@ async function forceElapsedSeconds(page: import('@playwright/test').Page, second
   }, seconds);
 }
 
+// MB-13: cumulative, monotonic drifting-orb spawn count -- see
+// JourneyCanvas.tsx's own comment on why this is used for spawn-RATE
+// comparisons instead of the (fluctuating, removal-affected)
+// __orbJourneyDevGetDriftingOrbCount above.
+async function getDriftingOrbSpawnCount(page: import('@playwright/test').Page): Promise<number> {
+  return page.evaluate(
+    () => (window as unknown as { __orbJourneyDevGetDriftingOrbSpawnCount?: () => number }).__orbJourneyDevGetDriftingOrbSpawnCount?.() ?? -1,
+  );
+}
+
+// MB-13: average canvas color across the WHOLE frame -- a room's theme
+// (background, drawn first and covering most of the board) dominates this
+// average far more than the small ball/paddle/orbs, so a meaningfully
+// different average color between two rooms is real evidence the THEME
+// changed, not just that gameplay objects moved to different positions.
+async function averageCanvasColor(page: import('@playwright/test').Page): Promise<{ r: number; g: number; b: number }> {
+  return page.evaluate(() => {
+    const canvas = document.querySelector('canvas') as HTMLCanvasElement;
+    const ctx = canvas.getContext('2d')!;
+    const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    let count = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      r += data[i];
+      g += data[i + 1];
+      b += data[i + 2];
+      count++;
+    }
+    return { r: r / count, g: g / count, b: b / count };
+  });
+}
+
 async function canvasHasNonZeroPixels(page: import('@playwright/test').Page): Promise<boolean> {
   const result = await page.evaluate(() => {
     const canvas = document.querySelector('canvas');
@@ -196,22 +230,113 @@ test.describe('Orb Journey (MB-05, ADR-0015)', () => {
     expect(pageErrors).toEqual([]);
   });
 
-  test('clearing the final configured room shows the "cleared" acknowledgement, and Journey keeps playing (no dead end, no game-over)', async ({ page }) => {
+  // MB-13, ADR-0015 §12: this test's own boundary moved -- Room 2 is no
+  // longer the last configured room, so clearing it must now advance to
+  // Room 3 ('playing'), and 'cleared' must not appear until Room 3 itself
+  // is cleared. Explicit, not assumed -- this IS the exact boundary
+  // condition Room 3's addition changed.
+  test('clearing room 2 now advances to room 3 (not "cleared"); clearing room 3 shows the "cleared" acknowledgement and Journey keeps playing (no dead end, no game-over)', async ({
+    page,
+  }) => {
     await openJourney(page);
     await expect(page.getByText('Room 1')).toBeVisible();
 
     await forceRoomGoal(page); // clears room 1 -> room 2
     await expect(page.getByText('Room 2')).toBeVisible();
-    await forceRoomGoal(page); // clears room 2, the LAST configured room this slice
+    await forceRoomGoal(page); // clears room 2 -> room 3 (NOT "cleared" -- room 2 is no longer the last room, post-MB-13)
+
+    await expect(page.getByText('Room 3')).toBeVisible();
+    await expect(page.getByText('Rooms cleared — keep playing!')).not.toBeVisible();
+
+    await forceRoomGoal(page); // clears room 3, the LAST configured room as of MB-13
 
     await expect(page.getByText('Rooms cleared — keep playing!')).toBeVisible();
-    // Still room 2 (no room 3 authored, ADR-0015 §7) -- dialog remains open,
-    // no game-over, matching ADR-0015 §1/§3's "no game over except Esc/close".
-    await expect(page.getByText('Room 2')).toBeVisible();
+    // Still room 3 -- dialog remains open, no game-over, matching ADR-0015
+    // §1/§3's "no game over except Esc/close".
+    await expect(page.getByText('Room 3')).toBeVisible();
     await expect(page.getByRole('dialog')).toBeVisible();
 
     await page.keyboard.press('Escape');
     await expect(page.getByRole('dialog')).not.toBeVisible();
+  });
+
+  // MB-13, ADR-0015 §12: proves Room 3s Rhythm/Calendar theme is visibly
+  // distinct from Room 1/2s Focus/Tasks theme -- not just a different
+  // theme ID in state, an actually different rendered frame. Average color
+  // across the WHOLE canvas (see averageCanvasColor's own comment) isolates
+  // the THEME's contribution (background, drawn first, covering most of the
+  // board) from incidental ball/paddle/orb position differences between
+  // the two samples.
+  test('Room 3s Rhythm/Calendar theme renders visibly distinct from Room 1/2s Focus/Tasks theme (MB-13: grid/bars vs cards/checkmarks)', async ({
+    page,
+  }) => {
+    await openJourney(page);
+    await forceRoomGoal(page); // -> room 2 (focus-tasks)
+    await expect(page.getByText('Room 2')).toBeVisible();
+    await page.waitForTimeout(250);
+    const room2Color = await averageCanvasColor(page);
+
+    await forceRoomGoal(page); // -> room 3 (rhythm-calendar)
+    await expect(page.getByText('Room 3')).toBeVisible();
+    await page.waitForTimeout(250);
+    const room3Color = await averageCanvasColor(page);
+
+    const distance = Math.hypot(room3Color.r - room2Color.r, room3Color.g - room2Color.g, room3Color.b - room2Color.b);
+    expect(distance).toBeGreaterThan(2); // a real, meaningfully different average color, not floating-point noise
+  });
+
+  // MB-13, ADR-0015 §12: proves Room 3s ONE content lever (a faster
+  // drifting-orb spawn cadence) is real, measured via the engine's own
+  // cumulative spawn counter over a bounded, identical-length real-time
+  // window in each room -- not asserted from the tuning constants alone
+  // (which could be right in tuning.ts but never actually wired through
+  // buildDriftingOrbSpawnConfig). Runs an in-page driver loop (MB-11 soak's
+  // own pattern -- avoids per-iteration Playwright round-trip latency) that
+  // tracks the ball's real X position with the paddle every frame, via the
+  // __orbJourneyDevGetBallFraction hook -- WITHOUT this, the stationary
+  // paddle causes frequent floor misses, each of which resets
+  // driftingOrbSpawnElapsedMs via the room-local restart path and can starve
+  // the spawn interval entirely (observed directly: 0 spawns in 9s without
+  // paddle tracking).
+  test('Room 3s drifting orbs spawn measurably more frequently than Room 2s, within a bounded observation window (MB-13)', async ({ page }) => {
+    await openJourney(page);
+    await forceRoomGoal(page); // -> room 2
+    await expect(page.getByText('Room 2')).toBeVisible();
+
+    const measureSpawnsOverWindow = (windowMs: number) =>
+      page.evaluate(async durationMs => {
+        type Hooks = {
+          __orbJourneyDevGetBallFraction?: () => { x: number; y: number };
+          __orbJourneyDevGetDriftingOrbSpawnCount?: () => number;
+        };
+        const w = window as unknown as Hooks;
+        const canvasEl = document.querySelector('canvas') as HTMLCanvasElement;
+
+        const dispatchPointer = (clientX: number, clientY: number) => {
+          canvasEl.dispatchEvent(new PointerEvent('pointermove', { clientX, clientY, bubbles: true, cancelable: true, pointerId: 1 }));
+        };
+
+        const start = performance.now();
+        const startCount = w.__orbJourneyDevGetDriftingOrbSpawnCount?.() ?? -1;
+        while (performance.now() - start < durationMs) {
+          const rect = canvasEl.getBoundingClientRect();
+          const frac = w.__orbJourneyDevGetBallFraction?.();
+          if (frac) dispatchPointer(rect.left + frac.x * rect.width, rect.top + rect.height - 20);
+          await new Promise(resolve => requestAnimationFrame(resolve));
+        }
+        const endCount = w.__orbJourneyDevGetDriftingOrbSpawnCount?.() ?? -1;
+        return endCount - startCount;
+      }, windowMs);
+
+    const windowMs = 9000;
+    const room2Spawns = await measureSpawnsOverWindow(windowMs);
+
+    await forceRoomGoal(page); // -> room 3
+    await expect(page.getByText('Room 3')).toBeVisible();
+    const room3Spawns = await measureSpawnsOverWindow(windowMs);
+
+    expect(room2Spawns).toBeGreaterThan(0); // sanity: room 2 spawned at least once in the window
+    expect(room3Spawns).toBeGreaterThan(room2Spawns); // room 3s shorter interval spawns strictly more in the SAME window
   });
 
   test('crash path in the Journey context: an in-overlay error state, never a silent black screen -- Esc still exits cleanly', async ({ page }) => {
@@ -742,7 +867,9 @@ test.describe('Orb Journey (MB-05, ADR-0015)', () => {
     await openJourney(page);
     await forceRoomGoal(page); // clears room 1 -> room 2
     await expect(page.getByText('Room 2')).toBeVisible();
-    await forceRoomGoal(page); // clears room 2, the LAST configured room -- enters 'cleared'
+    await forceRoomGoal(page); // clears room 2 -> room 3 (MB-13: room 2 is no longer the last room)
+    await expect(page.getByText('Room 3')).toBeVisible();
+    await forceRoomGoal(page); // clears room 3, the LAST configured room as of MB-13 -- enters 'cleared'
     await expect(page.getByText('Rooms cleared — keep playing!')).toBeVisible();
 
     const ballSpeedBefore = await getBallSpeed(page);
@@ -785,6 +912,62 @@ test.describe('Orb Journey (MB-05, ADR-0015)', () => {
     const ballSpeedFarPastBoundary = await getBallSpeed(page);
     expect(ballSpeedFarPastBoundary).toBeGreaterThan(0);
     expect(await sampleFrozen()).toBe(false);
+
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).not.toBeVisible();
+    await expect(page.locator(START_BUTTON)).toBeEnabled();
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  // MB-13, ADR-0015 §12: MB-11's physics/update-step crash guard and MB-12's
+  // 90s-freeze fix are both engine-level (JourneyCanvas.tsx's onTick
+  // try/catch; roomEngine.ts's deriveRoomEngineConfig unbounded
+  // durationSeconds), not room-specific -- but "should apply automatically"
+  // is a claim, not a fact, until actually re-run against Room 3. Reuses
+  // the EXACT same deterministic fault-injection methodology as the
+  // original MB-11/MB-12 tests above, just reached via Room 3 instead of
+  // Room 2.
+  test('MB-11s crash guard and MB-12s 90s-freeze fix both still hold in Room 3 (MB-13 regression check, not assumed)', async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on('pageerror', err => pageErrors.push(err.message));
+
+    await openJourney(page);
+    await forceRoomGoal(page); // -> room 2
+    await expect(page.getByText('Room 2')).toBeVisible();
+    await forceRoomGoal(page); // -> room 3
+    await expect(page.getByText('Room 3')).toBeVisible();
+
+    // MB-12 check first (non-destructive to the crash guard check below):
+    // jump elapsedSeconds past the legacy 90s boundary and confirm the
+    // frame is still animating (same pixel-hash methodology as the MB-12
+    // test above).
+    await forceElapsedSeconds(page, 600);
+    const frozen = await page.evaluate(async () => {
+      const canvasEl = document.querySelector('canvas') as HTMLCanvasElement;
+      const ctx = canvasEl.getContext('2d')!;
+      const snapshot = () => {
+        const { data } = ctx.getImageData(0, 0, canvasEl.width, canvasEl.height);
+        let hash = 0;
+        for (let i = 0; i < data.length; i += 97) hash = (hash * 31 + data[i]) | 0;
+        return hash;
+      };
+      const hashes: number[] = [];
+      for (let i = 0; i < 30; i++) {
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        hashes.push(snapshot());
+      }
+      return new Set(hashes).size === 1;
+    });
+    expect(frozen).toBe(false);
+
+    // MB-11 check: fault-injected physics-step exception must still show
+    // the SAME recoverable error overlay, in Room 3 as much as Room 2.
+    await forceNextTickThrow(page);
+    await page.waitForTimeout(300);
+
+    await expect(page.getByText('Something went wrong with the game')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Close micro break' })).toBeVisible();
 
     await page.keyboard.press('Escape');
     await expect(page.getByRole('dialog')).not.toBeVisible();

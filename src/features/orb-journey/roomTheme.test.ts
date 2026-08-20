@@ -234,6 +234,10 @@ describe('roomTheme: runtime boundary', () => {
     document.documentElement.style.setProperty('--flow-primary', '#7C4DFF');
     document.documentElement.style.setProperty('--flow-surface-2', '#0F1128');
     document.documentElement.style.setProperty('--flow-border-soft', 'rgba(112, 120, 180, 0.22)');
+    // MB-13, ADR-0015 §12: Rhythm/Calendar's own token set.
+    document.documentElement.style.setProperty('--flow-blue', '#4F73FF');
+    document.documentElement.style.setProperty('--flow-surface-3', '#13152E');
+    document.documentElement.style.setProperty('--flow-border', '#272B4B');
   });
 
   afterEach(() => {
@@ -247,5 +251,21 @@ describe('roomTheme: runtime boundary', () => {
     expect(colors.cardFill(0.5)).toBeTruthy();
     expect(colors.cardBorder(0.5)).toBeTruthy();
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  // MB-13, ADR-0015 §12: same proof, for the NEW Rhythm/Calendar theme --
+  // resolves via its own token set (--flow-blue/--flow-surface-3/
+  // --flow-border), deliberately different from focus-tasks' tokens above.
+  it('resolving Rhythm/Calendar theme colors (Room 3, MB-13) never calls fetch, and uses a DIFFERENT token set from focus-tasks', () => {
+    const rhythmColors = resolveRoomThemeColors('rhythm-calendar');
+    const focusColors = resolveRoomThemeColors('focus-tasks');
+    expect(rhythmColors.accent(0.5)).toBeTruthy();
+    expect(rhythmColors.cardFill(0.5)).toBeTruthy();
+    expect(rhythmColors.cardBorder(0.5)).toBeTruthy();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    // Different token sources (--flow-blue vs --flow-primary) resolve to
+    // visibly different colors -- proves the two themes are not
+    // accidentally sharing the same token mapping.
+    expect(rhythmColors.accent(0.5)).not.toBe(focusColors.accent(0.5));
   });
 });

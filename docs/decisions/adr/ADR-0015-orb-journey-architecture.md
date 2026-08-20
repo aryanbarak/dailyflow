@@ -58,6 +58,13 @@ adaptive-performance-correction difficulty. Breakable obstacles are no
 longer deferred — see §10 (Amendment, post-MB-06).
 
 ### 7. This slice's content
+**Amended (MB-13): room count extended to 3.** The original "exactly 2
+rooms" constraint below was this slice's initial scope, not a permanent
+ceiling — see §12 for Room 3's addition. The room-sequencing and
+'cleared'-phase logic (§7's own text below, plus MB-05's judgment call on
+cleared-phase behavior) generalizes to N rooms with no design change; only
+the authored room count increases.
+
 Exactly 2 rooms, same theme family, ricochet-only mechanics (no targets, no
 breakable obstacles). Room 1 introduces the mechanic; Room 2 is a harder
 variant via room-index difficulty only.
@@ -169,6 +176,20 @@ foregone opportunity/avoided risk, not a failure state.
 Spawn cadence, drift speed, and the speed-multiplier magnitude/duration are
 tuning-configurable constants (tuning.ts), not hardcoded. Room 1 remains
 free of drifting orbs this slice, consistent with §7.
+
+### 12. Room 3 (Rhythm/Calendar theme)
+A third room is added, using the Rhythm/Calendar theme family from the
+concept doc's theming table (§13 of the original concept doc): grid lines
+and horizontal bar shapes, abstract, sourced from design tokens only — the
+same "never real data" rule as Room 1/2's Focus/Tasks theme (§5). Difficulty
+continues via the existing room-index-only scaling formula (§4) — no new
+difficulty mechanism. The one Room-3-specific content lever is drifting-orb
+spawn cadence, which is increased relative to Room 2 (a tuning constant, not
+a new mechanic) — more frequent reward/penalty events, not new event types.
+Room 3 has no static obstacles (consistent with §10's retirement — the
+"obstacle" concept lives entirely in the penalty-role drifting orb, per
+§11). The 'cleared' phase (§7/MB-05) now triggers after Room 3 instead of
+Room 2.
 
 ## Consequences
 + One engine serves both session types; no physics duplication; trust
