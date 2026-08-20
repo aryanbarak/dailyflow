@@ -531,6 +531,19 @@ test.describe('Orb Journey (MB-05, ADR-0015)', () => {
     await openJourney(page);
     await forceRoomGoal(page);
     await expect(page.getByText('Room 2')).toBeVisible();
+    // MB-15: the room-1->2 play-area CSS width transition (and the
+    // ResizeObserver-driven rescalePongState it triggers, which DOES scale
+    // ballVelocity proportionally to the width change -- see
+    // pongEngine.ts's own rescalePongState) is still settling for a moment
+    // after the room-transition text appears. MB-15's genuinely-narrow
+    // Room 1 baseline makes this a proportionally BIGGER width jump than
+    // MB-14's ~480->711px one was (~300->551px, a larger ratio), which is
+    // what surfaced this as a real flake -- sampling "speed before" mid-
+    // transition and "speed after" once it's settled looks like a speed
+    // CHANGE that has nothing to do with the paddle-catch mechanic this
+    // test is actually about. Let it settle first, same wait MB-14s own
+    // play-area tests already use.
+    await page.waitForTimeout(600);
 
     const speedBefore = await getBallSpeed(page);
     expect(speedBefore).toBeGreaterThan(0);
@@ -560,6 +573,13 @@ test.describe('Orb Journey (MB-05, ADR-0015)', () => {
     await openJourney(page);
     await forceRoomGoal(page);
     await expect(page.getByText('Room 2')).toBeVisible();
+    // MB-15: same settle-wait rationale as the paddle-catch test above --
+    // this test's expected DECREASE could be masked/offset by the room-
+    // transition width-resize's own (positive, growth-direction) velocity
+    // rescale if sampled mid-transition. Passed without this wait under the
+    // current constants, but shares the identical fragility class -- fixed
+    // for genuine robustness, not just because it happened to fail.
+    await page.waitForTimeout(600);
 
     const speedBefore = await getBallSpeed(page);
     expect(speedBefore).toBeGreaterThan(0);
@@ -1038,6 +1058,41 @@ test.describe('Orb Journey (MB-05, ADR-0015)', () => {
     });
   }
 
+  // MB-15 (coordinator-error correction): the ORIGINAL product requirement
+  // (PO, pre-MB-14) was Room 1 narrow enough that the dashboard is clearly
+  // visible on BOTH sides -- MB-14s ~480px baseline never actually
+  // satisfied that on a real desktop viewport (PO confirmed on a real
+  // browser). This test proves the CORRECTED baseline does, at a common
+  // desktop viewport size (1440x900, within the ADR's own cited
+  // ~1440-1920px range) -- asserting the actual computed width is
+  // meaningfully less than the viewport (under 40%), not just "smaller
+  // than the old value."
+  test('MB-15: at a common desktop viewport, Room 1s play area leaves a measurable margin on BOTH sides -- genuinely narrow, not just "smaller than before"', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openJourney(page);
+    await expect(page.getByText('Room 1')).toBeVisible();
+    await page.waitForTimeout(200);
+
+    const room1 = await getPlayAreaWidths(page);
+    const viewportWidth = 1440;
+    const widthFraction = room1.containerBoxWidth / viewportWidth;
+
+    // Under ~40% of viewport width -- comfortably leaves the majority of
+    // the screen for the dashboard, unlike MB-14s ~480px baseline (480/1440
+    // = 33%... but MB-14 never actually confirmed this in real PO usage,
+    // and 480 was chosen for gameplay comfort, not narrowness -- MB-15
+    // deliberately targets a visibly SMALLER fraction).
+    expect(widthFraction).toBeLessThan(0.25);
+
+    // The margin on EACH side (the play area is horizontally centered,
+    // mx-auto) is what actually reads as "dashboard visible" to a user --
+    // assert it directly, not just the play area's own width in isolation.
+    const marginPerSide = (viewportWidth - room1.containerBoxWidth) / 2;
+    expect(marginPerSide).toBeGreaterThan(viewportWidth * 0.35); // at least 35% of the viewport visible on EACH side
+  });
+
   test('play area is visibly narrower in Room 1 than Room 3, and grows monotonically across Room 1 -> 2 -> 3 (MB-14)', async ({ page }) => {
     await openJourney(page);
     await expect(page.getByText('Room 1')).toBeVisible();
@@ -1054,9 +1109,10 @@ test.describe('Orb Journey (MB-05, ADR-0015)', () => {
     await page.waitForTimeout(600);
     const room3 = await getPlayAreaWidths(page);
 
-    // Room 1 matches todays exact pre-MB-14 fixed cap (480px) -- the
-    // formula's own baseline guarantee, now confirmed live.
-    expect(room1.containerMaxWidthPx).toBeCloseTo(480, 0);
+    // Room 1 matches the MB-15-corrected genuinely-narrow baseline (300px,
+    // NOT the old ~480px MB-14 value) -- the formula's own baseline
+    // guarantee, now confirmed live.
+    expect(room1.containerMaxWidthPx).toBeCloseTo(300, 0);
 
     expect(room2.containerMaxWidthPx).toBeGreaterThan(room1.containerMaxWidthPx);
     expect(room3.containerMaxWidthPx).toBeGreaterThan(room2.containerMaxWidthPx);
@@ -1079,19 +1135,26 @@ test.describe('Orb Journey (MB-05, ADR-0015)', () => {
 
     const widths = await getPlayAreaWidths(page);
     expect(widths.canvasBoxWidth).toBeCloseTo(widths.containerBoxWidth, 0);
-    // Also confirms this is genuinely Room 2s GROWN width, not just Room 1s
-    // untouched 480px cap staying trivially self-consistent with itself.
-    expect(widths.containerMaxWidthPx).toBeGreaterThan(480);
+    // Also confirms this is genuinely Room 2s GROWN width (MB-15-corrected
+    // baseline, 300px), not just Room 1s untouched cap staying trivially
+    // self-consistent with itself.
+    expect(widths.containerMaxWidthPx).toBeGreaterThan(300);
   });
 
-  // MB-14, ADR-0015 §13: mobile/PWA reconciliation. On a narrow phone
-  // viewport, `w-full` (100%) still wins over the room-index pixel cap for
-  // Room 1 through several rooms -- exactly reproducing today's pre-MB-14
-  // mobile behavior (see getJourneyPlayAreaMaxWidthPx's own comment). This
-  // proves the composition produces a SANE on-screen size, not overflow or
-  // an absurdly tiny canvas, on both a narrow phone AND after growth to
-  // Room 3.
-  test('mobile viewport: the play area is a sane, non-overflowing size at Room 1 AND after growing to Room 3 (MB-14 mobile/PWA reconciliation)', async ({
+  // MB-14, ADR-0015 §13; mobile behavior at Room 1 corrected by MB-15. On a
+  // narrow phone viewport, `w-full` (100%) still wins over the room-index
+  // pixel cap from Room 2 onward -- but MB-15's new, genuinely-narrow Room
+  // 1 baseline (300px) is now BELOW a typical modern phone's own width
+  // (390px here), which the OLD ~480px MB-14 baseline never was (480 > any
+  // real phone) -- so Room 1 on this phone now renders at the 300px
+  // baseline itself, not ~100% of the phone's screen. This is the CORRECT,
+  // expected consequence of MB-15's correction (Room 1 is meant to be
+  // genuinely narrow everywhere, not just desktop), not a regression --
+  // this test proves it lands exactly on the floored baseline (still well
+  // above JOURNEY_PLAY_AREA_MIN_WIDTH_PX, i.e. "usable, not over-shrunk"
+  // per the task brief), and that later rooms still return to ~100% once
+  // their pixel cap exceeds the phone's own width.
+  test('mobile viewport: Room 1 lands on the new narrow baseline (usable, not over-shrunk) and later rooms still reach ~100% of the phone (MB-14/MB-15 mobile reconciliation)', async ({
     page,
   }) => {
     await page.setViewportSize({ width: 390, height: 844 }); // portrait phone, same as microBreaksMobileAcceptance.spec.ts
@@ -1100,14 +1163,25 @@ test.describe('Orb Journey (MB-05, ADR-0015)', () => {
     await page.waitForTimeout(200);
 
     const room1 = await getPlayAreaWidths(page);
-    // On a 390px-wide phone, `w-full` wins over the (480px) room-1 pixel
-    // cap -- effectively full viewport width, matching todays pre-MB-14
-    // mobile behavior exactly (no shrinkage from the new formula).
-    expect(room1.canvasBoxWidth).toBeLessThanOrEqual(390);
-    expect(room1.canvasBoxWidth).toBeGreaterThan(350); // not clipped down to some tiny fraction
+    // Room 1s pixel cap (300, the new MB-15 baseline) is now the binding
+    // constraint on this 390px phone -- NOT 100% of the viewport, unlike
+    // pre-MB-15. Still comfortably usable: well above both
+    // JOURNEY_PLAY_AREA_MIN_WIDTH_PX (260) and the engine's own absolute
+    // BOARD_MIN_WIDTH_PX (240) floors.
+    expect(room1.canvasBoxWidth).toBeCloseTo(300, 0);
+    expect(room1.canvasBoxWidth).toBeGreaterThan(260); // above the MB-15 mobile/touch safety floor -- not over-shrunk
+    expect(room1.canvasBoxWidth).toBeLessThan(390); // genuinely narrower than the phones own full width -- the correction actually took effect
 
     await forceRoomGoal(page); // -> room 2
     await expect(page.getByText('Room 2')).toBeVisible();
+    await page.waitForTimeout(600);
+    const room2 = await getPlayAreaWidths(page);
+    // By Room 2, the pixel cap (~551px) already exceeds this phones own
+    // width -- `w-full` wins again, same composition MB-14 always had from
+    // whichever room the cap first exceeds the viewport.
+    expect(room2.canvasBoxWidth).toBeCloseTo(390, 0);
+    expect(room2.canvasBoxWidth).toBeGreaterThan(room1.canvasBoxWidth);
+
     await forceRoomGoal(page); // -> room 3
     await expect(page.getByText('Room 3')).toBeVisible();
     await page.waitForTimeout(600);

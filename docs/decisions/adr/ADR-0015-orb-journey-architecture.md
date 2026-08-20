@@ -192,6 +192,21 @@ Room 3 has no static obstacles (consistent with §10's retirement — the
 Room 2.
 
 ### 13. Progressive play-area growth (Amendment, post-MB-13, Journey-only)
+**Corrected (MB-15, coordinator error).** §13 as originally written defined
+Room 1's baseline as "the play area's current (MB-05-era) width," which was
+silently assumed to already satisfy the original product requirement (PO,
+pre-MB-14): Room 1 should be narrow enough that the dashboard is clearly
+visible on both sides, growing gradually to full-screen by ~room 10. That
+assumption was wrong — the MB-05-era width was sized for comfortable
+gameplay, not for "narrow with dashboard visible," and PO confirmed on a
+real browser that Room 1 still showed little to no visible dashboard/
+sidebar. This correction redefines the baseline to a genuinely narrow
+starting width (a new named constant, desktop-oriented, distinctly smaller
+than the old ~480px default) while preserving MB-14's growth formula shape
+and its room-10 full-screen target unchanged. A new absolute minimum-width
+floor is also introduced so Room 1 never shrinks below a usable size on
+touch/mobile viewports, independent of the desktop-narrow baseline.
+
 The visual width of Orb Journey's play area (the bounded region containing
 the canvas and its dim/blur backdrop treatment, per ADR-0014 §2) grows with
 room index, reinforcing progression without any HUD/numeric indicator. Room
