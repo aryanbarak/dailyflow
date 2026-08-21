@@ -96,6 +96,7 @@ import {
   type SupportedAiResponseLanguage,
 } from '@/features/ai/responseLanguage'
 import { findWriteIntentDescriptor, writeIntentRegistry } from '../../shared/writeIntentRegistry'
+import { reportProposalOutcome, writeProposalTargetFields, type ProposalOutcomeDomain } from '@/features/agent/proposalOutcomeReporting'
 
 interface ChatMsg {
   id: string
@@ -231,6 +232,18 @@ interface ReasoningProposalState {
   runStatus: ReasoningRunStatus
   readOnlyResult?: ReadOnlyRuntimeResult
   writeResult?: WriteRuntimeResult
+}
+
+// Task 40: WorkspacePlanStep['domain'] is broader (habits/documents/
+// learning/workspace) than the proposal-outcome ledger's own domain CHECK
+// constraint (tasks/calendar/finance/github) -- a write proposal's step
+// never actually resolves to the broader values (stepForReasoning below
+// only ever derives tasks/calendar/finance/github for a write-capable
+// proposal), but this guard makes that assumption explicit and safe rather
+// than asserting it.
+const PROPOSAL_OUTCOME_DOMAINS = new Set<string>(['tasks', 'calendar', 'finance', 'github'])
+function isProposalOutcomeDomain(domain: string): domain is ProposalOutcomeDomain {
+  return PROPOSAL_OUTCOME_DOMAINS.has(domain)
 }
 
 const readIntentAction: Record<string, WorkspacePlanActionType> = {
@@ -2207,6 +2220,41 @@ export default function ChatPage() {
     )
   }, [appendAssistantResult, reasoningProposal, tasks, workerUrl, workspace])
 
+  // Task 40, ADR-0016 Slice 2: the ask-lane's half of the proposal outcome
+  // ledger (Part A established finance ALWAYS takes this lane while tasks/
+  // calendar usually take the Worker's own in-process auto-lane -- if only
+  // one lane reports, the data is systematically biased). Fire-and-forget
+  // (Decision item 6): reportProposalOutcome itself never throws, and this
+  // is never awaited, so it can never delay or fail the write it describes
+  // -- by the time any call site below reaches this, the write has already
+  // completed (or already been rejected).
+  const reportCurrentProposalOutcome = useCallback((
+    current: ReasoningProposalState,
+    outcome: 'approved' | 'rejected',
+    succeeded: boolean | null,
+    requestId?: string,
+  ) => {
+    const domain = current.step?.domain
+    const toolId = current.resolution?.toolId
+    if (!domain || !toolId || !isProposalOutcomeDomain(domain)) return
+    void reportProposalOutcome({
+      workerBaseUrl: workerUrl,
+      getAccessToken: async () => {
+        const { data: { session } } = await supabase.auth.getSession()
+        return session?.access_token
+      },
+    }, {
+      requestId,
+      intentType: current.result.proposal.type,
+      toolId,
+      domain,
+      outcome,
+      succeeded,
+      riskLevel: current.resolution?.tool?.riskLevel,
+      targetFields: writeProposalTargetFields(current.result.proposal.target),
+    })
+  }, [workerUrl])
+
   // complete_task proposals are always a single-element reasoningProposal
   // array -- disambiguation candidates are deliberately never complete_task
   // (see resolveDisambiguationCandidates) -- so the approval flow only ever
@@ -2215,13 +2263,23 @@ export default function ChatPage() {
     if (!decision.ok || decision.decision === 'closed') return
     setReasoningProposal(prev => {
       if (!prev || prev.length === 0) return prev
+      const current = prev[0]
+      // Task 40: only the REJECTED decision is reported here -- an
+      // APPROVED decision via the full dialog still needs a separate Run
+      // click (handleRunWriteProposal) before the write actually happens,
+      // so its outcome (with the write's own success/failure) is reported
+      // from runWriteProposalWithApproval instead, once both facts are
+      // known together.
+      if (decision.decision === 'rejected') {
+        reportCurrentProposalOutcome(current, 'rejected', null)
+      }
       return prev.map((p, i) => i === 0 ? {
         ...p,
         approval: decision.approval,
         runStatus: decision.decision === 'approved' ? 'approved' : 'rejected',
       } : p)
     })
-  }, [])
+  }, [reportCurrentProposalOutcome])
 
   // Generalized for EPIC-07 (Write Light) -- runs any resolved write proposal
   // (tasks.complete, github.issues.comment, github.issues.update), not just
@@ -2247,8 +2305,9 @@ export default function ChatPage() {
       ? prev.map((p, i) => i === 0 ? { ...p, runStatus: 'running' } : p)
       : prev)
     const currentTime = new Date()
+    const requestId = `reasoning:write:${toolId}:${current.step.id}:${currentTime.getTime()}`
     const writeResult = await runWriteTool({
-      requestId: `reasoning:write:${toolId}:${current.step.id}:${currentTime.getTime()}`,
+      requestId,
       step: current.step,
       toolResolution: current.resolution,
       approval,
@@ -2282,6 +2341,10 @@ export default function ChatPage() {
         writeResult,
       } : p)
       : prev)
+    // Task 40, ADR-0016 Slice 2: the write has already completed (success
+    // or failure) by this point -- reporting its outcome here can never
+    // delay or change what the user already sees above.
+    reportCurrentProposalOutcome(current, 'approved', writeResult.success, requestId)
     if (writeResult.success && toolId === 'tasks.complete') {
       void workspace.refresh?.tasks()
     }
@@ -2305,7 +2368,7 @@ export default function ChatPage() {
       ),
       current.result.responseLanguage,
     )
-  }, [appendAssistantResult, reasoningProposal, tasks, workerUrl, workspace])
+  }, [appendAssistantResult, reasoningProposal, reportCurrentProposalOutcome, tasks, workerUrl, workspace])
 
   const handleRunWriteProposal = useCallback(async () => {
     const current = reasoningProposal?.[0]
@@ -2332,6 +2395,10 @@ export default function ChatPage() {
       tool: current.resolution?.tool,
     })
     if (!decision.ok || decision.decision !== 'approved' || !decision.approval) {
+      // Task 40: matches the existing runStatus:'rejected' the UI already
+      // shows for this path (an approval that failed policy validation,
+      // not a literal user Reject click) -- no write was ever attempted.
+      reportCurrentProposalOutcome(current, 'rejected', null)
       setReasoningProposal(prev => prev
         ? prev.map((p, i) => i === 0 ? { ...p, runStatus: 'rejected' } : p)
         : prev)
@@ -2342,7 +2409,7 @@ export default function ChatPage() {
       ? prev.map((p, i) => i === 0 ? { ...p, approval: approvedApproval, runStatus: 'approved' } : p)
       : prev)
     await runWriteProposalWithApproval(approvedApproval)
-  }, [reasoningProposal, runWriteProposalWithApproval])
+  }, [reasoningProposal, reportCurrentProposalOutcome, runWriteProposalWithApproval])
 
   const firstName =
     profile?.displayName?.trim()?.split(' ')[0] ||
