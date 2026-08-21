@@ -18,6 +18,7 @@ import {
   type WriteIntentToolId,
   type WriteIntentType,
 } from "../../../../shared/writeIntentRegistry";
+import { parseFinanceDirection } from "../../../../shared/financeDirection";
 
 // Task 22-fix (C1): every existing call site of validateAgentIntentProposal
 // omits `timeZone` (it wasn't a parameter before this fix), so this is the
@@ -334,12 +335,9 @@ function parseDeterministicAmount(message: string): { amount?: string; currency?
   return { amount: String(amount), currency: EURO_CURRENCY_PATTERN.test(text) ? "EUR" : undefined };
 }
 
-function parseDeterministicDirection(message: string): "income" | "expense" | undefined {
-  const text = message.toLowerCase();
-  if (/\bgot paid\b/.test(text) || /\b(income|earned|received|salary)\b/.test(text) || /\b(einnahme|erhalten|gehalt)\b/.test(text) || /درآمد|دریافت|حقوق/.test(message)) return "income";
-  if (/\b(expense|spent|paid|pay|bought|cost|send|sent|transfer)\b/.test(text) || /\b(ausgabe|bezahlt|zahle|gekauft|kosten|sende|überweise)\b/.test(text) || /هزینه|خرید|پرداخت|بفرست/.test(message)) return "expense";
-  return undefined;
-}
+// Task 42: extracted to shared/financeDirection.ts (this file's own copy
+// and flow-write-policy.ts's parseFinanceDirection were hand duplicates --
+// see that shared module's own header comment for why).
 
 const IBAN_GROUPED_PATTERN = /\b[A-Za-z]{2}[0-9]{2}(?:\s[A-Za-z0-9]{4}){2,7}(?:\s[A-Za-z0-9]{1,4})?\b/;
 const IBAN_COMPACT_PATTERN = /\b[A-Za-z]{2}[0-9]{2}[A-Za-z0-9]{11,30}\b/;
@@ -1001,7 +999,7 @@ export function validateAgentIntentProposal(input: {
     const { amount, currency } = parseDeterministicAmount(messageForAmount);
     target.amount = amount;
     target.currency = currency;
-    target.direction = parseDeterministicDirection(input.userMessage);
+    target.direction = parseFinanceDirection(input.userMessage);
     // Unmentioned defaults to today, in the request's own timeZone (this
     // domain tolerates an absent date, unlike create_calendar_event's
     // start) -- mirrors agent/worker/flow-write-policy.ts's own

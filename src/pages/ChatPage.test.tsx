@@ -1153,6 +1153,112 @@ describe("ChatPage LLM reasoning UX boundary", () => {
   });
 
   // ---------------------------------------------------------------------
+  // Task 42, Part A: task 41-verify traced a real production case -- a
+  // finance message whose direction couldn't be determined resolved to a
+  // genuine ask_clarification, which task 11b's blanket rule (above) then
+  // silenced entirely, leaving only the conversational lane's own false
+  // completion promise. This narrow carve-out surfaces the clarification
+  // question ONLY when the SERVER (not this overlay alone) already
+  // confirmed a write trigger fired for this message
+  // (serverWritePolicyMode === 'ask') -- see resolveChatTurnOutcome's own
+  // comment for why this doesn't reopen task 11b's original bug.
+  // ---------------------------------------------------------------------
+
+  function financeClarificationResult(question = "Whether this is income or an expense is required before recording a transaction."): AgentReasoningResult {
+    const base = reasoningResult("ask_clarification", undefined);
+    return {
+      ...base,
+      proposal: {
+        ...base.proposal,
+        requestedDomain: "finance",
+        requiresTool: false,
+        toolId: undefined,
+        clarificationQuestion: question,
+        reasons: ["Whether this is income or an expense is required before recording a transaction."],
+      },
+      toolId: undefined,
+    };
+  }
+
+  describe("Task 42, Part A: a server-confirmed write trigger's ask_clarification surfaces as text, still no panel", () => {
+    it("server confirmed (serverWritePolicyMode: 'ask') + ask_clarification -> the clarification question is appended, no intent panel", () => {
+      const t = (key: string) => key;
+      const reply = "۲۵ یورو به عنوان یک هزینه در بخش مواد غذایی اضافه می‌کنم";
+      const question = "Whether this is income or an expense is required before recording a transaction.";
+      const outcome = resolveChatTurnOutcome(
+        {
+          intentSignal: "explicit",
+          message: "مبلغ ۲۵ یورو در بخش مواد غذایی اضافه کن",
+          responseLanguage: "fa",
+          reply,
+          overlayResult: financeClarificationResult(question),
+          serverWritePolicyMode: "ask",
+        },
+        t,
+      );
+      expect(outcome.content).toBe(`${reply}\n\n${question}`);
+      expect(outcome.reasoningStates).toBeNull();
+    });
+
+    it("NOT server confirmed (serverWritePolicyMode absent) + the SAME ask_clarification -> stays fully silent, exactly like task 11b's original rule -- proves the gate requires server confirmation, not just any ask_clarification", () => {
+      const t = (key: string) => key;
+      const reply = "some conversational reply";
+      const outcome = resolveChatTurnOutcome(
+        {
+          intentSignal: "explicit",
+          message: "some ordinary message the overlay alone misjudged as needing clarification",
+          responseLanguage: "en",
+          reply,
+          overlayResult: financeClarificationResult(),
+        },
+        t,
+      );
+      expect(outcome.content).toBe(reply);
+      expect(outcome.reasoningStates).toBeNull();
+    });
+
+    it("serverWritePolicyMode: 'auto' + ask_clarification -> stays silent -- the carve-out is specific to 'ask', not any pending write policy", () => {
+      const t = (key: string) => key;
+      const reply = "some conversational reply";
+      const outcome = resolveChatTurnOutcome(
+        {
+          intentSignal: "explicit",
+          message: "a task/calendar message resolved to auto mode",
+          responseLanguage: "en",
+          reply,
+          overlayResult: financeClarificationResult(),
+          serverWritePolicyMode: "auto",
+        },
+        t,
+      );
+      expect(outcome.content).toBe(reply);
+      expect(outcome.reasoningStates).toBeNull();
+    });
+
+    it("a non-write, purely conversational message (no server write trigger, overlay null) still renders nothing at all -- task 11b's deliberate rule is unaffected by this carve-out", () => {
+      const t = (key: string) => key;
+      const reply = "Just chatting -- nothing to do here.";
+      const outcome = resolveChatTurnOutcome(
+        { intentSignal: "conversational", message: "how's it going?", responseLanguage: "en", reply, overlayResult: null },
+        t,
+      );
+      expect(outcome.content).toBe(reply);
+      expect(outcome.reasoningStates).toBeNull();
+    });
+
+    it("server confirmed 'ask' but the overlay has no clarificationQuestion text -- nothing is appended (never render an empty note)", () => {
+      const t = (key: string) => key;
+      const reply = "reply text";
+      const noQuestion = financeClarificationResult("");
+      const outcome = resolveChatTurnOutcome(
+        { intentSignal: "explicit", message: "some message", responseLanguage: "en", reply, overlayResult: noQuestion, serverWritePolicyMode: "ask" },
+        t,
+      );
+      expect(outcome.content).toBe(reply);
+    });
+  });
+
+  // ---------------------------------------------------------------------
   // Task 20, Part A0 (PO revision of task 11b): an 'unsupported' overlay for
   // a CLEAR, explicit action request (a real write-shaped verb -- create,
   // set up, schedule, remind, ...) now gets one short, calm capability

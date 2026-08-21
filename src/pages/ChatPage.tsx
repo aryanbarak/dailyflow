@@ -1039,16 +1039,16 @@ export interface ChatTurnOutcome {
   readonly reasoningStates: ReasoningProposalState[] | null
 }
 
-// Task 11b (silence the overlay), revised by task 20's Part A0: the ONE
-// place that decides how a resolved conversational reply and a resolved
-// (possibly null, possibly failed) overlay result combine into what the
-// user actually sees. Extracted as a pure function -- independent of
-// fetch/Supabase/React state -- so the decision logic is directly testable
-// without rendering the full ChatPage component, mirroring how
+// Task 11b (silence the overlay), revised by task 20's Part A0 and task 42's
+// Part A: the ONE place that decides how a resolved conversational reply and
+// a resolved (possibly null, possibly failed) overlay result combine into
+// what the user actually sees. Extracted as a pure function -- independent
+// of fetch/Supabase/React state -- so the decision logic is directly
+// testable without rendering the full ChatPage component, mirroring how
 // classifyMessageIntentSignal/getAmbiguousOfferHint are already tested as
 // pure functions in this same file.
 //
-// Exactly THREE outcomes can add anything to what the user sees:
+// Exactly FOUR outcomes can add anything to what the user sees:
 //   (a) a supported, actionable proposal -> the intent panel (unchanged UI)
 //   (b) the task-9 ambiguous trailing offer -> one extra sentence
 //   (c) task 20, A0: an 'unsupported' overlay for a message that ALSO looks
@@ -1062,24 +1062,68 @@ export interface ChatTurnOutcome {
 //       verbatim; requiring the extra verb-vocabulary match keeps that case
 //       silent while still surfacing an honest answer for a real request
 //       like "set a daily study task and two daily reminders."
-// Everything else -- unsupported for a non-action-shaped message, a genuine
-// ask_clarification, low confidence, conflicting domain evidence, a mixed
-// request, an unparseable LLM response, or the overlay promise having
-// failed/thrown/timed out -- surfaces NOTHING: no panel, no trailing note,
-// no clarificationQuestion text. The conversational reply the default lane
-// already produced is the whole story for all of those; see
-// hasSupportedActionableOverlay above for the exhaustive type-level
-// definition of "actionable."
+//   (d) task 42, Part A: a SERVER-CONFIRMED write trigger
+//       (serverWritePolicyMode === 'ask' -- the Worker's own independent,
+//       deterministic parse, not this overlay, already recognized a genuine
+//       task/calendar/finance write request in this message) whose overlay
+//       resolved to ask_clarification -> the clarificationQuestion text,
+//       still no panel (ask_clarification names no concrete tool to attach
+//       one to). Task 41-verify traced a real production case (a finance
+//       message whose direction couldn't be determined) that reached
+//       exactly this state and was silently dropped, leaving only the
+//       conversational lane's own false completion promise -- see that
+//       report. This is deliberately narrower than "any ask_clarification":
+//       an overlay THAT ALONE decided a plain, non-domain-confirmed message
+//       needed clarification (task 11b's original silencing target) stays
+//       silent -- only a server-confirmed write request that is missing one
+//       field gets to speak.
+// Everything else -- unsupported for a non-action-shaped message, an
+// ask_clarification with no server-confirmed write trigger, low confidence,
+// conflicting domain evidence, a mixed request, an unparseable LLM response,
+// or the overlay promise having failed/thrown/timed out -- surfaces
+// NOTHING: no panel, no trailing note, no clarificationQuestion text. The
+// conversational reply the default lane already produced is the whole story
+// for all of those; see hasSupportedActionableOverlay above for the
+// exhaustive type-level definition of "actionable."
+//
+// KNOWN DEAD END (task 42, reported per that task's own instruction, not
+// fixed here): if the user answers this surfaced clarification in their
+// NEXT message ("expense" / "هزینه"), that reply alone will not resolve
+// anything. reasonAboutUserMessage/buildReasoningPrompt carries no prior
+// chat turns at all (only safeContext + the single current userMessage), so
+// the follow-up is reasoned about with zero memory of the amount/category
+// from the turn that prompted the question -- it will most likely produce
+// its OWN ask_clarification (this time for the missing amount), which this
+// same branch surfaces again, looking like a loop rather than progress.
+// Multi-turn intent completion (giving the overlay access to recent turns)
+// is separate, larger work, out of this task's scope.
 export function resolveChatTurnOutcome(input: ChatTurnOverlayInput, t: Translate): ChatTurnOutcome {
   const overlayResult = input.overlayResult
   const serverTerminalWrite = input.serverWritePolicyMode === 'auto' || input.serverWritePolicyMode === 'off' || Boolean(input.serverWriteExecution)
   const hasGenuineOverlay = !serverTerminalWrite && overlayResult !== null && hasSupportedActionableOverlay(overlayResult)
 
+  // Task 42, Part A: see outcome (d) above. Gated on the SERVER's own
+  // write-trigger confirmation, never on the overlay's own opinion alone --
+  // that is what keeps this from reintroducing task 11b's original bug
+  // (a plain conversational message the overlay alone misreads as needing
+  // clarification must stay silent).
+  const isServerConfirmedClarification =
+    input.serverWritePolicyMode === 'ask' &&
+    overlayResult !== null &&
+    overlayResult.proposal.type === 'ask_clarification' &&
+    Boolean(overlayResult.proposal.clarificationQuestion)
+  const clarificationTrailingNote = isServerConfirmedClarification ? overlayResult!.proposal.clarificationQuestion! : null
+
   if (!hasGenuineOverlay && overlayResult !== null) {
-    console.debug('[ChatPage] overlay suppressed (task 11b): not a supported, actionable proposal', {
-      type: overlayResult.proposal.type,
-      reasons: overlayResult.proposal.reasons,
-    })
+    console.debug(
+      isServerConfirmedClarification
+        ? '[ChatPage] overlay ask_clarification surfaced as text only (task 42): server-confirmed write trigger, no panel (no concrete tool)'
+        : '[ChatPage] overlay suppressed (task 11b): not a supported, actionable proposal',
+      {
+        type: overlayResult.proposal.type,
+        reasons: overlayResult.proposal.reasons,
+      },
+    )
   }
 
   const offerHint = input.intentSignal === 'ambiguous' ? getAmbiguousOfferHint(input.message) : null
@@ -1094,7 +1138,7 @@ export function resolveChatTurnOutcome(input: ChatTurnOverlayInput, t: Translate
     looksLikeExplicitActionRequest(input.message)
   const capabilityTrailingNote = isExplicitUnsupportedActionRequest ? UNSUPPORTED_CAPABILITY_TEXT[input.responseLanguage] : null
 
-  const trailingNote = ambiguousTrailingNote ?? capabilityTrailingNote
+  const trailingNote = ambiguousTrailingNote ?? capabilityTrailingNote ?? clarificationTrailingNote
 
   return {
     content: trailingNote ? `${input.reply}\n\n${trailingNote}` : input.reply,

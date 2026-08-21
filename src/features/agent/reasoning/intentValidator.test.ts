@@ -952,3 +952,55 @@ describe("Task 28 (finance write slice) write intents", () => {
     expect(result.proposal.type).toBe("create_task");
   });
 });
+
+// Task 42: task 41-verify traced the PO's exact production phrase all the
+// way through this validator -- the model's own type survives (see that
+// report's probe), but target.direction (re-derived deterministically at
+// the create_finance_transaction override step, never trusted from the
+// model) came back undefined because no explicit expense/income word is
+// present, so the !target?.direction check a few lines below downgraded the
+// whole proposal to ask_clarification. Part B closes that gap by inferring
+// expense from a stated spending category; these tests exercise it through
+// this file's own validateAgentIntentProposal entry point, one layer above
+// shared/financeDirection.test.ts's direct unit corpus.
+describe("Task 42 (finance direction inference from a spending category)", () => {
+  it("the PO exact production phrase now resolves to create_finance_transaction with direction=expense, not ask_clarification", () => {
+    // Copied byte-for-byte from task 42's own instructions -- never retyped.
+    const PO_STRING = "مبلغ ۲۵ یورو در بخش مواد غذایی اضافه کن";
+    const result = validate(
+      proposal({
+        type: "create_finance_transaction",
+        requestedDomain: "finance",
+        toolId: "finance.create_transaction",
+        userMessage: PO_STRING,
+        language: "fa",
+        target: {},
+      }),
+      PO_STRING,
+    );
+    expect(result.proposal.type).toBe("create_finance_transaction");
+    expect(result.proposal.target).toMatchObject({ amount: "25", currency: "EUR", direction: "expense" });
+  });
+
+  it("an explicit income phrasing still resolves to income -- the category+verb inference never overrides an explicit word", () => {
+    const result = validate(
+      proposal({ type: "create_finance_transaction", requestedDomain: "finance", toolId: "finance.create_transaction", target: {} }),
+      "حقوق ۵۰ یورو در بخش درآمد ثبت کن",
+    );
+    expect(result.proposal.type).toBe("create_finance_transaction");
+    expect(result.proposal.target).toMatchObject({ direction: "income" });
+  });
+
+  it("a genuinely ambiguous finance message (amount + write verb, no category, no explicit income/expense word) still surfaces the clarification question, not a silent guess", () => {
+    const result = validate(
+      proposal({ type: "create_finance_transaction", requestedDomain: "finance", toolId: "finance.create_transaction", target: {} }),
+      "Record a transaction of 20 EUR",
+    );
+    expect(result.proposal.type).toBe("ask_clarification");
+    expect(result.proposal.clarificationQuestion).toBeTruthy();
+    // Specifically direction-missing, not amount-missing -- proves this
+    // case is the one Part B's inference deliberately still leaves
+    // unresolved, not an unrelated failure mode.
+    expect(result.proposal.reasons).toContain("Whether this is income or an expense is required before recording a transaction.");
+  });
+});
