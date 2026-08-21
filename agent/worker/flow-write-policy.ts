@@ -2,6 +2,7 @@
 import { supabaseGet } from './context-builder'
 import { callGeminiForTaskTitle } from './task-title-extraction'
 import { findWriteIntentDescriptor, writeIntentRegistry, type WriteIntentType } from '../../shared/writeIntentRegistry'
+import { parseFinanceDirection } from '../../shared/financeDirection'
 
 export type FlowWriteMode = 'auto' | 'ask' | 'off'
 export type FlowWriteAction = 'create' | 'update' | 'delete'
@@ -1021,15 +1022,10 @@ function isFinanceWriteTrigger(message: string): boolean {
     /(هزینه|درآمد|تراکنش|پرداخت|مبلغ).{0,40}(ثبت کن|اضافه کن|وارد کن|بزن|بساز|ثبت شود)/.test(message)
 }
 
-function parseFinanceDirection(message: string): 'income' | 'expense' | undefined {
-  const text = message.toLowerCase()
-  // "got paid"/"received a payment" is income; a bare "pay"/"paid"/"send"/
-  // "transfer" (no "got"/"received" framing) is money going out, the
-  // common case for a single-user app recording the user's OWN transactions.
-  if (/\bgot paid\b/.test(text) || /\b(income|earned|received|salary)\b/.test(text) || /\b(einnahme|erhalten|gehalt)\b/.test(text) || /درآمد|دریافت|حقوق/.test(message)) return 'income'
-  if (/\b(expense|spent|paid|pay|bought|cost|send|sent|transfer)\b/.test(text) || /\b(ausgabe|bezahlt|zahle|gekauft|kosten|sende|überweise)\b/.test(text) || /هزینه|خرید|پرداخت|بفرست/.test(message)) return 'expense'
-  return undefined
-}
+// Task 42: extracted to shared/financeDirection.ts (both this file's own
+// copy and intentValidator.ts's parseDeterministicDirection were hand
+// duplicates -- see that shared module's own header comment for why and
+// task 41-verify's diagnosis for how the drift risk was found).
 
 // Task 28: matches an amount+optional-currency token in Farsi (Arabic-indic
 // digits, normalized via normalizeDigits already used by the date parsers

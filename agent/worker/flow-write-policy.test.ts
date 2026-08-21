@@ -729,9 +729,9 @@ describe('task 28: finance write slice', () => {
     // (both already exported), matching this file's existing convention --
     // isFinanceWriteTrigger itself, like its sibling isCalendarWriteTrigger,
     // stays a private, unexported implementation detail.
-    it('the exact production phrase that produced no proposal now triggers finance', () => {
+    it('the exact production phrase that produced no proposal now triggers finance, with direction inferred as expense (task 42, part B)', () => {
       const intent = parseFinanceWriteIntent('مبلغ ۲۵ یورو در بخش مواد غذایی اضافه کن', FINANCE_NOW, TZ)
-      expect(intent).toMatchObject({ kind: 'create_finance_transaction', amount: 25, currency: 'EUR' })
+      expect(intent).toMatchObject({ kind: 'create_finance_transaction', amount: 25, currency: 'EUR', direction: 'expense' })
       expect(detectWriteDomainSignal('مبلغ ۲۵ یورو در بخش مواد غذایی اضافه کن', FINANCE_NOW, TZ)).toBe('finance')
     })
 
@@ -758,6 +758,34 @@ describe('task 28: finance write slice', () => {
 
     it('does not create a false-positive collision with task or calendar triggers', () => {
       expect(detectWriteDomainSignal('مبلغ ۲۵ یورو در بخش مواد غذایی اضافه کن', FINANCE_NOW, TZ)).toBe('finance')
+    })
+  })
+
+  // Task 42, Part B: task 41-verify traced the PO's exact phrase all the
+  // way through -- the trigger fires (task 41's own fix), but direction
+  // came back undefined (no explicit expense/income word), so
+  // intentValidator.ts downgraded the proposal to ask_clarification, which
+  // ChatPage.tsx then silenced entirely (task 11b's blanket rule) --
+  // leaving only the chat lane's own false completion promise. These tests
+  // exercise the fix through parseFinanceWriteIntent (this file's own
+  // integration point for shared/financeDirection.ts's
+  // parseFinanceDirection), mirroring shared/financeDirection.test.ts's own
+  // direct-unit corpus one layer up, at the level this file's other tests
+  // already operate at.
+  describe('task 42: finance direction inference from a spending category (shared/financeDirection.ts)', () => {
+    it('the PO exact production phrase resolves direction to expense, not amountClarificationNeeded-shaped silence', () => {
+      const intent = parseFinanceWriteIntent('مبلغ ۲۵ یورو در بخش مواد غذایی اضافه کن', FINANCE_NOW, TZ)
+      expect(intent?.direction).toBe('expense')
+    })
+
+    it('an explicit income phrasing still yields income -- the category+verb inference never overrides an explicit word', () => {
+      const intent = parseFinanceWriteIntent('حقوق ۵۰ یورو در بخش درآمد ثبت کن', FINANCE_NOW, TZ)
+      expect(intent?.direction).toBe('income')
+    })
+
+    it('a genuinely ambiguous finance message (amount + write verb, no category, no explicit word) still leaves direction undefined', () => {
+      const intent = parseFinanceWriteIntent('مبلغ ۲۰ یورو ثبت کن', FINANCE_NOW, TZ)
+      expect(intent?.direction).toBeUndefined()
     })
   })
 
