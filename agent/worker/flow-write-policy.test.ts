@@ -6,12 +6,14 @@ import {
   assembleCalendarWriteIntent,
   assembleFinanceWriteIntent,
   assembleTaskWriteIntent,
+  calendarIntentTargetFields,
   cleanTitleEdges,
   defaultFlowWriteMode,
   detectContinuationDomain,
   detectWriteDomainSignal,
   executeAutoFinanceWrite,
   extractOriginalRequestText,
+  financeIntentTargetFields,
   isTitleSubstantiallyTheMessage,
   isValidIban,
   parseCalendarWriteIntent,
@@ -23,16 +25,18 @@ import {
   resolveCreateEventTitle,
   resolveCreateTaskTitle,
   resolveServerFlowWriteMode,
+  taskIntentTargetFields,
   undoAutoWrite,
   UNDO_KIND_VALUES,
   utcInstantToZonedDateAndTime,
   validateCandidateTitle,
+  writeIntentOutcomeIdentity,
   zonedDateTimeToUtcIso,
   type ParsedCalendarWriteIntent,
   type ParsedFinanceWriteIntent,
   type ParsedTaskWriteIntent,
 } from './flow-write-policy'
-import { writeIntentRegistry } from '../../shared/writeIntentRegistry'
+import { WRITE_DOMAIN_TARGET_FIELDS, writeIntentRegistry } from '../../shared/writeIntentRegistry'
 import type { Env } from './types'
 
 const NOW = new Date('2026-08-13T10:00:00.000Z')
@@ -709,6 +713,54 @@ describe('task 28: finance write slice', () => {
     })
   })
 
+  // Task 41 production bug: "مبلغ ۲۵ یورو در بخش مواد غذایی اضافه کن"
+  // ("add an amount of 25 euros in the groceries category") produced no
+  // proposal at all (isFinanceWriteTrigger returned false, so
+  // detectWriteDomainSignal never even routed to finance) while an
+  // equivalent "...ثبت کن" phrasing did. Root cause: the Farsi noun/verb
+  // regex already listed "اضافه کن" as a valid verb, but required one of
+  // هزینه/درآمد/تراکنش/پرداخت (expense/income/transaction/payment) as the
+  // paired noun -- "مبلغ" (amount) was not among them. See
+  // isFinanceWriteTrigger's own comment for the fix and why "بزن"/"وارد کن"
+  // (also requested) stay noun-gated the same way every other verb here
+  // already is.
+  describe('task 41: Farsi finance trigger coverage (اضافه کن / وارد کن / بزن and equivalents)', () => {
+    // Tested indirectly via parseFinanceWriteIntent/detectWriteDomainSignal
+    // (both already exported), matching this file's existing convention --
+    // isFinanceWriteTrigger itself, like its sibling isCalendarWriteTrigger,
+    // stays a private, unexported implementation detail.
+    it('the exact production phrase that produced no proposal now triggers finance', () => {
+      const intent = parseFinanceWriteIntent('مبلغ ۲۵ یورو در بخش مواد غذایی اضافه کن', FINANCE_NOW, TZ)
+      expect(intent).toMatchObject({ kind: 'create_finance_transaction', amount: 25, currency: 'EUR' })
+      expect(detectWriteDomainSignal('مبلغ ۲۵ یورو در بخش مواد غذایی اضافه کن', FINANCE_NOW, TZ)).toBe('finance')
+    })
+
+    it.each([
+      ['هزینه ۲۵ یورو مواد غذایی اضافه کن', 'add -- already covered, regression guard'],
+      ['مبلغ ۲۵ یورو اضافه کن', 'add, paired with amount instead of expense'],
+      ['هزینه ۲۵ یورو مواد غذایی وارد کن', 'enter'],
+      ['مبلغ ۲۵ یورو وارد کن', 'enter, paired with amount'],
+      ['هزینه ۲۵ یورو مواد غذایی بزن', 'colloquial log/put it'],
+      ['مبلغ ۲۵ یورو بزن', 'colloquial, paired with amount'],
+      ['یک هزینه ۲۵ یورو ثبت کن', 'record -- already covered, regression guard'],
+    ])('triggers finance for phrasing: %s (%s)', (message) => {
+      expect(parseFinanceWriteIntent(message, FINANCE_NOW, TZ)).not.toBeNull()
+      expect(detectWriteDomainSignal(message, FINANCE_NOW, TZ)).toBe('finance')
+    })
+
+    it('the colloquial verb stays noun-gated -- a bare, unrelated use of the same overloaded verb is NOT finance evidence', () => {
+      // Heavily overloaded in colloquial Persian (hit/play/dial/...); this
+      // proves the fix did not turn it into an unconditional finance
+      // trigger the way an ungated addition would.
+      expect(parseFinanceWriteIntent('این آهنگ رو بزن', FINANCE_NOW, TZ)).toBeNull()
+      expect(detectWriteDomainSignal('این آهنگ رو بزن', FINANCE_NOW, TZ)).toBe('none')
+    })
+
+    it('does not create a false-positive collision with task or calendar triggers', () => {
+      expect(detectWriteDomainSignal('مبلغ ۲۵ یورو در بخش مواد غذایی اضافه کن', FINANCE_NOW, TZ)).toBe('finance')
+    })
+  })
+
   describe('detectWriteDomainSignal / detectContinuationDomain -- finance as a third independent signal', () => {
     it('a finance-only trigger resolves to \'finance\'', () => {
       expect(detectWriteDomainSignal('Log an expense of 20 EUR', FINANCE_NOW, TZ)).toBe('finance')
@@ -890,5 +942,191 @@ describe('task 28: finance write slice', () => {
         global.fetch = originalFetch
       }
     })
+  })
+})
+
+// Task 40, ADR-0016 Slice 2, Part D item 10: proves the auto-lane's
+// target_fields derivation is shape-only -- given an intent whose VALUES
+// include a real amount and a real description, the returned array must
+// contain only the corresponding FIELD NAMES, never those values, and must
+// never contain a name for a field the intent left unset.
+describe('task 40: proposal-outcome target field extraction is shape-only', () => {
+  it('taskIntentTargetFields returns only the names of populated task fields', () => {
+    const intent: ParsedTaskWriteIntent = {
+      kind: 'create_task',
+      title: 'Buy groceries for the week',
+      notes: 'milk, eggs, bread',
+      dueDate: '2026-08-20',
+    }
+    const fields = taskIntentTargetFields(intent)
+    expect(fields.sort()).toEqual(['dueDate', 'notes', 'title'].sort())
+    // Never a raw value anywhere in the result.
+    expect(fields).not.toContain('Buy groceries for the week')
+    expect(fields).not.toContain('milk, eggs, bread')
+    expect(fields).not.toContain('2026-08-20')
+    // Never an unset field's name either.
+    expect(fields).not.toContain('taskReference')
+    expect(fields).not.toContain('timeOfDay')
+  })
+
+  it('taskIntentTargetFields excludes control-flow fields (kind, titleSource, dateClarificationNeeded)', () => {
+    const intent: ParsedTaskWriteIntent = { kind: 'create_task', title: 'x', titleSource: 'correction', dateClarificationNeeded: false }
+    const fields = taskIntentTargetFields(intent)
+    expect(fields).toEqual(['title'])
+  })
+
+  // Task 41: 'title' is reported as the registry's own 'eventTitle' name,
+  // not the ParsedCalendarWriteIntent property name -- see
+  // CALENDAR_INTENT_TARGET_FIELD_MAP's own comment for why the raw
+  // property name would otherwise collide with tasks' registry vocabulary.
+  it('calendarIntentTargetFields returns only the names of populated calendar fields (registry-named), never their values', () => {
+    const intent: ParsedCalendarWriteIntent = {
+      kind: 'create_calendar_event',
+      title: 'Doctor appointment',
+      startDate: '2026-08-21',
+      startTime: '13:00',
+    }
+    const fields = calendarIntentTargetFields(intent)
+    expect(fields.sort()).toEqual(['eventTitle', 'startDate', 'startTime'].sort())
+    expect(fields).not.toContain('title')
+    expect(fields).not.toContain('Doctor appointment')
+    expect(fields).not.toContain('13:00')
+  })
+
+  it('financeIntentTargetFields returns only field names, never a real amount or description value', () => {
+    const intent: ParsedFinanceWriteIntent = {
+      kind: 'create_finance_transaction',
+      amount: 45,
+      direction: 'expense',
+      description: 'groceries for the week',
+      iban: 'DE89370400440532013000',
+      amountClarificationNeeded: false,
+    }
+    const fields = financeIntentTargetFields(intent)
+    expect(fields.sort()).toEqual(['amount', 'description', 'direction', 'iban'].sort())
+    // The whole point of this test: the actual amount/description/IBAN
+    // values must never appear anywhere in the returned array.
+    expect(fields).not.toContain(45)
+    expect(fields).not.toContain('groceries for the week')
+    expect(fields).not.toContain('DE89370400440532013000')
+    expect(fields.every((f) => typeof f === 'string')).toBe(true)
+  })
+
+  it('financeIntentTargetFields excludes amountClarificationNeeded/ibanValid/kind', () => {
+    const intent: ParsedFinanceWriteIntent = {
+      kind: 'create_finance_transaction',
+      amount: 10,
+      amountClarificationNeeded: false,
+      ibanValid: true,
+    }
+    expect(financeIntentTargetFields(intent)).toEqual(['amount'])
+  })
+
+  it('returns an empty array when no target fields are populated', () => {
+    expect(taskIntentTargetFields({ kind: 'update_task' })).toEqual([])
+    expect(calendarIntentTargetFields({ kind: 'update_calendar_event' })).toEqual([])
+    expect(financeIntentTargetFields({ kind: 'create_finance_transaction', amountClarificationNeeded: true })).toEqual([])
+  })
+})
+
+// Task 41: the production bug (agent_proposal_outcomes rows carrying
+// updateTitle/updateBody on a create_finance_transaction row) was traced to
+// the FRONTEND's extractor (proposalOutcomeReporting.ts's
+// writeProposalTargetFields), which used to trust Object.keys() on a target
+// object it didn't control the shape of. The Worker's three extractors
+// above are structurally immune to that same bug -- each operates on its
+// own domain-specific TypeScript interface (ParsedTaskWriteIntent /
+// ParsedCalendarWriteIntent / ParsedFinanceWriteIntent), so accessing a
+// field name from a DIFFERENT domain is a compile error, not just a
+// runtime possibility. These tests make that guarantee explicit and
+// registry-cross-checked rather than merely asserted in a comment: for
+// every field an extractor CAN emit, it must be either a field WRITE_DOMAIN_
+// TARGET_FIELDS also lists for that exact domain, or one of the Worker's
+// own documented time-shaped fields with no registry equivalent (the
+// deterministic parser stores start/end as separate startDate/startTime/
+// endTime, and tasks as timeOfDay, rather than the registry's single ISO
+// start/end strings) -- and it must NEVER be a field name that belongs to
+// a DIFFERENT domain's own registry vocabulary.
+describe('task 41: Worker target-field extractors never cross domain boundaries (registry-derived)', () => {
+  const registryFieldNames = (domain: 'tasks' | 'calendar' | 'finance') =>
+    new Set(WRITE_DOMAIN_TARGET_FIELDS[domain].map((field) => field.name))
+
+  // Fields the deterministic parser reports under a name with no registry
+  // equivalent at all (time-of-day granularity the registry's flat
+  // start/end don't separate, and calendar's own eventDescription, invented
+  // specifically because the registry has no notes/description field for
+  // calendar -- see CALENDAR_INTENT_TARGET_FIELD_MAP's own comment).
+  // Legitimate, not a leak, because none of these names collide with
+  // another domain's registry vocabulary either.
+  const WORKER_ONLY_NON_REGISTRY_FIELDS = new Set(['timeOfDay', 'startDate', 'startTime', 'endTime', 'eventDescription'])
+
+  it('financeIntentTargetFields never emits a task or calendar field name', () => {
+    const intent: ParsedFinanceWriteIntent = {
+      kind: 'create_finance_transaction',
+      amount: 45,
+      currency: 'EUR',
+      direction: 'expense',
+      transactionDate: '2026-08-20',
+      description: 'groceries',
+      iban: 'DE89370400440532013000',
+      amountClarificationNeeded: false,
+    }
+    const fields = financeIntentTargetFields(intent)
+    expect(fields.length).toBeGreaterThan(0)
+    for (const field of fields) {
+      expect(registryFieldNames('tasks').has(field)).toBe(false)
+      expect(registryFieldNames('calendar').has(field)).toBe(false)
+      expect(WORKER_ONLY_NON_REGISTRY_FIELDS.has(field) || registryFieldNames('finance').has(field)).toBe(true)
+    }
+  })
+
+  it('taskIntentTargetFields never emits a calendar or finance field name', () => {
+    const intent: ParsedTaskWriteIntent = {
+      kind: 'create_task',
+      title: 'Buy groceries',
+      taskReference: 'groceries',
+      notes: 'milk, eggs',
+      dueDate: '2026-08-21',
+      timeOfDay: '15:00',
+    }
+    const fields = taskIntentTargetFields(intent)
+    expect(fields.length).toBeGreaterThan(0)
+    for (const field of fields) {
+      expect(registryFieldNames('calendar').has(field)).toBe(false)
+      expect(registryFieldNames('finance').has(field)).toBe(false)
+      expect(WORKER_ONLY_NON_REGISTRY_FIELDS.has(field) || registryFieldNames('tasks').has(field)).toBe(true)
+    }
+  })
+
+  it('calendarIntentTargetFields never emits a task or finance field name', () => {
+    const intent: ParsedCalendarWriteIntent = {
+      kind: 'create_calendar_event',
+      title: 'Team sync',
+      eventReference: 'team sync',
+      notes: 'bring laptop',
+      startDate: '2026-08-21',
+      startTime: '13:00',
+      endTime: '14:00',
+    }
+    const fields = calendarIntentTargetFields(intent)
+    expect(fields.length).toBeGreaterThan(0)
+    for (const field of fields) {
+      expect(registryFieldNames('tasks').has(field)).toBe(false)
+      expect(registryFieldNames('finance').has(field)).toBe(false)
+      expect(WORKER_ONLY_NON_REGISTRY_FIELDS.has(field) || registryFieldNames('calendar').has(field)).toBe(true)
+    }
+  })
+})
+
+describe('task 40: writeIntentOutcomeIdentity is registry-derived, not hand-mapped', () => {
+  it.each(writeIntentRegistry.map((entry) => [entry.intentType, entry.toolId] as const))(
+    '%s resolves to its own registry toolId %s',
+    (intentType, toolId) => {
+      expect(writeIntentOutcomeIdentity(intentType)).toEqual({ intentType, toolId })
+    },
+  )
+
+  it('returns null for a kind with no registry entry', () => {
+    expect(writeIntentOutcomeIdentity('not_a_real_intent_type' as never)).toBeNull()
   })
 })

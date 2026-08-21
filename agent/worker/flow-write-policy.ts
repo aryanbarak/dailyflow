@@ -1002,7 +1002,23 @@ function isFinanceWriteTrigger(message: string): boolean {
     // ever matters once a message is already routed here.
     /\b(pay|send|transfer)\b.{0,40}\b(euro|eur|€|\d|[A-Za-z]{2}[0-9]{2}[A-Za-z0-9]{11,30})/i.test(message) ||
     /\b(erfasse|buche|trage)\b.{0,40}\b(ausgabe|einnahme|transaktion|zahlung)\b/i.test(message) ||
-    /(هزینه|درآمد|تراکنش|پرداخت).{0,40}(ثبت کن|اضافه کن|بساز|ثبت شود)/.test(message)
+    // Task 41 (production bug): "مبلغ ۲۵ یورو در بخش مواد غذایی اضافه کن"
+    // ("add an amount of 25 euros in the groceries category") produced NO
+    // proposal -- this noun/verb pair regex already listed "اضافه کن"
+    // among its verbs, but required one of هزینه/درآمد/تراکنش/پرداخت
+    // (expense/income/transaction/payment) as the paired noun, and that
+    // exact message says "مبلغ" (amount) instead of any of those four. Added
+    // "مبلغ" to the noun group (it is unambiguously a monetary-amount word,
+    // not shared with any task/calendar vocabulary -- see task 41's cross-
+    // domain-leak tests for the same non-collision discipline applied to
+    // target_fields). Also added "وارد کن" (enter) and "بزن" (colloquial
+    // "put/log it") to the verb group per the task's own explicit request
+    // for equivalents -- both stay gated behind the same finance-noun
+    // proximity requirement as every existing verb here, so a generic "بزن"
+    // elsewhere (it is heavily overloaded in colloquial Persian) still only
+    // ever counts as finance-write evidence when paired with a finance noun
+    // within 40 characters, exactly like "اضافه کن" already was.
+    /(هزینه|درآمد|تراکنش|پرداخت|مبلغ).{0,40}(ثبت کن|اضافه کن|وارد کن|بزن|بساز|ثبت شود)/.test(message)
 }
 
 function parseFinanceDirection(message: string): 'income' | 'expense' | undefined {
@@ -1105,7 +1121,34 @@ export interface ParsedFinanceWriteIntent {
 // field NAMES only; callers must never pass the intent object itself (or
 // any of its values) to the recording function.
 const TASK_INTENT_TARGET_FIELD_KEYS = ['title', 'taskReference', 'notes', 'dueDate', 'timeOfDay'] as const
-const CALENDAR_INTENT_TARGET_FIELD_KEYS = ['title', 'eventReference', 'notes', 'startDate', 'startTime', 'endTime'] as const
+
+// Task 41: `title`/`notes` here used to be the OUTPUT names too, not just
+// the internal ParsedCalendarWriteIntent property names -- but 'title' and
+// 'notes' are exactly TASK's own registry field names (WRITE_DOMAIN_TARGET_
+// FIELDS.tasks), not calendar's ('eventTitle'; calendar has no registry
+// notes/description field at all). A calendar auto-write's ledger row
+// therefore reported field names that look, by their string alone, like a
+// TASK field had been populated -- the same class of cross-domain
+// ambiguity as the production bug this task fixes, just latent rather
+// than yet observed. Each entry below maps the parsed intent's own
+// property to the OUTPUT name actually recorded: 'title' -> registry's
+// 'eventTitle'; 'notes' -> 'eventDescription' (invented, not a registry
+// name, since the registry doesn't model this field for calendar at all --
+// chosen to collide with neither tasks' 'notes'/'title' nor finance's
+// 'description'). eventReference/startDate/startTime/endTime already don't
+// collide with any other domain's registry vocabulary and pass through
+// unchanged; startDate/startTime/endTime have no single-field registry
+// equivalent (the registry's flat 'start'/'end' are whole ISO instants,
+// the deterministic parser stores date and time-of-day separately).
+const CALENDAR_INTENT_TARGET_FIELD_MAP: ReadonlyArray<{ property: keyof ParsedCalendarWriteIntent; outputName: string }> = [
+  { property: 'title', outputName: 'eventTitle' },
+  { property: 'eventReference', outputName: 'eventReference' },
+  { property: 'notes', outputName: 'eventDescription' },
+  { property: 'startDate', outputName: 'startDate' },
+  { property: 'startTime', outputName: 'startTime' },
+  { property: 'endTime', outputName: 'endTime' },
+]
+
 const FINANCE_INTENT_TARGET_FIELD_KEYS = ['amount', 'currency', 'direction', 'transactionDate', 'description', 'iban'] as const
 
 export function taskIntentTargetFields(intent: ParsedTaskWriteIntent): string[] {
@@ -1113,7 +1156,9 @@ export function taskIntentTargetFields(intent: ParsedTaskWriteIntent): string[] 
 }
 
 export function calendarIntentTargetFields(intent: ParsedCalendarWriteIntent): string[] {
-  return CALENDAR_INTENT_TARGET_FIELD_KEYS.filter((key) => intent[key] !== undefined)
+  return CALENDAR_INTENT_TARGET_FIELD_MAP
+    .filter(({ property }) => intent[property] !== undefined)
+    .map(({ outputName }) => outputName)
 }
 
 export function financeIntentTargetFields(intent: ParsedFinanceWriteIntent): string[] {
