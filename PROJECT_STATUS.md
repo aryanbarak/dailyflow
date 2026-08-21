@@ -408,47 +408,112 @@ doc has full evidence).
      explicitly backlog per ADR-0014 §10, needs its own core-only hit-target
      design.
 
-### 2.7 Orb Journey Slice 1 (task MB-05, tuning pass MB-06)
+### 2.7 Orb Journey — full feature line (tasks MB-05 through MB-24) — SHIPPED
 
-- **Second Micro Breaks session type: untimed room sequence, no persistence.**
-  [ADR-0015](docs/decisions/adr/ADR-0015-orb-journey-architecture.md)
-  (Accepted, extends ADR-0014). `src/features/orb-journey/`: a pure room
-  state machine (`roomEngine.ts` — room-index-only difficulty, room-local
-  miss-restart, "cleared" acknowledgement on the last authored room, no
-  overall game-over except Esc/close), a design-token-driven abstract room
-  theme (`roomTheme.ts` — Focus/Tasks family only, zero reads from any
-  workspace/task/calendar/finance data path), and a separate canvas renderer
-  (`JourneyCanvas.tsx`, deliberately not a fork of `PongCanvas.tsx`, so
-  Classic Pong has zero diff). Entry: a session-type choice screen
-  ("Quick Break" vs "Orb Journey") inside the existing bespoke overlay
-  (`MicroBreakOverlay.tsx`), reusing ADR-0014's a11y/exit/crash-fail-safe
-  machinery unchanged. `pongEngine.ts` gained one additive field
-  (`floorMissCount`) so the room layer can detect a miss unambiguously;
-  Quick Break's own 32/32 tests pass unmodified. Exactly 2 rooms, one theme
-  family, ricochet-only — everything else (breakable obstacles, target
-  sequences, path branching, persistence, adaptive difficulty) explicitly
-  deferred per ADR-0015 §6. Committed `cf438d9`.
-- **PO manual QA on MB-05 (partial — 2026-08-19):** choice screen legible,
-  room theme readable behind the ball/trail, room 2's difficulty step felt
-  "expected, not dramatic" (matches ADR-0015 §4's "somewhat harder" intent,
-  though the step itself — 8% speed / 4% paddle-shrink — read as barely
-  perceptible; widened in MB-06, see below). **Not yet confirmed by PO:**
-  Esc-mid-Journey, "cleared" phase behavior on the last room, Persian/RTL
-  choice screen.
-- **MB-06 difficulty/transition tuning pass:** widened
-  `ROOM_DIFFICULTY_SPEED_STEP` (0.08 → 0.22) and
-  `ROOM_DIFFICULTY_PADDLE_SHRINK_STEP` (0.04 → 0.12) in
-  `src/features/orb-journey/tuning.ts` in response to the PO feedback above
-  — room 2 is now ~22% faster / ~12% narrower-paddled than room 1 (was ~8%/
-  ~4%), still within ADR-0014 §4's speed-cap and degenerate-angle-guard
-  invariants (unit-tested, see MB-06 report). Also fixed an objective
-  smoothness gap in the room-transition accent flash
-  (`JourneyCanvas.tsx`/`roomTheme.ts`'s new `computeRoomTransitionFlashAlpha`)
-  — it previously popped instantly to peak alpha on transition entry (a hard
-  cut) and only eased on exit; now a half-sine envelope eases both in and
-  out within the same short window. Room-2 difficulty feel and transition
-  feel still need a PO real-session pass, not just the numeric/screenshot
-  verification done so far.
+**Second Micro Breaks session type: an untimed room sequence, now with full
+persistence.** [ADR-0015](docs/decisions/adr/ADR-0015-orb-journey-architecture.md)
+(Accepted, extends ADR-0014; supersedes the earlier MB-04 "Survival mode"
+plan outright). `src/features/orb-journey/`: a pure room state machine
+(`roomEngine.ts`), a design-token-driven abstract room theme layer
+(`roomTheme.ts`), and a separate canvas renderer (`JourneyCanvas.tsx`,
+deliberately not a fork of `PongCanvas.tsx`, so Classic Pong has zero diff).
+Entry: a session-type choice screen ("Quick Break" vs "Orb Journey" vs, once
+a checkpoint exists, "Continue Journey") inside the existing bespoke overlay
+(`MicroBreakOverlay.tsx`), reusing ADR-0014's a11y/exit/crash-fail-safe
+machinery unchanged throughout. Started as MB-05's 2-room slice
+(`cf438d9`) and grew through MB-24 into the following shipped state:
+
+- **Three rooms, two theme families.** Room 1 and Room 2 use the Focus/Tasks
+  abstract theme (checkmark-like forms, list lines — MB-05); Room 3 uses the
+  Rhythm/Calendar theme (grid lines, horizontal bars — MB-13 `6e6fd0a`,
+  ADR-0015 §12). All theming is design-token-only; zero reads from any real
+  task/calendar/finance data path, preserving ADR-0014 §1's trust boundary.
+  The "cleared" acknowledgement phase triggers after Room 3.
+- **Drifting speed-orbs — reward/penalty roles with paddle-block
+  interaction.** Introduced MB-08 (`c48b344`) as a temporary/timed
+  Calm(reward)/Haste(penalty) multiplier; revised MB-10 (`338ac3d`, PO
+  playtesting decision, ADR-0015 §11 final) to persistent (non-expiring)
+  speed effects with the corrected mapping — reward = speed-up, penalty =
+  speed-down — plus a new penalty-orb/paddle interaction (a safe block, no
+  speed change) and a penalty applied on an uncaught bottom-miss. Role is
+  always distinguishable by rim shape (smooth=reward, notched=penalty), not
+  color alone.
+- **Two-strike room-restart rule.** MB-18 (`26ccff7`, ADR-0015 §3 final,
+  frozen before persistence work): a room's 1st floor miss re-serves the
+  ball only — speed, combo progress, and active drifting orbs are all
+  preserved, not a restart; a 2nd miss (without reaching the room's goal in
+  between) triggers the original full room-local restart.
+- **Fixed 500px play area** (`ADR-0015 §13`). A progressive play-area-growth
+  mechanic was built and tuned across three rounds — MB-14 (`f55d059`,
+  formula + room-transition resize), MB-15 (`6088569`, narrowed Room 1's
+  baseline to a genuinely narrow 300px after PO browser feedback), MB-17
+  (`a76cc1f`, fixed a real ball stretch-distortion bug the growth mechanic's
+  canvas-buffer/CSS-size mismatch caused) — then retired entirely in MB-22
+  (`4941d99`) after real multi-room playtesting showed room-to-room growth
+  broke visual focus rather than reinforcing progression. Every Journey room
+  now uses one fixed 500px width; progression is carried by theme, room-index
+  difficulty, and drifting-orb spawn cadence instead.
+- **Crash-guard coverage — render path and physics/VFX path.** The render-path
+  guard shipped with MB-02b (`8053408`, Quick Break, catches a `draw()`
+  exception and routes to an in-overlay `'error'` phase). MB-11 (`de64ff2`)
+  closed a second, previously-uncovered gap: `onTick`'s physics and
+  particle-detection logic sat outside that guard, so an uncaught exception
+  there silently killed the rAF chain (paddle stayed responsive via its own
+  listener; everything else froze, no error surfaced). Both draw and
+  physics/VFX exceptions now route through one unified `crash()` path,
+  backed by a permanent fuzz/soak regression test.
+- **The 90s-freeze fix.** MB-12 (`bd22218`): Journey rooms had silently
+  inherited Quick Break's fixed 90s `durationSeconds`, whose `'ended'`-state
+  freeze is correct and load-bearing for Quick Break but was never meant to
+  apply to Journey — after 90 continuous seconds of play, Journey silently
+  froze with no exception thrown (MB-11's crash guard correctly didn't fire,
+  since nothing crashed). Journey now gets an unbounded (`Infinity`)
+  duration so the freeze condition is structurally unreachable.
+- **Cursor-hidden gameplay (Quick Break + Journey).** MB-16 (`e1b6af0`): the
+  native OS cursor is hidden inside the play area's canvas element for the
+  full mount lifetime of both session types — the paddle is the only visual
+  pointer. The choosing/error phases keep a normal cursor for button
+  interaction.
+- **Full Supabase persistence — checkpoint model, both migrations applied to
+  production.** Designed in MB-19 (`40c93b6`, ADR-0015 §14): `journey_progress`
+  (one updatable row per user — farthest room, best total score, RLS
+  owner-only SELECT/INSERT/UPDATE/DELETE) and `journey_runs` (append-only
+  session log, client-generated id for idempotent retry, RLS owner-only
+  SELECT/INSERT/DELETE, no UPDATE policy) — migration and service layer
+  written to disk only at that point, explicitly not applied. Wired into
+  gameplay in MB-20 (`dcdce9e`): non-blocking room-completion and
+  session-end writes covering all 4 exit paths, a localStorage offline queue
+  with idempotent flush on load/online, and the additive "Continue Journey"
+  entry point (starts at the first room of the stored farthest room, never
+  mid-room physics state). Extended in MB-23 (`f86fe70`, ADR-0015 §14
+  extension) with a `checkpoint_score` column, written in the same upsert as
+  `farthest_room` on room-completion (not on score-only improvements, so an
+  unearned score can't overwrite the checkpoint) — "Continue Journey" now
+  restores both the correct room AND the correct score, not just the room.
+  Both migrations (`supabase/migrations/20260820000000_journey_persistence.sql`,
+  `supabase/migrations/20260820010000_journey_checkpoint_score.sql`) are
+  applied to production (`taqxwnlwllbywaklwyno`) as of MB-24 — a
+  database-only Tier-1 step with no corresponding code commit.
+
+**Not yet confirmed by the Product Owner:** cross-device sync — "Continue
+Journey" on a second device/session correctly showing both the stored room
+AND score — has **not** been confirmed in a real two-device manual test.
+This capability's status is **"shipped, pending final PO manual
+confirmation,"** not "fully verified." Do not treat it as confirmed until
+that manual pass happens.
+
+**Retired/superseded design decisions (for a reader's clarity):**
+
+- **Survival mode** (the pre-MB-05 "sixth Pong mode" plan) → fully replaced
+  by Orb Journey as its own session type; ADR-0015 supersedes that plan
+  outright rather than extending it.
+- **Room 2's static breakable obstacle** (MB-07, `2917107`) → retired MB-09
+  (`b1c1c1a`, PO decision after playtesting both mechanics together); Room 2
+  is now drifting-orbs-only. The engine-level obstacle capability
+  (`PongObstacleConfig`/`PongObstacleState`) is kept as unused infrastructure
+  for a possible future room, not removed (ADR-0015 §10).
+- **Progressive play-area growth** (MB-14) → retired MB-22 (`4941d99`); see
+  the fixed-500px bullet above (ADR-0015 §13).
 
 ## 3. Verified NOT implemented
 
@@ -716,10 +781,19 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
    persistence) + MB-02b production-incident fix~~ — **merged/complete.**
    [ADR-0014](docs/decisions/adr/ADR-0014-micro-breaks-architecture-boundary.md)
    (Accepted, amended post-MB-02b). See §2.6.
-9. Micro Breaks Slice 2 (combo, sensory final wave, duration-preset Settings
-   UI, mobile/PWA acceptance, bounded polish) — **next**, per ADR-0014 §12
-   sequencing. No persistence in this slice either; Slice 3 (Supabase) stays
-   gated behind the §2.6 pending gates and an explicit PO "برو".
+9. ~~Orb Journey (tasks MB-05 through MB-24): 3-room untimed session type,
+   drifting speed-orbs, two-strike restart, crash-guard/freeze fixes,
+   cursor-hidden gameplay, full Supabase persistence~~ — **shipped.** See
+   §2.7 for the full arc and commit trail.
+   [ADR-0015](docs/decisions/adr/ADR-0015-orb-journey-architecture.md)
+   (Accepted). **One item still open:** cross-device "Continue Journey" sync
+   is unconfirmed by the PO in a real two-device test (§2.7) — not a merge
+   blocker, but not yet closeable as fully verified either.
+10. Micro Breaks Slice 2 (combo, sensory final wave, duration-preset Settings
+    UI, mobile/PWA acceptance, bounded polish) — still open, per ADR-0014
+    §12 sequencing; not addressed by the Orb Journey work above, which
+    proceeded as its own separate track (ADR-0015) rather than as this
+    slice.
 
 Superseded/completed sprint milestones from the prior version of this
 document have been removed rather than carried forward as history; git

@@ -338,6 +338,72 @@ browser API. Recorded in
 [ADR-0014](../../docs/decisions/adr/ADR-0014-micro-breaks-architecture-boundary.md)
 §3's post-MB-02b amendment.
 
+### A Visual Boundary Fix Can Break Another Component's Positioning Assumption
+
+Problem: MB-17 scoped Orb Journey's dim/blur backdrop boundary to the play
+area's growing width (previously full-viewport) to fix a genuine, correctly
+diagnosed problem elsewhere in the same commit. That change silently
+invalidated the room/score HUD's own positioning, which had been built
+around the old, wider "outside the play area" boundary. The regression went
+unnoticed until MB-22 touched the same layout for an unrelated reason
+(retiring play-area growth) and found the HUD had become illegible relative
+to the new boundary.
+
+Solution: MB-22 moved the room/score HUD from a viewport-anchored position
+outside the play area to a position inside it — sibling to the canvas, not
+nested inside it, to preserve the existing accessibility structure.
+
+Rule: when a boundary/scoping change makes something "outside" become
+"inside" (or vice versa), re-check every other component that assumed the
+old boundary. A fix that is entirely correct for its own stated problem can
+still leave a silent regression in a sibling component that shared the same
+implicit assumption about where the boundary was.
+
+### A UI Growth/Resize Mechanic Needs Real Playtesting, Not Just Correct Math
+
+Problem: Orb Journey's progressive play-area-growth mechanic (MB-14) shipped
+with correct math and passing unit tests, but real play kept surfacing
+concrete gaps a spec review hadn't caught: MB-15 found the calibrated
+baseline still wasn't narrow enough to satisfy the actual product
+requirement; MB-17 found a canvas-buffer/CSS-size mismatch that visibly
+distorted the ball. After all of that was fixed and the mechanic was played
+across all three rooms, MB-22 found the underlying design intent itself
+didn't hold up — a larger frame read as visually disorganized, not as
+escalating progression — and retired the mechanic outright in favor of a
+fixed play-area width.
+
+Solution: three rounds of playtesting-driven fixes (MB-14/15/17) followed by
+full retirement (MB-22) once real, sustained play revealed the mechanic's
+premise didn't work, not just isolated bugs in its implementation.
+
+Rule: a UI growth/resize mechanic needs real playtesting, not just correct
+math, before committing to it long-term. Three rounds of fixes followed by
+retirement after real play is cheaper than it looks in hindsight, and it is
+not a process failure — shipping something, actually playing it, and
+retiring it on real feedback is the process working as intended.
+
+### Silent rAF-Chain Stops Can Happen Without Any Exception
+
+Problem: MB-12 found Journey rooms silently froze after 90 seconds of
+continuous, uninterrupted play — no exception thrown, no error overlay,
+and MB-11's crash guard (added specifically to catch uncaught render/physics
+exceptions) correctly did not fire, because nothing crashed. The cause was
+a state condition: Journey rooms had silently inherited Quick Break's fixed
+90-second `durationSeconds` ceiling, whose `'ended'`-state freeze is correct
+and load-bearing for Quick Break but was never meant to apply to Journey's
+untimed session type.
+
+Solution: root-caused via state-dump evidence rather than inferred from the
+symptom, then fixed by giving Journey an unbounded (`Infinity`) duration so
+the freeze condition became structurally unreachable.
+
+Rule: not every freeze is a crash-guard gap — some are a state condition
+(like an inherited duration/threshold ceiling) that never throws at all.
+This class of bug is also easy to miss in fuzz/soak testing specifically
+because fuzzing naturally resets and varies state; a condition that only
+accumulates across sustained, uninterrupted real play may never actually
+accumulate long enough to trip during automated fuzzing.
+
 ## Development Workflow That Works
 
 1. Plan feature with a written implementation brief.
