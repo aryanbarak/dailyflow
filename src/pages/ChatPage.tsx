@@ -2251,7 +2251,7 @@ export default function ChatPage() {
       outcome,
       succeeded,
       riskLevel: current.resolution?.tool?.riskLevel,
-      targetFields: writeProposalTargetFields(current.result.proposal.target),
+      targetFields: writeProposalTargetFields(current.result.proposal.target, domain),
     })
   }, [workerUrl])
 

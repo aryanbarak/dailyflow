@@ -22,7 +22,7 @@ describe("writeProposalTargetFields", () => {
       description: "groceries for the week",
       iban: "DE89370400440532013000",
     };
-    const fields = writeProposalTargetFields(target);
+    const fields = writeProposalTargetFields(target, "finance");
     expect(fields.sort()).toEqual(["amount", "description", "direction", "iban"].sort());
     // The whole point of this test: real values must never appear.
     expect(fields).not.toContain("45");
@@ -33,11 +33,91 @@ describe("writeProposalTargetFields", () => {
 
   it("excludes fields the proposal left unset", () => {
     const target: AgentIntentTarget = { amount: "45" };
-    expect(writeProposalTargetFields(target)).toEqual(["amount"]);
+    expect(writeProposalTargetFields(target, "finance")).toEqual(["amount"]);
   });
 
   it("returns an empty array for an undefined target", () => {
-    expect(writeProposalTargetFields(undefined)).toEqual([]);
+    expect(writeProposalTargetFields(undefined, "finance")).toEqual([]);
+  });
+
+  // Task 41 production bug: agent_proposal_outcomes rows showed
+  // ["amount","currency","direction","transactionDate","updateTitle","updateBody"]
+  // for a create_finance_transaction proposal -- updateTitle/updateBody are
+  // GitHub issue-update fields, never a finance field. Root cause:
+  // intentValidator.ts's normalizeTarget always builds one flat superset
+  // object with every domain's fields present (each individually
+  // undefined-or-a-value); a model response naming stray out-of-domain
+  // fields left them non-undefined on an otherwise-finance target, and the
+  // old Object.keys(target) implementation reported every non-undefined key
+  // regardless of domain. This reproduces that exact shape and proves the
+  // fix: the domain parameter is now the source of truth, not the target
+  // object's own keys.
+  it("never yields a non-finance field name for a finance proposal, even when the target carries stray cross-domain keys (task 41 production bug)", () => {
+    const target = {
+      amount: "45",
+      currency: "EUR",
+      direction: "expense",
+      transactionDate: "2026-08-20",
+      // Stray fields a hallucinating/confused model response left non-
+      // undefined -- exactly the production shape from the bug report.
+      updateTitle: "Fix login bug",
+      updateBody: "Steps to reproduce...",
+      title: "Buy groceries",
+      eventTitle: "Team sync",
+      repo: "acme/widgets",
+    } as unknown as AgentIntentTarget;
+    const fields = writeProposalTargetFields(target, "finance");
+    expect(fields.sort()).toEqual(["amount", "currency", "direction", "transactionDate"].sort());
+    expect(fields).not.toContain("updateTitle");
+    expect(fields).not.toContain("updateBody");
+    expect(fields).not.toContain("title");
+    expect(fields).not.toContain("eventTitle");
+    expect(fields).not.toContain("repo");
+  });
+
+  it("never yields a non-task field name for a task proposal, even when the target carries stray cross-domain keys", () => {
+    const target = {
+      title: "Buy groceries",
+      notes: "milk, eggs",
+      dueDate: "2026-08-21",
+      amount: "45",
+      eventTitle: "Team sync",
+      updateLabels: ["bug"],
+    } as unknown as AgentIntentTarget;
+    const fields = writeProposalTargetFields(target, "tasks");
+    expect(fields.sort()).toEqual(["dueDate", "notes", "title"].sort());
+    expect(fields).not.toContain("amount");
+    expect(fields).not.toContain("eventTitle");
+    expect(fields).not.toContain("updateLabels");
+  });
+
+  it("never yields a non-calendar field name for a calendar proposal, even when the target carries stray cross-domain keys", () => {
+    const target = {
+      eventTitle: "Team sync",
+      start: "2026-08-21T13:00:00.000Z",
+      title: "Buy groceries",
+      amount: "45",
+      commentBody: "Looks good to me",
+    } as unknown as AgentIntentTarget;
+    const fields = writeProposalTargetFields(target, "calendar");
+    expect(fields.sort()).toEqual(["eventTitle", "start"].sort());
+    expect(fields).not.toContain("title");
+    expect(fields).not.toContain("amount");
+    expect(fields).not.toContain("commentBody");
+  });
+
+  it("never yields a non-github field name for a github proposal, even when the target carries stray cross-domain keys", () => {
+    const target = {
+      repo: "acme/widgets",
+      issueNumber: 42,
+      commentBody: "Looks good to me",
+      amount: "45",
+      title: "Buy groceries",
+    } as unknown as AgentIntentTarget;
+    const fields = writeProposalTargetFields(target, "github");
+    expect(fields.sort()).toEqual(["commentBody", "issueNumber", "repo"].sort());
+    expect(fields).not.toContain("amount");
+    expect(fields).not.toContain("title");
   });
 });
 

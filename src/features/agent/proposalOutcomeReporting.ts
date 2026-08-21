@@ -14,17 +14,42 @@
 // synchronously either.
 //
 // SHAPE, NOT VALUES: writeProposalTargetFields below returns only the
-// NAMES of populated target fields, never their contents -- see its own
-// comment for why a generic Object.keys derivation is safe here without a
-// per-domain field list (mirrors the Worker's own domain-specific
-// extraction in flow-write-policy.ts, which cannot reuse this function
-// since the Worker never imports src/features/agent/*).
+// NAMES of populated target fields, never their contents.
+//
+// Task 41 (production bug fix): this function used to trust
+// Object.keys(target) directly, on the assumption that "the proposal
+// target object only ever carries the fields its own domain populated."
+// That assumption was FALSE -- intentValidator.ts's normalizeTarget builds
+// one flat superset object with every domain's fields always present (each
+// individually undefined-or-a-value), and does not scope the result down
+// by the proposal's own type. A model response that included stray
+// out-of-domain fields (e.g. updateTitle/updateBody on a
+// create_finance_transaction proposal) therefore leaked task/calendar/
+// github-shaped field NAMES into finance rows in production
+// (agent_proposal_outcomes evidence, task 41). This function is now the
+// defensive backstop regardless of what normalizeTarget does upstream:
+// it filters the target's own keys down to exactly the CURRENT proposal's
+// domain vocabulary, sourced from the shared registry's own
+// WRITE_DOMAIN_TARGET_FIELDS (github has no registry entry -- ADR-0013's
+// "what stays hand-written" boundary -- so its own three write fields stay
+// a literal list here, matching reasoning-endpoint.ts's TARGET_FIELDS).
 
 import type { AgentIntentTarget, AgentIntentType } from "./reasoning/reasoningTypes";
+import { WRITE_DOMAIN_TARGET_FIELDS } from "../../../shared/writeIntentRegistry";
 
 export type ProposalOutcomeDomain = "tasks" | "calendar" | "finance" | "github";
 export type ProposalOutcomeValue = "approved" | "rejected";
 export type ProposalOutcomeRiskLevel = "none" | "low" | "medium" | "high";
+
+// github write proposals (write_github_issue_comment/write_github_issue_update)
+// have no shared-registry entry -- these three field names mirror
+// reasoning-endpoint.ts's own TARGET_FIELDS github addition exactly.
+const GITHUB_TARGET_FIELD_NAMES: readonly string[] = ["repo", "issueNumber", "commentBody", "updateTitle", "updateBody", "updateLabels"];
+
+function domainTargetFieldNames(domain: ProposalOutcomeDomain): readonly string[] {
+  if (domain === "github") return GITHUB_TARGET_FIELD_NAMES;
+  return WRITE_DOMAIN_TARGET_FIELDS[domain].map((field) => field.name);
+}
 
 export interface ReportProposalOutcomeOptions {
   workerBaseUrl: string;
@@ -44,20 +69,15 @@ export interface ReportProposalOutcomeInput {
   targetFields: readonly string[];
 }
 
-// The proposal target object only ever carries the fields its own domain
-// populated (AgentIntentTarget is a flat, all-optional interface shared
-// across every write domain) -- so "which keys are actually present" is
-// already exactly "which fields the user's request populated," with no
-// need for a per-domain allow-list the way the Worker's own
-// taskIntentTargetFields/calendarIntentTargetFields/financeIntentTargetFields
-// need one (those read a narrower, domain-specific parsed-intent shape,
-// not this flat proposal target). Only the KEYS are ever read here -- the
-// values themselves (amounts, IBANs, titles, comment bodies, ...) are never
-// touched, copied, or sent anywhere by this function.
-export function writeProposalTargetFields(target: AgentIntentTarget | undefined): string[] {
+// Only the KEYS are ever read here -- the values themselves (amounts,
+// IBANs, titles, comment bodies, ...) are never touched, copied, or sent
+// anywhere by this function. `domain` is required (not inferred from the
+// target's own shape) precisely because the target's shape can no longer
+// be trusted to already be domain-scoped -- see this file's header comment.
+export function writeProposalTargetFields(target: AgentIntentTarget | undefined, domain: ProposalOutcomeDomain): string[] {
   if (!target) return [];
   const record = target as unknown as Record<string, unknown>;
-  return Object.keys(record).filter((key) => record[key] !== undefined);
+  return domainTargetFieldNames(domain).filter((name) => record[name] !== undefined);
 }
 
 function endpointUrl(workerBaseUrl: string): string | null {

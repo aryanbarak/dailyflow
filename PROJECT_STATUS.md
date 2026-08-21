@@ -638,6 +638,23 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
     evidence snapshot (accepted, documented in the migration — the Worker's
     own candidate filtering already narrows correctly in the one production
     caller today).
+  - **i18n leak (task 41, same family as task 33): "This action was
+    rejected." renders in English inside a Farsi conversation.** Source:
+    `ChatPage.tsx:1362`'s `t('agent_intent_rejected')` call. Not a missing
+    translation — a real Farsi string exists
+    (`src/i18n/index.ts:2911`, "این اقدام رد شد."). Root cause is a
+    language-SOURCE mismatch: `useT()` (`src/i18n/index.ts`'s `t()`)
+    resolves against the app's INTERFACE language setting
+    (`useAppearance(s => s.language)`), not the current conversation's own
+    `responseLanguage` (an independently auto-detected/selected per-message
+    field on `AgentReasoningResult`) — so any user whose interface language
+    differs from the language they are actually chatting in sees this one
+    UI-chrome string in the wrong language, same as task 33's own leak
+    class. Not fixed here (task 41's explicit scope was to note it, not
+    resolve it) — likely needs either this specific call site to read
+    `responseLanguage` instead of `useT()`'s interface language, or a
+    broader pass identifying every other agent-intent-panel string with
+    the same mismatch risk.
 
 ### Design debt register (Product Owner's video review, task `8`)
 
