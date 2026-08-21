@@ -92,6 +92,24 @@ export interface PongDriftingOrbState {
   readonly role: DriftingOrbRole;
 }
 
+// MB-26, ADR-0015 §15: paddle jump-strike (Room 3+). A single config object,
+// undefined = feature off -- same "optional config, gated by existence"
+// convention as PongDriftingOrbConfig/PongObstacleConfig above (Quick Break
+// and Rooms 1-2 never set this field, so every read of it below is
+// structurally unreachable for them, not just coincidentally inert).
+export interface PongPaddleJumpConfig {
+  readonly riseMs: number;
+  readonly fallMs: number;
+  /** Hop height as a fraction of board height. */
+  readonly heightRatio: number;
+  /** Cooldown, measured from LANDING (not from the trigger), before another
+   *  jump can start. */
+  readonly cooldownMs: number;
+  /** Additive px/s applied to a collision resolved WHILE airborne, clamped
+   *  by config.maxSpeed alongside the normal speed ramp. */
+  readonly hitSpeedImpulse: number;
+}
+
 export interface PongEngineConfig {
   readonly width: number;
   readonly height: number;
@@ -130,6 +148,10 @@ export interface PongEngineConfig {
    *  unaffected, since every read below is gated on `config.driftingOrbSpawn`
    *  existing. */
   readonly driftingOrbSpawn?: PongDriftingOrbConfig;
+  /** MB-26, ADR-0015 §15: optional paddle jump-strike recipe. Undefined for
+   *  Quick Break and Orb Journey's Rooms 1-2 -- provably unaffected, since
+   *  every read below is gated on `config.paddleJump` existing. */
+  readonly paddleJump?: PongPaddleJumpConfig;
 }
 
 export const DEFAULT_PONG_CONFIG: PongEngineConfig = {
@@ -210,6 +232,25 @@ export interface PongState {
   readonly penaltyBallContactCount: number;
   readonly penaltyPaddleCatchCount: number;
   readonly penaltyBottomMissCount: number;
+  /** MB-26, ADR-0015 §15: true for the duration of the hop's rise+fall
+   *  (riseMs+fallMs), false while grounded (including during cooldown).
+   *  Meaningless when `config.paddleJump` is undefined -- always false,
+   *  never set by any code path Quick Break/Rooms 1-2 can reach. */
+  readonly paddleJumpActive: boolean;
+  /** Ms elapsed since the CURRENT jump attempt started; only meaningful
+   *  while `paddleJumpActive` is true (reset to 0 on landing). Same
+   *  "elapsed-time accumulator" idiom as `driftingOrbSpawnElapsedMs`. */
+  readonly paddleJumpElapsedMs: number;
+  /** Ms remaining before another jump may start; only decrements while
+   *  grounded (`!paddleJumpActive`) -- the cooldown clock does not run
+   *  DURING a hop, only after landing (see `config.paddleJump.cooldownMs`'s
+   *  own comment). */
+  readonly paddleJumpCooldownRemainingMs: number;
+  /** Monotonic counter, incremented whenever a paddle-ball collision
+   *  resolves WHILE airborne (a "jump-hit") -- same before/after-diff idiom
+   *  as `rewardContactCount` etc., letting a caller (JourneyCanvas.tsx)
+   *  detect "a jump-hit just happened this tick" for the stronger glow cue. */
+  readonly paddleJumpHitCount: number;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -244,7 +285,50 @@ export function createInitialPongState(config: PongEngineConfig = DEFAULT_PONG_C
     penaltyBallContactCount: 0,
     penaltyPaddleCatchCount: 0,
     penaltyBottomMissCount: 0,
+    paddleJumpActive: false,
+    paddleJumpElapsedMs: 0,
+    paddleJumpCooldownRemainingMs: 0,
+    paddleJumpHitCount: 0,
   };
+}
+
+// MB-26, ADR-0015 §15: the ONLY way a jump starts -- called by the caller
+// (JourneyCanvas.tsx's keyboard/tap handlers) BETWEEN ticks, mirroring
+// setPaddleX's own "external handler mutates a state input, stepPong
+// integrates it on the next tick" pattern, rather than threading a
+// "jump requested" flag through stepPong's own signature. Room-gated
+// structurally: an undefined `config.paddleJump` (Quick Break, Rooms 1-2)
+// makes this a no-op, the same "inert because the config field doesn't
+// exist" property `config.obstacles`/`config.driftingOrbSpawn` already
+// have for their own features -- ADR-0015 §15's "jump input is a no-op
+// below Room 3" is therefore true of which engineConfig a room was BUILT
+// WITH, not a separate check duplicated at every call site.
+export function requestPaddleJump(state: PongState, config: PongEngineConfig): PongState {
+  if (!config.paddleJump) return state;
+  if (state.paddleJumpActive || state.paddleJumpCooldownRemainingMs > 0) return state;
+  return { ...state, paddleJumpActive: true, paddleJumpElapsedMs: 0 };
+}
+
+// MB-26, ADR-0015 §15: the hop's vertical offset (px, positive = raised
+// toward the top of the board) at a given point in its own timeline -- a
+// quick ease-out rise (sine) to full height, then an ease-in fall (cosine)
+// back to grounded, matching "quick rise and fall" rather than a linear or
+// bouncy motion. Pure and exported so BOTH the collision check below (the
+// "live paddle rect") and the renderer (JourneyCanvas.tsx, drawing the
+// paddle at the SAME offset it collides at) derive the SAME number from the
+// SAME rule -- the same one-source-of-truth precedent `isFinalWave` already
+// established for Quick Break's own final-wave detection.
+export function computePaddleJumpOffsetPx(elapsedMs: number, jump: PongPaddleJumpConfig, boardHeightPx: number): number {
+  if (elapsedMs <= 0) return 0;
+  const heightPx = boardHeightPx * jump.heightRatio;
+  if (elapsedMs < jump.riseMs) {
+    const t = jump.riseMs > 0 ? elapsedMs / jump.riseMs : 1;
+    return heightPx * Math.sin((t * Math.PI) / 2);
+  }
+  const fallElapsedMs = elapsedMs - jump.riseMs;
+  if (fallElapsedMs >= jump.fallMs) return 0;
+  const t = jump.fallMs > 0 ? fallElapsedMs / jump.fallMs : 1;
+  return heightPx * Math.cos((t * Math.PI) / 2);
 }
 
 export function setPaddleX(state: PongState, x: number, config: PongEngineConfig): PongState {
@@ -293,6 +377,30 @@ function integrateSubstep(state: PongState, dtMs: number, config: PongEngineConf
   let combo = state.combo;
   let floorMissCount = state.floorMissCount;
   let obstacles = state.obstacles;
+
+  // MB-26, ADR-0015 §15: advance the jump's own internal clock every
+  // substep, same "elapsed-time accumulator" idiom as
+  // driftingOrbSpawnElapsedMs above. Gated on config.paddleJump existing,
+  // so Quick Break and Rooms 1-2 (all pass no paddleJump config) never
+  // touch this -- their physics stay byte-for-byte unchanged, structurally,
+  // not just because these fields happen to sit at 0/false.
+  let paddleJumpActive = state.paddleJumpActive;
+  let paddleJumpElapsedMs = state.paddleJumpElapsedMs;
+  let paddleJumpCooldownRemainingMs = state.paddleJumpCooldownRemainingMs;
+  let paddleJumpHitCount = state.paddleJumpHitCount;
+  if (config.paddleJump) {
+    if (paddleJumpActive) {
+      paddleJumpElapsedMs += dtMs;
+      if (paddleJumpElapsedMs >= config.paddleJump.riseMs + config.paddleJump.fallMs) {
+        // Landed -- the cooldown clock starts NOW, not at the trigger.
+        paddleJumpActive = false;
+        paddleJumpElapsedMs = 0;
+        paddleJumpCooldownRemainingMs = config.paddleJump.cooldownMs;
+      }
+    } else if (paddleJumpCooldownRemainingMs > 0) {
+      paddleJumpCooldownRemainingMs = Math.max(0, paddleJumpCooldownRemainingMs - dtMs);
+    }
+  }
 
   const r = config.ballRadius;
 
@@ -469,12 +577,24 @@ function integrateSubstep(state: PongState, dtMs: number, config: PongEngineConf
     }
   }
 
+  // MB-26, ADR-0015 §15: the "live" paddle rect used ONLY for ball-paddle
+  // collision below -- the drifting-orb/paddle interaction ABOVE
+  // deliberately keeps reading the GROUNDED paddleTop/paddleBottom
+  // unchanged (drifting-orb behavior is explicitly out of this feature's
+  // scope; see the MB-26 report). jumpOffsetPx is 0 whenever
+  // config.paddleJump is undefined or the paddle isn't currently airborne,
+  // so this is a no-op for every caller except an airborne Room 3+ paddle.
+  const jumpOffsetPx =
+    config.paddleJump && paddleJumpActive ? computePaddleJumpOffsetPx(paddleJumpElapsedMs, config.paddleJump, config.height) : 0;
+  const livePaddleTop = paddleTop - jumpOffsetPx;
+  const livePaddleBottom = paddleBottom - jumpOffsetPx;
+
   // Only checked while travelling downward into the paddle's band, so a
   // ball already reflected upward this same substep can't double-hit.
   let hitPaddle = false;
-  if (vy > 0 && y + r >= paddleTop && y - r <= paddleBottom && x >= paddleLeft && x <= paddleRight) {
+  if (vy > 0 && y + r >= livePaddleTop && y - r <= livePaddleBottom && x >= paddleLeft && x <= paddleRight) {
     hitPaddle = true;
-    y = paddleTop - r;
+    y = livePaddleTop - r;
 
     // Contact-point -> angle mapping: -1 (left edge) .. 0 (center) .. 1
     // (right edge), scaled to +/- maxBounceAngleRad. maxBounceAngleRad is
@@ -482,7 +602,10 @@ function integrateSubstep(state: PongState, dtMs: number, config: PongEngineConf
     // prevents the degenerate case (a bounce angle at/near 90 degrees would
     // send the ball travelling almost horizontally forever) -- the
     // vertical speed component is always at least
-    // speed * cos(maxBounceAngleRad) in magnitude.
+    // speed * cos(maxBounceAngleRad) in magnitude. Horizontal reach
+    // (paddleLeft/paddleRight) is UNCHANGED by a jump -- MB-26's hop is
+    // vertical-only ("the paddle, which normally moves only horizontally,
+    // can perform a brief vertical hop").
     const relative = clamp((x - state.paddleX) / (config.paddleWidth / 2), -1, 1);
     const angle = relative * config.maxBounceAngleRad;
 
@@ -494,9 +617,17 @@ function integrateSubstep(state: PongState, dtMs: number, config: PongEngineConf
     const rampPerHit = isFinalWave(state, config)
       ? 1 + (config.speedRampPerHit - 1) * config.finalWaveRampBoost
       : config.speedRampPerHit;
-    const speed = Math.min(magnitude(vx, vy) * rampPerHit, config.maxSpeed);
+    const rampedSpeed = Math.min(magnitude(vx, vy) * rampPerHit, config.maxSpeed);
+    // MB-26, ADR-0015 §15: "a hit made while jumping additionally applies a
+    // modest extra speed impulse... clamped by the maxSpeed ceiling."
+    // `wasAirborne` reads paddleJumpActive as it stood AT THE MOMENT OF
+    // CONTACT (this substep's own jump-timing advance above, not yet
+    // touched by anything below) -- a grounded hit is completely unaffected.
+    const wasAirborne = paddleJumpActive;
+    const speed = wasAirborne && config.paddleJump ? Math.min(rampedSpeed + config.paddleJump.hitSpeedImpulse, config.maxSpeed) : rampedSpeed;
     vx = speed * Math.sin(angle);
     vy = -speed * Math.cos(angle);
+    if (wasAirborne) paddleJumpHitCount += 1;
 
     // MB-03, ADR-0014 §11-12: combo increments BEFORE the score gain is
     // computed, so the FIRST hit in a streak (combo becomes 1) is worth
@@ -538,6 +669,10 @@ function integrateSubstep(state: PongState, dtMs: number, config: PongEngineConf
     penaltyBallContactCount,
     penaltyPaddleCatchCount,
     penaltyBottomMissCount,
+    paddleJumpActive,
+    paddleJumpElapsedMs,
+    paddleJumpCooldownRemainingMs,
+    paddleJumpHitCount,
   };
 }
 

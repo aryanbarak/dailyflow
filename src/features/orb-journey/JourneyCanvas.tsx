@@ -1,6 +1,14 @@
 import { useEffect, useRef, type MutableRefObject, type RefObject } from 'react';
 import { useVisibilityAwareGameLoop } from '../micro-breaks/engine/useVisibilityAwareGameLoop';
-import { computeBoardConfig, DEFAULT_PONG_CONFIG, rescalePongState, setPaddleX, type PongEngineConfig } from '../micro-breaks/engine/pongEngine';
+import {
+  computeBoardConfig,
+  computePaddleJumpOffsetPx,
+  DEFAULT_PONG_CONFIG,
+  requestPaddleJump,
+  rescalePongState,
+  setPaddleX,
+  type PongEngineConfig,
+} from '../micro-breaks/engine/pongEngine';
 import { ORB_GRADIENT_STOPS, resolveOrbCanvasColors, useOrbVisualTokens } from '../micro-breaks/orbTokens';
 import { setLastPointerPosition } from '../micro-breaks/pointerPositionRef';
 import { createConvergingParticles, createHitParticles, type Particle } from '../micro-breaks/particles';
@@ -41,7 +49,12 @@ import {
   getDriftingOrbJoltParticleCount,
   getDriftingOrbPaddleCatchParticleCount,
   getObstacleBreakParticleCount,
+  getPaddleJumpHitGlowPeakAlpha,
   JOURNEY_PLAY_AREA_MAX_WIDTH_PX,
+  PADDLE_JUMP_HIT_GLOW_DURATION_MS,
+  PADDLE_JUMP_HIT_GLOW_RADIUS_MULTIPLIER,
+  PADDLE_JUMP_TAP_MAX_DURATION_MS,
+  PADDLE_JUMP_TAP_MAX_MOVEMENT_PX,
   ROOM_TRANSITION_FLASH_PEAK_ALPHA,
   ROOM_TRANSITION_SECONDS,
   ROOM_TRANSITION_SECONDS_REDUCED_MOTION,
@@ -138,6 +151,13 @@ export function JourneyCanvas({
   // and it draws at a DIFFERENT screen location (the paddle), so it needs
   // its own until-timestamp rather than sharing driftingOrbReactionUntilRef.
   const paddleCatchReactionUntilRef = useRef(0);
+  // MB-26, ADR-0015 §15: paddle jump-strike's own "stronger glow" reaction --
+  // a separate until-timestamp from paddleCatchReactionUntilRef (a DIFFERENT
+  // cue: this one always draws at the paddle's CURRENT -- possibly raised --
+  // position, regardless of drifting-orb activity, and reuses a bigger
+  // radius/peak-alpha, see tuning.ts's own comment on why it borrows
+  // computePaddleCatchPulseAlpha's curve shape rather than inventing a new one).
+  const paddleJumpHitGlowUntilRef = useRef(0);
   const reducedMotionRef = useRef(false);
   const crashedRef = useRef(false);
   // MB-11: DEV-only fault-injection switch for the physics/update-path
@@ -182,9 +202,18 @@ export function JourneyCanvas({
       __orbJourneyDevForceElapsedSeconds?: (seconds: number) => void;
       __orbJourneyDevGetDriftingOrbSpawnCount?: () => number;
       __orbJourneyDevGetBallFraction?: () => { x: number; y: number };
+      __orbJourneyDevGetPaddleXFraction?: () => number;
       __orbJourneyDevForceFloorMiss?: () => void;
       __orbJourneyDevGetMissCount?: () => number;
       __orbJourneyDevIsReactionActive?: () => boolean;
+      __orbJourneyDevTriggerPaddleJump?: () => void;
+      __orbJourneyDevGetPaddleJumpState?: () => {
+        active: boolean;
+        elapsedMs: number;
+        cooldownRemainingMs: number;
+        hitCount: number;
+        enabledThisRoom: boolean;
+      };
     };
     globalWindow.__orbJourneyDevForceRoomGoal = () => {
       const room = roomsRef.current[journeyRef.current.roomIndex - 1];
@@ -371,6 +400,40 @@ export function JourneyCanvas({
     // that the Jolt drawing routine itself is correct, which is already
     // covered by existing drifting-orb reaction coverage).
     globalWindow.__orbJourneyDevIsReactionActive = () => performance.now() < driftingOrbReactionUntilRef.current;
+    // MB-26: read-only introspection -- lets a real-browser test confirm
+    // drag-to-move actually moved the paddle, the same fraction-of-board
+    // idiom __orbJourneyDevGetBallFraction already established for the ball.
+    globalWindow.__orbJourneyDevGetPaddleXFraction = () => {
+      const room = roomsRef.current[journeyRef.current.roomIndex - 1];
+      if (!room) return 0.5;
+      return journeyRef.current.pong.paddleX / room.engineConfig.width;
+    };
+    // MB-26, ADR-0015 §15: mirrors every other force-* hook's "manipulate a
+    // state input via the REAL public function, let physics run unmodified"
+    // methodology -- this one literally IS the real public entry point
+    // (requestPaddleJump), so there is nothing to shortcut: room-gating,
+    // cooldown, and the hop timing all still resolve exactly as the real
+    // keyboard/touch handlers would trigger them.
+    globalWindow.__orbJourneyDevTriggerPaddleJump = () => {
+      const room = roomsRef.current[journeyRef.current.roomIndex - 1];
+      if (!room) return;
+      journeyRef.current = { ...journeyRef.current, pong: requestPaddleJump(journeyRef.current.pong, room.engineConfig) };
+    };
+    // Read-only introspection -- there is no HUD text for jump state (same
+    // reasoning as missCount/obstacle-broken-state above), so this is the
+    // only way a real-browser test can confirm the hop/cooldown/hit-count
+    // actually advanced without pixel-diffing the canvas.
+    globalWindow.__orbJourneyDevGetPaddleJumpState = () => {
+      const room = roomsRef.current[journeyRef.current.roomIndex - 1];
+      const pong = journeyRef.current.pong;
+      return {
+        active: pong.paddleJumpActive,
+        elapsedMs: pong.paddleJumpElapsedMs,
+        cooldownRemainingMs: pong.paddleJumpCooldownRemainingMs,
+        hitCount: pong.paddleJumpHitCount,
+        enabledThisRoom: Boolean(room?.engineConfig.paddleJump),
+      };
+    };
     return () => {
       delete globalWindow.__orbJourneyDevForceRoomGoal;
       delete globalWindow.__orbJourneyDevForceObstacleContact;
@@ -388,6 +451,9 @@ export function JourneyCanvas({
       delete globalWindow.__orbJourneyDevForceFloorMiss;
       delete globalWindow.__orbJourneyDevGetMissCount;
       delete globalWindow.__orbJourneyDevIsReactionActive;
+      delete globalWindow.__orbJourneyDevTriggerPaddleJump;
+      delete globalWindow.__orbJourneyDevGetPaddleJumpState;
+      delete globalWindow.__orbJourneyDevGetPaddleXFraction;
     };
   }, []);
 
@@ -488,7 +554,12 @@ export function JourneyCanvas({
 
   // Same pointer-input wiring as PongCanvas (ADR-0014 §11's single Pointer
   // Events path, unchanged) -- paddle X only, from the CURRENT room's
-  // engineConfig.
+  // engineConfig. MB-26, ADR-0015 §15: extended (not forked into a second
+  // path) with tap-vs-drag detection for the paddle jump-strike's touch/
+  // mouse trigger -- pointerdown/pointermove above are UNTOUCHED, so
+  // drag-to-move (including a drag that starts slowly) behaves exactly as
+  // before; only a NEW pointerup listener decides, after the fact, whether
+  // what just happened was a tap.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -506,22 +577,85 @@ export function JourneyCanvas({
       journeyRef.current = { ...journeyRef.current, pong: setPaddleX(journeyRef.current.pong, toLocalX(event.clientX), currentConfig) };
     };
 
+    // MB-26: per-pointer down info (time + start position), keyed by
+    // pointerId so a stray second pointer's up event can never be
+    // misattributed to the FIRST pointer's own down -- Pointer Events can
+    // in principle deliver interleaved streams for multiple simultaneous
+    // touches, even though this feature's PRIMARY trigger (tap detection)
+    // only ever looks at a single pointer's own down/up pair.
+    const pointerDownInfoRef = new Map<number, { readonly time: number; readonly x: number; readonly y: number }>();
+
+    const triggerJumpIfEnabled = () => {
+      const room = roomsRef.current[journeyRef.current.roomIndex - 1];
+      if (!room?.engineConfig.paddleJump) return; // room-gated no-op, Rooms 1-2
+      journeyRef.current = { ...journeyRef.current, pong: requestPaddleJump(journeyRef.current.pong, room.engineConfig) };
+    };
+
     const handlePointerDown = (event: PointerEvent) => {
       canvas.setPointerCapture(event.pointerId);
       event.preventDefault();
+      pointerDownInfoRef.set(event.pointerId, { time: performance.now(), x: event.clientX, y: event.clientY });
       movePaddle(event);
     };
     const handlePointerMove = (event: PointerEvent) => {
       event.preventDefault();
       movePaddle(event);
     };
+    // MB-26, ADR-0015 §15: "a quick tap (short press without significant
+    // drag)" -- chosen over "a second concurrent pointer" as this feature's
+    // primary touch trigger (see tuning.ts's own comment on the tradeoff).
+    // Deliberately does NOT call movePaddle or preventDefault -- an up event
+    // carries no new paddle position, and touch-scroll prevention is
+    // already handled at the overlay root (MicroBreakOverlay.tsx's
+    // touchAction/overscrollBehavior styling) and by pointerdown/move above.
+    const handlePointerUp = (event: PointerEvent) => {
+      const down = pointerDownInfoRef.get(event.pointerId);
+      pointerDownInfoRef.delete(event.pointerId);
+      if (!down) return;
+      const elapsedMs = performance.now() - down.time;
+      const movedPx = Math.hypot(event.clientX - down.x, event.clientY - down.y);
+      if (elapsedMs > PADDLE_JUMP_TAP_MAX_DURATION_MS || movedPx > PADDLE_JUMP_TAP_MAX_MOVEMENT_PX) return; // a drag, not a tap
+      triggerJumpIfEnabled();
+    };
+    const handlePointerCancel = (event: PointerEvent) => {
+      pointerDownInfoRef.delete(event.pointerId);
+    };
 
     canvas.addEventListener('pointerdown', handlePointerDown);
     canvas.addEventListener('pointermove', handlePointerMove);
+    canvas.addEventListener('pointerup', handlePointerUp);
+    canvas.addEventListener('pointercancel', handlePointerCancel);
     return () => {
       canvas.removeEventListener('pointerdown', handlePointerDown);
       canvas.removeEventListener('pointermove', handlePointerMove);
+      canvas.removeEventListener('pointerup', handlePointerUp);
+      canvas.removeEventListener('pointercancel', handlePointerCancel);
     };
+  }, []);
+
+  // MB-26, ADR-0015 §15: Space-triggered jump-strike, on `document` (not the
+  // canvas -- the canvas is `aria-hidden`/never focusable, so the actually-
+  // focused element during an active Journey session is the overlay's own
+  // close button, MicroBreakOverlay.tsx's `closeButtonRef`). This effect's
+  // mount/unmount lifecycle already IS "while a Journey session is active"
+  // (JourneyCanvas only mounts then), so no extra phase check is needed
+  // here. `event.preventDefault()` runs UNCONDITIONALLY on a real, non-
+  // repeat Space keydown -- BEFORE the room-gate check below -- because the
+  // accidental-exit risk (Space's default keyboard-activation of a focused
+  // <button>) applies for the whole session, not just Room 3+; only the
+  // actual jump TRIGGER is room-gated, via the same requestPaddleJump
+  // no-op-when-ungated path the touch handler above already uses.
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== ' ' && event.code !== 'Space') return;
+      if (event.repeat) return; // ignore auto-repeat -- one press, one jump attempt
+      event.preventDefault();
+      const room = roomsRef.current[journeyRef.current.roomIndex - 1];
+      if (!room?.engineConfig.paddleJump) return; // room-gated no-op, Rooms 1-2
+      journeyRef.current = { ...journeyRef.current, pong: requestPaddleJump(journeyRef.current.pong, room.engineConfig) };
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
   }, []);
 
   // MB-11: single source of truth for "the game crashed, show the
@@ -624,20 +758,35 @@ export function JourneyCanvas({
       ctx.fill();
     }
 
+    // MB-26, ADR-0015 §15: the SAME computePaddleJumpOffsetPx the engine
+    // itself uses for collision (pongEngine.ts) -- drawing at this exact
+    // offset is what makes the paddle's VISUAL position match where it
+    // actually collides, one source of truth rather than a second,
+    // independently-tuned animation.
+    const jumpOffsetPx =
+      room.engineConfig.paddleJump && state.paddleJumpActive
+        ? computePaddleJumpOffsetPx(state.paddleJumpElapsedMs, room.engineConfig.paddleJump, config.height)
+        : 0;
+    const paddleDrawY = config.paddleY - jumpOffsetPx;
+
     ctx.save();
     ctx.shadowColor = colors.glow(0.8);
     ctx.shadowBlur = reducedMotion ? 0 : 16;
     ctx.fillStyle = colors.core;
     const paddleLeft = state.paddleX - config.paddleWidth / 2;
     ctx.beginPath();
-    ctx.roundRect(paddleLeft, config.paddleY, config.paddleWidth, config.paddleHeight, 7);
+    ctx.roundRect(paddleLeft, paddleDrawY, config.paddleWidth, config.paddleHeight, 7);
     ctx.fill();
     ctx.restore();
 
     // NEW, MB-10, ADR-0015 §11 (revision): penalty-role paddle-catch cue --
     // a minimal glow ring at the paddle, distinct from Absorb/Jolt (which
     // both draw AT THE BALL). Never gated by reduced motion at this layer,
-    // same convention as the flash/pulse color cues below.
+    // same convention as the flash/pulse color cues below. Deliberately
+    // drawn at the GROUNDED config.paddleY, not paddleDrawY -- the
+    // drifting-orb/paddle interaction it represents always reads the
+    // grounded rect too (pongEngine.ts, out of this feature's scope), so
+    // the cue stays visually honest about where that catch really happened.
     if (now < paddleCatchReactionUntilRef.current) {
       const paddleCatchElapsedMs = DRIFTING_ORB_PADDLE_CATCH_PULSE_DURATION_MS - (paddleCatchReactionUntilRef.current - now);
       const paddleCatchAlpha = computePaddleCatchPulseAlpha(
@@ -649,6 +798,29 @@ export function JourneyCanvas({
         ctx.beginPath();
         ctx.fillStyle = colors.glow(paddleCatchAlpha);
         ctx.arc(state.paddleX, config.paddleY + config.paddleHeight / 2, config.paddleHeight * 1.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // NEW, MB-26, ADR-0015 §15: "a hit made while jumping additionally
+    // applies... a stronger paddle-glow feedback." Reuses
+    // computePaddleCatchPulseAlpha's own rise-then-fall envelope (task
+    // brief: "reuse existing primitives") at a bigger peak alpha/radius, so
+    // it reads as visually distinct from (and more emphatic than) the
+    // penalty-catch cue above. Drawn at paddleDrawY -- the paddle's OWN
+    // current (possibly raised) position, since this cue represents THIS
+    // paddle's own jump-hit, unlike the catch cue above.
+    if (now < paddleJumpHitGlowUntilRef.current) {
+      const jumpGlowElapsedMs = PADDLE_JUMP_HIT_GLOW_DURATION_MS - (paddleJumpHitGlowUntilRef.current - now);
+      const jumpGlowAlpha = computePaddleCatchPulseAlpha(
+        jumpGlowElapsedMs,
+        PADDLE_JUMP_HIT_GLOW_DURATION_MS,
+        getPaddleJumpHitGlowPeakAlpha(reducedMotion),
+      );
+      if (jumpGlowAlpha > 0) {
+        ctx.beginPath();
+        ctx.fillStyle = colors.glow(jumpGlowAlpha);
+        ctx.arc(state.paddleX, paddleDrawY + config.paddleHeight / 2, config.paddleHeight * PADDLE_JUMP_HIT_GLOW_RADIUS_MULTIPLIER, 0, Math.PI * 2);
         ctx.fill();
       }
     }
@@ -785,6 +957,10 @@ export function JourneyCanvas({
         // grace-path miss just happened THIS tick" -- see the reaction block
         // below.
         const prevMissCount = journeyRef.current.missCount;
+        // MB-26, ADR-0015 §15: needed to detect "a jump-hit just happened
+        // THIS tick" -- same before/after-diff idiom as every other counter
+        // captured above.
+        const prevPaddleJumpHitCount = journeyRef.current.pong.paddleJumpHitCount;
         const next = stepJourney(journeyRef.current, dtMs, roomsRef.current);
         journeyRef.current = next;
 
@@ -794,6 +970,15 @@ export function JourneyCanvas({
           if (particleCount > 0) {
             particlesRef.current.push(...createHitParticles(next.pong.ball.x, next.pong.ball.y, particleCount, performance.now()));
           }
+        }
+
+        // NEW, MB-26, ADR-0015 §15: "a hit made while jumping additionally
+        // applies... a stronger paddle-glow feedback." The normal squash/
+        // particle burst above ALREADY fires for a jump-hit too (it is
+        // still a score-changing paddle hit) -- this only adds the EXTRA
+        // glow cue, not a duplicate of the base hit feedback.
+        if (next.pong.paddleJumpHitCount > prevPaddleJumpHitCount) {
+          paddleJumpHitGlowUntilRef.current = performance.now() + PADDLE_JUMP_HIT_GLOW_DURATION_MS;
         }
 
         // ADR-0015 §10 (amendment), MB-07: break VFX. Only checked when still

@@ -12,6 +12,7 @@ import {
   type PongDriftingOrbConfig,
   type PongEngineConfig,
   type PongObstacleConfig,
+  type PongPaddleJumpConfig,
   type PongState,
 } from '../micro-breaks/engine/pongEngine';
 import {
@@ -20,6 +21,13 @@ import {
   DRIFTING_ORB_RADIUS_RATIO,
   DRIFTING_ORB_REWARD_SPEED_STEP,
   DRIFTING_ORB_SPAWN_INTERVAL_MS,
+  JOURNEY_BASE_SPEED_MULTIPLIER,
+  PADDLE_JUMP_COOLDOWN_MS,
+  PADDLE_JUMP_FALL_MS,
+  PADDLE_JUMP_HEIGHT_RATIO,
+  PADDLE_JUMP_HIT_IMPULSE_RATIO,
+  PADDLE_JUMP_MIN_ROOM_INDEX,
+  PADDLE_JUMP_RISE_MS,
   ROOM_1_GOAL_COMBO,
   ROOM_3_DRIFTING_ORB_SPAWN_INTERVAL_MS,
   ROOM_DIFFICULTY_PADDLE_SHRINK_STEP,
@@ -49,6 +57,11 @@ export interface RoomConfig {
    *  SAME object reference is also set on `engineConfig.driftingOrbSpawn`
    *  (see buildRoomConfig), one source of truth like `obstacles` above. */
   readonly driftingOrbSpawn: PongDriftingOrbConfig | undefined;
+  /** MB-26, ADR-0015 §15: undefined for Rooms 1-2 (mirrors driftingOrbSpawn's
+   *  own room-gating pattern) -- the SAME object reference as
+   *  engineConfig.paddleJump (see buildRoomConfig), one source of truth
+   *  like obstacles/driftingOrbSpawn above. */
+  readonly paddleJump: PongPaddleJumpConfig | undefined;
   readonly engineConfig: PongEngineConfig;
 }
 
@@ -124,7 +137,18 @@ export function buildDriftingOrbSpawnConfig(roomIndex: number, engineConfig: Pon
 // bearing behavior for Quick Break's actually-timed sessions.
 export function deriveRoomEngineConfig(roomIndex: number, base: PongEngineConfig): PongEngineConfig {
   const stepsBeyondFirst = Math.max(0, roomIndex - 1);
-  const speedMultiplier = 1 + stepsBeyondFirst * ROOM_DIFFICULTY_SPEED_STEP;
+  // MB-26, ADR-0015 §15: JOURNEY_BASE_SPEED_MULTIPLIER is a FLAT factor
+  // combined multiplicatively with the existing per-room ramp into ONE
+  // speedMultiplier -- same single-multiplier structure this function
+  // already had, so maxSpeed/minSpeed stay scaled IDENTICALLY to baseSpeed
+  // (the ratio between them, and therefore the drifting-orb reward-
+  // multiplier headroom below maxSpeed, is unaffected -- see the MB-26
+  // report's headroom math). `base.baseSpeed` here is Quick Break's OWN
+  // shared BASE_SPEED_PX_PER_SECOND (micro-breaks/tuning.ts) -- untouched
+  // by this constant; Quick Break itself never calls this function at all
+  // (PongCanvas.tsx builds its config straight from DEFAULT_PONG_CONFIG),
+  // so JOURNEY_BASE_SPEED_MULTIPLIER is structurally inert for it.
+  const speedMultiplier = JOURNEY_BASE_SPEED_MULTIPLIER * (1 + stepsBeyondFirst * ROOM_DIFFICULTY_SPEED_STEP);
   const paddleShrinkMultiplier = Math.max(
     ROOM_MIN_PADDLE_WIDTH_RATIO,
     1 - stepsBeyondFirst * ROOM_DIFFICULTY_PADDLE_SHRINK_STEP,
@@ -153,17 +177,40 @@ export function deriveRoomEngineConfig(roomIndex: number, base: PongEngineConfig
 // bearing for Quick Break) can never trigger for a Journey room.
 const JOURNEY_UNBOUNDED_DURATION_SECONDS = Number.POSITIVE_INFINITY;
 
+// MB-26, ADR-0015 §15: Room 3+'s paddle jump-strike recipe -- undefined
+// below PADDLE_JUMP_MIN_ROOM_INDEX, mirroring buildDriftingOrbSpawnConfig's
+// own room-gating exactly, so requestPaddleJump's own `!config.paddleJump`
+// check makes jump input structurally inert there, not merely unreachable
+// via UI-level gating alone.
+export function buildPaddleJumpConfig(roomIndex: number, engineConfig: PongEngineConfig): PongPaddleJumpConfig | undefined {
+  if (roomIndex < PADDLE_JUMP_MIN_ROOM_INDEX) return undefined;
+
+  return {
+    riseMs: PADDLE_JUMP_RISE_MS,
+    fallMs: PADDLE_JUMP_FALL_MS,
+    heightRatio: PADDLE_JUMP_HEIGHT_RATIO,
+    cooldownMs: PADDLE_JUMP_COOLDOWN_MS,
+    // Scales with THIS room's own (already difficulty-scaled) baseSpeed --
+    // same "ratio of a real, already-scaled config value" convention
+    // buildDriftingOrbSpawnConfig's own radius already established against
+    // engineConfig.width.
+    hitSpeedImpulse: engineConfig.baseSpeed * PADDLE_JUMP_HIT_IMPULSE_RATIO,
+  };
+}
+
 export function buildRoomConfig(roomIndex: number, theme: RoomThemeId, boardConfig: PongEngineConfig): RoomConfig {
   const engineConfig = deriveRoomEngineConfig(roomIndex, boardConfig);
   const obstacles = buildRoomObstacles(roomIndex, engineConfig);
   const driftingOrbSpawn = buildDriftingOrbSpawnConfig(roomIndex, engineConfig);
+  const paddleJump = buildPaddleJumpConfig(roomIndex, engineConfig);
   return {
     roomIndex,
     theme,
     goalCombo: ROOM_1_GOAL_COMBO + (roomIndex - 1) * ROOM_GOAL_COMBO_STEP_PER_ROOM,
     obstacles,
     driftingOrbSpawn,
-    engineConfig: { ...engineConfig, obstacles, driftingOrbSpawn },
+    paddleJump,
+    engineConfig: { ...engineConfig, obstacles, driftingOrbSpawn, paddleJump },
   };
 }
 

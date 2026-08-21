@@ -2,16 +2,19 @@ import { describe, expect, it } from 'vitest';
 import { BOARD_MAX_WIDTH_PX, BOARD_MIN_WIDTH_PX, PADDLE_BOTTOM_MARGIN_RATIO } from '../tuning';
 import {
   computeBoardConfig,
+  computePaddleJumpOffsetPx,
   createInitialPongState,
   DEFAULT_PONG_CONFIG,
   getRemainingSeconds,
   isFinalWave,
+  requestPaddleJump,
   rescalePongState,
   setPaddleX,
   stepPong,
   type PongDriftingOrbConfig,
   type PongEngineConfig,
   type PongObstacleConfig,
+  type PongPaddleJumpConfig,
   type PongState,
 } from './pongEngine';
 
@@ -81,6 +84,15 @@ function stateWithPenaltyOrbAtPaddle(config: PongEngineConfig = CONFIG_WITH_DRIF
     driftingOrbs: [{ id: 'paddle-orb', x: config.width / 2, y: config.paddleY, role: 'penalty' }],
   };
 }
+
+// MB-26, ADR-0015 §15: a paddle jump-strike recipe with test-friendly round
+// numbers -- riseMs/fallMs deliberately UNEQUAL (100/50, not symmetric) so a
+// bug that swapped or averaged them would produce a visibly wrong total
+// (150ms) rather than accidentally looking right. hitSpeedImpulse (200) is
+// large relative to CONFIG's speeds so an applied-vs-not-applied contrast
+// test can't pass on rounding noise alone.
+const TEST_PADDLE_JUMP: PongPaddleJumpConfig = { riseMs: 100, fallMs: 50, heightRatio: 0.05, cooldownMs: 300, hitSpeedImpulse: 200 };
+const CONFIG_WITH_PADDLE_JUMP: PongEngineConfig = { ...CONFIG, paddleJump: TEST_PADDLE_JUMP };
 
 // MB-10, ADR-0015 §11 (revision): an orb positioned just inside the bottom
 // boundary (one substep's drift pushes it past config.height), ball placed
@@ -741,5 +753,226 @@ describe('pongEngine: paddle input', () => {
 
     expect(clampedLeft.paddleX).toBe(CONFIG.paddleWidth / 2);
     expect(clampedRight.paddleX).toBe(CONFIG.width - CONFIG.paddleWidth / 2);
+  });
+});
+
+describe('pongEngine: paddle jump-strike (MB-26, ADR-0015 §15, Room 3+)', () => {
+  it('requestPaddleJump is a structural no-op when config.paddleJump is undefined -- Quick Break and Rooms 1-2 gating', () => {
+    const state = createInitialPongState(CONFIG);
+    const next = requestPaddleJump(state, CONFIG); // CONFIG has no paddleJump
+    expect(next).toBe(state); // same reference -- not just equal, genuinely untouched
+  });
+
+  it('requestPaddleJump sets paddleJumpActive and resets elapsedMs to 0, when enabled and grounded', () => {
+    const state = createInitialPongState(CONFIG_WITH_PADDLE_JUMP);
+    expect(state.paddleJumpActive).toBe(false);
+    const next = requestPaddleJump(state, CONFIG_WITH_PADDLE_JUMP);
+    expect(next.paddleJumpActive).toBe(true);
+    expect(next.paddleJumpElapsedMs).toBe(0);
+  });
+
+  it('requestPaddleJump is a no-op while ALREADY airborne -- does not restart/extend the current hop', () => {
+    const airborne: PongState = { ...createInitialPongState(CONFIG_WITH_PADDLE_JUMP), paddleJumpActive: true, paddleJumpElapsedMs: 40 };
+    const next = requestPaddleJump(airborne, CONFIG_WITH_PADDLE_JUMP);
+    expect(next).toBe(airborne); // same reference -- genuinely untouched, not silently reset to 0
+  });
+
+  it('requestPaddleJump is a no-op while on cooldown (grounded, but cooldownRemainingMs > 0)', () => {
+    const cooling: PongState = { ...createInitialPongState(CONFIG_WITH_PADDLE_JUMP), paddleJumpActive: false, paddleJumpCooldownRemainingMs: 150 };
+    const next = requestPaddleJump(cooling, CONFIG_WITH_PADDLE_JUMP);
+    expect(next).toBe(cooling);
+  });
+
+  it('stepPong advances paddleJumpElapsedMs while airborne, then lands (active=false, elapsedMs=0, cooldown set to cooldownMs) once riseMs+fallMs is reached', () => {
+    let state = requestPaddleJump(createInitialPongState(CONFIG_WITH_PADDLE_JUMP), CONFIG_WITH_PADDLE_JUMP);
+    // Positioned/aimed so the ball never touches the paddle band during this
+    // window -- isolates the jump TIMING from any collision side-effects.
+    state = { ...state, ball: { x: 10, y: 10 }, ballVelocity: { x: 0, y: 0 } };
+
+    state = stepPong(state, 40, CONFIG_WITH_PADDLE_JUMP);
+    expect(state.paddleJumpActive).toBe(true);
+    expect(state.paddleJumpElapsedMs).toBeCloseTo(40, 5);
+    expect(state.paddleJumpCooldownRemainingMs).toBe(0); // cooldown clock has not started yet -- still airborne
+
+    // Total hop duration is riseMs+fallMs = 150ms; 40+40+40+40 = 160ms, past it.
+    state = stepPong(state, 40, CONFIG_WITH_PADDLE_JUMP);
+    state = stepPong(state, 40, CONFIG_WITH_PADDLE_JUMP);
+    state = stepPong(state, 40, CONFIG_WITH_PADDLE_JUMP);
+
+    expect(state.paddleJumpActive).toBe(false); // landed
+    expect(state.paddleJumpElapsedMs).toBe(0);
+    expect(state.paddleJumpCooldownRemainingMs).toBeGreaterThan(0); // cooldown clock NOW running
+    expect(state.paddleJumpCooldownRemainingMs).toBeLessThanOrEqual(TEST_PADDLE_JUMP.cooldownMs);
+  });
+
+  it('cooldown enforced: a rapid re-trigger immediately after landing does NOT chain into a new jump -- must FAIL against a naive no-cooldown implementation', () => {
+    let state = requestPaddleJump(createInitialPongState(CONFIG_WITH_PADDLE_JUMP), CONFIG_WITH_PADDLE_JUMP);
+    state = { ...state, ball: { x: 10, y: 10 }, ballVelocity: { x: 0, y: 0 } };
+    // Advance past riseMs+fallMs (150ms) in one step so the hop lands.
+    state = stepPong(state, 160, CONFIG_WITH_PADDLE_JUMP);
+    expect(state.paddleJumpActive).toBe(false);
+    expect(state.paddleJumpCooldownRemainingMs).toBeGreaterThan(0);
+
+    // Immediately try to jump again, same tick the cooldown started.
+    const retried = requestPaddleJump(state, CONFIG_WITH_PADDLE_JUMP);
+    expect(retried.paddleJumpActive).toBe(false); // still grounded -- the trigger was rejected
+    expect(retried).toBe(state); // genuinely untouched, not silently queued
+  });
+
+  it('a jump IS allowed again once the FULL cooldown has elapsed', () => {
+    let state = requestPaddleJump(createInitialPongState(CONFIG_WITH_PADDLE_JUMP), CONFIG_WITH_PADDLE_JUMP);
+    state = { ...state, ball: { x: 10, y: 10 }, ballVelocity: { x: 0, y: 0 } };
+    state = stepPong(state, 160, CONFIG_WITH_PADDLE_JUMP); // lands, cooldown = 300ms
+    // Two calls, not one -- stepPong's own MAX_TOTAL_STEP_MS (250ms) caps a
+    // SINGLE call's clock advance (ADR-0014 §4's tab-suspension guard), so a
+    // single 300ms call would only elapse 250ms of it, leaving this test's
+    // own premise ("the FULL cooldown has elapsed") false before it even
+    // asserts anything.
+    state = stepPong(state, 200, CONFIG_WITH_PADDLE_JUMP);
+    state = stepPong(state, 100, CONFIG_WITH_PADDLE_JUMP);
+    expect(state.paddleJumpCooldownRemainingMs).toBe(0);
+
+    const retried = requestPaddleJump(state, CONFIG_WITH_PADDLE_JUMP);
+    expect(retried.paddleJumpActive).toBe(true); // allowed now
+  });
+
+  it('a collision resolved WHILE AIRBORNE applies the hit impulse (clamped by maxSpeed) and increments paddleJumpHitCount -- a GROUNDED collision, otherwise identical, does neither (contrast)', () => {
+    const rampFreeConfig: PongEngineConfig = { ...CONFIG_WITH_PADDLE_JUMP, speedRampPerHit: 1, maxSpeed: 100000 }; // isolate the impulse from the ramp/cap
+    const approach = (state: PongState): PongState => ({ ...state, ball: { x: 200, y: rampFreeConfig.paddleY - 5 }, ballVelocity: { x: 0, y: 300 }, paddleX: 200 });
+
+    // Grounded hit.
+    const groundedNext = stepPong(approach(createInitialPongState(rampFreeConfig)), 16, rampFreeConfig);
+    const groundedSpeed = Math.hypot(groundedNext.ballVelocity.x, groundedNext.ballVelocity.y);
+    expect(groundedNext.paddleJumpHitCount).toBe(0);
+
+    // Airborne hit -- identical approach, but the paddle is mid-hop first.
+    let airborneState = requestPaddleJump(createInitialPongState(rampFreeConfig), rampFreeConfig);
+    airborneState = approach(airborneState);
+    const airborneNext = stepPong(airborneState, 16, rampFreeConfig);
+    const airborneSpeed = Math.hypot(airborneNext.ballVelocity.x, airborneNext.ballVelocity.y);
+
+    expect(airborneNext.paddleJumpHitCount).toBe(1);
+    // The airborne hit's resulting speed is MEANINGFULLY higher than the
+    // grounded hit's -- proves the impulse actually landed on the velocity,
+    // not just that the counter incremented.
+    expect(airborneSpeed).toBeGreaterThan(groundedSpeed + TEST_PADDLE_JUMP.hitSpeedImpulse - 1);
+  });
+
+  it('the hit impulse is clamped by maxSpeed, same as the normal ramp -- an airborne hit can never exceed the cap', () => {
+    const cappedConfig: PongEngineConfig = { ...CONFIG_WITH_PADDLE_JUMP, speedRampPerHit: 1, maxSpeed: 320 }; // just above the 300 approach speed
+    let state = requestPaddleJump(createInitialPongState(cappedConfig), cappedConfig);
+    state = { ...state, ball: { x: 200, y: cappedConfig.paddleY - 5 }, ballVelocity: { x: 0, y: 300 }, paddleX: 200 };
+    const next = stepPong(state, 16, cappedConfig);
+    const speed = Math.hypot(next.ballVelocity.x, next.ballVelocity.y);
+    expect(next.paddleJumpHitCount).toBe(1); // the impulse WAS applied...
+    expect(speed).toBeLessThanOrEqual(cappedConfig.maxSpeed + 1e-6); // ...but clamped, exactly like a normal ramped hit
+  });
+
+  it('the LIVE (raised) paddle rect actually gates collision: a ball positioned in the gap between the raised and grounded rect is caught ONLY while airborne', () => {
+    // Position the ball exactly at the raised paddle's top edge (grounded
+    // paddle would NOT reach this y) -- computed from the SAME
+    // computePaddleJumpOffsetPx the engine itself uses, at a point mid-rise.
+    const midRiseElapsedMs = TEST_PADDLE_JUMP.riseMs / 2;
+    const offsetPx = computePaddleJumpOffsetPx(midRiseElapsedMs, TEST_PADDLE_JUMP, CONFIG_WITH_PADDLE_JUMP.height);
+    expect(offsetPx).toBeGreaterThan(0); // sanity: this really is testing a raised position, not a zero offset
+
+    const ballY = CONFIG_WITH_PADDLE_JUMP.paddleY - offsetPx + 1; // just inside the RAISED paddle's band
+    const buildState = (airborne: boolean): PongState => ({
+      ...createInitialPongState(CONFIG_WITH_PADDLE_JUMP),
+      ball: { x: 200, y: ballY },
+      ballVelocity: { x: 0, y: 300 },
+      paddleX: 200,
+      paddleJumpActive: airborne,
+      paddleJumpElapsedMs: airborne ? midRiseElapsedMs : 0,
+    });
+
+    const airborneNext = stepPong(buildState(true), 1, CONFIG_WITH_PADDLE_JUMP); // 1ms: negligible extra travel/jump-timing drift
+    const groundedNext = stepPong(buildState(false), 1, CONFIG_WITH_PADDLE_JUMP);
+
+    expect(airborneNext.ballVelocity.y).toBeLessThan(0); // caught by the RAISED paddle
+    expect(groundedNext.ballVelocity.y).toBeGreaterThan(0); // grounded paddle doesn't reach here -- ball keeps falling
+  });
+
+  it('the drifting-orb/paddle interaction is UNAFFECTED by an airborne paddle -- it keeps reading the GROUNDED rect (out of this feature\'s scope)', () => {
+    const spawnConfig: PongDriftingOrbConfig = { spawnIntervalMs: 100000, driftSpeedPxPerSecond: 0, radius: 8, rewardSpeedStep: 2, penaltySpeedStep: 0.4 };
+    const config: PongEngineConfig = { ...CONFIG_WITH_PADDLE_JUMP, driftingOrbSpawn: spawnConfig };
+    let state = requestPaddleJump(createInitialPongState(config), config);
+    // A penalty orb sitting exactly at the GROUNDED paddle position -- if the
+    // paddle-catch check incorrectly used the raised rect, this orb would
+    // fall just short of it while airborne; the grounded-rect contract says
+    // it must still be caught here regardless of jump state.
+    state = {
+      ...state,
+      ball: { x: 10, y: 10 },
+      ballVelocity: { x: 0, y: 0 },
+      paddleX: config.width / 2,
+      driftingOrbs: [{ id: 'orb1', x: config.width / 2, y: config.paddleY, role: 'penalty' }],
+    };
+    const next = stepPong(state, 16, config);
+    expect(next.penaltyPaddleCatchCount).toBe(1); // caught, exactly as it would be grounded
+  });
+
+  it('computePaddleJumpOffsetPx: 0 at/before the trigger, positive through the rise, back to 0 once the fall completes -- a full rise-then-fall envelope', () => {
+    expect(computePaddleJumpOffsetPx(0, TEST_PADDLE_JUMP, 600)).toBe(0);
+    expect(computePaddleJumpOffsetPx(-5, TEST_PADDLE_JUMP, 600)).toBe(0);
+    const midRise = computePaddleJumpOffsetPx(TEST_PADDLE_JUMP.riseMs / 2, TEST_PADDLE_JUMP, 600);
+    expect(midRise).toBeGreaterThan(0);
+    const peakHeightPx = 600 * TEST_PADDLE_JUMP.heightRatio;
+    const atRiseEnd = computePaddleJumpOffsetPx(TEST_PADDLE_JUMP.riseMs, TEST_PADDLE_JUMP, 600);
+    expect(atRiseEnd).toBeCloseTo(peakHeightPx, 5); // full height reached exactly at the rise/fall boundary
+    expect(midRise).toBeLessThan(atRiseEnd); // still rising at the midpoint
+    const midFall = computePaddleJumpOffsetPx(TEST_PADDLE_JUMP.riseMs + TEST_PADDLE_JUMP.fallMs / 2, TEST_PADDLE_JUMP, 600);
+    expect(midFall).toBeGreaterThan(0);
+    expect(midFall).toBeLessThan(peakHeightPx); // descending
+    const afterLanding = computePaddleJumpOffsetPx(TEST_PADDLE_JUMP.riseMs + TEST_PADDLE_JUMP.fallMs, TEST_PADDLE_JUMP, 600);
+    expect(afterLanding).toBe(0);
+  });
+
+  it('createInitialPongState always starts grounded, regardless of whether paddleJump is configured', () => {
+    expect(createInitialPongState(CONFIG_WITH_PADDLE_JUMP).paddleJumpActive).toBe(false);
+    expect(createInitialPongState(CONFIG_WITH_PADDLE_JUMP).paddleJumpCooldownRemainingMs).toBe(0);
+    expect(createInitialPongState(CONFIG_WITH_PADDLE_JUMP).paddleJumpHitCount).toBe(0);
+    expect(createInitialPongState(CONFIG).paddleJumpActive).toBe(false); // Quick Break/no-jump config too
+  });
+});
+
+// MB-26, ADR-0015 §15: "verify at the new top speeds... test, dont assume."
+// A high-speed variant of the existing "collision"/"degenerate-angle
+// prevention" tests above, proving the dt-clamp/substep machinery (ADR-0014
+// §4) is STILL sufficient at a speed well above anything Quick Break or
+// pre-MB-26 Journey ever reached -- not re-deriving the substep math, just
+// confirming empirically that a ball approaching this fast is still always
+// caught, never tunnels through the paddle band in a single substep.
+describe('pongEngine: no-tunneling at high speed (MB-26, ADR-0015 §15 verification)', () => {
+  it('a ball falling at a speed far above any pre-MB-26 room maxSpeed still bounces off the paddle every time, swept across the full paddle width -- never tunnels through to the floor', () => {
+    // 2000px/s: comfortably above Room 3's real post-MB-26 maxSpeed (see
+    // roomEngine.test.ts's own room-specific proof at the ACTUAL tuned
+    // value) -- this test isolates the ENGINE's substep guarantee from any
+    // particular tuning number.
+    const fastConfig: PongEngineConfig = { ...CONFIG, maxSpeed: 2000 };
+    const offsets = [-0.99, -0.5, 0, 0.5, 0.99]; // fraction of paddle half-width
+    for (const offsetFraction of offsets) {
+      const paddleX = fastConfig.width / 2;
+      const ballX = paddleX + offsetFraction * (fastConfig.paddleWidth / 2);
+      let state: PongState = {
+        ...createInitialPongState(fastConfig),
+        ball: { x: ballX, y: 0 },
+        ballVelocity: { x: 0, y: 2000 },
+        paddleX,
+      };
+      // `score` is the discriminating signal, NOT ballVelocity.y < 0 -- a
+      // FLOOR bounce also flips vy negative (see the floor-miss branch
+      // above), so a ball that tunnels straight through the paddle band and
+      // bounces off the FLOOR instead would false-positive on a bare
+      // velocity-sign check. Score only increments on a genuine paddle hit.
+      let caughtByPaddle = false;
+      for (let frame = 0; frame < 100 && !caughtByPaddle; frame++) {
+        state = stepPong(state, 16, fastConfig); // one real 60Hz-frame-sized dt per iteration, matching a real caller
+        if (state.score > 0) caughtByPaddle = true;
+        if (state.floorMissCount > 0) break; // tunneled through to the floor -- fail fast
+      }
+      expect(caughtByPaddle).toBe(true);
+      expect(state.floorMissCount).toBe(0);
+    }
   });
 });

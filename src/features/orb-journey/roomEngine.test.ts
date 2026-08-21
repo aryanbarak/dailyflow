@@ -7,7 +7,9 @@ import {
   type PongObstacleConfig,
   type PongState,
 } from '../micro-breaks/engine/pongEngine';
+import { JOURNEY_BASE_SPEED_MULTIPLIER, PADDLE_JUMP_HIT_IMPULSE_RATIO, PADDLE_JUMP_MIN_ROOM_INDEX, ROOM_DIFFICULTY_SPEED_STEP } from './tuning';
 import {
+  buildPaddleJumpConfig,
   buildRoomConfig,
   buildRoomSequence,
   createInitialJourneyState,
@@ -69,9 +71,16 @@ function missTwice(journey: JourneyState, room: RoomConfig, rooms: readonly Room
 }
 
 describe('roomEngine: deriveRoomEngineConfig (ADR-0015 §4, room-index-only difficulty)', () => {
-  it('room 1 is unchanged from the base config (no difficulty step applied yet)', () => {
+  // MB-26, ADR-0015 §15: Room 1's baseSpeed is NO LONGER identical to the
+  // base config -- JOURNEY_BASE_SPEED_MULTIPLIER now applies even at
+  // stepsBeyondFirst=0 (a flat, room-index-independent boost, "noticeably
+  // faster permanent base ball speed"). paddleWidth is UNAFFECTED (only
+  // speed fields carry the multiplier) -- this replaces the pre-MB-26
+  // "room 1 is unchanged from the base config" test, which is no longer
+  // true by design, not a regression.
+  it('room 1s baseSpeed is boosted by exactly JOURNEY_BASE_SPEED_MULTIPLIER over the base config; paddleWidth stays unchanged', () => {
     const config = deriveRoomEngineConfig(1, BOARD_CONFIG);
-    expect(config.baseSpeed).toBe(BOARD_CONFIG.baseSpeed);
+    expect(config.baseSpeed).toBeCloseTo(BOARD_CONFIG.baseSpeed * JOURNEY_BASE_SPEED_MULTIPLIER, 6);
     expect(config.paddleWidth).toBe(BOARD_CONFIG.paddleWidth);
   });
 
@@ -122,6 +131,52 @@ describe('roomEngine: MB-06 widened room-2 difficulty step (PO QA: "hardly felt 
   });
 });
 
+// MB-26, ADR-0015 §15: the PO's "noticeably faster permanent base ball
+// speed, scaling further per room -- independent of and in addition to"
+// the drifting-orb multipliers, plus the steepened per-room ramp. Proves
+// the headroom claim from the MB-26 report: because JOURNEY_BASE_SPEED_MULTIPLIER
+// scales baseSpeed AND maxSpeed by the SAME factor (deriveRoomEngineConfig
+// applies it once, to speedMultiplier, which both fields multiply), the
+// maxSpeed/baseSpeed RATIO -- and therefore how much room a drifting-orb
+// reward multiplier (§11) has before clamping -- is IDENTICAL across every
+// room and unaffected by this change, not just "still positive."
+describe('roomEngine: MB-26 base-speed multiplier + steepened per-room ramp (ADR-0015 §15)', () => {
+  it('JOURNEY_BASE_SPEED_MULTIPLIER applies EQUALLY at every room index -- a flat boost, not itself room-scaled (the per-room ramp is the separate, ADDITIONAL escalation)', () => {
+    for (const roomIndex of [1, 2, 3, 6]) {
+      const config = deriveRoomEngineConfig(roomIndex, BOARD_CONFIG);
+      const stepsBeyondFirst = roomIndex - 1;
+      const expectedMultiplier = JOURNEY_BASE_SPEED_MULTIPLIER * (1 + stepsBeyondFirst * ROOM_DIFFICULTY_SPEED_STEP);
+      expect(config.baseSpeed).toBeCloseTo(BOARD_CONFIG.baseSpeed * expectedMultiplier, 6);
+      expect(config.maxSpeed).toBeCloseTo(BOARD_CONFIG.maxSpeed * expectedMultiplier, 6);
+      expect(config.minSpeed).toBeCloseTo(BOARD_CONFIG.minSpeed * expectedMultiplier, 6);
+    }
+  });
+
+  it('the maxSpeed/baseSpeed ratio (drifting-orb reward-multiplier headroom, ADR-0015 §11) is IDENTICAL across rooms -- proportional scaling preserves headroom, it does not erode it', () => {
+    const room1 = deriveRoomEngineConfig(1, BOARD_CONFIG);
+    const room2 = deriveRoomEngineConfig(2, BOARD_CONFIG);
+    const room3 = deriveRoomEngineConfig(3, BOARD_CONFIG);
+    const ratio1 = room1.maxSpeed / room1.baseSpeed;
+    const ratio2 = room2.maxSpeed / room2.baseSpeed;
+    const ratio3 = room3.maxSpeed / room3.baseSpeed;
+    expect(ratio2).toBeCloseTo(ratio1, 9);
+    expect(ratio3).toBeCloseTo(ratio1, 9);
+    // Sanity: a single reward-orb hit (DRIFTING_ORB_REWARD_SPEED_STEP,
+    // 1.35x) never gets fully clamped away by maxSpeed at ANY room's base
+    // speed -- there is real headroom above one hit, not just above zero.
+    expect(room1.baseSpeed * 1.35).toBeLessThan(room1.maxSpeed);
+  });
+
+  it('room 2s widened MB-26 speed step (0.30) is steeper than the pre-MB-26 step (0.22), and still under the existing "not punishing" sanity ceiling', () => {
+    const room1 = deriveRoomEngineConfig(1, BOARD_CONFIG);
+    const room2 = deriveRoomEngineConfig(2, BOARD_CONFIG);
+    const actualSpeedStep = room2.baseSpeed / room1.baseSpeed - 1;
+    expect(actualSpeedStep).toBeCloseTo(ROOM_DIFFICULTY_SPEED_STEP, 6);
+    expect(ROOM_DIFFICULTY_SPEED_STEP).toBeGreaterThan(0.22);
+    expect(actualSpeedStep).toBeLessThan(0.5); // same sanity band the MB-06 test above already asserts
+  });
+});
+
 describe('roomEngine: difficulty tuning respects the ADR-0014 §4 hard ceilings (speed cap, degenerate-angle guard)', () => {
   it('degenerate-angle guard (maxBounceAngleRad) is passed through UNCHANGED by room difficulty scaling, for every room', () => {
     for (const roomIndex of [1, 2, 6]) {
@@ -142,6 +197,66 @@ describe('roomEngine: difficulty tuning respects the ADR-0014 §4 hard ceilings 
       const speed = Math.hypot(state.ballVelocity.x, state.ballVelocity.y);
       expect(speed).toBeLessThanOrEqual(room2.engineConfig.maxSpeed + 1e-6);
     }
+  });
+});
+
+// MB-26, ADR-0015 §15: "verify at the new top speeds... test, dont assume."
+// Uses Room 3's REAL, actually-tuned engineConfig (buildRoomSequence's real
+// output, not a synthetic high-speed config) -- pongEngine.test.ts's own
+// generic high-speed test proves the ENGINE's substep guarantee in the
+// abstract; this proves the SPECIFIC numbers this task shipped are safe.
+describe('roomEngine: MB-26 no-tunneling / degenerate-angle verification at Room 3s ACTUAL new maxSpeed', () => {
+  it('a ball falling at Room 3s real post-MB-26 maxSpeed always bounces off the paddle -- never tunnels through to a floor miss, swept across the paddle width', () => {
+    const rooms = buildRoomSequence(BOARD_CONFIG);
+    const room3 = rooms[2].engineConfig;
+    expect(room3.maxSpeed).toBeGreaterThan(1000); // sanity: really exercising the NEW, higher ceiling
+
+    const offsets = [-0.99, -0.5, -0.1, 0, 0.1, 0.5, 0.99];
+    for (const offsetFraction of offsets) {
+      const paddleX = room3.width / 2;
+      const ballX = paddleX + offsetFraction * (room3.paddleWidth / 2);
+      let state: PongState = {
+        ...createInitialPongState(room3),
+        ball: { x: ballX, y: 0 },
+        ballVelocity: { x: 0, y: room3.maxSpeed },
+        paddleX,
+      };
+      // `score` is the discriminating signal, NOT ballVelocity.y < 0 -- a
+      // FLOOR bounce also flips vy negative (see pongEngine.ts's own
+      // floor-miss branch), so a ball that tunnels straight through the
+      // paddle band and bounces off the FLOOR instead would false-positive
+      // on a bare velocity-sign check. Score only increments on a genuine
+      // paddle hit (MB-03, ADR-0014 §11-12) -- confirmed as a real
+      // discriminator below by deliberately re-running this same test at an
+      // artificially inflated JOURNEY_BASE_SPEED_MULTIPLIER during
+      // development (see the MB-26 report) and observing it correctly fail.
+      let caughtByPaddle = false;
+      for (let frame = 0; frame < 200 && !caughtByPaddle; frame++) {
+        state = stepPong(state, 16, room3);
+        if (state.score > 0) caughtByPaddle = true;
+        if (state.floorMissCount > 0) break; // tunneled through to the floor -- fail fast, don't keep looping
+      }
+      expect(caughtByPaddle).toBe(true);
+      expect(state.floorMissCount).toBe(0);
+    }
+  });
+
+  it('degenerate-angle guard still holds at Room 3s real new maxSpeed: the extreme paddle edge never collapses the vertical speed component toward zero', () => {
+    const rooms = buildRoomSequence(BOARD_CONFIG);
+    const room3 = rooms[2].engineConfig;
+    const paddleX = room3.width / 2;
+    const edgeX = paddleX + room3.paddleWidth / 2;
+    const state: PongState = {
+      ...createInitialPongState(room3),
+      ball: { x: edgeX, y: room3.paddleY - 5 },
+      ballVelocity: { x: 0, y: room3.maxSpeed },
+      paddleX,
+    };
+    const next = stepPong(state, 16, room3);
+    const speed = Math.hypot(next.ballVelocity.x, next.ballVelocity.y);
+    const minVerticalFraction = Math.cos(room3.maxBounceAngleRad);
+    expect(Math.abs(next.ballVelocity.y)).toBeGreaterThanOrEqual(speed * minVerticalFraction - 1e-6);
+    expect(speed).toBeLessThanOrEqual(room3.maxSpeed + 1e-6);
   });
 });
 
@@ -593,6 +708,57 @@ describe('roomEngine: buildRoomConfig', () => {
     const step3 = room3.goalCombo - room2.goalCombo;
     expect(step2).toBeGreaterThan(0);
     expect(step3).toBe(step2); // linear step, per ADR-0015 §4's room-index-ONLY rule
+  });
+});
+
+// MB-26, ADR-0015 §15: paddle jump-strike room-gating -- "inert in Rooms
+// 1-2... active from Room 3 onward." Mirrors buildDriftingOrbSpawnConfig's
+// own "Room 1 has NO ... while Room 2 DOES" contrast-pair test pattern one
+// block up.
+describe('roomEngine: buildPaddleJumpConfig (MB-26, ADR-0015 §15, Room 3+ paddle jump-strike)', () => {
+  it('Rooms 1 and 2 have NO paddle-jump config while Room 3 DOES -- the gate is at PADDLE_JUMP_MIN_ROOM_INDEX', () => {
+    const rooms = buildRoomSequence(BOARD_CONFIG);
+    expect(PADDLE_JUMP_MIN_ROOM_INDEX).toBe(3);
+    expect(rooms[0].paddleJump).toBeUndefined();
+    expect(rooms[0].engineConfig.paddleJump).toBeUndefined();
+    expect(rooms[1].paddleJump).toBeUndefined();
+    expect(rooms[1].engineConfig.paddleJump).toBeUndefined();
+    // Contrasted against Room 3 in the SAME test -- an "absent" assertion
+    // alone can't be disproven by full reversion, same reasoning the
+    // drifting-orb gating test above already documents.
+    expect(rooms[2].paddleJump).toBeDefined();
+  });
+
+  it('Room 3s paddle-jump config has positive rise/fall/height/cooldown, and hitSpeedImpulse scales with Room 3s OWN (already-boosted) baseSpeed', () => {
+    const rooms = buildRoomSequence(BOARD_CONFIG);
+    const room3 = rooms[2];
+    const jump = room3.paddleJump;
+    expect(jump).toBeDefined();
+    expect(jump!.riseMs).toBeGreaterThan(0);
+    expect(jump!.fallMs).toBeGreaterThan(0);
+    expect(jump!.heightRatio).toBeGreaterThan(0);
+    expect(jump!.cooldownMs).toBeGreaterThan(0);
+    expect(jump!.hitSpeedImpulse).toBeCloseTo(room3.engineConfig.baseSpeed * PADDLE_JUMP_HIT_IMPULSE_RATIO, 6);
+    // Room-specific: Room 3s impulse must be LARGER than what Room 2s own
+    // baseSpeed would produce -- confirms it scales per-room, not a flat
+    // constant duplicated across rooms.
+    const room2 = rooms[1];
+    const room2ImpulseIfEnabled = room2.engineConfig.baseSpeed * PADDLE_JUMP_HIT_IMPULSE_RATIO;
+    expect(jump!.hitSpeedImpulse).toBeGreaterThan(room2ImpulseIfEnabled);
+  });
+
+  it('RoomConfig.paddleJump and engineConfig.paddleJump are the SAME object reference -- one source of truth, matching obstacles/driftingOrbSpawns own precedent', () => {
+    const rooms = buildRoomSequence(BOARD_CONFIG);
+    expect(rooms[2].paddleJump).toBeDefined(); // guards against this passing trivially on undefined === undefined
+    expect(rooms[2].paddleJump).toBe(rooms[2].engineConfig.paddleJump);
+  });
+
+  it('buildPaddleJumpConfig called directly is undefined below the gate and defined at/above it', () => {
+    const engineConfig = deriveRoomEngineConfig(3, BOARD_CONFIG);
+    expect(buildPaddleJumpConfig(1, engineConfig)).toBeUndefined();
+    expect(buildPaddleJumpConfig(2, engineConfig)).toBeUndefined();
+    expect(buildPaddleJumpConfig(3, engineConfig)).toBeDefined();
+    expect(buildPaddleJumpConfig(6, engineConfig)).toBeDefined();
   });
 });
 

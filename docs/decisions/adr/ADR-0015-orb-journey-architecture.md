@@ -320,6 +320,33 @@ exists for the user, the session-type picker offers "Continue Journey"
 physics state, consistent with ADR-0015 §5's original checkpoint rationale)
 alongside "New Journey".
 
+### 15. Paddle jump-strike (Room 3+) and base-speed ramp increase (MB-26)
+Post-playtesting, the PO requested (a) a noticeably faster permanent base
+ball speed, scaling further per room -- independent of and in addition to
+the reward/penalty drifting-orb multipliers (§11), which are unchanged;
+and (b) a new active paddle mechanic from Room 3 onward: a jump-strike.
+
+Jump-strike: the paddle, which normally moves only horizontally, can
+perform a brief vertical hop (fixed height, quick rise and fall, short
+cooldown -- all tuning constants). During the hop, normal paddle-ball
+collision applies (contact-point->angle logic unchanged); a hit made while
+jumping additionally applies a modest extra speed impulse (tuning
+constant, clamped by the maxSpeed ceiling) and a stronger paddle-glow
+feedback. Input: Space on keyboard (with explicit guards so Space never
+activates a focused overlay control -- accidental exit via the close button
+is a known browser behavior that must be prevented while a Journey session
+is active); on touch, a quick tap (short press without significant drag)
+or a second concurrent pointer, whichever proves more reliable -- one
+Pointer Events path, must not disturb the existing drag-to-move control.
+The mechanic is inert in Rooms 1-2 (input ignored) and active from Room 3
+onward -- introducing an execution skill exactly where difficulty and orb
+cadence already step up (§12).
+Speed: base ball speed and the per-room-index ramp both increase (tuning
+constants); the maxSpeed ceiling is raised proportionally so cumulative
+reward multipliers (§11) retain meaningful headroom; the degenerate-angle
+guard and dt-clamp invariants (ADR-0014 §4) are unchanged and re-verified
+at the new speeds.
+
 ## Consequences
 
 + One engine serves both session types; no physics duplication; trust

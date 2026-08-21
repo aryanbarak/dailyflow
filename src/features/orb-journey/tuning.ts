@@ -57,6 +57,22 @@ export const ROOM_GOAL_COMBO_STEP_PER_ROOM = 4;
 
 // ── Room difficulty scaling (ADR-0015 §4: room-index ONLY, no adaptive
 //    performance correction this slice) ──────────────────────────────────
+// MB-26, ADR-0015 §15: a FLAT multiplier applied on top of the per-room
+// speed step below -- the PO's "noticeably faster permanent base ball
+// speed... independent of and in addition to" the per-room ramp. Combined
+// multiplicatively with (1 + stepsBeyondFirst * ROOM_DIFFICULTY_SPEED_STEP)
+// in deriveRoomEngineConfig, so it scales baseSpeed/maxSpeed/minSpeed
+// IDENTICALLY to that per-room step -- the ratio between them (and
+// therefore the drifting-orb reward-multiplier headroom below maxSpeed,
+// ADR-0015 §11) is unaffected by this constant; see the MB-26 report's
+// explicit headroom math. Deliberately lives HERE, not in
+// micro-breaks/tuning.ts's shared BASE_SPEED_PX_PER_SECOND/
+// MAX_SPEED_PX_PER_SECOND -- those remain byte-for-byte untouched, so Quick
+// Break (which never calls deriveRoomEngineConfig at all -- PongCanvas.tsx
+// uses DEFAULT_PONG_CONFIG directly) is structurally unaffected, not just
+// unaffected by coincidence.
+export const JOURNEY_BASE_SPEED_MULTIPLIER = 1.15; // ~15% faster, per the PO's explicit request
+
 // MB-06: widened from 0.08/0.04 after PO manual QA on MB-05 ("hardly felt
 // different, but I expected that") -- ADR-0015 §4 wants room 2 "somewhat"
 // harder, not imperceptible. This only changes these two constants' values;
@@ -64,11 +80,18 @@ export const ROOM_GOAL_COMBO_STEP_PER_ROOM = 4;
 // well under 90 degrees -- ADR-0014 §4) are untouched, since
 // deriveRoomEngineConfig never scales maxBounceAngleRad and stepPong's
 // Math.min(..., config.maxSpeed) clamp is structural, not a tuning constant.
+// MB-26, ADR-0015 §15: steepened again, 0.22 -> 0.30, per the PO's "scaling
+// further per room" request post-playtesting. A smaller relative jump than
+// MB-06's own 0.08 -> 0.22 (that correction was fixing an imperceptible
+// value; this one is amplifying an already-working step, so a milder,
+// deliberate increase is enough) -- stays comfortably under the existing
+// "noticeably harder, not punishingly harder" sanity ceiling already
+// asserted in roomEngine.test.ts (< 0.5).
 /** Multiplies baseSpeed (and maxSpeed, proportionally) per room index beyond
  *  1 -- combines with the per-hit speedRampPerHit that already escalates
  *  difficulty WITHIN a room, so this only needs to be a modest per-room
  *  step, not a steep ramp on its own. */
-export const ROOM_DIFFICULTY_SPEED_STEP = 0.22;
+export const ROOM_DIFFICULTY_SPEED_STEP = 0.3;
 /** Shrinks paddle width per room index beyond 1, floored at
  *  ROOM_MIN_PADDLE_WIDTH_RATIO so late rooms stay legitimately playable. */
 export const ROOM_DIFFICULTY_PADDLE_SHRINK_STEP = 0.12;
@@ -180,3 +203,75 @@ export const DRIFTING_ORB_PADDLE_CATCH_PULSE_PEAK_ALPHA = 0.4;
 export function getDriftingOrbPaddleCatchParticleCount(reducedMotion: boolean): number {
   return reducedMotion ? 0 : DRIFTING_ORB_PADDLE_CATCH_PARTICLE_COUNT;
 }
+
+// ── Paddle jump-strike (Room 3+, MB-26, ADR-0015 §15) ────────────────────
+/** Room-gating: below this room index, `buildPaddleJumpConfig` (roomEngine.ts)
+ *  returns undefined, making `requestPaddleJump` (pongEngine.ts) a
+ *  structural no-op there -- "the mechanic is inert in Rooms 1-2" is a
+ *  property of which engineConfig a room was built with, not a UI-only
+ *  restriction duplicated at every input call site. */
+export const PADDLE_JUMP_MIN_ROOM_INDEX = 3;
+/** "Quick rise" -- ADR-0015 §15's own suggested value, used as-is. */
+export const PADDLE_JUMP_RISE_MS = 120;
+/** "...and fall" -- slightly longer than the rise, so the hop reads as a
+ *  snappy launch followed by a softer landing, not perfectly symmetric. */
+export const PADDLE_JUMP_FALL_MS = 160;
+/** Hop height as a fraction of board height (matches this file's existing
+ *  ratio-of-board-dimension convention, e.g. DRIFTING_ORB_RADIUS_RATIO) --
+ *  on the 600px default board height, ~30px: clearly visible (~2x the
+ *  paddle's own height) without being a huge leap. */
+export const PADDLE_JUMP_HEIGHT_RATIO = 0.05;
+/** "Short cooldown" -- ADR-0015 §15's own suggested value, used as-is.
+ *  Measured from LANDING (jump completion), not from the trigger -- see
+ *  pongEngine.ts's own comment on why the cooldown clock only starts once
+ *  the hop's rise+fall finishes. */
+export const PADDLE_JUMP_COOLDOWN_MS = 600;
+/** The "modest extra speed impulse" a jump-hit adds, as a fraction of
+ *  THIS ROOM's OWN (already difficulty-scaled) baseSpeed -- scales
+ *  naturally across rooms the same way DRIFTING_ORB_RADIUS_RATIO scales
+ *  with engineConfig.width, rather than a flat px/s value that would feel
+ *  proportionally smaller in a later, faster room. Additive (not a
+ *  multiplier, unlike the drifting-orb reward/penalty steps) -- ADR-0015
+ *  §15 describes it as "an extra speed impulse," and an additive amount is
+ *  what needs an explicit maxSpeed clamp to stay meaningful (a pure
+ *  multiplier of an already-near-cap speed would barely move the needle by
+ *  comparison). */
+export const PADDLE_JUMP_HIT_IMPULSE_RATIO = 0.15;
+
+/** Touch/mouse jump trigger: a pointerdown->up pair is a "tap" (not a drag)
+ *  when both the ELAPSED TIME and the MOVEMENT since pointerdown stay under
+ *  these thresholds. Chosen over "a second concurrent pointer" (ADR-0015
+ *  §15's other named option) as this feature's primary touch trigger -- see
+ *  the MB-26 report for the reasoning (a second-finger heuristic is more
+ *  prone to false positives from an incidental grip touch, and Pointer
+ *  Events' multi-pointer bookkeeping is more invasive to the existing
+ *  single-pointer drag-to-move path than a simple tap/drag distinction on
+ *  the SAME pointer stream). Duration is deliberately generous (a real
+ *  fingertip tap is rarely under ~100ms) while movement stays tight enough
+ *  that a genuine drag-to-move gesture -- even one that starts slowly --
+ *  crosses it almost immediately and is never misread as a tap. */
+export const PADDLE_JUMP_TAP_MAX_DURATION_MS = 220;
+export const PADDLE_JUMP_TAP_MAX_MOVEMENT_PX = 12;
+
+// Stronger-than-paddle-catch glow ring at the paddle on a jump-hit --
+// reuses roomTheme.ts's existing computePaddleCatchPulseAlpha envelope
+// (task brief: "reuse existing primitives"), just with a bigger peak alpha
+// and radius so it reads as visually distinct from (and more emphatic than)
+// the drifting-orb paddle-catch cue it borrows its curve shape from.
+export const PADDLE_JUMP_HIT_GLOW_DURATION_MS = 260;
+export const PADDLE_JUMP_HIT_GLOW_PEAK_ALPHA = 0.75;
+/** Toned down, not suppressed, under reduced motion -- ADR-0015 §15: "the
+ *  jump itself (gameplay)" -- the hop, collision, and speed impulse -- is
+ *  never reduced-motion-gated; only this glow's decorative INTENSITY is,
+ *  same "keep the color/brightness cue, reduce the flourish" spirit as this
+ *  feature's other reactions, but here as a partial reduction rather than
+ *  the usual all-or-nothing particle-count gate, since a jump-hit's glow is
+ *  the ONLY feedback distinguishing it from a normal hit and should stay
+ *  legible even under reduced motion. */
+export const PADDLE_JUMP_HIT_GLOW_PEAK_ALPHA_REDUCED_MOTION = 0.4;
+export function getPaddleJumpHitGlowPeakAlpha(reducedMotion: boolean): number {
+  return reducedMotion ? PADDLE_JUMP_HIT_GLOW_PEAK_ALPHA_REDUCED_MOTION : PADDLE_JUMP_HIT_GLOW_PEAK_ALPHA;
+}
+/** vs. the drifting-orb paddle-catch cue's own 1.6x paddleHeight radius --
+ *  visibly bigger, reinforcing "stronger." */
+export const PADDLE_JUMP_HIT_GLOW_RADIUS_MULTIPLIER = 2.4;

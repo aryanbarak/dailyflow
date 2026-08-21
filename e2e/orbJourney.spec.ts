@@ -147,6 +147,29 @@ async function isReactionActive(page: import('@playwright/test').Page): Promise<
   );
 }
 
+// MB-26, ADR-0015 §15: mirrors forceRoomGoal's own reasoning -- calls the
+// REAL public requestPaddleJump entry point, so room-gating, cooldown, and
+// hop timing all resolve exactly as the real keyboard/touch handlers would.
+async function triggerPaddleJump(page: import('@playwright/test').Page) {
+  await page.evaluate(() => {
+    (window as unknown as { __orbJourneyDevTriggerPaddleJump?: () => void }).__orbJourneyDevTriggerPaddleJump?.();
+  });
+}
+
+type PaddleJumpDevState = { active: boolean; elapsedMs: number; cooldownRemainingMs: number; hitCount: number; enabledThisRoom: boolean };
+async function getPaddleJumpState(page: import('@playwright/test').Page): Promise<PaddleJumpDevState> {
+  return page.evaluate(
+    () =>
+      (window as unknown as { __orbJourneyDevGetPaddleJumpState?: () => PaddleJumpDevState }).__orbJourneyDevGetPaddleJumpState?.() ?? {
+        active: false,
+        elapsedMs: 0,
+        cooldownRemainingMs: 0,
+        hitCount: 0,
+        enabledThisRoom: false,
+      },
+  );
+}
+
 // MB-13: average canvas color across the WHOLE frame -- a room's theme
 // (background, drawn first and covering most of the board) dominates this
 // average far more than the small ball/paddle/orbs, so a meaningfully
@@ -1586,5 +1609,150 @@ test.describe('Orb Journey (MB-05, ADR-0015)', () => {
     await expect(page.getByRole('dialog')).not.toBeVisible();
 
     expect(pageErrors).toEqual([]);
+  });
+});
+
+// MB-26, ADR-0015 §15: paddle jump-strike (Room 3+) input coverage --
+// room-gating, keyboard (Space, including the accidental-exit guard), and
+// touch/pointer (tap vs. drag). These need real browser keyboard/pointer
+// event dispatch (jsdom cannot reliably synthesize the button-activation
+// behavior Space's guard defends against), same rationale as every other
+// canvas-adjacent Journey behavior in this file.
+test.describe('MB-26 paddle jump-strike (ADR-0015 §15): room-gating, keyboard, and touch input', () => {
+  test('jump input is a structural no-op in Rooms 1-2 (dev-hook trigger), and becomes active once Room 3 is reached', async ({ page }) => {
+    await openJourney(page);
+    await expect(page.getByText('Room 1')).toBeVisible();
+
+    expect((await getPaddleJumpState(page)).enabledThisRoom).toBe(false);
+    await triggerPaddleJump(page);
+    expect((await getPaddleJumpState(page)).active).toBe(false); // Room 1: inert
+
+    await forceRoomGoal(page); // -> room 2
+    await expect(page.getByText('Room 2')).toBeVisible();
+    expect((await getPaddleJumpState(page)).enabledThisRoom).toBe(false);
+    await triggerPaddleJump(page);
+    expect((await getPaddleJumpState(page)).active).toBe(false); // Room 2: still inert
+
+    await forceRoomGoal(page); // -> room 3
+    await expect(page.getByText('Room 3')).toBeVisible();
+    expect((await getPaddleJumpState(page)).enabledThisRoom).toBe(true);
+    await triggerPaddleJump(page);
+    expect((await getPaddleJumpState(page)).active).toBe(true); // Room 3: active
+  });
+
+  test('Space triggers a jump in Room 3, but is a no-op in Room 1 -- the same room-gating the dev hook and touch input both respect', async ({
+    page,
+  }) => {
+    await openJourney(page);
+    await expect(page.getByText('Room 1')).toBeVisible();
+    await page.keyboard.press('Space');
+    await page.waitForTimeout(50);
+    expect((await getPaddleJumpState(page)).active).toBe(false);
+
+    await forceRoomGoal(page);
+    await expect(page.getByText('Room 2')).toBeVisible();
+    await forceRoomGoal(page);
+    await expect(page.getByText('Room 3')).toBeVisible();
+    await page.keyboard.press('Space');
+    await page.waitForTimeout(50);
+    expect((await getPaddleJumpState(page)).active).toBe(true);
+  });
+
+  test('cooldown enforced: rapid repeated Space presses do not chain -- the hops own elapsed clock never resets mid-hop from a re-press', async ({
+    page,
+  }) => {
+    await openJourney(page);
+    await forceRoomGoal(page);
+    await expect(page.getByText('Room 2')).toBeVisible();
+    await forceRoomGoal(page);
+    await expect(page.getByText('Room 3')).toBeVisible();
+
+    await page.keyboard.press('Space');
+    await page.waitForTimeout(30);
+    const firstState = await getPaddleJumpState(page);
+    expect(firstState.active).toBe(true);
+
+    // Rapid re-presses while still airborne -- a naive re-trigger would
+    // reset paddleJumpElapsedMs back toward 0 on each press.
+    await page.keyboard.press('Space');
+    await page.waitForTimeout(20);
+    await page.keyboard.press('Space');
+    await page.waitForTimeout(20);
+    const stateAfterSpam = await getPaddleJumpState(page);
+    expect(stateAfterSpam.elapsedMs).toBeGreaterThanOrEqual(firstState.elapsedMs); // kept advancing monotonically, never reset by a re-press
+  });
+
+  test('Space never activates the close button while a Journey session is active -- the dialog stays open across repeated presses; Escape (unlike Space) still closes it, proving the dialog COULD have closed', async ({
+    page,
+  }) => {
+    await openJourney(page);
+    await expect(page.getByText('Room 1')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Close micro break' })).toBeVisible();
+
+    for (let i = 0; i < 5; i++) {
+      await page.keyboard.press('Space');
+    }
+    await page.waitForTimeout(50);
+    await expect(page.getByRole('dialog')).toBeVisible();
+
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).not.toBeVisible();
+  });
+
+  test('a quick tap on the canvas triggers a jump in Room 3; a slow drag across the canvas does NOT trigger a jump, and the paddle still moves normally with the drag', async ({
+    page,
+  }) => {
+    await openJourney(page);
+    await forceRoomGoal(page);
+    await expect(page.getByText('Room 2')).toBeVisible();
+    await forceRoomGoal(page);
+    await expect(page.getByText('Room 3')).toBeVisible();
+
+    const canvas = page.locator('canvas');
+    const box = await canvas.boundingBox();
+    if (!box) throw new Error('no canvas bounding box -- cannot drive synthetic pointer input');
+    const centerX = box.x + box.width / 2;
+    const centerY = box.y + box.height / 2;
+
+    // Quick tap: down and up at (almost) the same point, no delay.
+    await page.mouse.move(centerX, centerY);
+    await page.mouse.down();
+    await page.mouse.up();
+    await page.waitForTimeout(50);
+    expect((await getPaddleJumpState(page)).active).toBe(true);
+
+    // Let the hop AND its cooldown fully clear before the drag check --
+    // riseMs+fallMs (280ms) + cooldownMs (600ms), generous margin.
+    await page.waitForTimeout(1200);
+    expect((await getPaddleJumpState(page)).cooldownRemainingMs).toBe(0);
+
+    const paddleFractionBeforeDrag = await page.evaluate(
+      () => (window as unknown as { __orbJourneyDevGetPaddleXFraction?: () => number }).__orbJourneyDevGetPaddleXFraction?.() ?? 0.5,
+    );
+
+    // Slow drag: down, then several incremental moves across a real
+    // distance, each separated by a real delay -- "even one that starts
+    // slowly," per the task brief -- then up.
+    const dragStartX = box.x + box.width * 0.15;
+    await page.mouse.move(dragStartX, centerY);
+    await page.mouse.down();
+    for (let step = 1; step <= 6; step++) {
+      await page.waitForTimeout(60);
+      await page.mouse.move(dragStartX + step * (box.width * 0.12), centerY);
+    }
+    await page.mouse.up();
+    await page.waitForTimeout(50);
+
+    // The drag must NOT have re-triggered a jump (no fresh cooldown/active state).
+    const stateAfterDrag = await getPaddleJumpState(page);
+    expect(stateAfterDrag.active).toBe(false);
+    expect(stateAfterDrag.cooldownRemainingMs).toBe(0);
+
+    // And drag-to-move itself is genuinely unaffected -- the paddle tracked
+    // the drag's real end position.
+    const paddleFractionAfterDrag = await page.evaluate(
+      () => (window as unknown as { __orbJourneyDevGetPaddleXFraction?: () => number }).__orbJourneyDevGetPaddleXFraction?.() ?? 0.5,
+    );
+    expect(paddleFractionAfterDrag).toBeGreaterThan(paddleFractionBeforeDrag + 0.2); // moved meaningfully rightward with the drag
   });
 });
