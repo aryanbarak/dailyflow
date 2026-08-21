@@ -50,6 +50,7 @@ interface FetchLog {
   calendarWrites: Array<{ method: string; body?: Record<string, unknown> }>
   alarmWrites: Array<{ method: string; body?: Record<string, unknown> }>
   undoWrites: Array<{ method: string; body?: Record<string, unknown> }>
+  proposalOutcomeWrites: Array<Record<string, unknown>>
 }
 
 type UndoStore = Map<string, Record<string, unknown>>
@@ -91,11 +92,17 @@ function installFetchMock(
   // exercise persistUndoOrRollback's fallback behaviour without depending
   // on the actual constraint being wide or narrow.
   undoPersistShouldFail = false,
+  // Task 40, ADR-0016 Slice 2, Part C: simulates the agent_proposal_outcomes
+  // insert itself failing -- proves the fire-and-forget guarantee at the
+  // true end-to-end level (the /chat response must be completely
+  // unaffected, since recordProposalOutcome never throws and this insert
+  // is never on the write's own success path).
+  proposalOutcomeShouldFail = false,
 ): FetchLog {
   const chatRows = [...chatHistoryRows]
   const log: FetchLog = {
     geminiCalls: [], chatMessageWrites: [], sessionPatches: 0, personalMemoryReads: 0, documentReads: 0, storageReads: 0,
-    taskWrites: [], calendarWrites: [], alarmWrites: [], undoWrites: [],
+    taskWrites: [], calendarWrites: [], alarmWrites: [], undoWrites: [], proposalOutcomeWrites: [],
   }
 
   const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -186,6 +193,14 @@ function installFetchMock(
       // whose undo-persist failed also removes the alarm it just created.
       log.alarmWrites.push({ method })
       return new Response(null, { status: 204 })
+    }
+    if (url.startsWith(`${SUPABASE_URL}/rest/v1/agent_proposal_outcomes`) && method === 'POST') {
+      if (proposalOutcomeShouldFail) {
+        return new Response(JSON.stringify({ message: 'insert failed' }), { status: 500, headers: { 'Content-Type': 'application/json' } })
+      }
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+      log.proposalOutcomeWrites.push(body)
+      return new Response(null, { status: 201 })
     }
     if (url.startsWith(`${SUPABASE_URL}/rest/v1/documents`) && method === 'GET') {
       log.documentReads += 1
@@ -1228,6 +1243,75 @@ describe('ADR-0012 server-side task write policy', () => {
     expect(coldLog.undoWrites.some(write => write.method === 'PATCH')).toBe(true)
     expect(coldLog.taskWrites.some(write => write.method === 'PATCH' && write.body?.due_date === null)).toBe(true)
   })
+
+  // Task 40, ADR-0016 Slice 2, Part D item 8 (auto lane): the Worker's own
+  // deterministic auto-write path must record its outcome through the same
+  // ledger the ask lane uses -- see the "task 40: ask-lane" describe block
+  // below for the other half of this proof (ADR-0016 Part A's finding that
+  // finance always takes the ask lane while tasks/calendar usually take
+  // this one).
+  it('task 40: records auto_executed with the write result and shape-only target fields, never the title/date VALUES', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto')
+    const ctx = fakeExecutionContext()
+    const response = await worker.fetch(chatRequest({
+      message: 'Create task "Review invoices" for tomorrow',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), ctx)
+    expect(response.status).toBe(200)
+
+    // Fire-and-forget (ADR-0016 item 6): the recording call is dispatched
+    // via ctx.waitUntil, not awaited inline -- await the captured promise
+    // here only so the assertions below are deterministic, not because the
+    // production code itself waits on it.
+    const waitUntilMock = ctx.waitUntil as ReturnType<typeof vi.fn>
+    expect(waitUntilMock).toHaveBeenCalledTimes(1)
+    await waitUntilMock.mock.calls[0][0]
+
+    expect(log.proposalOutcomeWrites).toHaveLength(1)
+    const row = log.proposalOutcomeWrites[0]
+    expect(row).toMatchObject({
+      user_id: 'user-1',
+      intent_type: 'create_task',
+      tool_id: 'tasks.create',
+      domain: 'tasks',
+      write_mode: 'auto',
+      outcome: 'auto_executed',
+      succeeded: true,
+    })
+    expect(row.target_fields).toEqual(expect.arrayContaining(['title', 'dueDate']))
+    // Shape only -- the actual title/date VALUES must never appear
+    // anywhere in the recorded row, only the field NAMES.
+    expect(JSON.stringify(row)).not.toContain('Review invoices')
+    expect(JSON.stringify(row)).not.toContain('2026-08-15')
+  })
+
+  // Task 40 Part D item 9: the fire-and-forget guarantee, proven end to
+  // end. Forcing the ledger insert itself to fail must have ZERO effect on
+  // the chat turn the user is actually waiting on -- same status, same
+  // reply, same undo affordance as the passing case above.
+  it('task 40: a failing agent_proposal_outcomes insert never affects the chat reply the user sees (fire-and-forget)', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], null, null, false, true)
+    const ctx = fakeExecutionContext()
+    const response = await worker.fetch(chatRequest({
+      message: 'Create task "Review invoices" for tomorrow',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), ctx)
+    const body = await response.json() as { reply?: string; writeExecution?: string; undo?: { id?: string; label?: string } }
+
+    expect(response.status).toBe(200)
+    expect(body.writeExecution).toBe('executed')
+    expect(body.reply).toContain('✓ Task created: Review invoices')
+    expect(body.undo?.id).toMatch(/^undo:[0-9a-f-]{36}$/)
+    expect(log.taskWrites.some(write => write.method === 'POST')).toBe(true)
+
+    // The insert really was attempted and really did fail -- awaiting it
+    // must not throw back into this test (recordProposalOutcome swallows
+    // its own error), and it must not have produced a row.
+    const waitUntilMock = ctx.waitUntil as ReturnType<typeof vi.fn>
+    expect(waitUntilMock).toHaveBeenCalledTimes(1)
+    await expect(waitUntilMock.mock.calls[0][0]).resolves.toBeUndefined()
+    expect(log.proposalOutcomeWrites).toHaveLength(0)
+  })
 })
 
 describe('task 22: calendar write policy + routing', () => {
@@ -1622,5 +1706,161 @@ describe('task 24: CORS allow-list -- dual-origin domain migration (barakzai.clo
     const response = await worker.fetch(optionsRequest('http://localhost:5173'), testEnv(), fakeExecutionContext())
     expect(response.status).toBe(204)
     expect(response.headers.get('Access-Control-Allow-Origin')).toBe('http://localhost:5173')
+  })
+
+  // Task 40 Part A.3: proves POST /agent/proposal-outcome reuses THIS SAME
+  // allow-list (not a second, independent one, the way GITHUB_ALLOWED_ORIGINS
+  // once did -- task 32) -- the OPTIONS preflight check runs generically in
+  // the dispatcher before any pathname routing, so this is the identical
+  // code path /chat's own preflight above already exercises.
+  it('POST /agent/proposal-outcome reuses the SAME CORS allow-list as /chat', async () => {
+    const allowed = new Request('https://worker.test/agent/proposal-outcome', {
+      method: 'OPTIONS',
+      headers: { Origin: 'https://smartaryn.com' },
+    })
+    const disallowed = new Request('https://worker.test/agent/proposal-outcome', {
+      method: 'OPTIONS',
+      headers: { Origin: 'https://evil.example.com' },
+    })
+    const allowedResponse = await worker.fetch(allowed, testEnv(), fakeExecutionContext())
+    const disallowedResponse = await worker.fetch(disallowed, testEnv(), fakeExecutionContext())
+
+    expect(allowedResponse.headers.get('Access-Control-Allow-Origin')).toBe('https://smartaryn.com')
+    expect(disallowedResponse.headers.get('Access-Control-Allow-Origin')).not.toBe('https://evil.example.com')
+    expect(disallowedResponse.headers.get('Access-Control-Allow-Origin')).toBe('https://smartaryn.com')
+  })
+})
+
+// Task 40, ADR-0016 Slice 2, Part D item 8 (ask lane): the frontend's own
+// half of the proposal outcome ledger -- see the "records auto_executed"
+// test above for the Worker's in-process half. ADR-0016 Part A found
+// finance ALWAYS takes this lane while tasks/calendar usually take the
+// in-process one; if only one lane recorded, the ledger would be
+// systematically biased.
+describe('task 40: POST /agent/proposal-outcome (ask-lane recording)', () => {
+  function outcomeRequest(body: Record<string, unknown>, headers: Record<string, string> = {}) {
+    return new Request('https://worker.test/agent/proposal-outcome', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer user-token',
+        'Origin': 'https://smartaryn.com',
+        ...headers,
+      },
+      body: JSON.stringify(body),
+    })
+  }
+
+  function validBody(overrides: Record<string, unknown> = {}) {
+    return {
+      intentType: 'create_finance_transaction',
+      toolId: 'finance.create_transaction',
+      domain: 'finance',
+      outcome: 'approved',
+      succeeded: true,
+      riskLevel: 'high',
+      targetFields: ['amount', 'direction'],
+      ...overrides,
+    }
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('records an approved outcome, with write_mode hardcoded server-side to "ask" regardless of what the body sends', async () => {
+    const log = installFetchMock()
+    const ctx = fakeExecutionContext()
+    const response = await worker.fetch(outcomeRequest({ ...validBody(), writeMode: 'auto' }), testEnv(), ctx)
+    expect(response.status).toBe(202)
+
+    const waitUntilMock = ctx.waitUntil as ReturnType<typeof vi.fn>
+    expect(waitUntilMock).toHaveBeenCalledTimes(1)
+    await waitUntilMock.mock.calls[0][0]
+
+    expect(log.proposalOutcomeWrites).toHaveLength(1)
+    expect(log.proposalOutcomeWrites[0]).toMatchObject({
+      user_id: 'user-1',
+      intent_type: 'create_finance_transaction',
+      tool_id: 'finance.create_transaction',
+      domain: 'finance',
+      write_mode: 'ask',
+      outcome: 'approved',
+      succeeded: true,
+      risk_level: 'high',
+      target_fields: ['amount', 'direction'],
+    })
+  })
+
+  it('records a rejected outcome with succeeded null', async () => {
+    const log = installFetchMock()
+    const ctx = fakeExecutionContext()
+    const response = await worker.fetch(outcomeRequest({ ...validBody(), outcome: 'rejected', succeeded: null }), testEnv(), ctx)
+    expect(response.status).toBe(202)
+
+    const waitUntilMock = ctx.waitUntil as ReturnType<typeof vi.fn>
+    await waitUntilMock.mock.calls[0][0]
+
+    expect(log.proposalOutcomeWrites[0]).toMatchObject({ outcome: 'rejected', succeeded: null })
+  })
+
+  // user_id is NEVER read from the request body (ADR-0016 Decision item 7)
+  // -- even a caller that tries to claim a different user's identity is
+  // recorded under the AUTHENTICATED token's own user id.
+  it('derives user_id from the authenticated token, never from the request body', async () => {
+    const log = installFetchMock()
+    const ctx = fakeExecutionContext()
+    await worker.fetch(outcomeRequest({ ...validBody(), userId: 'someone-elses-id', user_id: 'someone-elses-id' }), testEnv(), ctx)
+    const waitUntilMock = ctx.waitUntil as ReturnType<typeof vi.fn>
+    await waitUntilMock.mock.calls[0][0]
+    expect(log.proposalOutcomeWrites[0].user_id).toBe('user-1')
+  })
+
+  it('rejects a missing/invalid bearer token with 401, without attempting any recording', async () => {
+    const log = installFetchMock()
+    const response = await worker.fetch(new Request('https://worker.test/agent/proposal-outcome', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Origin': 'https://smartaryn.com' },
+      body: JSON.stringify(validBody()),
+    }), testEnv(), fakeExecutionContext())
+    expect(response.status).toBe(401)
+    expect(log.proposalOutcomeWrites).toHaveLength(0)
+  })
+
+  // Task 40 Part A.2: a rejection here returns an error to the CALLER
+  // only -- it must never propagate into any write path. There is no
+  // "write path" for this endpoint to corrupt (it only ever records), so
+  // the concrete proof is: a malformed body produces a 400 AND leaves no
+  // partial or malformed row behind.
+  it('rejects a malformed body with 400 and records nothing', async () => {
+    const log = installFetchMock()
+    const response = await worker.fetch(outcomeRequest({ ...validBody(), outcome: 'auto_executed' }), testEnv(), fakeExecutionContext())
+    expect(response.status).toBe(400)
+    expect(log.proposalOutcomeWrites).toHaveLength(0)
+  })
+
+  it('rejects invalid JSON with 400', async () => {
+    installFetchMock()
+    const response = await worker.fetch(new Request('https://worker.test/agent/proposal-outcome', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer user-token', 'Origin': 'https://smartaryn.com' },
+      body: '{not valid json',
+    }), testEnv(), fakeExecutionContext())
+    expect(response.status).toBe(400)
+  })
+
+  // Task 40 Part D item 9 (ask lane): the fire-and-forget guarantee at this
+  // endpoint -- a failing insert must still return 202 to the caller, never
+  // a 500, since recordProposalOutcome can never signal failure back to
+  // its caller by design (ADR-0016 item 6).
+  it('still returns 202 when the underlying insert fails (fire-and-forget)', async () => {
+    const log = installFetchMock([], null, 'unused', null, new Map(), [], null, null, false, true)
+    const ctx = fakeExecutionContext()
+    const response = await worker.fetch(outcomeRequest(validBody()), testEnv(), ctx)
+    expect(response.status).toBe(202)
+
+    const waitUntilMock = ctx.waitUntil as ReturnType<typeof vi.fn>
+    await expect(waitUntilMock.mock.calls[0][0]).resolves.toBeUndefined()
+    expect(log.proposalOutcomeWrites).toHaveLength(0)
   })
 })

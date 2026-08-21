@@ -19,16 +19,23 @@ import {
   assembleCalendarWriteIntent,
   assembleFinanceWriteIntent,
   assembleTaskWriteIntent,
+  calendarIntentTargetFields,
   detectContinuationDomain,
   detectWriteDomainSignal,
   executeAutoCalendarWrite,
   executeAutoFinanceWrite,
   executeAutoTaskWrite,
+  financeIntentTargetFields,
   resolveCreateEventTitle,
   resolveCreateTaskTitle,
   resolveServerFlowWriteMode,
+  taskIntentTargetFields,
   undoAutoWrite,
+  writeIntentOutcomeIdentity,
 } from './flow-write-policy'
+import { recordProposalOutcome } from './proposal-outcome-recording'
+import { parseProposalOutcomeRequestBody } from './proposal-outcome-endpoint'
+import type { WriteIntentType } from '../../shared/writeIntentRegistry'
 
 // ADR-0010 Product Owner Resolution Q4: always-on background extraction
 // into user_context is DISABLED by this decision (SUPERSEDE per Q3 --
@@ -110,6 +117,10 @@ export default {
 
     if (pathname === '/documents/extract-memory') {
       return handleDocumentMemoryExtractionRequest(request, env, { logger: console })
+    }
+
+    if (pathname === '/agent/proposal-outcome') {
+      return handleProposalOutcomeRequest(request, env, ctx)
     }
 
     return json({ error: 'Not found' }, 404, origin)
@@ -663,8 +674,19 @@ async function handleFinanceSuggestions(request: Request, env: Env): Promise<Res
 // response for a terminal execution outcome (executed/clarify/failed).
 // Returns null for 'not_found' so the caller falls through to the
 // pending-ask-mode path below, exactly like the pre-task-22 inline logic.
+// Task 40, ADR-0016 Slice 2: the auto-write lane's own outcome-recording
+// identity -- intentType/toolId (registry-derived) plus target_fields
+// (which fields the parsed intent populated, never their values). Callers
+// build this from whichever of taskWriteIntent/calendarWriteIntent/
+// financeWriteIntent actually triggered the write.
+interface WriteExecutionOutcomeContext {
+  kind: WriteIntentType
+  targetFields: readonly string[]
+}
+
 async function respondToWriteExecution(
   env: Env,
+  ctx: ExecutionContext,
   userId: string,
   sessionId: string,
   origin: string,
@@ -678,6 +700,7 @@ async function respondToWriteExecution(
     | { status: 'clarify'; reply: string }
     | { status: 'failed'; reply: string }
     | { status: 'not_found' },
+  outcomeContext: WriteExecutionOutcomeContext,
 ): Promise<Response | null> {
   if (execution.status !== 'executed' && execution.status !== 'clarify' && execution.status !== 'failed') return null
   await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'user', content: message })
@@ -685,7 +708,85 @@ async function respondToWriteExecution(
   const undo = execution.status === 'executed'
     ? { id: execution.undoId, label: language === 'de' ? 'Rückgängig' : language === 'fa' ? 'برگرداندن' : 'Undo', expiresAt: execution.undoExpiresAt }
     : undefined
+  // Task 40: 'executed'/'failed' are the only auto-lane states that
+  // represent an actual attempted write -- 'clarify' means the deterministic
+  // parser never reached a well-formed proposal in the first place (nothing
+  // to record an outcome for, the same way the ask-lane never records a
+  // proposal that was never shown). Fire-and-forget (ADR-0016 item 6):
+  // ctx.waitUntil keeps the isolate alive for this insert without making
+  // the user's chat reply wait on it; recordProposalOutcome itself never
+  // throws, so a failure here can never surface as a chat/write failure.
+  if (execution.status === 'executed' || execution.status === 'failed') {
+    const identity = writeIntentOutcomeIdentity(outcomeContext.kind)
+    if (identity) {
+      ctx.waitUntil(recordProposalOutcome(env, {
+        userId,
+        intentType: identity.intentType,
+        toolId: identity.toolId,
+        domain,
+        writeMode: 'auto',
+        outcome: 'auto_executed',
+        succeeded: execution.status === 'executed',
+        targetFields: outcomeContext.targetFields,
+      }))
+    }
+  }
   return json({ reply: execution.reply, writePolicy: { domain, action, mode }, writeExecution: execution.status, undo }, 200, origin)
+}
+
+// =============================================
+// POST /agent/proposal-outcome -- ADR-0016 Decision item 7 / task 40.
+// The ask-lane's reporting mechanism: the frontend calls this once per
+// proposal outcome (approved or rejected) AFTER the write it describes has
+// already completed or been rejected. Reuses THIS FILE's own requireAuth/
+// json/corsHeaders exactly (not a copy) -- see this task's own report for
+// why: a second, independent CORS mechanism is the exact pattern that broke
+// production for weeks in github-integration.ts (task 32).
+// =============================================
+async function handleProposalOutcomeRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  const origin = request.headers.get('Origin') ?? ''
+
+  const { userId, error: authError } = await requireAuth(request, env)
+  if (authError || !userId) {
+    return json({ error: authError ?? 'Unauthorized' }, 401, origin)
+  }
+
+  let body: unknown
+  try {
+    body = await request.json()
+  } catch {
+    return json({ error: 'Invalid JSON body' }, 400, origin)
+  }
+
+  const validation = parseProposalOutcomeRequestBody(body)
+  if (validation.ok === false) {
+    // Task 40 Part A.2: a rejection here returns an error to the CALLER
+    // only. It cannot propagate into any write path -- the write this
+    // outcome describes (if any) already completed or was already
+    // rejected before the frontend ever made this call.
+    return json({ error: validation.error }, 400, origin)
+  }
+
+  const input = validation.value
+  // Fire-and-forget (ADR-0016 item 6): ctx.waitUntil lets the isolate
+  // finish the insert after this response is sent, so this endpoint's own
+  // round trip never makes the CALLER wait on it either. recordProposalOutcome
+  // itself never throws, so nothing here can turn into a 500 once
+  // validation has passed.
+  ctx.waitUntil(recordProposalOutcome(env, {
+    userId,
+    requestId: input.requestId,
+    intentType: input.intentType,
+    toolId: input.toolId,
+    domain: input.domain,
+    writeMode: 'ask',
+    outcome: input.outcome,
+    succeeded: input.succeeded,
+    riskLevel: input.riskLevel,
+    targetFields: input.targetFields,
+  }))
+
+  return json({ accepted: true }, 202, origin)
 }
 
 async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -855,7 +956,7 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
             taskWriteIntent.title = await resolveCreateTaskTitle(env, taskWriteIntent, message)
           }
           const execution = await executeAutoTaskWrite({ env, userId, language, intent: taskWriteIntent, now: new Date(), timeZone })
-          const response = await respondToWriteExecution(env, userId, sessionId, origin, message, language, domain, action, mode, execution)
+          const response = await respondToWriteExecution(env, ctx, userId, sessionId, origin, message, language, domain, action, mode, execution, { kind: taskWriteIntent.kind, targetFields: taskIntentTargetFields(taskWriteIntent) })
           if (response) return response
         } else if (calendarWriteIntent) {
           // Task 22: same model-title-resolution treatment as tasks above.
@@ -863,7 +964,7 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
             calendarWriteIntent.title = await resolveCreateEventTitle(env, calendarWriteIntent, message)
           }
           const execution = await executeAutoCalendarWrite({ env, userId, language, intent: calendarWriteIntent, now: new Date(), timeZone })
-          const response = await respondToWriteExecution(env, userId, sessionId, origin, message, language, domain, action, mode, execution)
+          const response = await respondToWriteExecution(env, ctx, userId, sessionId, origin, message, language, domain, action, mode, execution, { kind: calendarWriteIntent.kind, targetFields: calendarIntentTargetFields(calendarWriteIntent) })
           if (response) return response
         } else if (financeWriteIntent) {
           // Task 28: unreachable in production today -- resolveServerFlowWriteMode
@@ -874,7 +975,7 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
           // branches above, per this task's own instruction to build the
           // full triad -- see the task 28 report.
           const execution = await executeAutoFinanceWrite({ env, userId, language, intent: financeWriteIntent, now: new Date() })
-          const response = await respondToWriteExecution(env, userId, sessionId, origin, message, language, domain, action, mode, execution)
+          const response = await respondToWriteExecution(env, ctx, userId, sessionId, origin, message, language, domain, action, mode, execution, { kind: financeWriteIntent.kind, targetFields: financeIntentTargetFields(financeWriteIntent) })
           if (response) return response
         }
       }

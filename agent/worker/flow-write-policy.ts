@@ -1,7 +1,7 @@
 ﻿import type { Env, Language } from './types'
 import { supabaseGet } from './context-builder'
 import { callGeminiForTaskTitle } from './task-title-extraction'
-import { writeIntentRegistry, type WriteIntentType } from '../../shared/writeIntentRegistry'
+import { findWriteIntentDescriptor, writeIntentRegistry, type WriteIntentType } from '../../shared/writeIntentRegistry'
 
 export type FlowWriteMode = 'auto' | 'ask' | 'off'
 export type FlowWriteAction = 'create' | 'update' | 'delete'
@@ -1094,6 +1094,40 @@ export interface ParsedFinanceWriteIntent {
   iban?: string
   ibanValid?: boolean
   amountClarificationNeeded: boolean
+}
+
+// Task 40, ADR-0016 Slice 2: derives the proposal-outcome ledger's
+// target_fields (which fields were POPULATED, never their content) from
+// each parsed intent. `kind`/`titleSource`/`dateClarificationNeeded`/
+// `ibanValid`/`amountClarificationNeeded` are control-flow signals, not
+// target content, and are deliberately excluded -- only the fields a user's
+// message could actually populate are listed here. Each function returns
+// field NAMES only; callers must never pass the intent object itself (or
+// any of its values) to the recording function.
+const TASK_INTENT_TARGET_FIELD_KEYS = ['title', 'taskReference', 'notes', 'dueDate', 'timeOfDay'] as const
+const CALENDAR_INTENT_TARGET_FIELD_KEYS = ['title', 'eventReference', 'notes', 'startDate', 'startTime', 'endTime'] as const
+const FINANCE_INTENT_TARGET_FIELD_KEYS = ['amount', 'currency', 'direction', 'transactionDate', 'description', 'iban'] as const
+
+export function taskIntentTargetFields(intent: ParsedTaskWriteIntent): string[] {
+  return TASK_INTENT_TARGET_FIELD_KEYS.filter((key) => intent[key] !== undefined)
+}
+
+export function calendarIntentTargetFields(intent: ParsedCalendarWriteIntent): string[] {
+  return CALENDAR_INTENT_TARGET_FIELD_KEYS.filter((key) => intent[key] !== undefined)
+}
+
+export function financeIntentTargetFields(intent: ParsedFinanceWriteIntent): string[] {
+  return FINANCE_INTENT_TARGET_FIELD_KEYS.filter((key) => intent[key] !== undefined)
+}
+
+// Task 40: intentType/toolId for the proposal-outcome ledger, derived from
+// the shared registry rather than hand-mapped here a second time (ADR-0013
+// discipline). `kind` already matches WriteIntentType exactly for all three
+// domains, so this is a direct registry lookup, not a translation table.
+export function writeIntentOutcomeIdentity(kind: WriteIntentType): { intentType: WriteIntentType; toolId: string } | null {
+  const entry = findWriteIntentDescriptor(kind)
+  if (!entry) return null
+  return { intentType: entry.intentType, toolId: entry.toolId }
 }
 
 /**
