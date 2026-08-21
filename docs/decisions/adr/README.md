@@ -21,9 +21,10 @@ and must not be reused.
 - [ADR-0010: Personal Memory Layer v1](ADR-0010-personal-memory-layer.md) - Accepted
 - [ADR-0011: Confirmed Personal Memory Consumption v1](ADR-0011-confirmed-personal-memory-consumption.md) - Accepted
 - [ADR-0012: Write Capability Layer v1](ADR-0012-write-capability-layer.md) - Accepted
-- [ADR-0013: Write Intent Registry v2](ADR-0013-write-intent-registry-v2.md) - Proposed
+- [ADR-0013: Write Intent Registry v2](ADR-0013-write-intent-registry-v2.md) - Accepted
 - [ADR-0014: Micro Breaks Architecture Boundary](ADR-0014-micro-breaks-architecture-boundary.md) - Accepted
 - [ADR-0015: Orb Journey Architecture](ADR-0015-orb-journey-architecture.md) - Accepted
+- [ADR-0016: Proposal Outcome Ledger](ADR-0016-proposal-outcome-ledger.md) - Proposed
 
 ## ADR vs Decision Log
 
