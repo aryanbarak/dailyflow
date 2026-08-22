@@ -1,4 +1,5 @@
 import { WRITE_INTENT_TARGET_FIELD_NAMES, writeIntentRegistry } from '../../shared/writeIntentRegistry'
+import { parseModelJsonObject } from './modelJsonParsing'
 
 const LOCAL_WORKER_MODE = 'local-qa'
 const MAX_BODY_BYTES = 32 * 1024
@@ -323,14 +324,6 @@ async function validateRequest(
   }
 }
 
-function extractJsonObject(rawText: string): unknown {
-  const trimmed = rawText.trim()
-  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
-    throw new Error('Model response must be exactly one JSON object.')
-  }
-  return JSON.parse(trimmed)
-}
-
 function boundedString(value: unknown, maxLength = MAX_SHORT_TEXT_LENGTH): string | undefined {
   if (typeof value !== 'string') return undefined
   const result = value.trim().slice(0, maxLength)
@@ -614,7 +607,7 @@ async function callGeminiOnce(
   }
   const text = candidate.content?.parts?.[0]?.text
   if (typeof text !== 'string' || !text.trim()) throw new Error('Model returned no proposal content.')
-  return extractJsonObject(text)
+  return parseModelJsonObject(text)
 }
 
 export async function handleLocalReasoningRequest(

@@ -85,10 +85,18 @@ create table if not exists public.document_chunks (
   -- backfill.
   extraction_method text not null check (extraction_method in ('model_transcription')),
 
-  -- text-embedding-004, 768 dimensions (task 16 report's Phase-A decision
-  -- 2: Gemini's stable embedding model, same generativelanguage.googleapis.com
-  -- host already used for generation elsewhere in this Worker; 768 keeps
-  -- the HNSW index below reasonably cheap).
+  -- gemini-embedding-001, requested at 768 dimensions via outputDimensionality
+  -- (task 16 report's Phase-A decision 2: Gemini's embedding model, same
+  -- generativelanguage.googleapis.com host already used for generation
+  -- elsewhere in this Worker; 768 keeps the HNSW index below reasonably
+  -- cheap). Comment corrected by task PA-02 (provider-coupling-audit-v1.md
+  -- §5): this originally said "text-embedding-004" -- that was the model
+  -- in use when this migration was authored, but it was retired by the
+  -- provider in Jan 2026 (task 16-fix) and replaced with gemini-embedding-001
+  -- at the same 768 dimensions, which agent/worker/embeddingConfig.ts's
+  -- EMBEDDING_MODEL/EMBEDDING_DIMENSIONS have named ever since -- only this
+  -- comment had drifted from the code. Comment-only fix; the DDL below
+  -- (vector(768)) was already correct and is unchanged.
   embedding vector(768) not null,
 
   created_at timestamptz not null default now()

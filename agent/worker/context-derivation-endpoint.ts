@@ -44,6 +44,8 @@
 // accept/reject outcomes for every kind -- run it after editing either
 // this file's normalizeCandidate or inferredProjectContextFieldValidation.ts.
 
+import { parseModelJsonObject, ModelJsonParseError } from './modelJsonParsing'
+
 const CONTEXT_FIELD_KINDS = ['objective', 'milestone', 'decision', 'risk', 'capability', 'candidate_action'] as const
 type ContextFieldKind = typeof CONTEXT_FIELD_KINDS[number]
 const CONFIDENCE_VALUES = ['low', 'medium', 'high'] as const
@@ -455,22 +457,13 @@ async function callGeminiForDerivation(
   }
   const text = candidate.content?.parts?.[0]?.text
   if (typeof text !== 'string' || !text.trim()) throw new ProviderCallError('Model returned no derivation content.', 'MODEL_OUTPUT_UNUSABLE')
-  const trimmed = text.trim()
-  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
-    const snippet = truncateForLog(trimmed, 300)
-    throw new ProviderCallError(`Model response must be exactly one JSON object. Raw output snippet: "${snippet}"`, 'MODEL_OUTPUT_UNUSABLE', undefined, snippet)
-  }
   let raw: unknown
   try {
-    raw = JSON.parse(trimmed)
-  } catch (parseError) {
-    const snippet = truncateForLog(trimmed, 300)
-    throw new ProviderCallError(
-      `Model response was not valid JSON (${(parseError as Error).message}). Raw output snippet: "${snippet}"`,
-      'MODEL_OUTPUT_UNUSABLE',
-      undefined,
-      snippet,
-    )
+    raw = parseModelJsonObject(text)
+  } catch (err) {
+    const parseErr = err as ModelJsonParseError
+    const snippet = truncateForLog(parseErr.failedText, 300)
+    throw new ProviderCallError(`${parseErr.message} Raw output snippet: "${snippet}"`, 'MODEL_OUTPUT_UNUSABLE', undefined, snippet)
   }
   return {
     raw,

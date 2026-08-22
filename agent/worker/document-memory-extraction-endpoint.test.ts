@@ -4,9 +4,12 @@ import {
   chunkDocumentText,
   stripControlCharacters,
   boundExtractedText,
-  l2Normalize,
   type DocumentMemoryExtractionEnv,
 } from './document-memory-extraction-endpoint'
+// Task PA-02: l2Normalize moved to embeddingConfig.ts (one source of truth
+// shared with personal-memory-extraction-endpoint.ts) -- imported directly
+// from there now instead of re-exported through this endpoint file.
+import { l2Normalize } from './embeddingConfig'
 
 const ORIGIN = 'https://smartflow.example'
 const SUPABASE_URL = 'https://supabase.example.co'

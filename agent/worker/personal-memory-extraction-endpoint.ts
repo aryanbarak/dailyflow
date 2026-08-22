@@ -24,6 +24,15 @@
 // maintenance cost, exactly as context-derivation-endpoint.ts's own header
 // comment already documents for its own equivalent duplication. Guarded by
 // src/features/personal-memory/personalMemoryValidationEquivalence.test.ts.
+//
+// Task PA-02: parseModelJsonObject/EMBEDDING_MODEL/EMBEDDING_DIMENSIONS/
+// l2Normalize ARE imported from sibling agent/worker/*.ts modules below --
+// there is no actual "zero-cross-import" rule between sibling Worker files
+// (see modelJsonParsing.ts's own header comment); the constraint above is
+// specifically about not importing src/features/* into agent/worker/.
+
+import { parseModelJsonObject, ModelJsonParseError } from './modelJsonParsing'
+import { EMBEDDING_MODEL, EMBEDDING_DIMENSIONS, l2Normalize } from './embeddingConfig'
 
 const PERSONAL_MEMORY_RECORD_KINDS = ['preference', 'goal', 'working_pattern', 'commitment', 'personal_fact', 'skill'] as const
 type PersonalMemoryRecordKind = typeof PERSONAL_MEMORY_RECORD_KINDS[number]
@@ -504,18 +513,6 @@ function truncateForLog(text: string, maxLength: number): string {
   return collapsed.length > maxLength ? `${collapsed.slice(0, maxLength)}...` : collapsed
 }
 
-// Task 12 fix (defensive hardening, not an observed divergence -- see the
-// design/diagnosis notes: reasoning-endpoint.ts's own "proven working"
-// extractJsonObject does NOT strip fences either, and responseMimeType:
-// 'application/json' should structurally prevent Gemini from wrapping
-// output in markdown in the first place). Kept cheap and narrow: only
-// strips a single ```json ... ``` or ``` ... ``` fence wrapping the ENTIRE
-// response, never touches content in the middle of an otherwise-bare object.
-function stripJsonFence(text: string): string {
-  const match = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)
-  return match ? match[1].trim() : text
-}
-
 // Task 14 fix (provider error transparency): REDACTION GUARD -- this
 // function must NEVER log modelUrl.toString() or response.url (both carry
 // GEMINI_API_KEY as a query param), never log an Authorization header
@@ -617,22 +614,13 @@ async function callGeminiForExtraction(
   }
   const text = candidate.content?.parts?.[0]?.text
   if (typeof text !== 'string' || !text.trim()) throw new ProviderCallError('Model returned no extraction content.', 'MODEL_OUTPUT_UNUSABLE')
-  const trimmed = stripJsonFence(text.trim())
-  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
-    const snippet = truncateForLog(trimmed, 300)
-    throw new ProviderCallError(`Model response must be exactly one JSON object. Raw output snippet: "${snippet}"`, 'MODEL_OUTPUT_UNUSABLE', undefined, snippet)
-  }
   let raw: unknown
   try {
-    raw = JSON.parse(trimmed)
-  } catch (parseError) {
-    const snippet = truncateForLog(trimmed, 300)
-    throw new ProviderCallError(
-      `Model response was not valid JSON (${(parseError as Error).message}). Raw output snippet: "${snippet}"`,
-      'MODEL_OUTPUT_UNUSABLE',
-      undefined,
-      snippet,
-    )
+    raw = parseModelJsonObject(text)
+  } catch (err) {
+    const parseErr = err as ModelJsonParseError
+    const snippet = truncateForLog(parseErr.failedText, 300)
+    throw new ProviderCallError(`${parseErr.message} Raw output snippet: "${snippet}"`, 'MODEL_OUTPUT_UNUSABLE', undefined, snippet)
   }
   return {
     raw,
@@ -991,8 +979,6 @@ async function reportExtractionFailure(
 // produced the suggestion.
 // ---------------------------------------------------------------------------
 
-const OVERLAP_EMBEDDING_MODEL = 'gemini-embedding-001'
-const OVERLAP_EMBEDDING_DIMENSIONS = 768
 const OVERLAP_EMBEDDING_NORM_EPSILON = 1e-3
 export const OVERLAP_EMBEDDING_THRESHOLD = 0.83
 // Bounds the fallback's own cost: at most this many same-kind existing
@@ -1011,12 +997,6 @@ export function normalizeOverlapSubjectText(text: string): string {
     .replace(/\s+/g, ' ')
 }
 
-function l2NormalizeOverlap(values: readonly number[]): number[] {
-  const norm = Math.sqrt(values.reduce((sum, v) => sum + v * v, 0))
-  if (norm === 0) return values.slice() as number[]
-  return values.map((v) => v / norm)
-}
-
 /** Both inputs are already unit-normalized, so this is a plain dot product. Exported for direct unit testing. */
 export function cosineSimilarity(a: readonly number[], b: readonly number[]): number {
   let sum = 0
@@ -1024,21 +1004,21 @@ export function cosineSimilarity(a: readonly number[], b: readonly number[]): nu
   return sum
 }
 
-/** Mirrors document-memory-extraction-endpoint.ts's own embedChunk (same model, same dimensionality, same client-side L2-normalization requirement) -- duplicated, not imported, per this file's own zero-cross-import convention. */
+/** Mirrors document-memory-extraction-endpoint.ts's own embedChunk -- model/dimensions/normalization now come from embeddingConfig.ts, the single source of truth for both. */
 async function embedTextForOverlap(
   text: string,
   env: PersonalMemoryExtractionEnv,
   fetcher: typeof fetch,
   logger: Pick<Console, 'info' | 'error'>,
 ): Promise<number[] | null> {
-  const modelUrl = new URL(`https://generativelanguage.googleapis.com/v1beta/models/${OVERLAP_EMBEDDING_MODEL}:embedContent`)
+  const modelUrl = new URL(`https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_MODEL}:embedContent`)
   modelUrl.searchParams.set('key', env.GEMINI_API_KEY ?? '')
   let response: Response
   try {
     response = await fetcher(modelUrl.toString(), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: { parts: [{ text }] }, outputDimensionality: OVERLAP_EMBEDDING_DIMENSIONS }),
+      body: JSON.stringify({ content: { parts: [{ text }] }, outputDimensionality: EMBEDDING_DIMENSIONS }),
     })
   } catch (networkError) {
     logger.error?.(`[PersonalMemory] overlap embedding call failed before any response: path=${modelUrl.pathname} error=${(networkError as Error).message}`)
@@ -1050,10 +1030,10 @@ async function embedTextForOverlap(
   }
   const data = (await response.json()) as { embedding?: { values?: unknown } }
   const values = data.embedding?.values
-  if (!Array.isArray(values) || values.length !== OVERLAP_EMBEDDING_DIMENSIONS || !values.every((v) => typeof v === 'number')) {
+  if (!Array.isArray(values) || values.length !== EMBEDDING_DIMENSIONS || !values.every((v) => typeof v === 'number')) {
     return null
   }
-  const normalized = l2NormalizeOverlap(values as number[])
+  const normalized = l2Normalize(values as number[])
   const norm = Math.sqrt(normalized.reduce((sum, v) => sum + v * v, 0))
   if (Math.abs(norm - 1) > OVERLAP_EMBEDDING_NORM_EPSILON) return null
   return normalized

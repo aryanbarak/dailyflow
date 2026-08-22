@@ -36,11 +36,17 @@
 // cap before upload (chatAttachmentValidation.ts) -- this is defense in
 // depth against a documentId referencing a larger document uploaded some
 // other way (e.g. directly via the Documents page).
+// Task PA-02: EMBEDDING_MODEL/EMBEDDING_DIMENSIONS/l2Normalize now come
+// from embeddingConfig.ts (one source of truth shared with
+// personal-memory-extraction-endpoint.ts) instead of being declared here
+// -- see that module's own header comment for why the prior "zero-cross-
+// import convention" justification for the duplication did not reflect an
+// actual rule.
+import { EMBEDDING_MODEL, EMBEDDING_DIMENSIONS, l2Normalize } from './embeddingConfig'
+
 export const MAX_SOURCE_FILE_BYTES = 20 * 1024 * 1024 // matches docs_file_size_error's existing 20MB upload cap (src/i18n/index.ts); task 18 renamed from MAX_PDF_BYTES -- this bound now also gates plain-text uploads
 const MAX_EXTRACTED_TEXT_CHARS = 20000 // resumes are short documents; generous headroom for a multi-page CV, still bounded
 const MAX_CHUNK_CHARS = 3000
-const EMBEDDING_MODEL = 'gemini-embedding-001' // text-embedding-004 was retired Jan 2026 (task 16-fix); successor model
-const EMBEDDING_DIMENSIONS = 768 // requested via outputDimensionality -- gemini-embedding-001's native output is 3072-dim
 const EMBEDDING_NORM_EPSILON = 1e-3 // sanity-check tolerance for the post-normalization unit norm
 // Task 18, A3: extraction_method is now chosen per document rather than a
 // single fixed constant -- 'model_transcription' for PDFs (unchanged),
@@ -85,8 +91,10 @@ function errorResponse(code: string, message: string, status: number, origin: st
 }
 
 // Task 14 taxonomy, reused verbatim (same three values, same meaning) --
-// mirrors context-derivation-endpoint.ts's own duplicated copy; this module
-// cannot import that one either (zero-cross-import convention).
+// mirrors context-derivation-endpoint.ts's own duplicated copy. Kept
+// duplicated here, not unified: there is no actual rule against importing
+// it (see embeddingConfig.ts's header comment for why "zero-cross-import
+// convention" doesn't hold), this just wasn't in PA-02's scope.
 // Task 19: exported so chat-attachment-context.ts's own ProviderCallError
 // handling can share the exact same taxonomy type rather than a third
 // hand-copied union.
@@ -479,16 +487,6 @@ async function embedChunk(
     throw new ProviderCallError(`Embedding failed to normalize to unit length (norm=${norm}).`, 'MODEL_OUTPUT_UNUSABLE')
   }
   return normalized
-}
-
-// gemini-embedding-001 at a non-default outputDimensionality is NOT
-// unit-normalized by the provider (unlike its native 3072-dim output) --
-// per Gemini docs, callers requesting a truncated dimensionality must
-// normalize client-side. Deterministic, no provider dependence.
-export function l2Normalize(values: readonly number[]): number[] {
-  const norm = vectorNorm(values)
-  if (norm === 0) return values.slice() as number[]
-  return values.map((v) => v / norm)
 }
 
 function vectorNorm(values: readonly number[]): number {

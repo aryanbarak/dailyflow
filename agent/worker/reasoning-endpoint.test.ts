@@ -313,6 +313,15 @@ describe('POST /agent/reason', () => {
     expect(response.status).toBe(502)
   })
 
+  // Task PA-02: parseModelJsonObject (agent/worker/modelJsonParsing.ts) now
+  // strips a wrapping ```json fence before the shape check, so the
+  // "Markdown-fenced JSON" case below no longer fails AT JSON-PARSING --
+  // it parses successfully to `{"type":"inspect_tasks"}`, then fails
+  // normalizeProposal's schema validation instead (missing the required
+  // `confidence`/`reasons` fields). Still 502, still no retry -- this is
+  // exactly the "small, intentional" behavior change PA-02 describes: the
+  // endpoint becomes fence-tolerant, but a fenced-yet-otherwise-incomplete
+  // proposal still fails closed, just one step later than before.
   it.each([
     ['malformed JSON', '{bad-json', 'STOP'],
     ['Markdown-fenced JSON', '```json\n{"type":"inspect_tasks"}\n```', 'STOP'],
@@ -332,6 +341,31 @@ describe('POST /agent/reason', () => {
 
     expect(response.status).toBe(502)
     expect(fetcher).toHaveBeenCalledTimes(2)
+  })
+
+  // Task PA-02: the actual positive proof of the intentional behavior
+  // change -- unlike the "Markdown-fenced JSON" case above (which is
+  // fenced but otherwise INCOMPLETE, so it still fails, just later), this
+  // proposal is fenced AND complete, so it now succeeds end-to-end. Before
+  // this task, no fenced response -- complete or not -- could ever reach
+  // normalizeProposal at all.
+  it('succeeds on a markdown-fenced, otherwise-complete proposal (parseModelJsonObject strips the fence)', async () => {
+    const fetcher = successfulFetcher()
+    const proposal = { type: 'inspect_tasks', confidence: 'high', requestedDomain: 'tasks', reasons: ['The request asks to inspect active tasks.'], language: 'en' }
+    fetcher.mockImplementationOnce(async () => new Response(JSON.stringify({ id: 'local-user-id' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })).mockImplementationOnce(async () => new Response(JSON.stringify({
+      candidates: [{ finishReason: 'STOP', content: { parts: [{ text: '```json\n' + JSON.stringify(proposal) + '\n```' }] } }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+
+    const response = await handleLocalReasoningRequest(reasoningRequest(), validEnv, {
+      fetcher: fetcher as unknown as typeof fetch,
+    })
+    const body = await response.json() as { proposal: { type: string } }
+
+    expect(response.status).toBe(200)
+    expect(body.proposal.type).toBe('inspect_tasks')
   })
 
   it.each([

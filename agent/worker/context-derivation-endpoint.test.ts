@@ -234,6 +234,36 @@ describe('POST /projects/context-derivation', () => {
     expect(rpcCalls[0]).toMatchObject({ p_project_id: PROJECT_ID, p_run_id: RUN_ID, p_kind: 'risk', p_confidence: 'medium' })
   });
 
+  // Task PA-02 (provider-coupling-audit-v1.md §4): this endpoint previously
+  // had NO fence-stripping at all -- a markdown-fenced Gemini response
+  // failed outright with MODEL_OUTPUT_UNUSABLE regardless of how complete
+  // or well-formed the JSON inside the fence was. parseModelJsonObject
+  // (agent/worker/modelJsonParsing.ts) now strips it, same as
+  // personal-memory-extraction-endpoint.ts already did. This is the
+  // positive proof of that intentional, small behavior change.
+  it('succeeds on a markdown-fenced derivation response (previously rejected outright with no fence-stripping)', async () => {
+    const inner = baseFetcher()
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.startsWith('https://generativelanguage.googleapis.com/')) {
+        const raw = await inner(input, init)
+        const data = await raw.json() as { candidates: Array<{ content: { parts: Array<{ text: string }> } }> }
+        const fencedText = '```json\n' + data.candidates[0].content.parts[0].text + '\n```'
+        return new Response(JSON.stringify({
+          candidates: [{ content: { parts: [{ text: fencedText }] } }],
+          usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 50 },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      return inner(input, init)
+    })
+    const response = await handleContextDerivationRequest(request(), validEnv, { fetcher, now: () => '2026-08-07T00:00:00.000Z' })
+    expect(response.status).toBe(200)
+    const json = await response.json()
+    expect(json.candidateCount).toBe(1)
+    expect(json.acceptedCount).toBe(1)
+    expect(json.droppedCount).toBe(0)
+  })
+
   it('REGRESSION GUARD (task 10-fix): the runs-table insert includes user_id equal to the authenticated user, plus every other NOT NULL column -- catches the task 10-diag bug (userId destructured but discarded, user_id never sent) if it is ever reintroduced', async () => {
     let insertBody: Record<string, unknown> | null = null
     const inner = baseFetcher()
