@@ -794,8 +794,9 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
     §12 sequencing; not addressed by the Orb Journey work above, which
     proceeded as its own separate track (ADR-0015) rather than as this
     slice.
-11. **Deterministic bank-statement import + batch write governance — IN
-    PROGRESS, built but NOT YET COMMITTED.**
+11. **Deterministic bank-statement import + batch write governance —
+    committed `a557839`; not pushed/deployed; migrations not applied; smoke
+    not run.**
     [ADR-0017](docs/decisions/adr/ADR-0017-deterministic-bank-import-governance.md)
     (Status: Proposed). Root cause (task 44): the PO could not import a
     Sparkasse statement — the PDF chat-attach path was blocked by an
@@ -837,8 +838,8 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
       `'ui-only'` intent) — snapshot regenerated and diff-inspected
       (`shared/reasoning-response-schema.snapshot.json`).
     - **NOT done — explicit gates before this can ship:**
-      1. **Nothing committed, pushed, or deployed.** All of the above is
-         uncommitted working-tree state as of this entry.
+      1. **Committed as `a557839` on `main`; not pushed or deployed yet**
+         (pushed by the PO, not automatically).
       2. **Two migrations authored, NOT applied to any database:**
          `supabase/migrations/20260822000001_finance_import_rows.sql`,
          `supabase/migrations/20260822000002_finance_import_batches.sql`
@@ -867,15 +868,3 @@ Superseded/completed sprint milestones from the prior version of this
 document have been removed rather than carried forward as history; git
 history of this file remains the record of what was previously claimed and
 when.
-
-
-## Personal Knowledge / Memory
-
-- Aryan Knowledge is an external Obsidian vault configured separately for local read-only access.
-- When durable personal or project context is relevant, start with `70 Memory/Memory Index/Memory Index.md`.
-- Use only approved memories as durable context.
-- The repository and its canonical documentation remain the technical source of truth.
-- If Obsidian memory conflicts with repository evidence about technical state, verify and follow the repository.
-- Treat the Obsidian vault as read-only. Never create, edit, move, rename, or delete vault files.
-- Suggest memory updates to the user instead of writing them directly.
-- Never store passwords, API keys, tokens, credentials, or other secrets in memory.
