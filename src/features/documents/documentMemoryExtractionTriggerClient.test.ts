@@ -1,10 +1,24 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/integrations/supabase/client", () => ({
   supabase: { auth: { getSession: vi.fn() } },
 }));
 
-import { triggerDocumentMemoryChunking } from "./documentMemoryExtractionTriggerClient";
+// CI-01c: same fix as contextDerivationTriggerClient.test.ts -- WORKER_URL
+// is read once at module load time from
+// import.meta.env.VITE_AGENT_WORKER_URL with no DI hook to override it, so
+// the stub must be in place before the module first evaluates.
+let triggerDocumentMemoryChunking: typeof import("./documentMemoryExtractionTriggerClient").triggerDocumentMemoryChunking;
+
+beforeEach(async () => {
+  vi.stubEnv("VITE_AGENT_WORKER_URL", "https://worker.example.test");
+  vi.resetModules();
+  ({ triggerDocumentMemoryChunking } = await import("./documentMemoryExtractionTriggerClient"));
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 const DOCUMENT_ID = "11111111-1111-4111-8111-111111111111";
 

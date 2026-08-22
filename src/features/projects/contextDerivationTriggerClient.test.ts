@@ -1,10 +1,30 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/integrations/supabase/client", () => ({
   supabase: { auth: { getSession: vi.fn() } },
 }));
 
-import { triggerContextDerivation } from "./contextDerivationTriggerClient";
+// CI-01c: WORKER_URL is read once at module load time from
+// import.meta.env.VITE_AGENT_WORKER_URL (contextDerivationTriggerClient.ts)
+// -- there is no DI hook to override it per-call, only fetcher/
+// getSessionToken are injectable. Every test below only exercises behavior
+// *after* that check passes, so the stubbed value must be in place before
+// the module is first evaluated: vi.resetModules() + a fresh dynamic
+// import() after vi.stubEnv() achieves that without touching product code.
+// (Locally this was masked by .env/.env.local both setting a real value;
+// the CI runner has neither, so every test fell through to
+// CONFIGURATION_MISSING before ever reaching its own assertions.)
+let triggerContextDerivation: typeof import("./contextDerivationTriggerClient").triggerContextDerivation;
+
+beforeEach(async () => {
+  vi.stubEnv("VITE_AGENT_WORKER_URL", "https://worker.example.test");
+  vi.resetModules();
+  ({ triggerContextDerivation } = await import("./contextDerivationTriggerClient"));
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 function jsonResponse(status: number, body: unknown): Response {
   return {
