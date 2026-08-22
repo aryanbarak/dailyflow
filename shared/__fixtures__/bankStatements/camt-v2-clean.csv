@@ -1,0 +1,7 @@
+Auftragskonto;Buchungstag;Valutadatum;Buchungstext;Verwendungszweck;Auftraggeber/Begünstigter;Kontonummer/IBAN;BLZ/BIC;Betrag;Waehrung;Gläubiger-ID;Mandatsreferenz;Kundenreferenz
+DE02500105170137075030;01.03.26;01.03.26;Gutschrift;Gehalt Maerz 2026;Musterfirma GmbH;DE12500105170648489890;COBADEFFXXX;2500,00;EUR;;;REF001
+DE02500105170137075030;03.03.2026;03.03.2026;SEPA-Ueberweisung;Miete Maerz 2026;Hausverwaltung Schmidt;DE89370400440532013000;COBADEFFXXX;-650,00;EUR;;;REF002
+DE02500105170137075030;05.03.26;05.03.26;Kartenzahlung;Einkauf Lebensmittel;REWE Markt Musterstadt;DE00000000000000000000;;-45,2;EUR;;;REF003
+DE02500105170137075030;07.03.26;07.03.26;Lastschrift;Mobilfunkvertrag;Telekom Deutschland GmbH;DE11111111111111111111;;-30;EUR;;;REF004
+DE02500105170137075030;10.03.26;10.03.26;Gutschrift;Erstattung Praemie;Finanzamt Musterstadt;DE22222222222222222222;;832,9;EUR;;;REF005
+DE02500105170137075030;12.03.26;12.03.26;Lastschrift;Versicherungsbeitrag Maerz;Allianz Versicherung AG;DE33333333333333333333;;-120,00;EUR;DE98ZZZ09999999999;MREF-2026-001;REF006

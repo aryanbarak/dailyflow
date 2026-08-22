@@ -1,0 +1,4 @@
+Auftragskonto;Buchungstag;Valutadatum;Buchungstext;Verwendungszweck;Auftraggeber/Begünstigter;Kontonummer/IBAN;BLZ/BIC;Betrag;Waehrung;Gläubiger-ID;Mandatsreferenz;Kundenreferenz;Kategorie
+DE02500105170137075030;20.03.26;20.03.26;Kartenzahlung;Einkauf;REWE Markt;DE30303030303030303030;;-60,00;EUR;;;REF015;Lebensmittel
+DE02500105170137075030;21.03.26;21.03.26;Gutschrift;Gehalt;Musterfirma GmbH;DE40404040404040404040;;2500,00;EUR;;;REF016;Gehalt
+DE02500105170137075030;22.03.26;22.03.26;SEPA-Ueberweisung;Miete;Hausverwaltung;DE50505050505050505050;;-650,00;EUR;;;REF017;Wohnen

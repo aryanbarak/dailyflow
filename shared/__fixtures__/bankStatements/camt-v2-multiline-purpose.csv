@@ -1,0 +1,5 @@
+Auftragskonto;Buchungstag;Valutadatum;Buchungstext;Verwendungszweck;Auftraggeber/Begünstigter;Kontonummer/IBAN;BLZ/BIC;Betrag;Waehrung;Gläubiger-ID;Mandatsreferenz;Kundenreferenz
+DE02500105170137075030;15.03.26;15.03.26;SEPA-Ueberweisung;"Rechnung Nr. 4711
+Bestellung vom 10.03.2026
+Vielen Dank fuer Ihren Einkauf";Handwerksbetrieb Meier;DE77777777777777777777;;-275,00;EUR;;;REF010
+DE02500105170137075030;17.03.26;17.03.26;Gutschrift;Rueckerstattung;Versandhaus Otto;DE88888888888888888888;;19,99;EUR;;;REF011

@@ -1,0 +1,6 @@
+Auftragskonto;Buchungstag;Valutadatum;Buchungstext;Verwendungszweck;Auftraggeber/Begünstigter;Kontonummer/IBAN;BLZ/BIC;Betrag;Waehrung;Gläubiger-ID;Mandatsreferenz;Kundenreferenz
+DE02500105170137075030;01.03.26;01.03.26;Gutschrift;Gehalt Maerz 2026;Musterfirma GmbH;DE12500105170648489890;COBADEFFXXX;2500,00;EUR;;;REF001
+DE02500105170137075030;03.03.2026;03.03.2026;SEPA-Ueberweisung;Miete Maerz 2026;Hausverwaltung Schmidt;DE89370400440532013000;COBADEFFXXX;-650,00;EUR;;;REF002
+DE02500105170137075030;05.03.26;05.03.26;Kartenzahlung;Einkauf Lebensmittel;REWE Markt Musterstadt;DE00000000000000000000;;-45,2;EUR;;;REF003
+DE02500105170137075030;32.13.26;32.13.26;Kartenzahlung;Fehlerhafte Buchung;Unbekannt;DE55555555555555555555;;-10,00;EUR;;;REF008
+DE02500105170137075030;16.03.26;16.03.26;Kartenzahlung;Fehlerhafter Betrag;Unbekannt;DE66666666666666666666;;xx,00;EUR;;;REF009
