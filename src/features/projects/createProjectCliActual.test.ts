@@ -11,6 +11,9 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 const MOCK_UNAUTHENTICATED_FETCH_PRELOAD_URL = pathToFileURL(
   path.join(path.dirname(fileURLToPath(import.meta.url)), "__fixtures__", "mockUnauthenticatedFetchPreload.mjs"),
 ).href;
+const MOCK_NETWORK_FAILURE_FETCH_PRELOAD_URL = pathToFileURL(
+  path.join(path.dirname(fileURLToPath(import.meta.url)), "__fixtures__", "mockNetworkFailureFetchPreload.mjs"),
+).href;
 
 function runCli(args: readonly string[], env: Record<string, string | undefined> = {}) {
   const command = process.platform === "win32" ? process.env.ComSpec ?? "cmd.exe" : "npm";
@@ -161,6 +164,25 @@ describe("create-project actual CLI JSON contract", () => {
     expect(json).toMatchObject({ ok: false, code: "UNAUTHENTICATED", target: { host: "127.0.0.1:54321" } });
     expect(result.stdout).not.toMatch(/dummy-token|dummy-anon/);
     expect(result.stderr).not.toMatch(/at .*\.ts|storage\.getItem|\[Supabase\]|supabase\.co|dummy-token|dummy-anon/);
+  });
+
+  // CI-01b review: a real ECONNREFUSED must never be reported as
+  // UNAUTHENTICATED -- that implies the server answered and rejected the
+  // credentials, when actually it never answered at all. Distinct code,
+  // distinct exit code, distinct message, still zero raw-stack-trace leak.
+  it("a network failure (ECONNREFUSED/DNS/timeout) is reported as NETWORK_UNAVAILABLE, exit code 6, never as UNAUTHENTICATED", () => {
+    const result = runCli(["--name", "SmartFlow"], {
+      NODE_OPTIONS: `--import ${MOCK_NETWORK_FAILURE_FETCH_PRELOAD_URL}`,
+      SMARTFLOW_SUPABASE_URL: "http://127.0.0.1:54321",
+      SMARTFLOW_SUPABASE_ANON_KEY: "dummy-anon",
+      SMARTFLOW_SUPABASE_ACCESS_TOKEN: "dummy-token",
+    });
+    expect(result.status).toBe(6);
+    const json = parseSingleJson(result.stdout);
+    expect(json).toMatchObject({ ok: false, code: "NETWORK_UNAVAILABLE" });
+    expect(json.message).toMatch(/could not connect|network error/i);
+    expect(json.code).not.toBe("UNAUTHENTICATED");
+    expect(result.stderr).not.toMatch(/at .*\.ts|storage\.getItem|\[Supabase\]|supabase\.co|dummy-token|dummy-anon|ECONNREFUSED/);
   });
 
   it("every spawned failure path terminates without a libuv/native crash on stderr", () => {

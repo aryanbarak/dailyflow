@@ -13,7 +13,7 @@
 // rest of the app already uses -- so ownership, RLS, and input validation are
 // enforced exactly once, in projectRecordService.ts/projectRecordValidation.ts,
 // not re-implemented here.
-import { createClient } from "@supabase/supabase-js";
+import { createClient, isAuthRetryableFetchError } from "@supabase/supabase-js";
 import { createSanitizedFetch } from "../src/features/projects/sanitizedSupabaseFetch";
 
 type ParsedArgs = {
@@ -89,6 +89,11 @@ function exitCodeFor(code: string): number {
     return 3;
   }
   if (code === "DUPLICATE_REPOSITORY_BINDING") return 4;
+  // CI-01b: distinct from UNAUTHENTICATED (exit 3) -- "the server never
+  // answered" is a different, actionable problem than "the server answered
+  // and rejected the credentials." See scripts/smartflow-refresh-project.ts's
+  // identical fix for the full reasoning.
+  if (code === "NETWORK_UNAVAILABLE") return 6;
   return 1;
 }
 
@@ -175,7 +180,17 @@ async function main(): Promise<number> {
     });
     const resolveOwnerId = async () => {
       const { data, error } = await client.auth.getUser(accessToken);
-      if (error) return null;
+      if (error) {
+        // CI-01b: see scripts/smartflow-refresh-project.ts's identical
+        // resolveOwnerId fix for the full reasoning -- isAuthRetryableFetchError
+        // means the server never actually answered (network failure or a
+        // genuine upstream 5xx), distinct from a real 401/invalid-JWT
+        // rejection.
+        if (isAuthRetryableFetchError(error)) {
+          throw new CliError("NETWORK_UNAVAILABLE", "Could not connect to the Supabase project (network error).");
+        }
+        return null;
+      }
       return data.user?.id ?? null;
     };
 

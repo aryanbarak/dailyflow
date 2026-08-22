@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createClient, isAuthRetryableFetchError } from "@supabase/supabase-js";
 import { createSanitizedFetch } from "./sanitizedSupabaseFetch";
 
 describe("createSanitizedFetch (CI-01b: real product defect fix)", () => {
@@ -75,5 +76,34 @@ describe("createSanitizedFetch (CI-01b: real product defect fix)", () => {
     await sanitized("https://example.supabase.co/auth/v1/user", init);
 
     expect(baseFetch).toHaveBeenCalledWith("https://example.supabase.co/auth/v1/user", init);
+  });
+
+  // CI-01b review: proves the actual END-TO-END guarantee callers rely on --
+  // routed through a real @supabase/supabase-js client, a rejecting fetch
+  // must become an error @supabase/supabase-js's own PUBLIC
+  // isAuthRetryableFetchError() recognizes, distinct from a real 401. Both
+  // CLI scripts' resolveOwnerId depend on exactly this to tell "server never
+  // answered" apart from "server answered and rejected the credentials" --
+  // see sanitizedSupabaseFetch.ts's own header comment.
+  it("a network failure routed through a real Supabase client's getUser() is recognized by isAuthRetryableFetchError -- distinct from a real 401", async () => {
+    const rejectingFetch = vi.fn(async () => { throw new TypeError("fetch failed"); });
+    const client = createClient("http://127.0.0.1:1", "dummy-anon", {
+      auth: { persistSession: false, autoRefreshToken: false },
+      global: { fetch: createSanitizedFetch(rejectingFetch as unknown as typeof fetch) },
+    });
+
+    const { error: networkError } = await client.auth.getUser("dummy-token");
+    expect(isAuthRetryableFetchError(networkError)).toBe(true);
+
+    const real401Fetch = vi.fn(async () => new Response(
+      JSON.stringify({ code: 401, error_code: "bad_jwt", msg: "invalid JWT" }),
+      { status: 401, headers: { "Content-Type": "application/json" } },
+    ));
+    const clientWithReal401 = createClient("http://127.0.0.1:1", "dummy-anon", {
+      auth: { persistSession: false, autoRefreshToken: false },
+      global: { fetch: createSanitizedFetch(real401Fetch as unknown as typeof fetch) },
+    });
+    const { error: authError } = await clientWithReal401.auth.getUser("dummy-token");
+    expect(isAuthRetryableFetchError(authError)).toBe(false);
   });
 });

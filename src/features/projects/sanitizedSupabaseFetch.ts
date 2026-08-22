@@ -46,6 +46,20 @@
 // be collected as test suites), matching this codebase's own existing
 // convention of the CLI scripts importing their real, testable logic from
 // src/features/projects/ rather than inlining it.
+//
+// CI-01b follow-up: the synthetic status below (503, one of auth-js's own
+// NETWORK_ERROR_CODES) is load-bearing for more than "which sanitized path
+// gets taken" -- auth-js throws the result as an `AuthRetryableFetchError`
+// specifically for that status range, which its own PUBLIC
+// `isAuthRetryableFetchError()` export (re-exported from
+// `@supabase/supabase-js`) can identify. Both CLI scripts' `resolveOwnerId`
+// check that function to tell "the server never actually answered" (this
+// synthetic response, or a genuine upstream 502/503/504) apart from a real
+// 401/invalid-JWT rejection, and report a distinct NETWORK_UNAVAILABLE
+// code/message/exit code instead of the misleading UNAUTHENTICATED. If this
+// status is ever changed, that distinction breaks silently -- keep it in
+// auth-js's NETWORK_ERROR_CODES range (currently 502/503/504; see
+// node_modules/@supabase/auth-js/src/lib/fetch.ts).
 export function createSanitizedFetch(baseFetch: typeof fetch = fetch): typeof fetch {
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     try {
