@@ -7,21 +7,26 @@ import {
   assembleFinanceWriteIntent,
   assembleTaskWriteIntent,
   calendarIntentTargetFields,
+  checkDuplicateRows,
   cleanTitleEdges,
   defaultFlowWriteMode,
   detectContinuationDomain,
   detectWriteDomainSignal,
   executeAutoFinanceWrite,
+  executeBatchFinanceImport,
   extractOriginalRequestText,
   financeIntentTargetFields,
   isTitleSubstantiallyTheMessage,
   isValidIban,
+  loadImportBatch,
+  markImportBatchConsumed,
   parseCalendarWriteIntent,
   parseDeterministicDueDate,
   parseDeterministicTimeOfDay,
   parseDeterministicTimeRange,
   parseFinanceWriteIntent,
   parseTaskWriteIntent,
+  persistImportBatch,
   resolveCreateEventTitle,
   resolveCreateTaskTitle,
   resolveServerFlowWriteMode,
@@ -37,6 +42,7 @@ import {
   type ParsedTaskWriteIntent,
 } from './flow-write-policy'
 import { WRITE_DOMAIN_TARGET_FIELDS, writeIntentRegistry } from '../../shared/writeIntentRegistry'
+import type { ParsedBankRow } from '../../shared/bankStatementParser'
 import type { Env } from './types'
 
 const NOW = new Date('2026-08-13T10:00:00.000Z')
@@ -584,15 +590,15 @@ describe('task 22-fix2 (D1), now task 23 registry-driven: UNDO_KIND_VALUES cross
   // explicit rather than relying on it being merely true by construction.
   const migrationPath = path.resolve(
     path.dirname(fileURLToPath(import.meta.url)),
-    // Task 28: repointed to the latest widening migration (finance's
-    // create_finance_transaction kind) -- each time this CHECK constraint
-    // is widened via a new migration, this path must move to that new
-    // file, the same way it presumably moved here from an earlier task
-    // 21/22 file when THIS migration was introduced. The 20260815 file
-    // remains in the repo as migration history; it is not re-applied on
-    // top of this one, this one's own `drop constraint if exists` +
-    // `add constraint` fully re-specifies the complete allowed set standalone.
-    '../../supabase/migrations/20260817000000_widen_flow_write_undo_kinds_finance.sql',
+    // Task 45c: repointed to the latest widening migration
+    // (import_bank_statement's kind) -- each time this CHECK constraint is
+    // widened via a new migration, this path must move to that new file,
+    // the same way it moved here from the finance (20260817) migration
+    // when THAT one was introduced. Earlier widening migrations remain in
+    // the repo as migration history; they are not re-applied on top of
+    // this one, this one's own `drop constraint if exists` + `add
+    // constraint` fully re-specifies the complete allowed set standalone.
+    '../../supabase/migrations/20260822000000_widen_flow_write_undo_kinds_import_bank_statement.sql',
   )
 
   it('UNDO_KIND_VALUES is exactly the shared registry\'s own undoKind values, in registry order', () => {
@@ -971,7 +977,425 @@ describe('task 28: finance write slice', () => {
       }
     })
   })
+
+  describe('Task 45c, ADR-0017: checkDuplicateRows + executeBatchFinanceImport (batch import execution)', () => {
+    // Local copy of the sibling describe block's own Call/mockSupabaseSequence
+    // (that block scopes them to itself) -- same shape, same convention.
+    interface Call { method: string; url: string; body?: unknown }
+
+    function mockSupabaseSequence(responses: Array<{ status: number; body: unknown }>) {
+      const calls: Call[] = []
+      let i = 0
+      const fetchMock = (async (url: string, init?: RequestInit) => {
+        calls.push({ method: init?.method ?? 'GET', url, body: init?.body ? JSON.parse(String(init.body)) : undefined })
+        const response = responses[Math.min(i, responses.length - 1)]
+        i += 1
+        return new Response(JSON.stringify(response.body), { status: response.status })
+      }) as typeof fetch
+      return { fetchMock, calls }
+    }
+
+    function bankRow(overrides: Partial<ParsedBankRow> = {}): ParsedBankRow {
+      return {
+        lineNumber: 1,
+        date: '2026-03-01',
+        amount: 45.5,
+        direction: 'expense',
+        currency: 'EUR',
+        counterparty: 'REWE Markt',
+        counterpartyIban: 'DE00000000000000000000',
+        counterpartyBic: '',
+        purpose: 'Einkauf',
+        bookingText: 'Kartenzahlung',
+        creditorId: '',
+        mandateReference: '',
+        customerReference: 'REF001',
+        rowHash: 'hash-1',
+        ...overrides,
+      }
+    }
+
+    describe('checkDuplicateRows', () => {
+      it('returns an empty set with no fetch call at all for an empty hash list', async () => {
+        const { fetchMock, calls } = mockSupabaseSequence([{ status: 200, body: [] }])
+        const originalFetch = global.fetch
+        global.fetch = fetchMock
+        try {
+          const result = await checkDuplicateRows(mockEnv(), 'user-1', [])
+          expect(result.size).toBe(0)
+          expect(calls.length).toBe(0)
+        } finally {
+          global.fetch = originalFetch
+        }
+      })
+
+      it('returns exactly the hashes the query reports as already existing, never inventing or dropping one', async () => {
+        const { fetchMock, calls } = mockSupabaseSequence([{ status: 200, body: [{ row_hash: 'hash-2' }] }])
+        const originalFetch = global.fetch
+        global.fetch = fetchMock
+        try {
+          const result = await checkDuplicateRows(mockEnv(), 'user-1', ['hash-1', 'hash-2', 'hash-3'])
+          expect(result).toEqual(new Set(['hash-2']))
+          expect(String(calls[0].url)).toContain('finance_import_rows')
+          expect(String(calls[0].url)).toContain('user_id=eq.user-1')
+        } finally {
+          global.fetch = originalFetch
+        }
+      })
+
+      it('fails open to an empty set (never throws) when the lookup query itself fails -- executeBatchFinanceImport\'s own DB-level unique constraint is the real backstop, not this function', async () => {
+        const originalFetch = global.fetch
+        global.fetch = (async () => new Response('boom', { status: 500 })) as typeof fetch
+        try {
+          const result = await checkDuplicateRows(mockEnv(), 'user-1', ['hash-1'])
+          expect(result.size).toBe(0)
+        } finally {
+          global.fetch = originalFetch
+        }
+      })
+    })
+
+    // Task 45c PART B (Ruling 3, PO): persistImportBatch/loadImportBatch/
+    // markImportBatchConsumed are the primitives that lock a preview's
+    // importable row set under a batchId so commit never re-derives it --
+    // see flow-write-policy.ts's own header comment on this section. These
+    // are unit-level proofs of the primitives themselves; the end-to-end
+    // preview-then-commit flow (including the collision-detection and
+    // retry-after-failure scenarios) is proven at the HTTP layer in
+    // agent/worker/index.test.ts.
+    describe('persistImportBatch + loadImportBatch + markImportBatchConsumed (Ruling 3 locking primitives)', () => {
+      it('persistImportBatch sends exactly the given rows, userId, and a freshly generated batchId+expiresAt to finance_import_batches', async () => {
+        const { fetchMock, calls } = mockSupabaseSequence([{ status: 201, body: null }])
+        const originalFetch = global.fetch
+        global.fetch = fetchMock
+        try {
+          const rows = [bankRow({ rowHash: 'hash-a' }), bankRow({ rowHash: 'hash-b', lineNumber: 2 })]
+          const { batchId, expiresAt } = await persistImportBatch(mockEnv(), 'user-1', rows, FINANCE_NOW)
+          expect(typeof batchId).toBe('string')
+          expect(batchId.length).toBeGreaterThan(0)
+          expect(new Date(expiresAt).getTime()).toBeGreaterThan(FINANCE_NOW.getTime())
+
+          expect(calls).toHaveLength(1)
+          expect(String(calls[0].url)).toContain('finance_import_batches')
+          const sent = calls[0].body as { id: string; user_id: string; rows: unknown; expires_at: string }
+          expect(sent.id).toBe(batchId)
+          expect(sent.user_id).toBe('user-1')
+          expect(sent.rows).toEqual(rows)
+          expect(sent.expires_at).toBe(expiresAt)
+        } finally {
+          global.fetch = originalFetch
+        }
+      })
+
+      it('loadImportBatch returns the exact locked rows for a live, unconsumed, unexpired batch owned by this user', async () => {
+        const rows = [bankRow({ rowHash: 'hash-a' })]
+        const futureExpiry = new Date(FINANCE_NOW.getTime() + 60_000).toISOString()
+        const { fetchMock } = mockSupabaseSequence([
+          { status: 200, body: [{ id: 'batch-1', rows, expires_at: futureExpiry, consumed_at: null }] },
+        ])
+        const originalFetch = global.fetch
+        global.fetch = fetchMock
+        try {
+          const result = await loadImportBatch(mockEnv(), 'user-1', 'batch-1', FINANCE_NOW)
+          expect(result).toEqual({ rows })
+        } finally {
+          global.fetch = originalFetch
+        }
+      })
+
+      it('loadImportBatch returns null for an unknown batchId (empty result), never throwing', async () => {
+        const { fetchMock } = mockSupabaseSequence([{ status: 200, body: [] }])
+        const originalFetch = global.fetch
+        global.fetch = fetchMock
+        try {
+          const result = await loadImportBatch(mockEnv(), 'user-1', 'does-not-exist', FINANCE_NOW)
+          expect(result).toBeNull()
+        } finally {
+          global.fetch = originalFetch
+        }
+      })
+
+      it('loadImportBatch returns null for an already-consumed batch -- never returns a spent batch\'s rows for a second commit', async () => {
+        const rows = [bankRow()]
+        const futureExpiry = new Date(FINANCE_NOW.getTime() + 60_000).toISOString()
+        const { fetchMock } = mockSupabaseSequence([
+          { status: 200, body: [{ id: 'batch-1', rows, expires_at: futureExpiry, consumed_at: FINANCE_NOW.toISOString() }] },
+        ])
+        const originalFetch = global.fetch
+        global.fetch = fetchMock
+        try {
+          const result = await loadImportBatch(mockEnv(), 'user-1', 'batch-1', FINANCE_NOW)
+          expect(result).toBeNull()
+        } finally {
+          global.fetch = originalFetch
+        }
+      })
+
+      it('loadImportBatch returns null for an expired batch, even if never consumed', async () => {
+        const rows = [bankRow()]
+        const pastExpiry = new Date(FINANCE_NOW.getTime() - 1_000).toISOString()
+        const { fetchMock } = mockSupabaseSequence([
+          { status: 200, body: [{ id: 'batch-1', rows, expires_at: pastExpiry, consumed_at: null }] },
+        ])
+        const originalFetch = global.fetch
+        global.fetch = fetchMock
+        try {
+          const result = await loadImportBatch(mockEnv(), 'user-1', 'batch-1', FINANCE_NOW)
+          expect(result).toBeNull()
+        } finally {
+          global.fetch = originalFetch
+        }
+      })
+
+      it('loadImportBatch fails closed to null (never throws) when the lookup query itself fails', async () => {
+        const originalFetch = global.fetch
+        global.fetch = (async () => new Response('boom', { status: 500 })) as typeof fetch
+        try {
+          const result = await loadImportBatch(mockEnv(), 'user-1', 'batch-1', FINANCE_NOW)
+          expect(result).toBeNull()
+        } finally {
+          global.fetch = originalFetch
+        }
+      })
+
+      it('markImportBatchConsumed PATCHes consumed_at on exactly the given batchId', async () => {
+        const { fetchMock, calls } = mockSupabaseSequence([{ status: 200, body: null }])
+        const originalFetch = global.fetch
+        global.fetch = fetchMock
+        try {
+          await markImportBatchConsumed(mockEnv(), 'batch-1', FINANCE_NOW)
+          expect(calls).toHaveLength(1)
+          expect(calls[0].method).toBe('PATCH')
+          expect(String(calls[0].url)).toContain('finance_import_batches')
+          expect(String(calls[0].url)).toContain('id=eq.batch-1')
+          expect((calls[0].body as { consumed_at: string }).consumed_at).toBe(FINANCE_NOW.toISOString())
+        } finally {
+          global.fetch = originalFetch
+        }
+      })
+    })
+
+    describe('executeBatchFinanceImport -- server-side bulk insert, never a browser-side call', () => {
+      it('rejects an empty row list without making any network call', async () => {
+        const { fetchMock, calls } = mockSupabaseSequence([{ status: 200, body: [] }])
+        const originalFetch = global.fetch
+        global.fetch = fetchMock
+        try {
+          const result = await executeBatchFinanceImport(mockEnv(), 'user-1', [], FINANCE_NOW)
+          expect(result.status).toBe('failed')
+          expect(calls.length).toBe(0)
+        } finally {
+          global.fetch = originalFetch
+        }
+      })
+
+      it('inserts every row in ONE bulk POST (array body, not N separate calls), persists one undo record covering the whole batch, and reports insertedCount', async () => {
+        const rows = [
+          bankRow({ lineNumber: 1, rowHash: 'hash-1', amount: 45.5, direction: 'expense' }),
+          bankRow({ lineNumber: 2, rowHash: 'hash-2', amount: 2500, direction: 'income', customerReference: 'REF002' }),
+        ]
+        const insertedTxns = [
+          { id: 'txn-a', user_id: 'user-1', type: 'expense', amount: 45.5, category: 'Bank Import', date: '2026-03-01', notes: 'Einkauf', created_at: FINANCE_NOW.toISOString(), updated_at: FINANCE_NOW.toISOString() },
+          { id: 'txn-b', user_id: 'user-1', type: 'income', amount: 2500, category: 'Bank Import', date: '2026-03-01', notes: 'Einkauf', created_at: FINANCE_NOW.toISOString(), updated_at: FINANCE_NOW.toISOString() },
+        ]
+        const { fetchMock, calls } = mockSupabaseSequence([
+          { status: 200, body: insertedTxns },      // POST finance_transactions (bulk)
+          { status: 200, body: null },               // POST finance_import_rows (bulk bookkeeping)
+          { status: 200, body: null },               // POST flow_write_undo_records
+        ])
+        const originalFetch = global.fetch
+        global.fetch = fetchMock
+        try {
+          const result = await executeBatchFinanceImport(mockEnv(), 'user-1', rows, FINANCE_NOW)
+          expect(result.status).toBe('executed')
+          if (result.status !== 'executed') throw new Error('unreachable')
+          expect(result.insertedCount).toBe(2)
+          expect(result.transactionIds).toEqual(['txn-a', 'txn-b'])
+          expect(result.undoId).toMatch(/^undo:/)
+
+          // Exactly one POST to finance_transactions, with an ARRAY body of both rows.
+          const txnCalls = calls.filter((c) => String(c.url).includes('finance_transactions') && c.method === 'POST')
+          expect(txnCalls).toHaveLength(1)
+          expect(Array.isArray(txnCalls[0].body)).toBe(true)
+          expect((txnCalls[0].body as unknown[]).length).toBe(2)
+
+          // Exactly one undo record for the WHOLE batch, not one per row.
+          const undoCalls = calls.filter((c) => String(c.url).includes('flow_write_undo_records'))
+          expect(undoCalls).toHaveLength(1)
+          expect((undoCalls[0].body as { kind: string; payload: { transactionIds: string[] } }).kind).toBe('import_bank_statement')
+          expect((undoCalls[0].body as { payload: { transactionIds: string[] } }).payload.transactionIds).toEqual(['txn-a', 'txn-b'])
+
+          // Bookkeeping rows carry the row hash -> transaction id mapping.
+          const bookkeepingCall = calls.find((c) => String(c.url).includes('finance_import_rows'))
+          expect(bookkeepingCall).toBeTruthy()
+          const bookkeepingBody = bookkeepingCall!.body as Array<{ row_hash: string; transaction_id: string }>
+          expect(bookkeepingBody).toEqual([
+            { row_hash: 'hash-1', transaction_id: 'txn-a', user_id: 'user-1', batch_id: expect.any(String) },
+            { row_hash: 'hash-2', transaction_id: 'txn-b', user_id: 'user-1', batch_id: expect.any(String) },
+          ]);
+        } finally {
+          global.fetch = originalFetch
+        }
+      })
+
+      it('never inserts via the browser -- this function is the ONLY write path (proves the RLS bypass the task closes: no code here reads a user JWT, only env.SUPABASE_SERVICE_KEY)', async () => {
+        const rows = [bankRow()]
+        const { fetchMock, calls } = mockSupabaseSequence([
+          { status: 200, body: [{ id: 'txn-a', user_id: 'user-1', type: 'expense', amount: 45.5, category: 'Bank Import', date: '2026-03-01', notes: 'Einkauf', created_at: FINANCE_NOW.toISOString(), updated_at: FINANCE_NOW.toISOString() }] },
+          { status: 200, body: null },
+          { status: 200, body: null },
+        ])
+        const originalFetch = global.fetch
+        global.fetch = fetchMock
+        try {
+          await executeBatchFinanceImport(mockEnv(), 'user-1', rows, FINANCE_NOW)
+          for (const call of calls) {
+            // Every request carries the service-role key, never a per-user bearer token.
+            expect(String(call.url)).toContain('supa.test')
+          }
+          expect(calls.every((c) => c.method === 'POST')).toBe(true)
+        } finally {
+          global.fetch = originalFetch
+        }
+      })
+
+      it('all-or-nothing on insert failure: a rejected finance_transactions POST fails the whole batch honestly (never throws -- the HTTP handler needs a clean result to turn into a 502, not an uncaught exception), no partial insert, no undo record attempted', async () => {
+        const rows = [bankRow(), bankRow({ lineNumber: 2, rowHash: 'hash-2', customerReference: 'REF002' })]
+        const originalFetch = global.fetch
+        global.fetch = (async () => new Response('db unavailable', { status: 500 })) as typeof fetch
+        try {
+          const result = await executeBatchFinanceImport(mockEnv(), 'user-1', rows, FINANCE_NOW)
+          expect(result.status).toBe('failed')
+        } finally {
+          global.fetch = originalFetch
+        }
+      })
+
+      it('rolls back the just-inserted transactions when the finance_import_rows bookkeeping insert fails (bookkeeping failure must not leave orphaned, un-tracked transactions)', async () => {
+        const rows = [bankRow()]
+        const insertedTxn = { id: 'txn-a', user_id: 'user-1', type: 'expense', amount: 45.5, category: 'Bank Import', date: '2026-03-01', notes: 'Einkauf', created_at: FINANCE_NOW.toISOString(), updated_at: FINANCE_NOW.toISOString() }
+        const { fetchMock, calls } = mockSupabaseSequence([
+          { status: 200, body: [insertedTxn] },       // POST finance_transactions succeeds
+          { status: 500, body: { message: 'unique_violation' } }, // POST finance_import_rows fails
+          { status: 200, body: [{ id: 'txn-a' }] },   // DELETE finance_transactions (rollback)
+        ])
+        const originalFetch = global.fetch
+        global.fetch = fetchMock
+        try {
+          const result = await executeBatchFinanceImport(mockEnv(), 'user-1', rows, FINANCE_NOW)
+          expect(result.status).toBe('failed')
+          const deleteCall = calls.find((c) => c.method === 'DELETE' && String(c.url).includes('finance_transactions'))
+          expect(deleteCall).toBeTruthy()
+          expect(String(deleteCall!.url)).toContain('txn-a')
+          // No undo record was ever attempted -- nothing survived to undo.
+          expect(calls.some((c) => String(c.url).includes('flow_write_undo_records'))).toBe(false)
+        } finally {
+          global.fetch = originalFetch
+        }
+      })
+
+      it('rolls back BOTH the transactions and the bookkeeping rows when undo-record persistence fails (persist-first, same as every other domain)', async () => {
+        const rows = [bankRow()]
+        const insertedTxn = { id: 'txn-a', user_id: 'user-1', type: 'expense', amount: 45.5, category: 'Bank Import', date: '2026-03-01', notes: 'Einkauf', created_at: FINANCE_NOW.toISOString(), updated_at: FINANCE_NOW.toISOString() }
+        const { fetchMock, calls } = mockSupabaseSequence([
+          { status: 200, body: [insertedTxn] },  // POST finance_transactions
+          { status: 200, body: null },            // POST finance_import_rows
+          { status: 500, body: { code: '23514', message: 'check constraint' } }, // POST flow_write_undo_records fails
+          { status: 200, body: [{ id: 'txn-a' }] },  // DELETE finance_transactions (rollback)
+          { status: 200, body: null },              // DELETE finance_import_rows (rollback)
+        ])
+        const originalFetch = global.fetch
+        global.fetch = fetchMock
+        try {
+          const result = await executeBatchFinanceImport(mockEnv(), 'user-1', rows, FINANCE_NOW)
+          expect(result.status).toBe('failed')
+          const deletes = calls.filter((c) => c.method === 'DELETE')
+          expect(deletes.some((c) => String(c.url).includes('finance_transactions'))).toBe(true)
+          expect(deletes.some((c) => String(c.url).includes('finance_import_rows'))).toBe(true)
+        } finally {
+          global.fetch = originalFetch
+        }
+      })
+
+      it('undo round trip: undoAutoWrite reverses the WHOLE batch with one bulk DELETE, and cleans up finance_import_rows too', async () => {
+        const rows = [bankRow({ rowHash: 'hash-1' }), bankRow({ lineNumber: 2, rowHash: 'hash-2', customerReference: 'REF002' })]
+        const insertedTxns = [
+          { id: 'txn-a', user_id: 'user-1', type: 'expense', amount: 45.5, category: 'Bank Import', date: '2026-03-01', notes: 'Einkauf', created_at: FINANCE_NOW.toISOString(), updated_at: FINANCE_NOW.toISOString() },
+          { id: 'txn-b', user_id: 'user-1', type: 'expense', amount: 45.5, category: 'Bank Import', date: '2026-03-01', notes: 'Einkauf', created_at: FINANCE_NOW.toISOString(), updated_at: FINANCE_NOW.toISOString() },
+        ]
+        const { fetchMock } = mockSupabaseSequence([
+          { status: 200, body: insertedTxns },
+          { status: 200, body: null },
+          { status: 200, body: null },
+        ])
+        const originalFetch = global.fetch
+        global.fetch = fetchMock
+        let undoId = ''
+        try {
+          const result = await executeBatchFinanceImport(mockEnv(), 'user-1', rows, FINANCE_NOW)
+          if (result.status !== 'executed') throw new Error('setup failed')
+          undoId = result.undoId
+        } finally {
+          global.fetch = originalFetch
+        }
+
+        const undoRow = {
+          id: undoUuidFromId(undoId),
+          user_id: 'user-1',
+          kind: 'import_bank_statement',
+          task_id: 'txn-a',
+          payload: { transactionIds: ['txn-a', 'txn-b'] },
+          expires_at: new Date(FINANCE_NOW.getTime() + 60_000).toISOString(),
+          consumed_at: null,
+        }
+        const { fetchMock: undoFetchMock, calls: undoCalls } = mockSupabaseSequence([
+          { status: 200, body: [undoRow] },        // GET flow_write_undo_records
+          { status: 200, body: null },              // PATCH consumed_at
+          { status: 200, body: [{ id: 'txn-a' }, { id: 'txn-b' }] }, // DELETE finance_transactions (bulk)
+          { status: 200, body: null },              // DELETE finance_import_rows (bulk)
+        ])
+        global.fetch = undoFetchMock
+        try {
+          const undone = await undoAutoWrite(mockEnv(), 'user-1', undoId, FINANCE_NOW)
+          expect(undone).toBe(true)
+          const deletes = undoCalls.filter((c) => c.method === 'DELETE')
+          expect(deletes).toHaveLength(2)
+          expect(String(deletes[0].url)).toContain('finance_transactions')
+          expect(String(deletes[0].url)).toContain('id=in.(txn-a,txn-b)')
+          expect(String(deletes[1].url)).toContain('finance_import_rows')
+        } finally {
+          global.fetch = originalFetch
+        }
+      })
+
+      // Non-tautology proof: a batch import undo record must NEVER be
+      // reconstructable from a payload missing transactionIds -- this is
+      // what stops consumeUndoRecord from silently returning a "reversible"
+      // entry that would delete nothing (an empty id=in.() filter, or worse,
+      // never call DELETE at all while still reporting success).
+      it('non-tautology: undoAutoWrite returns false (not true) when the stored payload has no transactionIds', async () => {
+        const undoRow = {
+          id: 'undo-id-2', user_id: 'user-1', kind: 'import_bank_statement', task_id: 'txn-a',
+          payload: {}, // missing transactionIds
+          expires_at: new Date(FINANCE_NOW.getTime() + 60_000).toISOString(), consumed_at: null,
+        }
+        const { fetchMock } = mockSupabaseSequence([{ status: 200, body: [undoRow] }, { status: 200, body: null }])
+        const originalFetch = global.fetch
+        global.fetch = fetchMock
+        try {
+          const undone = await undoAutoWrite(mockEnv(), 'user-1', 'undo:undo-id-2', FINANCE_NOW)
+          expect(undone).toBe(false)
+        } finally {
+          global.fetch = originalFetch
+        }
+      })
+    })
+  })
 })
+
+function undoUuidFromId(undoId: string): string {
+  return undoId.startsWith('undo:') ? undoId.slice('undo:'.length) : undoId
+}
 
 // Task 40, ADR-0016 Slice 2, Part D item 10: proves the auto-lane's
 // target_fields derivation is shape-only -- given an intent whose VALUES

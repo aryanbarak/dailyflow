@@ -18,6 +18,91 @@
   the reasoning against it as the final choice are kept below under
   Alternatives Considered, not deleted, since the argument the PO weighed
   is part of the record.
+- **Amendment (task 45c PART B), three PO rulings resolving open questions
+  from the batch-proposal-flow slice:**
+  1. **Execution is all-or-nothing (Ruling 1).** Quarantine (item 2 above)
+     governs the PARSE stage only -- pre-approval, per row, always visible.
+     Once a batch is approved, execution is a single atomic bulk insert:
+     either every approved row lands, or none do, with an explicit error
+     and the same proposal retryable. A partial mid-batch write would
+     create a state nobody approved (the user approved "N rows, sum S",
+     not "some subset of N") and would make batch undo ambiguous (undo
+     *which* rows?). This was already how `executeBatchFinanceImport`
+     was built (PostgREST bulk insert = one Postgres statement); this
+     ruling makes it an explicit, PO-ruled requirement rather than an
+     implementation default, and extends it to the batch-locking
+     mechanism in ruling 3: a failed commit attempt leaves the approved
+     batch uncommitted but intact, not partially spent.
+  2. **Chat non-exposure is a first-class registry field, not an emergent
+     property (Ruling 2).** `shared/writeIntentRegistry.ts`'s
+     `WriteIntentDescriptor` gained `exposure: 'chat' | 'ui-only'`.
+     `import_bank_statement` is the first (and so far only) `'ui-only'`
+     entry. This is a **two-view split of one registry**: the REASONING
+     view (`reasoningPrompt.ts`'s generated prompt lines, and the Worker's
+     Gemini structured-output schema enum in
+     `agent/worker/reasoning-endpoint.ts`) filters to `exposure === 'chat'`
+     -- a ui-only tool's intentType/toolId literally cannot appear in what
+     the model reads or in what it is allowed to output. The RUNTIME view
+     (`writeRuntime.ts`'s `SUPPORTED_WRITE_TOOL_IDS`, the undo-kind
+     derivation, `findWriteIntentDescriptor`/`findWriteIntentDescriptorByToolId`)
+     stays **unfiltered** -- a ui-only tool still needs to execute and be
+     undoable, just never via chat-resolution. Before this field existed,
+     import_bank_statement's chat-non-exposure was a side effect of
+     several independent omissions (no `promptInstruction`, an unfakeable
+     `batchId` target field, no registered handler); `intentValidator.ts`'s
+     explicit type guard is now a documented backstop for this primary
+     mechanism, not the only thing preventing exposure. **This two-view
+     split is structural and future domains will rely on it** -- any write
+     intent that must be invokable only from a specific UI flow (never
+     free text) should set `exposure: 'ui-only'` rather than relying on
+     omission alone.
+  3. **Duplicate exclusion is locked at proposal-build time, not re-derived
+     at execution (Ruling 3).** `POST /finance/import-batch/preview`
+     computes the post-quarantine, post-duplicate-exclusion importable row
+     set and persists it under a server-issued `batchId` in a new
+     short-lived staging table, `finance_import_batches`.
+     `POST /finance/import-batch/commit` takes `{batchId}` (no file
+     upload) and loads that exact locked set -- it never re-parses the
+     file or re-runs duplicate exclusion from scratch. Commit does re-run
+     a narrow duplicate check, but only against the locked rows' own
+     hashes, solely to detect a collision that arose *since* preview (e.g.
+     an overlapping import completed in between); a collision fails the
+     **whole** batch (409, ruling 1's all-or-nothing philosophy applied to
+     this cause specifically) and consumes the batch (a collision means
+     the locked set is now stale -- the correct recovery is a fresh
+     preview, not a retry). A transient infrastructure failure (item 7's
+     server-side insert itself failing) deliberately does **not** consume
+     the batch, so the same `batchId` remains commitable again per ruling
+     1. This closes a gap in the task 45c PART A draft's original design
+     (both endpoints independently re-parsing the same file bytes, which
+     the PO's own ruling identified as re-deriving a decision that should
+     have been locked) -- superseding Decision item 7's original
+     `/finance/import-batch/prepare` + `/finance/import-batch/commit`
+     wording below with the actual shipped endpoint names,
+     `/finance/import-batch/preview` + `/finance/import-batch/commit`.
+
+     **Deferred: retention/expiry.** What happens to a `finance_import_batches`
+     row after it reaches a terminal state is not decided by this ADR and
+     not implemented by task 45c PART B. Two cases, neither acted on today:
+     (a) a **previewed but never-committed** batch -- its row sits with
+     `consumed_at` null forever once `expires_at` passes; `loadImportBatch`
+     already treats an expired row as unusable (returns null exactly as if
+     it did not exist), so the row is inert, but nothing deletes it. (b) a
+     **consumed** batch (committed successfully, or terminated by a
+     duplicate collision) -- its row is kept indefinitely with `consumed_at`
+     set; nothing reads a consumed row for any purpose after the commit
+     request that consumed it returns. Both cases accumulate rows in
+     `finance_import_batches` without bound over the app's lifetime. The
+     migration's own comment already names `expires_at`/`consumed_at` as
+     what a *future* scheduled cleanup would key off of, but no such
+     cleanup (cron, scheduled Worker trigger, or manual vacuum) exists yet.
+     This is an accepted, low-severity gap for now -- the table holds no
+     values beyond what the corresponding `finance_transactions`/
+     `finance_import_rows` rows already retain for a successful import, and
+     an abandoned preview holds parsed-but-never-approved statement data
+     for longer than ideal but behind the same service_role-only RLS
+     posture as everything else in this table. Left here as a named,
+     deliberate deferral rather than a silently forgotten one.
 
 ---
 
@@ -226,8 +311,14 @@ data with no server-side re-validation of a client-computed batch.
   migration line, translations) this codebase's own
   `docs/architecture/adding-a-write-domain.md` already documents, plus this
   ADR's own new pieces: two new Worker endpoints, a batch-undo window
-  constant, and a duplicate-hash storage mechanism (new column or side
-  table -- implementation detail for a later slice, not this ADR).
+  constant, and a duplicate-hash storage mechanism (`finance_import_rows`,
+  shipped task 45c PART B). Task 45c PART B (Ruling 3) added one more:
+  `finance_import_batches`, a second short-lived staging table locking a
+  preview's approved row set under a server-issued `batchId` between
+  preview and commit -- see this ADR's task-45c amendment above.
+  `WriteIntentDescriptor` also gained `exposure: 'chat' | 'ui-only'`
+  (Ruling 2) -- a registry-wide field, not specific to this intent, though
+  import_bank_statement is its first user.
 - First finance write path in this codebase whose actual commit executes
   server-side under `service_role` rather than purely via RLS -- a
   deliberate precedent, worth revisiting for the single-transaction path

@@ -100,6 +100,12 @@ export interface WriteRuntimeProposalTarget {
   path?: string;
   proposedContent?: string;
   commitMessage?: string;
+  // Task 45c, ADR-0017: import_bank_statement's only target field. Present
+  // here for type completeness (this interface enumerates every domain's
+  // actual fields); no real write handler ever reads it -- see
+  // shared/writeIntentRegistry.ts's entry comment for why this tool never
+  // actually executes through this runtime.
+  batchId?: string;
 }
 
 export interface WriteRuntimeRequest {

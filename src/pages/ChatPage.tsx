@@ -641,6 +641,17 @@ function isSupportedActionableProposalType(type: AgentReasoningResult['proposal'
     case 'ask_clarification':
     case 'unsupported':
       return false
+    // Task 45c, ADR-0017: import_bank_statement is registered in
+    // shared/writeIntentRegistry.ts (for its undo-kind/domain/write-runtime
+    // metadata, not so it becomes a real chat proposal) -- intentValidator.ts's
+    // own explicit guard already converts any occurrence of this type to
+    // 'unsupported' before a proposal reaches ChatPage at all, so this case
+    // is unreachable in practice. It is still grouped with ask_clarification/
+    // unsupported here (never actionable), not with the real write types
+    // above, as a second, independent layer -- exactly the compile-time
+    // safety net this function's own header comment describes.
+    case 'import_bank_statement':
+      return false
     default: {
       const exhaustiveCheck: never = type
       return exhaustiveCheck

@@ -83,7 +83,11 @@ describe("buildReasoningPrompt finance support", () => {
     expect(prompt).not.toContain("finance mutations");
   });
 
-  it.each(writeIntentRegistry.map((entry) => entry.intentType))(
+  // Task 45c PART B (Ruling 2, PO): filtered to exposure 'chat' -- a
+  // ui-only entry must NOT appear in the prompt, which is exactly the
+  // opposite assertion, covered separately below in the
+  // "chat non-exposure" describe block.
+  it.each(writeIntentRegistry.filter((entry) => entry.exposure === 'chat').map((entry) => entry.intentType))(
     "includes registry write intent %s in the built prompt",
     (intentType) => {
       const prompt = buildReasoningPrompt(promptInput());
@@ -96,7 +100,7 @@ describe("buildReasoningPrompt finance support", () => {
   // them) -- this loops every registry entry's own toolId, generalising the
   // intentType-only loop above so a future registry entry with a wrong or
   // missing toolId in the mapping fails here too.
-  it.each(writeIntentRegistry.map((entry) => [entry.intentType, entry.toolId] as const))(
+  it.each(writeIntentRegistry.filter((entry) => entry.exposure === 'chat').map((entry) => [entry.intentType, entry.toolId] as const))(
     "includes the registry mapping %s->%s in the built prompt",
     (intentType, toolId) => {
       const prompt = buildReasoningPrompt(promptInput());
@@ -138,6 +142,41 @@ describe("buildReasoningPrompt finance support", () => {
     expect(line).toBe(
       "Allowed mappings: inspect_tasks->tasks.list, inspect_calendar->calendar.list_today, inspect_learning->learning.get_progress, inspect_workspace->workspace.get_context, inspect_github_repositories->github.repositories.list, inspect_github_issues->github.issues.list, inspect_github_epics->github.epics.list, inspect_github_pull_requests->github.pulls.list, inspect_github_workflow_runs->github.workflow_runs.list, complete_task->tasks.complete, create_task->tasks.create, update_task->tasks.update, create_calendar_event->calendar.create_event, update_calendar_event->calendar.update_event, create_finance_transaction->finance.create_transaction, write_github_issue_comment->github.issues.comment, write_github_issue_update->github.issues.update.",
     );
+  });
+
+  // Task 45c PART B (Ruling 2, PO): the reverse guard the ruling explicitly
+  // requires -- not just "the generation code filters ui-only entries out"
+  // (which the two byte-identical assertions above already prove for
+  // TODAY's registry contents) but "a ui-only entry's identifiers cannot
+  // appear in the rendered prompt text AT ALL", checked directly against
+  // the string, independent of which entries currently exist. Also proves
+  // the filter is real (exposure-driven), not incidental to import_bank_-
+  // statement specifically having no promptInstruction: batchId (its only
+  // target field, added alongside it) is checked too, since a leaked
+  // target-field name would be nearly as bad as a leaked tool id.
+  describe("chat non-exposure (Ruling 2): ui-only registry entries never reach the prompt", () => {
+    it("asserts at least one ui-only entry exists, so this guard is not vacuous", () => {
+      const uiOnlyEntries = writeIntentRegistry.filter((entry) => entry.exposure === "ui-only");
+      expect(uiOnlyEntries.length).toBeGreaterThan(0);
+    });
+
+    it.each(
+      writeIntentRegistry
+        .filter((entry) => entry.exposure === "ui-only")
+        .map((entry) => [entry.intentType, entry.toolId] as const),
+    )(
+      "never mentions ui-only entry %s (intentType or toolId %s) anywhere in the prompt",
+      (intentType, toolId) => {
+        const prompt = buildReasoningPrompt(promptInput());
+        expect(prompt).not.toContain(intentType);
+        expect(prompt).not.toContain(toolId);
+      },
+    );
+
+    it("never mentions batchId (import_bank_statement's only target field) in the prompt", () => {
+      const prompt = buildReasoningPrompt(promptInput());
+      expect(prompt).not.toContain("batchId");
+    });
   });
 
   // ADR-0013 Slice 5: the registry's promptInstruction is now consumed --

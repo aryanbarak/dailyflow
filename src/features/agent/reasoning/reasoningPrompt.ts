@@ -12,8 +12,16 @@ const MAX_SAFE_ITEMS = 12;
 // -- see buildReasoningPrompt's own comment at their call sites for the
 // non-registry members that stay hand-written around them, in their
 // original positions.
-const REGISTRY_SUPPORTED_INTENTS = writeIntentRegistry.map((entry) => entry.intentType).join(", ");
-const REGISTRY_ALLOWED_MAPPINGS = writeIntentRegistry
+//
+// Task 45c PART B (Ruling 2, PO): filtered to `exposure === 'chat'` --
+// this is the REASONING view of the registry, a strict subset of the full
+// (RUNTIME) registry. A `ui-only` entry (currently only
+// import_bank_statement) must never appear in any of the three lines
+// below; reasoningPrompt.test.ts's reverse guard asserts this directly
+// against the rendered prompt text, not just against this filter's intent.
+const CHAT_EXPOSED_REGISTRY_ENTRIES = writeIntentRegistry.filter((entry) => entry.exposure === 'chat');
+const REGISTRY_SUPPORTED_INTENTS = CHAT_EXPOSED_REGISTRY_ENTRIES.map((entry) => entry.intentType).join(", ");
+const REGISTRY_ALLOWED_MAPPINGS = CHAT_EXPOSED_REGISTRY_ENTRIES
   .map((entry) => `${entry.intentType}->${entry.toolId}`)
   .join(", ");
 // Task 36b (Slice 0) backfilled promptInstruction on 3 of the 5 entries
@@ -22,7 +30,7 @@ const REGISTRY_ALLOWED_MAPPINGS = writeIntentRegistry
 // (no existing prompt prose to move verbatim) and are filtered out here so
 // they contribute nothing, rather than an `undefined` entry that would
 // render as a literal "undefined" line or leave a stray joiner.
-const REGISTRY_PROMPT_INSTRUCTIONS = writeIntentRegistry
+const REGISTRY_PROMPT_INSTRUCTIONS = CHAT_EXPOSED_REGISTRY_ENTRIES
   .map((entry) => entry.promptInstruction)
   .filter((instruction): instruction is string => Boolean(instruction));
 

@@ -20,12 +20,17 @@ import {
   assembleFinanceWriteIntent,
   assembleTaskWriteIntent,
   calendarIntentTargetFields,
+  checkDuplicateRows,
   detectContinuationDomain,
   detectWriteDomainSignal,
   executeAutoCalendarWrite,
   executeAutoFinanceWrite,
   executeAutoTaskWrite,
+  executeBatchFinanceImport,
   financeIntentTargetFields,
+  loadImportBatch,
+  markImportBatchConsumed,
+  persistImportBatch,
   resolveCreateEventTitle,
   resolveCreateTaskTitle,
   resolveServerFlowWriteMode,
@@ -36,6 +41,8 @@ import {
 import { recordProposalOutcome } from './proposal-outcome-recording'
 import { parseProposalOutcomeRequestBody } from './proposal-outcome-endpoint'
 import type { WriteIntentType } from '../../shared/writeIntentRegistry'
+import { parseBankStatement } from '../../shared/bankStatementParser'
+import { buildBatchImportPreview, selectImportableRows } from '../../shared/bankImportBatchPreview'
 
 // ADR-0010 Product Owner Resolution Q4: always-on background extraction
 // into user_context is DISABLED by this decision (SUPERSEDE per Q3 --
@@ -121,6 +128,14 @@ export default {
 
     if (pathname === '/agent/proposal-outcome') {
       return handleProposalOutcomeRequest(request, env, ctx)
+    }
+
+    if (pathname === '/finance/import-batch/preview') {
+      return handleFinanceImportBatchPreview(request, env)
+    }
+
+    if (pathname === '/finance/import-batch/commit') {
+      return handleFinanceImportBatchCommit(request, env, ctx)
     }
 
     return json({ error: 'Not found' }, 404, origin)
@@ -787,6 +802,192 @@ async function handleProposalOutcomeRequest(request: Request, env: Env, ctx: Exe
   }))
 
   return json({ accepted: true }, 202, origin)
+}
+
+// =============================================
+// Task 45c, ADR-0017 -- bank-statement batch import
+//
+// PREVIEW parses the uploaded file server-side via the shared/ parser and
+// LOCKS the resulting importable row set (shared/bankImportBatchPreview.ts's
+// selectImportableRows -- post-quarantine, post-duplicate-exclusion) under
+// a server-issued batchId, persisted in finance_import_batches. COMMIT
+// never re-parses a file and never re-derives which rows are importable --
+// it loads that exact locked set by batchId. This is task 45c PART B's
+// Ruling 3 (PO): what is approved must be exactly what executes, never a
+// value independently recomputed from possibly-changed DB state between
+// the two calls. See flow-write-policy.ts's persistImportBatch/
+// loadImportBatch for the full reasoning, and ADR-0017's task-45c
+// amendment for the durable record.
+//
+// COMMIT does re-run checkDuplicateRows, but only as a NARROW collision
+// check against the locked rows' own hashes -- never to redecide which
+// rows are importable, only to detect whether any of those exact,
+// already-approved rows collided with something imported since preview. A
+// collision fails the WHOLE batch (Ruling 1's all-or-nothing philosophy
+// applied to this specific cause), never a silent partial skip.
+//
+// Neither endpoint executes through writeRuntime.ts/runWriteTool -- the
+// browser never inserts a row itself. This is the RLS bypass this task
+// closes: unlike the existing single-transaction finance write (a direct
+// browser-side Supabase insert authorized only by RLS), the actual insert
+// here runs only in executeBatchFinanceImport, using env.SUPABASE_SERVICE_KEY.
+// =============================================
+
+async function readUploadedBankStatementFile(request: Request): Promise<{ bytes: Uint8Array } | { error: string }> {
+  let formData: FormData
+  try {
+    formData = await request.formData()
+  } catch {
+    return { error: 'Invalid multipart body' }
+  }
+  const file = formData.get('file')
+  if (!file || typeof file === 'string') {
+    return { error: 'file field is required' }
+  }
+  // Same order-of-magnitude ceiling as the recovered ai-worker's own
+  // /import-bank endpoint (task 44's own finding) -- a CAMT CSV statement
+  // is plain text, so this is generous headroom, not a tight budget.
+  if (file.size > 20 * 1024 * 1024) {
+    return { error: 'File too large (max 20 MB)' }
+  }
+  const bytes = new Uint8Array(await file.arrayBuffer())
+  return { bytes }
+}
+
+async function handleFinanceImportBatchPreview(request: Request, env: Env): Promise<Response> {
+  const origin = request.headers.get('Origin') ?? ''
+
+  const { userId, error: authError } = await requireAuth(request, env)
+  if (authError || !userId) {
+    return json({ error: authError ?? 'Unauthorized' }, 401, origin)
+  }
+
+  const upload = await readUploadedBankStatementFile(request)
+  if ('error' in upload) {
+    return json({ error: upload.error }, 400, origin)
+  }
+
+  const parseResult = parseBankStatement(upload.bytes, userId)
+  const duplicateHashes = parseResult.verdict === 'ok'
+    ? await checkDuplicateRows(env, userId, parseResult.rows.map((row) => row.rowHash))
+    : new Set<string>()
+  const preview = buildBatchImportPreview(parseResult, duplicateHashes)
+
+  // Ruling 3: lock the importable row set now, under a fresh batchId, so
+  // commit never has to re-derive it. Only issued when there is something
+  // to import -- an empty/blocked preview has nothing worth locking, and
+  // never gets a batchId, so the client cannot even attempt to commit it.
+  let batchId: string | null = null
+  if (parseResult.verdict === 'ok') {
+    const importable = selectImportableRows(parseResult, duplicateHashes)
+    if (importable.length > 0) {
+      const persisted = await persistImportBatch(env, userId, importable, new Date())
+      batchId = persisted.batchId
+    }
+  }
+
+  return json({ ...preview, batchId }, 200, origin)
+}
+
+async function parseImportBatchCommitBody(request: Request): Promise<{ batchId: string } | { error: string }> {
+  let body: unknown
+  try {
+    body = await request.json()
+  } catch {
+    return { error: 'Invalid JSON body' }
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { error: 'Request body must be an object' }
+  }
+  const batchId = (body as Record<string, unknown>).batchId
+  if (typeof batchId !== 'string' || !batchId.trim()) {
+    return { error: 'batchId is required' }
+  }
+  return { batchId: batchId.trim() }
+}
+
+async function handleFinanceImportBatchCommit(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  const origin = request.headers.get('Origin') ?? ''
+
+  const { userId, error: authError } = await requireAuth(request, env)
+  if (authError || !userId) {
+    return json({ error: authError ?? 'Unauthorized' }, 401, origin)
+  }
+
+  const bodyResult = await parseImportBatchCommitBody(request)
+  if ('error' in bodyResult) {
+    return json({ error: bodyResult.error }, 400, origin)
+  }
+
+  const now = new Date()
+  const batch = await loadImportBatch(env, userId, bodyResult.batchId, now)
+  if (!batch) {
+    // Not found, already consumed, or expired -- nothing was decided here
+    // (a stale/garbage/replayed batchId is a lookup failure, not an
+    // approval outcome), so no ledger row.
+    return json({ error: 'Import batch not found or expired. Please re-import the file to try again.' }, 404, origin)
+  }
+
+  const identity = writeIntentOutcomeIdentity('import_bank_statement')
+  const targetFields = ['rowCount', 'dateRangeStart', 'dateRangeEnd', 'currency']
+  const dateRange = batch.rows.reduce(
+    (acc, row) => ({ start: row.date < acc.start ? row.date : acc.start, end: row.date > acc.end ? row.date : acc.end }),
+    { start: batch.rows[0].date, end: batch.rows[0].date },
+  )
+
+  // Ruling 3: narrow collision check against the LOCKED rows' own hashes
+  // only -- never a re-derivation of which rows are importable (that was
+  // already decided and locked at preview time). A non-empty result means
+  // something else imported an overlapping row since this batch was
+  // approved; the whole batch fails rather than silently dropping the
+  // colliding row and importing the rest (Ruling 1's all-or-nothing
+  // philosophy, applied here).
+  const collisionHashes = await checkDuplicateRows(env, userId, batch.rows.map((row) => row.rowHash))
+
+  let result: Awaited<ReturnType<typeof executeBatchFinanceImport>>
+  let failureStatus = 502
+  if (collisionHashes.size > 0) {
+    await markImportBatchConsumed(env, bodyResult.batchId, now)
+    result = { status: 'failed', reply: 'Some rows in this batch were already imported since you approved it. Please re-import the file to try again.' }
+    failureStatus = 409
+  } else {
+    result = await executeBatchFinanceImport(env, userId, batch.rows, now)
+    if (result.status === 'executed') {
+      await markImportBatchConsumed(env, bodyResult.batchId, now)
+    }
+    // On a transient infrastructure failure, the batch is deliberately
+    // left NOT consumed -- Ruling 1: "the same proposal retryable" -- so
+    // the same batchId can be committed again without a fresh preview.
+  }
+
+  if (identity) {
+    // Fire-and-forget (ADR-0016 item 6): the ledger write never gates this
+    // response, and its own failure can never turn into a write failure --
+    // recordProposalOutcome itself never throws.
+    ctx.waitUntil(recordProposalOutcome(env, {
+      userId,
+      intentType: identity.intentType,
+      toolId: identity.toolId,
+      domain: 'finance',
+      writeMode: 'ask',
+      outcome: 'approved',
+      succeeded: result.status === 'executed',
+      riskLevel: 'medium',
+      targetFields,
+    }))
+  }
+
+  if (result.status === 'failed') {
+    return json({ error: result.reply }, failureStatus, origin)
+  }
+
+  return json({
+    status: 'executed',
+    insertedCount: result.insertedCount,
+    dateRange,
+    undoId: result.undoId,
+    undoExpiresAt: result.undoExpiresAt,
+  }, 200, origin)
 }
 
 async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {

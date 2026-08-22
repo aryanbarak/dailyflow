@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import worker from './index'
 import type { Env } from './types'
 import { writeIntentRegistry } from '../../shared/writeIntentRegistry'
@@ -346,6 +348,13 @@ describe('handleChat mode routing', () => {
       // Task 28 (finance write slice): registry-derived, same as the
       // calendar pair above.
       'create_finance_transaction',
+      // Task 45c (ADR-0017 batch import): import_bank_statement is
+      // registry-derived too, but deliberately ABSENT here. Task 45c PART B
+      // (Ruling 2, PO) made registry membership NOT unconditional for the
+      // schema enum -- SUPPORTED_INTENT_VALUES (reasoning-endpoint.ts) now
+      // filters on the registry's own `exposure` field, and this entry's
+      // exposure is 'ui-only'. See the "reasoning schema type.enum EXCLUDES
+      // ui-only registry intent" test below for the direct proof.
       'write_github_issue_comment',
       'write_github_issue_update',
       'ask_clarification',
@@ -375,7 +384,7 @@ describe('handleChat mode routing', () => {
   // one checking the other -- the hand-written array stays for human-
   // reviewable diffs; this loop is what actually fails on day one if a
   // registry intent silently drops out of the built schema.
-  it.each(writeIntentRegistry.map((entry) => entry.intentType))(
+  it.each(writeIntentRegistry.filter((entry) => entry.exposure === 'chat').map((entry) => entry.intentType))(
     'reasoning schema type.enum contains registry intent %s',
     async (intentType) => {
       const log = installFetchMock()
@@ -392,6 +401,24 @@ describe('handleChat mode routing', () => {
       expect(call.generationConfig.responseSchema.properties.type.enum).toContain(intentType)
     },
   )
+
+  // Task 45c PART B (Ruling 2, PO): the reverse of the loop above -- proves
+  // a ui-only registry entry is genuinely EXCLUDED from what the model may
+  // output, not merely untested by the positive loop's own coverage.
+  it('reasoning schema type.enum EXCLUDES ui-only registry intent import_bank_statement', async () => {
+    const log = installFetchMock()
+    const ctx = fakeExecutionContext()
+    const env = testEnv()
+
+    await worker.fetch(
+      chatRequest({ message: 'Reasoning prompt text', mode: 'reasoning', responseLanguage: 'en' }),
+      env,
+      ctx,
+    )
+
+    const [call] = log.geminiCalls
+    expect(call.generationConfig.responseSchema.properties.type.enum).not.toContain('import_bank_statement')
+  })
 
   it('mode absent behaves exactly like plain chat: unchanged persistence and config', async () => {
     const log = installFetchMock()
@@ -1862,5 +1889,470 @@ describe('task 40: POST /agent/proposal-outcome (ask-lane recording)', () => {
     const waitUntilMock = ctx.waitUntil as ReturnType<typeof vi.fn>
     await expect(waitUntilMock.mock.calls[0][0]).resolves.toBeUndefined()
     expect(log.proposalOutcomeWrites).toHaveLength(0)
+  })
+})
+
+// =============================================
+// Task 45c, ADR-0017 -- POST /finance/import-batch/preview and
+// POST /finance/import-batch/commit. A self-contained fetch mock, not a
+// reuse of installFetchMock above (that mock is already large and shared
+// across ~80 unrelated tests; a dedicated one here keeps these new tests
+// legible and low-risk to the existing suite).
+// =============================================
+describe('Task 45c, ADR-0017: POST /finance/import-batch/preview and /commit', () => {
+  const FIXTURE_DIR = path.join(__dirname, '..', '..', 'shared', '__fixtures__', 'bankStatements')
+
+  function loadFixtureBytes(name: string): Uint8Array {
+    return new Uint8Array(readFileSync(path.join(FIXTURE_DIR, name)))
+  }
+
+  function fixtureFile(name: string): File {
+    return new File([loadFixtureBytes(name)], name, { type: 'text/csv' })
+  }
+
+  function previewRequest(file: File, headers: Record<string, string> = {}) {
+    const form = new FormData()
+    form.append('file', file)
+    return new Request('https://worker.test/finance/import-batch/preview', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer user-token', 'Origin': 'https://smartaryn.com', ...headers },
+      body: form,
+    })
+  }
+
+  // Task 45c PART B (Ruling 3, PO): commit's contract changed from a
+  // second multipart file upload (re-parsed independently) to a plain JSON
+  // {batchId} referencing the exact row set preview already locked -- see
+  // index.ts's own header comment on this section and flow-write-policy.ts's
+  // persistImportBatch/loadImportBatch for why.
+  function commitRequest(batchId: unknown, headers: Record<string, string> = {}) {
+    return new Request('https://worker.test/finance/import-batch/commit', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer user-token', 'Origin': 'https://smartaryn.com', 'Content-Type': 'application/json', ...headers },
+      body: JSON.stringify({ batchId }),
+    })
+  }
+
+  interface RouteMock {
+    duplicateHashes?: string[]
+    financeInsertStatus?: number
+    financeInsertRows?: Array<{ id: string; type: string; amount: number; category: string; date: string; notes: string | null }>
+    bookkeepingStatus?: number
+    undoStatus?: number
+    ledgerStatus?: number
+    /**
+     * When true, every finance_import_rows GET AFTER the first one (i.e.
+     * commit's own collision recheck, never preview's initial exclusion
+     * pass) echoes back whatever row_hash values it was asked about as
+     * already-imported -- simulating that something else imported an
+     * overlapping row between preview and commit (Ruling 3), without the
+     * test needing to know the fixture's real computed hash values.
+     */
+    collideOnCommitRecheck?: boolean
+    /**
+     * When true, the first finance_transactions bulk insert fails (500)
+     * and every insert after that succeeds -- lets a single mock/test
+     * prove a failed commit attempt's batchId is retryable (Ruling 1)
+     * without a second mock install or manually re-seeding batch state.
+     */
+    financeInsertFailFirstThenSucceed?: boolean
+  }
+
+  function installImportBatchFetchMock(opts: RouteMock = {}) {
+    const calls: Array<{ method: string; url: string; body?: unknown }> = []
+    // In-memory finance_import_batches, keyed by id -- a real (if minimal)
+    // store, not a stub, since these tests exercise TWO sequential HTTP
+    // calls (preview then commit) that must see consistent state, exactly
+    // like the real table does across the two real requests.
+    const batches = new Map<string, { id: string; user_id: string; rows: unknown; expires_at: string; consumed_at: string | null }>()
+    let getCallCount = 0
+    let financeInsertAttempts = 0
+    const original = global.fetch
+    global.fetch = (async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET'
+      const bodyText = init?.body ? String(init.body) : undefined
+      let parsedBody: unknown
+      try { parsedBody = bodyText ? JSON.parse(bodyText) : undefined } catch { parsedBody = bodyText }
+      calls.push({ method, url, body: parsedBody })
+
+      if (url === `${SUPABASE_URL}/auth/v1/user`) {
+        return new Response(JSON.stringify({ id: 'user-1' }), { status: 200 })
+      }
+      if (url.includes('/rest/v1/finance_import_rows') && method === 'GET') {
+        getCallCount += 1
+        // First GET (preview's own exclusion pass) uses duplicateHashes.
+        // Any subsequent GET is commit's narrow collision recheck -- when
+        // collideOnCommitRecheck is set, echo back every hash it queried
+        // for (i.e. "everything collides"), independent of duplicateHashes,
+        // proving the two checks are genuinely separate calls that can
+        // disagree, not the same cached result reused.
+        if (getCallCount > 1 && opts.collideOnCommitRecheck) {
+          const match = url.match(/row_hash=in\.\(([^)]*)\)/)
+          const echoed = match ? match[1].split(',').map((h) => ({ row_hash: decodeURIComponent(h) })) : []
+          return new Response(JSON.stringify(echoed), { status: 200 })
+        }
+        const source = getCallCount === 1 ? (opts.duplicateHashes ?? []) : []
+        const matched = source.map((row_hash) => ({ row_hash }))
+        return new Response(JSON.stringify(matched), { status: 200 })
+      }
+      if (url.includes('/rest/v1/finance_import_batches') && method === 'POST') {
+        const row = parsedBody as { id: string; user_id: string; rows: unknown; expires_at: string }
+        batches.set(row.id, { ...row, consumed_at: null })
+        return new Response('null', { status: 201 })
+      }
+      if (url.includes('/rest/v1/finance_import_batches') && method === 'GET') {
+        const idMatch = url.match(/id=eq\.([^&]+)/)
+        const userMatch = url.match(/user_id=eq\.([^&]+)/)
+        const id = idMatch ? decodeURIComponent(idMatch[1]) : ''
+        const userId = userMatch ? decodeURIComponent(userMatch[1]) : ''
+        const row = batches.get(id)
+        const result = row && row.user_id === userId ? [row] : []
+        return new Response(JSON.stringify(result), { status: 200 })
+      }
+      if (url.includes('/rest/v1/finance_import_batches') && method === 'PATCH') {
+        const idMatch = url.match(/id=eq\.([^&]+)/)
+        const id = idMatch ? decodeURIComponent(idMatch[1]) : ''
+        const row = batches.get(id)
+        const patch = parsedBody as { consumed_at?: string }
+        if (row && patch.consumed_at !== undefined) row.consumed_at = patch.consumed_at
+        return new Response('null', { status: 200 })
+      }
+      if (url.includes('/rest/v1/finance_transactions') && method === 'POST') {
+        financeInsertAttempts += 1
+        const failThisAttempt = opts.financeInsertFailFirstThenSucceed ? financeInsertAttempts === 1 : (opts.financeInsertStatus ?? 200) >= 400
+        const status = failThisAttempt ? (opts.financeInsertStatus ?? 500) : 200
+        if (status >= 400) return new Response(JSON.stringify({ message: 'insert failed' }), { status })
+        const sentRows = parsedBody as Array<{ type: string; amount: number; category: string; date: string; notes: string | null }>
+        const rows = opts.financeInsertRows ?? sentRows.map((row, i) => ({ id: `txn-${i + 1}`, ...row }))
+        return new Response(JSON.stringify(rows), { status: 200 })
+      }
+      if (url.includes('/rest/v1/finance_import_rows') && method === 'POST') {
+        const status = opts.bookkeepingStatus ?? 200
+        return new Response(status >= 400 ? JSON.stringify({ message: 'unique_violation' }) : 'null', { status })
+      }
+      if (url.includes('/rest/v1/finance_transactions') && method === 'DELETE') {
+        return new Response(JSON.stringify([{ id: 'deleted' }]), { status: 200 })
+      }
+      if (url.includes('/rest/v1/flow_write_undo_records') && method === 'POST') {
+        const status = opts.undoStatus ?? 200
+        return new Response(status >= 400 ? JSON.stringify({ code: '23514', message: 'check constraint' }) : 'null', { status })
+      }
+      if (url.includes('/rest/v1/agent_proposal_outcomes') && method === 'POST') {
+        const status = opts.ledgerStatus ?? 200
+        return new Response(status >= 400 ? JSON.stringify({ message: 'insert failed' }) : 'null', { status })
+      }
+      return new Response('null', { status: 200 })
+    }) as typeof fetch
+    return { calls, batches, restore: () => { global.fetch = original } }
+  }
+
+  async function previewAndGetBatchId(opts: RouteMock, fixtureName: string): Promise<string> {
+    const response = await worker.fetch(previewRequest(fixtureFile(fixtureName)), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { batchId: string | null }
+    if (!body.batchId) throw new Error('Expected preview to issue a batchId for this fixture/opts combination')
+    return body.batchId
+  }
+
+  describe('POST /finance/import-batch/preview', () => {
+    it('requires auth', async () => {
+      const { restore } = installImportBatchFetchMock()
+      try {
+        const req = previewRequest(fixtureFile('camt-v2-clean.csv'), { Authorization: '' })
+        const response = await worker.fetch(req, testEnv(), fakeExecutionContext())
+        expect(response.status).toBe(401)
+      } finally { restore() }
+    })
+
+    it('builds the preview from each Slice 1 fixture, matching what shared/bankImportBatchPreview.test.ts already proves against the parser directly, and issues a batchId', async () => {
+      const { restore } = installImportBatchFetchMock()
+      try {
+        const response = await worker.fetch(previewRequest(fixtureFile('camt-v2-clean.csv')), testEnv(), fakeExecutionContext())
+        expect(response.status).toBe(200)
+        const body = await response.json() as { verdict: string; importableCount: number; quarantinedCount: number; batchId: string | null }
+        expect(body.verdict).toBe('ok')
+        expect(body.importableCount).toBe(6)
+        expect(body.quarantinedCount).toBe(0)
+        expect(typeof body.batchId).toBe('string')
+        expect(body.batchId!.length).toBeGreaterThan(0)
+      } finally { restore() }
+    })
+
+    it('excludes duplicate rows, per ADR-0017 -- checked fresh against finance_import_rows, never trusted from the client', async () => {
+      const { restore } = installImportBatchFetchMock()
+      try {
+        const first = await worker.fetch(previewRequest(fixtureFile('camt-v2-clean.csv')), testEnv(), fakeExecutionContext())
+        const firstBody = await first.json() as { importableCount: number }
+        expect(firstBody.importableCount).toBe(6)
+      } finally { restore() }
+
+      const { restore: restore2, calls } = installImportBatchFetchMock({ duplicateHashes: ['will-not-match-anything'] })
+      try {
+        const response = await worker.fetch(previewRequest(fixtureFile('camt-v2-clean.csv')), testEnv(), fakeExecutionContext())
+        const body = await response.json() as { importableCount: number; duplicateCount: number }
+        // A hash that matches nothing in this file changes nothing --
+        // proves the exclusion is keyed by the FILE's own computed hashes,
+        // not a hardcoded assumption.
+        expect(body.importableCount).toBe(6)
+        expect(body.duplicateCount).toBe(0)
+        expect(calls.some((c) => String(c.url).includes('finance_import_rows') && c.method === 'GET')).toBe(true)
+      } finally { restore2() }
+    })
+
+    it('all rows already duplicate: importableCount 0 and NO batchId issued -- nothing exists to commit', async () => {
+      // Echo back every hash the `in.(...)` filter names as "already imported".
+      const original = global.fetch
+      global.fetch = (async (url: string, init?: RequestInit) => {
+        const method = init?.method ?? 'GET'
+        if (url === `${SUPABASE_URL}/auth/v1/user`) return new Response(JSON.stringify({ id: 'user-1' }), { status: 200 })
+        if (url.includes('/rest/v1/finance_import_rows') && method === 'GET') {
+          const match = url.match(/row_hash=in\.\(([^)]*)\)/)
+          const echoed = match ? match[1].split(',').map((h) => ({ row_hash: decodeURIComponent(h) })) : []
+          return new Response(JSON.stringify(echoed), { status: 200 })
+        }
+        return new Response('null', { status: 200 })
+      }) as typeof fetch
+      try {
+        const response = await worker.fetch(previewRequest(fixtureFile('camt-v2-clean.csv')), testEnv(), fakeExecutionContext())
+        const body = await response.json() as { importableCount: number; duplicateCount: number; batchId: string | null }
+        expect(body.importableCount).toBe(0)
+        expect(body.duplicateCount).toBe(6)
+        expect(body.batchId).toBeNull()
+      } finally { global.fetch = original }
+    })
+
+    it('reports blocked_structural for a file missing a required column, with zero importable rows and no batchId', async () => {
+      const { restore } = installImportBatchFetchMock()
+      try {
+        const response = await worker.fetch(previewRequest(fixtureFile('camt-v2-missing-column.csv')), testEnv(), fakeExecutionContext())
+        const body = await response.json() as { verdict: string; importableCount: number; structuralError?: string; batchId: string | null }
+        expect(body.verdict).toBe('blocked_structural')
+        expect(body.importableCount).toBe(0)
+        expect(body.structuralError).toContain('Waehrung')
+        expect(body.batchId).toBeNull()
+      } finally { restore() }
+    })
+
+    it('reports blocked_over_threshold with the quarantined rows listed (line + reason) and no batchId', async () => {
+      const { restore } = installImportBatchFetchMock()
+      try {
+        const response = await worker.fetch(previewRequest(fixtureFile('camt-v2-over-threshold.csv')), testEnv(), fakeExecutionContext())
+        const body = await response.json() as { verdict: string; quarantined: Array<{ lineNumber: number; reasonCode: string }>; batchId: string | null }
+        expect(body.verdict).toBe('blocked_over_threshold')
+        expect(body.quarantined).toHaveLength(2)
+        expect(body.quarantined.map((q) => q.reasonCode).sort()).toEqual(['invalid_amount', 'invalid_date'])
+        expect(body.batchId).toBeNull()
+      } finally { restore() }
+    })
+  })
+
+  describe('POST /finance/import-batch/commit -- approval executes server-side, from a LOCKED preview batchId (Ruling 3)', () => {
+    it('requires auth', async () => {
+      const { restore } = installImportBatchFetchMock()
+      try {
+        const response = await worker.fetch(commitRequest('anything', { Authorization: '' }), testEnv(), fakeExecutionContext())
+        expect(response.status).toBe(401)
+      } finally { restore() }
+    })
+
+    it('rejects a missing/empty batchId with 400, no batch lookup attempted', async () => {
+      const { restore, calls } = installImportBatchFetchMock()
+      try {
+        const response = await worker.fetch(commitRequest(undefined), testEnv(), fakeExecutionContext())
+        expect(response.status).toBe(400)
+        expect(calls.some((c) => String(c.url).includes('finance_import_batches'))).toBe(false)
+      } finally { restore() }
+    })
+
+    it('rejects an unknown batchId with 404, no insert attempted, no ledger row', async () => {
+      const { restore, calls } = installImportBatchFetchMock()
+      const ctx = fakeExecutionContext()
+      try {
+        const response = await worker.fetch(commitRequest('does-not-exist'), testEnv(), ctx)
+        expect(response.status).toBe(404)
+        expect(calls.some((c) => String(c.url).includes('finance_transactions') && c.method === 'POST')).toBe(false)
+        expect((ctx.waitUntil as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0)
+      } finally { restore() }
+    })
+
+    it('executes the LOCKED preview batch server-side, returns insertedCount/undoId, and records ONE approved+succeeded ledger row', async () => {
+      const { restore, calls } = installImportBatchFetchMock()
+      const ctx = fakeExecutionContext()
+      try {
+        const batchId = await previewAndGetBatchId({}, 'camt-v2-clean.csv')
+        const response = await worker.fetch(commitRequest(batchId), testEnv(), ctx)
+        expect(response.status).toBe(200)
+        const body = await response.json() as { status: string; insertedCount: number; undoId: string }
+        expect(body.status).toBe('executed')
+        expect(body.insertedCount).toBe(6)
+        expect(body.undoId).toMatch(/^undo:/)
+
+        // Exactly one bulk POST to finance_transactions with a 6-row array body.
+        const txnInsert = calls.find((c) => String(c.url).includes('finance_transactions') && c.method === 'POST')
+        expect(txnInsert).toBeTruthy()
+        expect((txnInsert!.body as unknown[]).length).toBe(6)
+
+        const waitUntilMock = ctx.waitUntil as ReturnType<typeof vi.fn>
+        expect(waitUntilMock.mock.calls).toHaveLength(1)
+        await waitUntilMock.mock.calls[0][0]
+      } finally { restore() }
+
+      const ledgerCalls = calls.filter((c) => String(c.url).includes('agent_proposal_outcomes') && c.method === 'POST')
+      expect(ledgerCalls).toHaveLength(1)
+      const ledgerBody = ledgerCalls[0].body as { intent_type: string; tool_id: string; domain: string; write_mode: string; outcome: string; succeeded: boolean; target_fields: string[] }
+      expect(ledgerBody.intent_type).toBe('import_bank_statement')
+      expect(ledgerBody.tool_id).toBe('finance.import_bank_statement')
+      expect(ledgerBody.domain).toBe('finance')
+      expect(ledgerBody.write_mode).toBe('ask')
+      expect(ledgerBody.outcome).toBe('approved')
+      expect(ledgerBody.succeeded).toBe(true)
+      // Shape only -- field NAMES, never any row's actual amount/date/description.
+      expect(ledgerBody.target_fields).toEqual(['rowCount', 'dateRangeStart', 'dateRangeEnd', 'currency']);
+      expect(JSON.stringify(ledgerBody)).not.toContain('2500')
+      expect(JSON.stringify(ledgerBody)).not.toContain('Musterfirma')
+    })
+
+    it('a structurally invalid or over-threshold file never reaches commit at all -- preview never issues a batchId for it (proven above in the preview suite)', () => {
+      // Left as documentation of WHERE this behavior is now proven: task
+      // 45c PART A's original design had commit independently re-parse and
+      // re-reject such a file (422). Under the locked-batch design
+      // (Ruling 3), commit has no file to parse at all -- "reject a bad
+      // file" is now entirely a preview-time concern, checked in the
+      // "POST /finance/import-batch/preview" describe block above
+      // (batchId: null for both blocked_structural and
+      // blocked_over_threshold), not re-tested redundantly here.
+      expect(true).toBe(true)
+    })
+
+    it('all-or-nothing on insert failure: 502, records approved+succeeded:false, batch NOT consumed, and the SAME batchId succeeds on retry (Ruling 1: "the same proposal retryable")', async () => {
+      const { restore, calls, batches } = installImportBatchFetchMock({ financeInsertFailFirstThenSucceed: true })
+      const ctx = fakeExecutionContext()
+      try {
+        const batchId = await previewAndGetBatchId({ financeInsertFailFirstThenSucceed: true }, 'camt-v2-clean.csv')
+
+        const response = await worker.fetch(commitRequest(batchId), testEnv(), ctx)
+        expect(response.status).toBe(502)
+        const waitUntilMock = ctx.waitUntil as ReturnType<typeof vi.fn>
+        expect(waitUntilMock.mock.calls).toHaveLength(1)
+        await waitUntilMock.mock.calls[0][0]
+        expect(batches.get(batchId)?.consumed_at).toBeNull()
+
+        // The actual retry proof, not just an inspected flag: commit the
+        // exact SAME batchId again -- a batch left consumed after the
+        // first (failed) attempt would 404 here instead of executing.
+        const retryResponse = await worker.fetch(commitRequest(batchId), testEnv(), fakeExecutionContext())
+        expect(retryResponse.status).toBe(200)
+        const retryBody = await retryResponse.json() as { status: string; insertedCount: number }
+        expect(retryBody.status).toBe('executed')
+        expect(retryBody.insertedCount).toBe(6)
+        expect(batches.get(batchId)?.consumed_at).not.toBeNull()
+      } finally { restore() }
+
+      const ledgerCalls = calls.filter((c) => String(c.url).includes('agent_proposal_outcomes'))
+      expect(ledgerCalls).toHaveLength(2)
+      expect((ledgerCalls[0].body as { succeeded: boolean }).succeeded).toBe(false)
+      expect((ledgerCalls[0].body as { outcome: string }).outcome).toBe('approved')
+      expect((ledgerCalls[1].body as { succeeded: boolean }).succeeded).toBe(true)
+    })
+
+    it('rolls back on a bookkeeping insert failure: 502, no undo record attempted (nothing survived to undo), batch left retryable', async () => {
+      const { restore, calls, batches } = installImportBatchFetchMock({ bookkeepingStatus: 500 })
+      const ctx = fakeExecutionContext()
+      let batchId = ''
+      try {
+        batchId = await previewAndGetBatchId({ bookkeepingStatus: 500 }, 'camt-v2-clean.csv')
+        const response = await worker.fetch(commitRequest(batchId), testEnv(), ctx)
+        expect(response.status).toBe(502)
+        await (ctx.waitUntil as ReturnType<typeof vi.fn>).mock.calls[0][0]
+      } finally { restore() }
+      expect(calls.some((c) => c.method === 'DELETE' && String(c.url).includes('finance_transactions'))).toBe(true)
+      expect(calls.some((c) => String(c.url).includes('flow_write_undo_records'))).toBe(false)
+      expect(batches.get(batchId)?.consumed_at).toBeNull()
+    })
+
+    it('double-commit: a second commit with the SAME batchId after a successful first commit fails closed at 404, not a second insert', async () => {
+      const { restore, calls } = installImportBatchFetchMock()
+      const ctx = fakeExecutionContext()
+      try {
+        const batchId = await previewAndGetBatchId({}, 'camt-v2-clean.csv')
+        const first = await worker.fetch(commitRequest(batchId), testEnv(), ctx)
+        expect(first.status).toBe(200)
+        await (ctx.waitUntil as ReturnType<typeof vi.fn>).mock.calls[0][0]
+
+        const insertCallsBeforeRetry = calls.filter((c) => String(c.url).includes('finance_transactions') && c.method === 'POST').length
+        const second = await worker.fetch(commitRequest(batchId), testEnv(), ctx)
+        expect(second.status).toBe(404)
+        const insertCallsAfterRetry = calls.filter((c) => String(c.url).includes('finance_transactions') && c.method === 'POST').length
+        expect(insertCallsAfterRetry).toBe(insertCallsBeforeRetry)
+      } finally { restore() }
+    })
+
+    // Task 45c PART B, Ruling 3 (PO): "If the DB changed in between and a
+    // new duplicate collides at execution, fail the whole batch with a
+    // clear message." This is that exact scenario: preview locks 6
+    // importable rows with no duplicates at THAT moment; by commit time,
+    // something else has imported one of those exact rows (simulated via
+    // collideOnCommitRecheck echoing every hash commit's own recheck
+    // queries for). The whole batch must fail -- not 5 rows importing and
+    // 1 silently skipped.
+    it('a duplicate collision detected at commit time fails the WHOLE batch (409), inserts nothing, records the outcome, and consumes the batch (not retryable -- a fresh preview is required)', async () => {
+      const { restore, calls, batches } = installImportBatchFetchMock({ collideOnCommitRecheck: true })
+      const ctx = fakeExecutionContext()
+      let batchId = ''
+      try {
+        batchId = await previewAndGetBatchId({ collideOnCommitRecheck: true }, 'camt-v2-clean.csv')
+
+        const response = await worker.fetch(commitRequest(batchId), testEnv(), ctx)
+        expect(response.status).toBe(409)
+        const body = await response.json() as { error: string }
+        expect(body.error).toContain('already imported')
+
+        expect(calls.some((c) => String(c.url).includes('finance_transactions') && c.method === 'POST')).toBe(false)
+
+        const waitUntilMock = ctx.waitUntil as ReturnType<typeof vi.fn>
+        expect(waitUntilMock.mock.calls).toHaveLength(1)
+        await waitUntilMock.mock.calls[0][0]
+        const ledgerCalls = calls.filter((c) => String(c.url).includes('agent_proposal_outcomes'))
+        expect(ledgerCalls).toHaveLength(1)
+        expect((ledgerCalls[0].body as { succeeded: boolean }).succeeded).toBe(false)
+
+        expect(batches.get(batchId)?.consumed_at).not.toBeNull()
+
+        // Not retryable -- the batch is now consumed, so committing the
+        // exact same batchId again fails closed at 404, never a second
+        // attempt that could somehow succeed.
+        const retry = await worker.fetch(commitRequest(batchId), testEnv(), fakeExecutionContext())
+        expect(retry.status).toBe(404)
+      } finally { restore() }
+    })
+  })
+
+  describe('rejection reuses the EXISTING POST /agent/proposal-outcome endpoint -- no new code needed', () => {
+    it('accepts import_bank_statement/finance.import_bank_statement with outcome "rejected", writing exactly one ledger row and nothing else', async () => {
+      const { calls, restore } = installImportBatchFetchMock()
+      const ctx = fakeExecutionContext()
+      try {
+        const response = await worker.fetch(new Request('https://worker.test/agent/proposal-outcome', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer user-token', 'Origin': 'https://smartaryn.com' },
+          body: JSON.stringify({
+            intentType: 'import_bank_statement',
+            toolId: 'finance.import_bank_statement',
+            domain: 'finance',
+            outcome: 'rejected',
+            succeeded: null,
+            targetFields: ['rowCount', 'dateRangeStart', 'dateRangeEnd', 'currency'],
+          }),
+        }), testEnv(), ctx)
+        expect(response.status).toBe(202)
+        await (ctx.waitUntil as ReturnType<typeof vi.fn>).mock.calls[0][0]
+      } finally { restore() }
+
+      const relevantCalls = calls.filter((c) => c.method !== 'GET' && String(c.url).includes('/rest/v1/'))
+      expect(relevantCalls).toHaveLength(1)
+      expect(String(relevantCalls[0].url)).toContain('agent_proposal_outcomes')
+      const body = relevantCalls[0].body as { outcome: string; succeeded: boolean | null }
+      expect(body.outcome).toBe('rejected')
+      expect(body.succeeded).toBeNull()
+    })
   })
 })

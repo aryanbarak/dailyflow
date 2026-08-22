@@ -54,6 +54,18 @@ type _DomainNoMissingMembers = ExpectTrue<Extends<PreChangeAgentIntentDomain, Ag
 // literal, not part of the registry), but the union really is 17-wide, not
 // 16, both before and after this slice's edit -- membership is unchanged,
 // only the brief's stated count was off by one.
+// Task 45c, ADR-0017: widened by one deliberate member,
+// "finance.import_bank_statement" -- the registry gained a sixth entry
+// (see shared/writeIntentRegistry.ts), which legitimately grows this
+// derived union. This is the same "pinned, deliberately updated on a real
+// change" discipline every other frozen literal in this codebase already
+// uses (EXPECTED_INTENT_TYPES in writeIntentRegistry.test.ts, the
+// hand-written schema enum array in agent/worker/index.test.ts, the
+// reasoning-response-schema snapshot) -- the name "PreChangeToolId" is now
+// read as "the last deliberately-accepted membership," not literally
+// "before ANY change ever," since new registry entries are expected to
+// widen it over time; what this test still guards against is an
+// UNINTENDED widening or narrowing slipping through unnoticed.
 type PreChangeToolId =
   | "tasks.list"
   | "calendar.list_today"
@@ -70,6 +82,7 @@ type PreChangeToolId =
   | "calendar.create_event"
   | "calendar.update_event"
   | "finance.create_transaction"
+  | "finance.import_bank_statement"
   | "github.issues.comment"
   | "github.issues.update";
 type DerivedToolId = Exclude<AgentReasoningValidationResult["toolId"], undefined>;

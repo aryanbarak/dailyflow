@@ -16,6 +16,15 @@ const PROPOSAL_LANGUAGES = ['en', 'de', 'fa'] as const
 // byte-identical schema check. Every other value here is a read intent,
 // GitHub write, or terminal state that isn't part of this task's scope
 // (tasks + calendar only) and stays a plain literal.
+//
+// Task 45c PART B (Ruling 2, PO): the splice is filtered to
+// `exposure === 'chat'`. This enum constrains what the model is even
+// ALLOWED to output (Gemini structured-output enforces it), so a ui-only
+// entry (import_bank_statement) appearing here would mean the model could
+// legitimately propose a batch import from free text -- the exact thing
+// this registry field exists to prevent. intentValidator.ts's own
+// import_bank_statement guard is a backstop for this enum, not a
+// substitute for it.
 export const SUPPORTED_INTENT_VALUES = [
   'inspect_tasks',
   'inspect_calendar',
@@ -27,7 +36,7 @@ export const SUPPORTED_INTENT_VALUES = [
   'inspect_github_pull_requests',
   'inspect_github_workflow_runs',
   'complete_task',
-  ...writeIntentRegistry.map((entry) => entry.intentType),
+  ...writeIntentRegistry.filter((entry) => entry.exposure === 'chat').map((entry) => entry.intentType),
   'write_github_issue_comment',
   'write_github_issue_update',
   'ask_clarification',

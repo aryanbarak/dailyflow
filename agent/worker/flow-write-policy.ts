@@ -3,6 +3,7 @@ import { supabaseGet } from './context-builder'
 import { callGeminiForTaskTitle } from './task-title-extraction'
 import { findWriteIntentDescriptor, writeIntentRegistry, type WriteIntentType } from '../../shared/writeIntentRegistry'
 import { parseFinanceDirection } from '../../shared/financeDirection'
+import type { ParsedBankRow } from '../../shared/bankStatementParser'
 
 export type FlowWriteMode = 'auto' | 'ask' | 'off'
 export type FlowWriteAction = 'create' | 'update' | 'delete'
@@ -119,6 +120,14 @@ export type UndoEntry =
   | { kind: 'create_calendar_event'; userId: string; eventId: string; expiresAt: string }
   | { kind: 'update_calendar_event'; userId: string; eventId: string; previous: Pick<CalendarEventRow, 'title' | 'date' | 'start_time' | 'end_time' | 'description'>; expiresAt: string }
   | { kind: 'create_finance_transaction'; userId: string; transactionId: string; expiresAt: string }
+  // Task 45c, ADR-0017: one undo record reverses an ENTIRE batch import --
+  // transactionIds holds every row the batch inserted, not a single id.
+  // Unlike every other kind above (whose single id fits the reused
+  // `task_id` column directly, see undoRecordId below), the full list lives
+  // in `payload` (the same JSONB column update_task/update_calendar_event
+  // already use for their `previous` snapshot) since a text column cannot
+  // hold an array.
+  | { kind: 'import_bank_statement'; userId: string; transactionIds: string[]; expiresAt: string }
 
 // Task 22-fix2 (D1 structural lesson), now task 23 registry-driven: the
 // single, authoritative runtime list of undo-persisting kinds -- every
@@ -151,7 +160,13 @@ function esc(value: string) {
   return encodeURIComponent(value)
 }
 
-async function supabaseWriteReturning<T>(env: Env, method: 'POST' | 'PATCH' | 'DELETE', path: string, body?: Record<string, unknown>): Promise<T> {
+// Task 45c: body widened to also accept an array -- a single PostgREST POST
+// with a JSON array body inserts every element in ONE Postgres statement
+// (atomic by construction, no manual transaction wrapping needed), which is
+// exactly what executeBatchFinanceImport below relies on for its
+// all-or-nothing insert. Every existing call site still passes a single
+// object and is unaffected.
+async function supabaseWriteReturning<T>(env: Env, method: 'POST' | 'PATCH' | 'DELETE', path: string, body?: Record<string, unknown> | Record<string, unknown>[]): Promise<T> {
   const res = await fetch(`${env.SUPABASE_URL}/rest/v1/${path}`, {
     method,
     headers: {
@@ -167,7 +182,7 @@ async function supabaseWriteReturning<T>(env: Env, method: 'POST' | 'PATCH' | 'D
   return res.json()
 }
 
-async function supabaseWriteNoContent(env: Env, method: 'POST' | 'PATCH' | 'DELETE', path: string, body?: Record<string, unknown>): Promise<void> {
+async function supabaseWriteNoContent(env: Env, method: 'POST' | 'PATCH' | 'DELETE', path: string, body?: Record<string, unknown> | Record<string, unknown>[]): Promise<void> {
   const res = await fetch(`${env.SUPABASE_URL}/rest/v1/${path}`, {
     method,
     headers: {
@@ -196,14 +211,25 @@ function undoExpiresAt(now: Date) {
 // `tasks`, only `not null`, so it is safely a generic "the row this undo
 // entry is about" id slot regardless of kind. Not renamed, to avoid an
 // unnecessary migration + touching every existing call site.
+// Task 45c: task_id has no real single-id meaning for a batch -- the first
+// inserted transaction id is used purely to satisfy the column's NOT NULL
+// constraint (same "generic id slot" convention this function's own
+// pre-existing comment already documents); the record's actual reversal
+// data (the FULL id list) lives in `payload`, read back by consumeUndoRecord
+// below, never from this column.
 function undoRecordId(entry: UndoEntry): string {
   if (entry.kind === 'create_task' || entry.kind === 'update_task') return entry.taskId
   if (entry.kind === 'create_finance_transaction') return entry.transactionId
+  if (entry.kind === 'import_bank_statement') return entry.transactionIds[0] ?? ''
   return entry.eventId
 }
 
 async function persistUndoRecord(env: Env, entry: UndoEntry, undoId: string) {
-  const payload = entry.kind === 'update_task' || entry.kind === 'update_calendar_event' ? { previous: entry.previous } : {}
+  const payload = entry.kind === 'update_task' || entry.kind === 'update_calendar_event'
+    ? { previous: entry.previous }
+    : entry.kind === 'import_bank_statement'
+      ? { transactionIds: entry.transactionIds }
+      : {}
   await supabaseWriteNoContent(env, 'POST', 'flow_write_undo_records', {
     id: undoUuid(undoId),
     user_id: entry.userId,
@@ -217,12 +243,13 @@ async function persistUndoRecord(env: Env, entry: UndoEntry, undoId: string) {
 interface UndoRecordRow {
   id: string
   user_id: string
-  kind: 'create_task' | 'update_task' | 'create_calendar_event' | 'update_calendar_event' | 'create_finance_transaction'
+  kind: 'create_task' | 'update_task' | 'create_calendar_event' | 'update_calendar_event' | 'create_finance_transaction' | 'import_bank_statement'
   task_id: string
   payload: {
     previous?:
       | Pick<TaskRow, 'title' | 'notes' | 'due_date' | 'completed'>
       | Pick<CalendarEventRow, 'title' | 'date' | 'start_time' | 'end_time' | 'description'>
+    transactionIds?: string[]
   } | null
   expires_at: string
   consumed_at: string | null
@@ -244,6 +271,11 @@ async function consumeUndoRecord(env: Env, userId: string, undoId: string, now: 
   if (row.kind === 'create_task') return { kind: 'create_task', userId, taskId: row.task_id, expiresAt: row.expires_at }
   if (row.kind === 'create_calendar_event') return { kind: 'create_calendar_event', userId, eventId: row.task_id, expiresAt: row.expires_at }
   if (row.kind === 'create_finance_transaction') return { kind: 'create_finance_transaction', userId, transactionId: row.task_id, expiresAt: row.expires_at }
+  if (row.kind === 'import_bank_statement') {
+    const transactionIds = row.payload?.transactionIds
+    if (!transactionIds || transactionIds.length === 0) return null
+    return { kind: 'import_bank_statement', userId, transactionIds, expiresAt: row.expires_at }
+  }
   if (row.kind === 'update_task') {
     const previous = row.payload?.previous as Pick<TaskRow, 'title' | 'notes' | 'due_date' | 'completed'> | undefined
     if (!previous) return null
@@ -1584,6 +1616,19 @@ export async function undoAutoWrite(env: Env, userId: string, undoId: string, no
     await supabaseWriteReturning<FinanceTransactionRow[]>(env, 'DELETE', `finance_transactions?id=eq.${esc(entry.transactionId)}&user_id=eq.${esc(userId)}&select=id`)
     return true
   }
+  if (entry.kind === 'import_bank_statement') {
+    // Task 45c: one bulk DELETE reverses the whole batch -- PostgREST's
+    // `id=in.(...)` filter is a single Postgres statement, atomic the same
+    // way the original bulk INSERT was (executeBatchFinanceImport below).
+    // finance_import_rows' bookkeeping rows are cleaned up in the SAME
+    // undo call so an undone import doesn't leave orphaned duplicate-hash
+    // entries that would silently block a legitimate re-import of the same
+    // statement.
+    const idList = entry.transactionIds.map(esc).join(',')
+    await supabaseWriteReturning<FinanceTransactionRow[]>(env, 'DELETE', `finance_transactions?id=in.(${idList})&user_id=eq.${esc(userId)}&select=id`)
+    await supabaseWriteNoContent(env, 'DELETE', `finance_import_rows?transaction_id=in.(${idList})&user_id=eq.${esc(userId)}`)
+    return true
+  }
   await supabaseWriteReturning<CalendarEventRow[]>(env, 'PATCH', `calendar_events?id=eq.${esc(entry.eventId)}&user_id=eq.${esc(userId)}&select=id`, {
     title: entry.previous.title,
     date: entry.previous.date,
@@ -1592,4 +1637,268 @@ export async function undoAutoWrite(env: Env, userId: string, undoId: string, no
     description: entry.previous.description,
   })
   return true
+}
+
+// ---------------------------------------------------------------------------
+// Task 45c, ADR-0017 -- bank-statement batch import. Deliberately NOT a
+// parse<Domain>WriteIntent/assemble<Domain>WriteIntent/execute<Domain>Auto-
+// Write triad like task/calendar/finance above: there is no free-text
+// intent to resolve here at all (see shared/writeIntentRegistry.ts's own
+// import_bank_statement entry comment, and intentValidator.ts's explicit
+// guard, for why this is UI-only and never chat-resolved). What this
+// section DOES share with the triads above is everything downstream of
+// "an intent is already decided": the same service_role Supabase I/O
+// helpers, the same persist-first undo pattern (persistUndoOrRollback), and
+// the same registry-derived undo-kind bookkeeping.
+// ---------------------------------------------------------------------------
+
+interface FinanceImportRowRecord {
+  row_hash: string
+}
+
+/**
+ * Looks up which of `rowHashes` already exist in finance_import_rows for
+ * this user -- i.e. which parsed rows are duplicates of an already-imported
+ * statement row. Runs fresh on every call (both /finance/import-batch/preview
+ * and /finance/import-batch/commit call this independently); nothing about
+ * a duplicate decision is ever cached or trusted from a prior call. Returns
+ * an empty set (not an error) for an empty input, since there is nothing to
+ * look up.
+ */
+export async function checkDuplicateRows(env: Env, userId: string, rowHashes: readonly string[]): Promise<Set<string>> {
+  if (rowHashes.length === 0) return new Set()
+  const hashList = rowHashes.map(esc).join(',')
+  const rows = await supabaseGet<FinanceImportRowRecord[]>(
+    env,
+    `finance_import_rows?user_id=eq.${esc(userId)}&row_hash=in.(${hashList})&select=row_hash`,
+  ).catch(() => [] as FinanceImportRowRecord[])
+  return new Set(rows.map((row) => row.row_hash))
+}
+
+// Task 45c PART B (Ruling 3, PO): the duplicate-exclusion decision made at
+// preview time must be LOCKED, not re-derived at commit time. Re-deriving
+// independently (the task 45c PART A draft's original design: both
+// endpoints re-parse the same file bytes and re-run checkDuplicateRows
+// from scratch) would let the approved-vs-executed row set silently
+// diverge from unrelated DB activity between the two calls -- exactly the
+// "what was approved is not what runs" gap Ruling 1 already rules out for
+// mid-batch failure, just from a different cause. finance_import_batches
+// is a short-lived staging table: preview persists the post-quarantine,
+// post-duplicate-exclusion row set (exactly what selectImportableRows
+// already computes) under a server-issued batchId; commit loads that EXACT
+// set by batchId instead of re-parsing or re-excluding anything. batchId is
+// the same opaque value shared/writeIntentRegistry.ts's import_bank_-
+// statement entry already documents as the tool's only target field --
+// "an opaque server-issued reference to an already Worker-parsed, already
+// Worker-validated batch" -- this table is what makes that description
+// literally true rather than aspirational.
+//
+// This is a distinct window from FLOW_WRITE_UNDO_WINDOW_MS above: that one
+// bounds how long an EXECUTED write stays undoable; this one bounds how
+// long an APPROVED-BUT-NOT-YET-EXECUTED batch stays commitable. 30 minutes
+// is generous review time without leaving stale batches around indefinitely.
+export const IMPORT_BATCH_APPROVAL_WINDOW_MS = 30 * 60 * 1000
+
+interface FinanceImportBatchRow {
+  id: string
+  rows: ParsedBankRow[]
+  expires_at: string
+  consumed_at: string | null
+}
+
+/**
+ * Persists the LOCKED, already-decided importable row set from a preview
+ * call, returning the batchId the client will later pass to
+ * loadImportBatch at commit time. Called once per /finance/import-batch/
+ * preview request that has at least one importable row -- see this file's
+ * own header comment on this section for why the set must be locked here
+ * rather than recomputed later.
+ */
+export async function persistImportBatch(
+  env: Env,
+  userId: string,
+  rows: readonly ParsedBankRow[],
+  now: Date,
+): Promise<{ batchId: string; expiresAt: string }> {
+  const batchId = crypto.randomUUID()
+  const expiresAt = new Date(now.getTime() + IMPORT_BATCH_APPROVAL_WINDOW_MS).toISOString()
+  await supabaseWriteNoContent(env, 'POST', 'finance_import_batches', {
+    id: batchId,
+    user_id: userId,
+    rows: rows as unknown as Record<string, unknown>,
+    expires_at: expiresAt,
+  })
+  return { batchId, expiresAt }
+}
+
+/**
+ * Loads the locked row set for a previously-issued batchId, or null if it
+ * does not exist for this user, has already been consumed (a prior commit
+ * attempt succeeded, or hit a duplicate collision -- see
+ * markImportBatchConsumed's call sites), or has expired. Never re-derives
+ * or filters the row set -- what is returned is byte-for-byte what
+ * persistImportBatch stored.
+ */
+export async function loadImportBatch(
+  env: Env,
+  userId: string,
+  batchId: string,
+  now: Date,
+): Promise<{ rows: ParsedBankRow[] } | null> {
+  const result = await supabaseGet<FinanceImportBatchRow[]>(
+    env,
+    `finance_import_batches?id=eq.${esc(batchId)}&user_id=eq.${esc(userId)}&select=id,rows,expires_at,consumed_at&limit=1`,
+  ).catch(() => [] as FinanceImportBatchRow[])
+  const row = result[0]
+  if (!row) return null
+  if (row.consumed_at) return null
+  if (row.expires_at < now.toISOString()) return null
+  return { rows: row.rows }
+}
+
+/**
+ * Marks a batch as consumed so it can never be committed again. Called
+ * from two DISTINCT terminal outcomes, deliberately not from a transient
+ * infrastructure failure (Ruling 1: "the same proposal retryable" means a
+ * failed executeBatchFinanceImport call must leave the batch commitable
+ * again with the same batchId):
+ *   1. executeBatchFinanceImport returned status 'executed' -- the batch
+ *      was spent on a real write; committing it again would double-import.
+ *   2. A duplicate collision was found at commit time (see
+ *      handleFinanceImportBatchCommit) -- the locked row set is now stale
+ *      (something else imported an overlapping row since preview), so
+ *      retrying with the SAME locked set would just collide again; the
+ *      correct recovery is a fresh preview, not a retry.
+ */
+export async function markImportBatchConsumed(env: Env, batchId: string, now: Date): Promise<void> {
+  await supabaseWriteNoContent(env, 'PATCH', `finance_import_batches?id=eq.${esc(batchId)}`, {
+    consumed_at: now.toISOString(),
+  })
+}
+
+export interface BatchImportExecutionResult {
+  status: 'executed'
+  insertedCount: number
+  transactionIds: string[]
+  undoId: string
+  undoExpiresAt: string
+}
+
+export interface BatchImportExecutionFailure {
+  status: 'failed'
+  reply: string
+}
+
+/**
+ * Inserts every row in `rows` as one PostgREST bulk POST (a single Postgres
+ * statement -- atomic by construction: either all rows land or none do,
+ * never a partial batch). Persists ONE undo record covering the whole
+ * batch (persist-first, same compensating-rollback semantics as every
+ * other domain's own execute*AutoWrite above -- if the undo record itself
+ * fails to persist, the just-inserted rows AND their finance_import_rows
+ * bookkeeping rows are rolled back and this reports 'failed' honestly,
+ * never a false success). Caller (the /finance/import-batch/commit HTTP
+ * handler) is responsible for recording the agent_proposal_outcomes ledger
+ * row -- that is a reporting concern, not an execution concern, and stays
+ * out of this function per ADR-0016's fire-and-forget principle (a ledger
+ * write must never gate or be gated by the actual write).
+ */
+export async function executeBatchFinanceImport(
+  env: Env,
+  userId: string,
+  rows: readonly ParsedBankRow[],
+  now: Date,
+): Promise<BatchImportExecutionResult | BatchImportExecutionFailure> {
+  if (rows.length === 0) {
+    return { status: 'failed', reply: 'No importable rows in this batch.' }
+  }
+
+  let insertedRows: FinanceTransactionRow[]
+  try {
+    insertedRows = await supabaseWriteReturning<FinanceTransactionRow[]>(
+      env,
+      'POST',
+      'finance_transactions?select=id,user_id,type,amount,category,date,notes,created_at,updated_at',
+      rows.map((row) => ({
+        user_id: userId,
+        type: row.direction,
+        amount: row.amount,
+        // No dedicated category parser for CAMT rows (out of Slice 1/2's
+        // stated scope, same fallback convention every other finance write
+        // path in this file already uses) -- "CSV mit Kategorien" rows keep
+        // their own Kategorie value when present.
+        category: row.category ?? 'Bank Import',
+        date: row.date,
+        notes: row.purpose || null,
+      })),
+    )
+  } catch (err) {
+    // Nothing to roll back -- this is the FIRST write in the chain, so a
+    // failure here means nothing was inserted at all. Caught explicitly
+    // (unlike letting it propagate) so the HTTP handler can report a clean
+    // 502 instead of an unhandled worker exception -- ADR-0012's "execution
+    // failure is reported honestly" rule applies to infrastructure faults
+    // too, not just domain-level rejections.
+    console.error('[BankImport] bulk finance_transactions insert failed:', (err as Error).message)
+    return { status: 'failed', reply: 'Could not record the transactions.' }
+  }
+
+  const transactionIds = insertedRows.map((row) => row.id).filter(Boolean)
+  if (transactionIds.length !== rows.length) {
+    // PostgREST returned fewer rows than were sent -- treat as a failed
+    // insert rather than silently accepting a partial result; nothing was
+    // meant to be undone here since a genuine partial bulk insert should
+    // not be possible (see this function's own header comment), so this
+    // branch exists only to fail loudly if that assumption is ever wrong,
+    // not to compensate for it.
+    return { status: 'failed', reply: 'Could not verify that all transactions were recorded.' }
+  }
+
+  const importBatchId = crypto.randomUUID()
+  const bookkeepingRows = rows.map((row, i) => ({
+    user_id: userId,
+    row_hash: row.rowHash,
+    transaction_id: transactionIds[i],
+    batch_id: importBatchId,
+  }))
+
+  const undoId = `undo:${crypto.randomUUID()}`
+  const expiresAt = new Date(now.getTime() + FLOW_WRITE_UNDO_WINDOW_MS).toISOString()
+  const rollbackInsertedRows = async () => {
+    const idList = transactionIds.map(esc).join(',')
+    await supabaseWriteNoContent(env, 'DELETE', `finance_transactions?id=in.(${idList})&user_id=eq.${esc(userId)}`)
+  }
+
+  try {
+    await supabaseWriteNoContent(env, 'POST', 'finance_import_rows', bookkeepingRows)
+  } catch (err) {
+    console.error('[BankImport] finance_import_rows bookkeeping insert failed, rolling back the batch:', (err as Error).message)
+    try {
+      await rollbackInsertedRows()
+    } catch (rollbackErr) {
+      console.error('[BankImport] CRITICAL: compensating rollback ALSO failed after a bookkeeping-insert failure -- transactions may be orphaned:', (rollbackErr as Error).message)
+    }
+    return { status: 'failed', reply: 'Could not record the import; no transactions were kept.' }
+  }
+
+  const undoFailure = await persistUndoOrRollback(
+    env,
+    { kind: 'import_bank_statement', userId, transactionIds, expiresAt },
+    undoId,
+    'en',
+    async () => {
+      await rollbackInsertedRows()
+      const idList = transactionIds.map(esc).join(',')
+      await supabaseWriteNoContent(env, 'DELETE', `finance_import_rows?transaction_id=in.(${idList})&user_id=eq.${esc(userId)}`)
+    },
+  )
+  if (undoFailure) return { status: 'failed', reply: undoFailure.reply }
+
+  return {
+    status: 'executed',
+    insertedCount: transactionIds.length,
+    transactionIds,
+    undoId,
+    undoExpiresAt: expiresAt,
+  }
 }

@@ -1004,3 +1004,51 @@ describe("Task 42 (finance direction inference from a spending category)", () =>
     expect(result.proposal.reasons).toContain("Whether this is income or an expense is required before recording a transaction.");
   });
 });
+
+describe("Task 45c, ADR-0017 (import_bank_statement is UI-only, never chat-proposable)", () => {
+  it("rejects import_bank_statement as unsupported, even with a well-formed-looking batchId target", () => {
+    const result = validate(
+      proposal({
+        type: "import_bank_statement",
+        requestedDomain: "finance",
+        toolId: "finance.import_bank_statement",
+        target: { batchId: "batch-123" },
+      }),
+      "import my bank statement",
+    );
+    expect(result.proposal.type).toBe("unsupported");
+  });
+
+  it("rejects it even with no target at all", () => {
+    const result = validate(
+      proposal({ type: "import_bank_statement", requestedDomain: "finance", toolId: "finance.import_bank_statement" }),
+      "import my bank statement",
+    );
+    expect(result.proposal.type).toBe("unsupported");
+  });
+
+  it("never offers a clarification question for it -- there is nothing the user could supply via chat to fix this", () => {
+    const result = validate(
+      proposal({ type: "import_bank_statement", requestedDomain: "finance", toolId: "finance.import_bank_statement" }),
+      "import my bank statement",
+    );
+    expect(result.proposal.requiresApproval).toBe(false);
+    expect(result.proposal.requiresTool).toBe(false);
+  });
+
+  it("rejects it regardless of message wording -- not gated on any particular trigger phrase, since none exists for this intent", () => {
+    const result = validate(
+      proposal({ type: "import_bank_statement", requestedDomain: "finance", toolId: "finance.import_bank_statement" }),
+      "hello",
+    );
+    expect(result.proposal.type).toBe("unsupported");
+  });
+
+  it("a normal finance message is unaffected by this guard (proves the guard is scoped to the one type, not a broader finance regression)", () => {
+    const result = validate(
+      proposal({ type: "create_finance_transaction", requestedDomain: "finance", toolId: "finance.create_transaction", target: {} }),
+      "I spent 20 EUR on coffee",
+    );
+    expect(result.proposal.type).toBe("create_finance_transaction");
+  });
+});

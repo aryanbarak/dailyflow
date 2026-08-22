@@ -108,6 +108,9 @@
           "iban": {
             "type": "STRING"
           },
+          "batchId": {
+            "type": "STRING"
+          },
           "repo": {
             "type": "STRING"
           },

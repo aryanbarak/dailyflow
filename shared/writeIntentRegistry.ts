@@ -55,6 +55,7 @@ export type WriteIntentType =
   | 'create_calendar_event'
   | 'update_calendar_event'
   | 'create_finance_transaction'
+  | 'import_bank_statement'
 
 export type WriteIntentDomain = 'tasks' | 'calendar' | 'finance'
 export type WriteIntentAction = 'create' | 'update'
@@ -64,6 +65,7 @@ export type WriteIntentToolId =
   | 'calendar.create_event'
   | 'calendar.update_event'
   | 'finance.create_transaction'
+  | 'finance.import_bank_statement'
 export type WriteIntentCapability = 'create' | 'update' | 'schedule'
 
 export interface WriteIntentTargetField {
@@ -115,6 +117,14 @@ export const WRITE_DOMAIN_TARGET_FIELDS: Record<WriteIntentDomain, readonly Writ
     { name: 'category', schemaType: 'STRING' },
     { name: 'description', schemaType: 'STRING' },
     { name: 'iban', schemaType: 'STRING' },
+    // Task 45c, ADR-0017: import_bank_statement's only target field --
+    // an opaque server-issued reference to an already Worker-parsed,
+    // already Worker-validated batch (POST /finance/import-batch/preview),
+    // never a value a chat message could ever legitimately supply. See
+    // intentValidator.ts's explicit import_bank_statement guard for why
+    // this field existing here is a structural backstop, not the primary
+    // chat-safety mechanism.
+    { name: 'batchId', schemaType: 'STRING' },
   ],
 }
 
@@ -221,6 +231,30 @@ export interface WriteIntentDescriptor {
   // mandatory empirical replay, was explicitly considered and rejected
   // rather than silently done (PO decision, task 36b).
   readonly promptInstruction?: string
+  // Task 45c PART B (Ruling 2, PO): explicit, structural chat-reachability
+  // flag -- 'chat' means the reasoning layer may propose this intent from
+  // free text (every pre-45c entry); 'ui-only' means it never should,
+  // regardless of what promptInstruction/createRequiredTargetFields happen
+  // to say. Before this field existed, chat-non-exposure for
+  // import_bank_statement was an emergent property of several independent
+  // omissions (no promptInstruction, an unfakeable target field, no
+  // registered handler) -- true, but implicit, and reasoningPrompt.ts's own
+  // REGISTRY_SUPPORTED_INTENTS/REGISTRY_ALLOWED_MAPPINGS still named the
+  // intent unconditionally. This field makes the split a first-class,
+  // registry-driven fact instead: reasoningPrompt.ts and the Worker's
+  // reasoning schema enum (agent/worker/reasoning-endpoint.ts) now both
+  // filter on `exposure === 'chat'` before including an entry, and a
+  // reverse guard test (reasoningPrompt.test.ts) asserts a ui-only entry's
+  // intentType/toolId literally cannot appear in the rendered prompt text.
+  // writeRuntime.ts's SUPPORTED_WRITE_TOOL_IDS and the undo-kind derivation
+  // deliberately do NOT filter on this field -- a ui-only tool still needs
+  // to execute (just never via the chat-resolution path), so its runtime
+  // capability/undo metadata must stay available unfiltered. This is the
+  // "two views of one registry" split: the REASONING view (what the model
+  // may ever be told exists) is a strict subset of the RUNTIME view (what
+  // the system knows how to execute and undo). See ADR-0017's task-45c
+  // amendment for the durable record of this decision.
+  readonly exposure: 'chat' | 'ui-only'
   // The description-panel title interpolated into i18n.descriptionKey.
   readonly descriptionTitle: (target: WriteIntentTargetRecord | undefined) => string
   // The approval-card preview lines (before the caller's own
@@ -239,6 +273,7 @@ export const writeIntentRegistry: readonly WriteIntentDescriptor[] = [
     action: 'create',
     toolId: 'tasks.create',
     capability: 'create',
+    exposure: 'chat',
     undoKind: 'create_task',
     createRequiredTargetFields: ['title'],
     reversible: true,
@@ -267,6 +302,7 @@ export const writeIntentRegistry: readonly WriteIntentDescriptor[] = [
     action: 'update',
     toolId: 'tasks.update',
     capability: 'update',
+    exposure: 'chat',
     undoKind: 'update_task',
     targetIdField: 'taskId',
     reversible: true,
@@ -296,6 +332,7 @@ export const writeIntentRegistry: readonly WriteIntentDescriptor[] = [
     action: 'create',
     toolId: 'calendar.create_event',
     capability: 'schedule',
+    exposure: 'chat',
     undoKind: 'create_calendar_event',
     createRequiredTargetFields: ['eventTitle', 'start'],
     reversible: true,
@@ -337,6 +374,7 @@ export const writeIntentRegistry: readonly WriteIntentDescriptor[] = [
     action: 'update',
     toolId: 'calendar.update_event',
     capability: 'update',
+    exposure: 'chat',
     undoKind: 'update_calendar_event',
     targetIdField: 'eventId',
     reversible: true,
@@ -376,6 +414,7 @@ export const writeIntentRegistry: readonly WriteIntentDescriptor[] = [
     action: 'create',
     toolId: 'finance.create_transaction',
     capability: 'create',
+    exposure: 'chat',
     undoKind: 'create_finance_transaction',
     // Task 28: amount and direction are the two fields nothing else can
     // stand in for -- a transaction with no amount or no income/expense
@@ -443,6 +482,71 @@ export const writeIntentRegistry: readonly WriteIntentDescriptor[] = [
       // hand-written" doc section describes never invents a new column for
       // a value the approval preview already surfaced. Confirmation-only,
       // by design, not an oversight.
+    }),
+  },
+  {
+    // Task 45c, ADR-0017: registered so the batch import can share this
+    // registry's undo-kind derivation (UNDO_KIND_VALUES), domain/capability
+    // metadata, and the write-runtime's generic per-toolId lookups
+    // (writeRuntime.ts's SUPPORTED_WRITE_TOOL_IDS/expectedCapabilityForToolId/
+    // expectedStepShapeForToolId all cover it for free, ADR-0013 Slice 4) --
+    // NOT so it becomes chat-proposable. It is UI-only, invoked from the
+    // Finance page's import flow after a file has already been parsed and
+    // validated server-side (POST /finance/import-batch/preview), never
+    // from free text. FOUR independent, deliberate reasons the reasoning
+    // layer can never turn this into a working proposal:
+    //   1. `exposure: 'ui-only'` below -- the PRIMARY, structural mechanism
+    //      (task 45c PART B, Ruling 2, PO). reasoningPrompt.ts's
+    //      REGISTRY_SUPPORTED_INTENTS/REGISTRY_ALLOWED_MAPPINGS/
+    //      REGISTRY_PROMPT_INSTRUCTIONS and the Worker's reasoning schema
+    //      enum (agent/worker/reasoning-endpoint.ts's SUPPORTED_INTENT_VALUES)
+    //      all filter on this field -- a ui-only entry's intentType/toolId
+    //      cannot appear in the prompt text the model reads, and cannot
+    //      appear in the schema enum constraining what it may output.
+    //      Before this field existed, this was an emergent consequence of
+    //      omission (no promptInstruction) rather than a first-class fact --
+    //      see this field's own doc comment on the interface above.
+    //   2. `createRequiredTargetFields: ['batchId']` -- a value with no
+    //      legitimate source in a chat message; it only exists after a real
+    //      POST /finance/import-batch/preview call.
+    //   3. No entry in writeHandlers.ts's registeredWriteHandlers -- even a
+    //      hypothetically well-formed chat proposal for this toolId fails
+    //      closed at writeRuntime.ts's handler_not_found, structurally
+    //      unable to execute through the chat pipeline.
+    // See intentValidator.ts's own import_bank_statement guard for the
+    // fifth layer: any occurrence of this type from the model is converted
+    // to `unsupported` before target normalization even runs -- now a
+    // backstop for a schema/prompt bypass, not the primary mechanism.
+    intentType: 'import_bank_statement',
+    domain: 'finance',
+    action: 'create',
+    toolId: 'finance.import_bank_statement',
+    capability: 'create',
+    exposure: 'ui-only',
+    undoKind: 'import_bank_statement',
+    createRequiredTargetFields: ['batchId'],
+    reversible: true,
+    successSummary: 'Bank statement imported.',
+    i18n: {
+      titleKey: 'agent_intent_title_import_bank_statement',
+      descriptionKey: 'agent_intent_import_bank_statement_description',
+      approvalReasonKey: 'agent_intent_import_bank_statement_approval_reason',
+    },
+    descriptionTitle: () => '',
+    // No promptInstruction (see the entry's own header comment) means this
+    // is never reached via the ChatPage approval-card path in practice
+    // (intentValidator.ts's guard converts the type away first) --
+    // previewLines/buildHandlerInput below exist only to satisfy this
+    // interface's required-field completeness (and this registry's own
+    // completeness test), not because any real UI calls them. The actual,
+    // rich batch preview (row count, date range, sums, quarantined rows) is
+    // shared/bankImportBatchPreview.ts's buildBatchImportPreview, built
+    // directly from the parser's output, not from this generic per-field
+    // hook shape.
+    previewLines: () => [],
+    buildHandlerInput: ({ actorId, target }) => ({
+      userId: actorId,
+      batchId: target.batchId,
     }),
   },
 ]

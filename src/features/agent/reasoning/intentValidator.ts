@@ -286,6 +286,15 @@ function normalizeTarget(value: unknown) {
     updateTitle: safeBoundedText(value.updateTitle, 200),
     updateBody: safeBoundedText(value.updateBody, 10_000),
     updateLabels: safeLabelList(value.updateLabels),
+    // Task 45c, ADR-0017: import_bank_statement's only target field. Reading
+    // it here (well-formed-or-dropped, same as every other field in this
+    // function) does NOT make the intent chat-reachable -- see
+    // validateAgentIntentProposal's own explicit import_bank_statement guard
+    // below, which converts the type to "unsupported" before this value is
+    // ever inspected. A real batchId only ever comes from a prior
+    // POST /finance/import-batch/preview call; no chat message could
+    // legitimately supply one.
+    batchId: safeString(value.batchId) || undefined,
   };
 }
 
@@ -742,6 +751,40 @@ export function validateAgentIntentProposal(input: {
   }
 
   const initialType = safeString(input.rawProposal.type) as AgentIntentType;
+
+  // Task 45c, ADR-0017: import_bank_statement is registered in
+  // shared/writeIntentRegistry.ts (for its undo-kind/domain/write-runtime
+  // metadata -- see that entry's own comment) but must NEVER become a real
+  // chat proposal. As of task 45c PART B (Ruling 2, PO), the entry's own
+  // `exposure: 'ui-only'` field is the PRIMARY mechanism: the model cannot
+  // even output this type (agent/worker/reasoning-endpoint.ts's
+  // SUPPORTED_INTENT_VALUES enum excludes it under Gemini's structured-
+  // output constraint) and never reads a prompt sentence naming it
+  // (reasoningPrompt.ts filters the same way, both keyed off `exposure`).
+  // Registry membership alone still does not make this guard redundant,
+  // though: import_bank_statement is registry-derived into
+  // supportedIntentTypes/CONFIRMED_WRITE_INTENT_TYPES above (so it would
+  // otherwise pass the normal write-intent checks below unchanged) --
+  // this explicit check is the BACKSTOP for a malformed/bypassed model
+  // response, a future regression in the exposure filter, or this
+  // function being reused against some other input source entirely. If
+  // the model ever names this type regardless -- whatever its target
+  // looks like -- it is rejected here, before target normalization,
+  // before any approval-card path, with no clarification offered
+  // (clarifying would imply the user could supply what's missing via
+  // chat; they cannot -- a real batchId only exists after a UI-driven
+  // POST /finance/import-batch/preview call). See writeIntentRegistry.ts's
+  // entry comment for the other layers (an unfakeable required target
+  // field, no registered write handler).
+  if (initialType === 'import_bank_statement') {
+    return createSafeProposal('unsupported', {
+      userMessage: input.userMessage,
+      language: input.language,
+      now,
+      reason: 'import_bank_statement is UI-only and can never be proposed from chat.',
+    });
+  }
+
   const initialTypeSupported = supportedIntentTypes.includes(initialType);
   const domainEvidence = getStrongReadDomainEvidence(input.userMessage);
   const completionRequested = requestLooksLikeTaskCompletion(input.userMessage);

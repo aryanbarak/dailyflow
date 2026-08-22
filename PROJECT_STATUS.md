@@ -794,8 +794,88 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
     §12 sequencing; not addressed by the Orb Journey work above, which
     proceeded as its own separate track (ADR-0015) rather than as this
     slice.
+11. **Deterministic bank-statement import + batch write governance — IN
+    PROGRESS, built but NOT YET COMMITTED.**
+    [ADR-0017](docs/decisions/adr/ADR-0017-deterministic-bank-import-governance.md)
+    (Status: Proposed). Root cause (task 44): the PO could not import a
+    Sparkasse statement — the PDF chat-attach path was blocked by an
+    unrelated 10 MB client constant, and the CSV path's own hint described
+    a schema no Sparkasse export actually produces. PO decision (task 45):
+    deterministic parsing for money (model extraction rejected — a
+    silently mis-read amount is worse than a failed import) plus bringing
+    bulk financial writes under this codebase's write-governance model.
+    - **Slice 1 (parser)** — pure, dependency-free CSV-CAMT V2 / "CSV mit
+      Kategorien" parser, quarantine-with-threshold (20%) row validation
+      (PO decision, amending the original fail-closed draft — see the
+      ADR's own amendment). `shared/bankStatementParser.ts` +
+      `shared/bankStatementParser.test.ts` (51 tests) +
+      `shared/__fixtures__/bankStatements/*.csv`. Not yet imported by
+      anything at this slice.
+    - **Slice 2 (batch proposal + governance) — this task.** Makes the
+      parser's output an approvable, executable write proposal under
+      ADR-0012/0017. New write intent `import_bank_statement`
+      (`shared/writeIntentRegistry.ts`), registry-wide new field
+      `exposure: 'chat' | 'ui-only'` (this intent is the first `'ui-only'`
+      entry — see the ADR's task-45c amendment for the "two-view registry"
+      split this establishes for future domains). Server-side batch
+      commit under `service_role` (`agent/worker/index.ts`'s
+      `POST /finance/import-batch/preview` + `/commit`,
+      `agent/worker/flow-write-policy.ts`'s `executeBatchFinanceImport` +
+      the `finance_import_batches` locking primitives) — closes an
+      RLS-bypass gap present even in today's existing single-transaction
+      finance write. All-or-nothing execution; batch undo; one ledger row
+      per batch via the existing `recordProposalOutcome` choke-point
+      (ADR-0016) — rejection needed zero new code, reusing the existing
+      `POST /agent/proposal-outcome` endpoint as-is. The old
+      `BankImportTool.tsx` (PDF+Gemini path) is untouched and still the
+      PO's live bridge — retiring it is a later, separate slice per the
+      ADR, not done here.
+    - **Verification:** target suites + full suite green (3480 passed, 76
+      skipped, 2 pre-existing environment-only failures unrelated to this
+      work); `npm run typecheck` passing against baseline; Gemini
+      structured-output schema changed (enum narrowed to exclude the new
+      `'ui-only'` intent) — snapshot regenerated and diff-inspected
+      (`shared/reasoning-response-schema.snapshot.json`).
+    - **NOT done — explicit gates before this can ship:**
+      1. **Nothing committed, pushed, or deployed.** All of the above is
+         uncommitted working-tree state as of this entry.
+      2. **Two migrations authored, NOT applied to any database:**
+         `supabase/migrations/20260822000001_finance_import_rows.sql`,
+         `supabase/migrations/20260822000002_finance_import_batches.sql`
+         (plus an undo-kind CHECK-constraint widen,
+         `20260822000000_widen_flow_write_undo_kinds_import_bank_statement.sql`).
+         Requires `supabase db push` with explicit PO authorization, same
+         policy as every other pending migration in this file.
+      3. **`provider-contract-smoke` (5/5) not run.** No `GEMINI_API_KEY`
+         available in the environment this was built in — required before
+         deploy per this repo's own 28b policy (schema changes require a
+         live smoke pass, not just the snapshot diff).
+      4. **Retention/expiry for `finance_import_batches` is a named,
+         deferred gap**, not implemented — see the ADR's own task-45c
+         amendment for what's deferred and why it's accepted as low-severity
+         for now.
+      5. **No live-Supabase RLS test for `finance_import_batches` or its
+         sibling `finance_import_rows`** — both are `service_role`-only
+         tables (no `authenticated`/`anon` grant at all), so the
+         `project_records.rls.test.ts`-style owner-isolation pattern
+         doesn't apply the same way; a static migration-structure test
+         exists for `finance_import_batches`
+         (`supabase/tests/finance_import_batches.migration_structure.test.ts`)
+         but `finance_import_rows` still has neither.
 
 Superseded/completed sprint milestones from the prior version of this
 document have been removed rather than carried forward as history; git
 history of this file remains the record of what was previously claimed and
 when.
+
+
+## Personal Knowledge / Memory
+
+- Aryan Knowledge is an external Obsidian vault configured separately for local read-only access.
+- When durable personal or project context is relevant, start with `70 Memory/Memory Index/Memory Index.md`.
+- Use only approved memories as durable context.
+- The repository and its canonical documentation remain the technical source of truth.
+- If Obsidian memory conflicts with repository evidence about technical state, verify and follow the repository.
+- Treat the Obsidian vault as read-only. Never create, edit, move, rename, or delete vault files.
+- Suggest memory updates to the user instead of writing them directly.
+- Never store passwords, API keys, tokens, credentials, or other secrets in memory.

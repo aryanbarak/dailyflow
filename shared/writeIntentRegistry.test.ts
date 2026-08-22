@@ -41,6 +41,7 @@ const EXPECTED_INTENT_TYPES: readonly WriteIntentType[] = [
   'create_calendar_event',
   'update_calendar_event',
   'create_finance_transaction',
+  'import_bank_statement',
 ]
 
 describe('writeIntentRegistry completeness (task 23)', () => {
@@ -66,6 +67,7 @@ describe('writeIntentRegistry completeness (task 23)', () => {
       expect(['create', 'update']).toContain(entry.action)
       expect(entry.toolId).toBeTruthy()
       expect(entry.capability).toBeTruthy()
+      expect(['chat', 'ui-only']).toContain(entry.exposure)
       expect(entry.undoKind).toBeTruthy()
       expect(typeof entry.reversible).toBe('boolean')
       expect(entry.successSummary).toBeTruthy()
@@ -104,7 +106,7 @@ describe('writeIntentRegistry completeness (task 23)', () => {
   // (tasks, which has no equivalent existing prose to move) -- so a future
   // edit that silently drops or adds promptInstruction on the wrong entry
   // fails here, not only via the generic non-empty check above.
-  it('promptInstruction is backfilled for calendar and finance entries, left unset for tasks', () => {
+  it('promptInstruction is backfilled for calendar and finance entries, left unset for tasks and import_bank_statement', () => {
     const withInstruction = writeIntentRegistry
       .filter((entry) => entry.promptInstruction !== undefined)
       .map((entry) => entry.intentType)
@@ -113,7 +115,11 @@ describe('writeIntentRegistry completeness (task 23)', () => {
     const withoutInstruction = writeIntentRegistry
       .filter((entry) => entry.promptInstruction === undefined)
       .map((entry) => entry.intentType)
-    expect(withoutInstruction).toEqual(['create_task', 'update_task'])
+    // Task 45c, ADR-0017: import_bank_statement deliberately has no
+    // promptInstruction -- see its own registry-entry comment for why this
+    // is one of several deliberate layers keeping it out of chat, not an
+    // oversight to backfill later.
+    expect(withoutInstruction).toEqual(['create_task', 'update_task', 'import_bank_statement'])
   })
 
   it('every entry resolves by its own toolId', () => {
@@ -121,6 +127,19 @@ describe('writeIntentRegistry completeness (task 23)', () => {
       expect(findWriteIntentDescriptorByToolId(entry.toolId)).toBe(entry)
       expect(findWriteIntentDescriptor(entry.intentType)).toBe(entry)
     }
+  })
+
+  // Task 45c PART B (Ruling 2, PO): locks in exactly which entries are
+  // chat-exposed versus ui-only, the same "name the exact expected set, not
+  // just a shape check" discipline EXPECTED_INTENT_TYPES above already
+  // applies to registry membership -- a future entry silently defaulting to
+  // the wrong exposure fails here, not only in production behavior.
+  it('exposure is chat for every pre-45c entry, ui-only only for import_bank_statement', () => {
+    const chatExposed = writeIntentRegistry.filter((entry) => entry.exposure === 'chat').map((entry) => entry.intentType)
+    expect(chatExposed).toEqual(['create_task', 'update_task', 'create_calendar_event', 'update_calendar_event', 'create_finance_transaction'])
+
+    const uiOnly = writeIntentRegistry.filter((entry) => entry.exposure === 'ui-only').map((entry) => entry.intentType)
+    expect(uiOnly).toEqual(['import_bank_statement'])
   })
 
   it('every entry undoKind is one of the registry intent types (undo bookkeeping never names an unknown kind)', () => {
@@ -140,7 +159,7 @@ describe('writeIntentRegistry completeness (task 23)', () => {
     expect(WRITE_INTENT_TARGET_FIELD_NAMES).toEqual([
       'taskId', 'taskReference', 'taskTitleHint', 'title', 'notes', 'dueDate',
       'eventTitle', 'eventReference', 'eventId', 'start', 'end',
-      'amount', 'currency', 'direction', 'transactionDate', 'category', 'description', 'iban',
+      'amount', 'currency', 'direction', 'transactionDate', 'category', 'description', 'iban', 'batchId',
     ])
   })
 
@@ -237,6 +256,27 @@ describe('writeIntentRegistry completeness (task 23)', () => {
       expect(amountLine).toContain('⁩')
       expect(dateLine).toContain('⁦')
       expect(dateLine).toContain('⁩')
+    })
+
+    // Task 45c, ADR-0017: import_bank_statement's hooks exist only for
+    // registry-interface completeness (see its own entry comment) -- this
+    // pins that they are deliberately minimal/inert, not accidentally so.
+    it('import_bank_statement.previewLines always returns an empty array (the real preview is buildBatchImportPreview, not this generic hook)', () => {
+      const entry = findWriteIntentDescriptor('import_bank_statement')!
+      const labels = { ...PREVIEW_LABELS_FIXTURE }
+      expect(entry.previewLines({ batchId: 'batch-1' }, labels)).toEqual([])
+      expect(entry.previewLines(undefined, labels)).toEqual([])
+    })
+
+    it('import_bank_statement.buildHandlerInput only ever carries userId and batchId', () => {
+      const entry = findWriteIntentDescriptor('import_bank_statement')!
+      expect(entry.buildHandlerInput({ actorId: 'user-1', target: { batchId: 'batch-1' } }))
+        .toEqual({ userId: 'user-1', batchId: 'batch-1' })
+    })
+
+    it('import_bank_statement has no promptInstruction (deliberate -- see the entry\'s own comment on why this is one layer among several)', () => {
+      const entry = findWriteIntentDescriptor('import_bank_statement')!
+      expect(entry.promptInstruction).toBeUndefined()
     })
   })
 })

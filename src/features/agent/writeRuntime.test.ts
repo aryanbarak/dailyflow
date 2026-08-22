@@ -780,7 +780,27 @@ describe("writeRuntime", () => {
   // approvalForReasoningStep hardcoding riskLevel: 'medium') hide behind
   // the first one -- so the next write domain added to the registry cannot
   // ship with either gap unnoticed.
-  it.each(writeIntentRegistry.map((entry) => [entry.toolId, entry] as const))(
+  // Task 45c, ADR-0017: import_bank_statement is excluded from this loop by
+  // design, not an oversight -- it is the first registry entry that is
+  // deliberately NEVER meant to execute through runWriteTool at all (see
+  // its own writeIntentRegistry.ts entry comment: no chat trigger, no
+  // registered writeHandlers.ts handler, batch execution happens server-side
+  // in agent/worker/flow-write-policy.ts's executeBatchFinanceImport
+  // instead). It also has no toolRegistry.ts AgentToolDefinition entry --
+  // adding one just to satisfy this generic loop would misrepresent it as a
+  // normal, chat-executable write tool, which is exactly what its own
+  // multi-layered guard (this file, intentValidator.ts, writeHandlers.ts)
+  // exists to prevent. Without a catalog entry, getToolById already returns
+  // undefined for it in production, so validateResolvedTool fails it closed
+  // as 'unsupported_tool' -- a safe outcome this loop's own stubbed-handler
+  // setup does not exercise (it substitutes a fake handler specifically to
+  // isolate the capability/step-shape derivation this loop tests, which is
+  // exactly the machinery import_bank_statement is NOT meant to reach).
+  it.each(
+    writeIntentRegistry
+      .filter((entry) => entry.intentType !== "import_bank_statement")
+      .map((entry) => [entry.toolId, entry] as const),
+  )(
     "%s resolves through the write runtime's tool-support lookup and succeeds",
     async (_toolId, entry) => {
       const tool = getToolById(entry.toolId);
@@ -820,6 +840,41 @@ describe("writeRuntime", () => {
       expect(result.status).toBe("success");
     },
   );
+
+  // Task 45c, ADR-0017: the positive claim the exclusion comment above
+  // makes -- that import_bank_statement fails closed through runWriteTool
+  // -- tested directly, not just asserted in a comment. Uses the REAL
+  // (default) getToolById and getWriteHandlerByToolId, neither stubbed,
+  // proving both independent gaps (no toolRegistry.ts catalog entry, no
+  // writeHandlers.ts handler) actually produce 'unsupported_tool' in this
+  // codebase today, not merely in theory.
+  it("finance.import_bank_statement is NOT resolvable through runWriteTool -- no toolRegistry.ts entry, so it fails closed as 'unsupported_tool' before even reaching a handler lookup", async () => {
+    const entry = writeIntentRegistry.find((e) => e.intentType === "import_bank_statement")!;
+    const targetId = "step:import-bank-statement-guard";
+    const sourceStep = step({
+      id: targetId,
+      domain: entry.domain,
+      actionType: entry.action,
+      targetId,
+    });
+    const result = await runWriteTool(request({
+      requestId: "write:import-bank-statement-guard",
+      step: sourceStep,
+      toolResolution: resolution(sourceStep, entry.toolId),
+      approval: approval(sourceStep, {
+        toolId: entry.toolId,
+        targetId,
+        riskLevel: "medium",
+        dataDomains: [entry.domain],
+      }),
+      target: { batchId: "batch-1" },
+    }), {
+      authorityContext: trustedAuthority(),
+      now: () => now,
+    });
+
+    expect(result.status).toBe("unsupported_tool");
+  });
 
   // Task 36e guard, ADR-0013 Slice 4: expectedCapabilityForToolId and
   // expectedStepShapeForToolId are about to collapse their five
