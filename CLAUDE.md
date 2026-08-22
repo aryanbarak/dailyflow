@@ -24,6 +24,9 @@
 - Only update PROJECT_STATUS.md when explicitly asked (it is maintained manually; there is no auto-update workflow).
 - Explain risks before any major architecture change.
 - After changing worker code, remember it must be redeployed (`npx wrangler deploy`); secrets do not need redeploy, code does.
+- Changes to `main` go through a pull request (CI-01); direct pushes to `main` bypass the PR gate even though CI still runs on push.
+- The `ci` workflow must be green (typecheck, test, build; lint is advisory until LINT-01) before a PR merges.
+- Worker deploy stays manual (`npx wrangler deploy`) after running `provider-contract-smoke` locally — CI does not deploy the worker.
 
 ## Critical rule
 Never assume the architecture. Always inspect the current implementation first.

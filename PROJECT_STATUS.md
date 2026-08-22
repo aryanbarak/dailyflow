@@ -555,6 +555,14 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
 
 ## 4. Current blockers / open decisions
 
+- **CI-01 (PR gate + test-gated deploy): authored on branch, not merged.**
+  `.github/workflows/ci.yml` (new — typecheck/test/build on every PR and
+  push to `main`, lint advisory via `continue-on-error` until LINT-01) and
+  a 3-line `npm test` insertion into `deploy-cloudflare-pages.yml` (deploy
+  can no longer run if tests fail), on branch `ci/ci-01-pr-gate`. Branch
+  protection for `main` is not configurable from the repo — PO must enable
+  "require CI" under GitHub → Settings → Branches. Worker deploy stays
+  manual, untouched by this task.
 - **RESOLVED: production schema now aligned through `20260808000000` on
   `taqxwnlwllbywaklwyno` (task `8c`, 2026-08-09).** Full story, in order:
   - Task `8b`'s identity-gate "zero rows in every table" finding was a

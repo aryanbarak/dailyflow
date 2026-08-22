@@ -35,6 +35,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Test
+        run: npm test
+
       - name: Build
         env:
           VITE_TUTOR_API_URL: ${{ secrets.VITE_TUTOR_API_URL }}
