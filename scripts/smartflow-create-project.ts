@@ -14,6 +14,7 @@
 // enforced exactly once, in projectRecordService.ts/projectRecordValidation.ts,
 // not re-implemented here.
 import { createClient } from "@supabase/supabase-js";
+import { createSanitizedFetch } from "../src/features/projects/sanitizedSupabaseFetch";
 
 type ParsedArgs = {
   name: string;
@@ -170,7 +171,7 @@ async function main(): Promise<number> {
 
     const client = createClient(supabaseUrl, anonKey, {
       auth: { persistSession: false, autoRefreshToken: false },
-      global: { headers: { Authorization: `Bearer ${accessToken}` } },
+      global: { headers: { Authorization: `Bearer ${accessToken}` }, fetch: createSanitizedFetch() },
     });
     const resolveOwnerId = async () => {
       const { data, error } = await client.auth.getUser(accessToken);

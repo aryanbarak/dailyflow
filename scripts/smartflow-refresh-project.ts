@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createClient } from "@supabase/supabase-js";
+import { createSanitizedFetch } from "../src/features/projects/sanitizedSupabaseFetch";
 
 type ParsedArgs = { projectId: string; repoRoot: string; json: boolean; allowProduction: boolean };
 
@@ -140,7 +141,7 @@ async function main(): Promise<number> {
 
     const client = createClient(supabaseUrl, anonKey, {
       auth: { persistSession: false, autoRefreshToken: false },
-      global: { headers: { Authorization: `Bearer ${accessToken}` } },
+      global: { headers: { Authorization: `Bearer ${accessToken}` }, fetch: createSanitizedFetch() },
     });
     const resolveOwnerId = async () => {
       const { data, error } = await client.auth.getUser(accessToken);
