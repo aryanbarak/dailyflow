@@ -70,6 +70,19 @@ export function createLlmReasoningCaller(
     });
 
     if (!response.ok) {
+      // INC-01: a 503 carrying the worker's typed PROVIDER_UNAVAILABLE
+      // code (agent/worker/index.ts's handleChat, mode==="reasoning")
+      // means the AI provider itself never got a chance to answer --
+      // distinct from any other non-ok status, which keeps the existing
+      // rawText:"" behavior (treated as "the model responded with nothing
+      // usable" by reasoningOrchestrator.ts's parse/rescue path, same as
+      // before this fix).
+      if (response.status === 503) {
+        const errorBody = await response.json().catch(() => null) as { code?: unknown } | null;
+        if (errorBody?.code === "PROVIDER_UNAVAILABLE") {
+          return { rawText: "", providerUnavailable: true };
+        }
+      }
       return { rawText: "" };
     }
 
