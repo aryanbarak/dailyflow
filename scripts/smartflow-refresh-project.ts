@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { createClient } from "@supabase/supabase-js";
+import { createClient, isAuthRetryableFetchError } from "@supabase/supabase-js";
+import { createSanitizedFetch } from "../src/features/projects/sanitizedSupabaseFetch";
 
 type ParsedArgs = { projectId: string; repoRoot: string; json: boolean; allowProduction: boolean };
 
@@ -59,6 +60,12 @@ function exitCodeFor(code: string): number {
   }
   if (code === "PROJECT_NOT_FOUND" || code === "PROJECT_ARCHIVED" || code === "EVIDENCE_SOURCE_DISABLED") return 4;
   if (code === "INVALID_REPOSITORY_ROOT" || code === "DOCUMENT_DISCOVERY_FAILURE" || code === "UNSAFE_DOCUMENT_PATH" || code === "DOCUMENT_READ_FAILURE") return 5;
+  // CI-01b: distinct from UNAUTHENTICATED (exit 3) -- "the server never
+  // answered" is a different, actionable problem than "the server answered
+  // and rejected the credentials." Reusing exit 3 here would tell a script
+  // wrapping this CLI to prompt for new credentials when the real problem
+  // is connectivity.
+  if (code === "NETWORK_UNAVAILABLE") return 6;
   return 1;
 }
 
@@ -140,11 +147,25 @@ async function main(): Promise<number> {
 
     const client = createClient(supabaseUrl, anonKey, {
       auth: { persistSession: false, autoRefreshToken: false },
-      global: { headers: { Authorization: `Bearer ${accessToken}` } },
+      global: { headers: { Authorization: `Bearer ${accessToken}` }, fetch: createSanitizedFetch() },
     });
     const resolveOwnerId = async () => {
       const { data, error } = await client.auth.getUser(accessToken);
-      if (error) return null;
+      if (error) {
+        // CI-01b: isAuthRetryableFetchError is @supabase/supabase-js's own
+        // public marker for "the request never got a real answer" (network
+        // failure, or a genuine upstream 502/503/504 -- see
+        // sanitizedSupabaseFetch.ts's own comment for how a local
+        // ECONNREFUSED/DNS/timeout ends up wearing this same shape) --
+        // distinct from a real 401/invalid-JWT rejection, which the server
+        // DID answer. Reporting both as UNAUTHENTICATED would tell the user
+        // their credentials are wrong when the real problem is that the
+        // server was never reached at all.
+        if (isAuthRetryableFetchError(error)) {
+          throw new CliError("NETWORK_UNAVAILABLE", "Could not connect to the Supabase project (network error).");
+        }
+        return null;
+      }
       return data.user?.id ?? null;
     };
 

@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  pull_request: {}
+  push:
+    branches: ["main"]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      # LINT-01 TODO: this repo has 41 pre-existing lint errors
+      # (docs/architecture/notes/ or the CI-00 report has the count) --
+      # continue-on-error here so CI-01 doesn't block every PR on
+      # unrelated pre-existing violations. A future task (LINT-01) is
+      # expected to either fix them or adopt an eslint baseline mechanism,
+      # then remove this continue-on-error so lint becomes blocking.
+      - name: Lint
+        run: npm run lint
+        continue-on-error: true
+
+      # No VITE_* secrets passed here on purpose: `npm run build` was
+      # verified locally (CI-01) to succeed with zero VITE_* env vars set
+      # -- Vite does not fail the build when an import.meta.env.VITE_*
+      # reference is undefined, it just bundles `undefined` for that
+      # reference and the app's own runtime code handles an unconfigured
+      # value (this workflow never serves or deploys the resulting dist/,
+      # so a build-time-unconfigured value has no user-facing effect here
+      # either way). If a future change makes the build actually REQUIRE
+      # one of these to succeed, use the same secrets
+      # deploy-cloudflare-pages.yml already defines
+      # (VITE_TUTOR_API_URL, VITE_TUTOR_API_TOKEN, VITE_AI_AGENT_URL,
+      # VITE_APP_ENV, VITE_AGENT_WORKER_URL) rather than inventing new ones.
+      - name: Build
+        run: npm run build
