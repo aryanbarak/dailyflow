@@ -27,3 +27,14 @@
 
 ## Critical rule
 Never assume the architecture. Always inspect the current implementation first.
+
+## Personal Knowledge / Memory
+
+- Aryan Knowledge is an external Obsidian vault configured separately for local read-only access.
+- When durable personal or project context is relevant, start with `70 Memory/Memory Index/Memory Index.md`.
+- Use only approved memories as durable context.
+- The repository and its canonical documentation remain the technical source of truth.
+- If Obsidian memory conflicts with repository evidence about technical state, verify and follow the repository.
+- Treat the Obsidian vault as read-only. Never create, edit, move, rename, or delete vault files.
+- Suggest memory updates to the user instead of writing them directly.
+- Never store passwords, API keys, tokens, credentials, or other secrets in memory.
