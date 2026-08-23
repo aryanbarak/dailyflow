@@ -47,6 +47,11 @@ import { buildReasoningResponseSchema } from '../agent/worker/reasoning-endpoint
 // MIG-01b: single-source model resolution (see that module's header
 // comment) -- this script no longer hardcodes its own default.
 import { resolveGeminiModel } from '../agent/worker/geminiModel'
+// ADR-0018 S2 Phase B: both builders above now return the neutral schema
+// subset, not Gemini's dialect -- this probe sends raw wire-level
+// requests by design (it exists to find real Gemini dialect quirks), so
+// it translates back explicitly rather than going through any adapter.
+import { translateNeutralSchema } from '../agent/worker/providers/gemini/geminiSchemaTranslation'
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? ''
 const GEMINI_MODEL = resolveGeminiModel({ GEMINI_MODEL: process.env.GEMINI_MODEL })
@@ -152,7 +157,7 @@ async function main() {
       generationConfig: {
         maxOutputTokens: 1024,
         responseMimeType: 'application/json',
-        responseSchema: buildTaskTitleResponseSchema(),
+        responseSchema: translateNeutralSchema(buildTaskTitleResponseSchema()),
       },
     }),
   )
@@ -164,7 +169,7 @@ async function main() {
       generationConfig: {
         maxOutputTokens: 1024,
         responseMimeType: 'application/json',
-        responseSchema: buildReasoningResponseSchema(),
+        responseSchema: translateNeutralSchema(buildReasoningResponseSchema()),
       },
     }),
   )
@@ -179,7 +184,7 @@ async function main() {
         maxOutputTokens: 1024,
         thinkingConfig: { thinkingBudget: 0 },
         responseMimeType: 'application/json',
-        responseSchema: buildTaskTitleResponseSchema(),
+        responseSchema: translateNeutralSchema(buildTaskTitleResponseSchema()),
       },
     }),
   )

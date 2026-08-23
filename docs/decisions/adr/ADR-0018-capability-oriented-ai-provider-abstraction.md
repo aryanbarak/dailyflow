@@ -81,7 +81,7 @@ interface EmbeddingProvider {
 
 The four schema builders (`buildReasoningResponseSchema`, `buildDerivationResponseSchema`, `buildExtractionResponseSchema`, `buildTaskTitleResponseSchema`) are rewritten to emit a **minimal JSON-Schema subset** owned by SmartFlow:
 
-`object`, `string`, `number`, `boolean`, `array` (of the above), `enum` (string), `required`, `maxItems`, `description`. Nothing else. If a builder needs more, that is a new decision.
+`object`, `string`, `number`, `boolean`, `array` (of the above), `enum` (string), `required`, `maxItems`, `minItems` (Amendments, 2026-08-23), `description`. Nothing else. If a builder needs more, that is a new decision.
 
 `GeminiStructuredGenerationProvider` translates this subset into Gemini's `responseSchema` dialect at call time. **Proof of zero behavior change:** `shared/reasoning-response-schema.snapshot.json` is extended to cover all four builders' *Gemini-translated* output; the snapshot must be byte-identical before and after the refactor. This is the same discipline as `provider-contract-smoke` — a provider-visible artifact, diffed.
 
@@ -182,3 +182,14 @@ S0–S3 are Tier-2 (code + authored migration). Applying the `provider_failure_e
 ## Supersession and Change Control
 
 Changes to the set of capabilities, to the fallback policy table, or to the scope boundary require a superseding or amending ADR with PO approval. Adding a second provider implementation for an existing capability does **not** require a new ADR if it conforms to the interface and passes the capability's contract tests; it does require a PO-approved slice.
+
+## Amendments (2026-08-23)
+
+**`minItems` added to the neutral schema subset (Decision 3).** Discovered during S2 Phase A (baseline snapshot of all four builders' current `responseSchema` output, generated from the real, unmodified builders): 3 of the 4 real builders use `minItems` today, not the 1-of-4 the original Decision 3 text anticipated —
+
+- `buildReasoningResponseSchema`: `reasons` (`minItems: 1, maxItems: 3`), `candidates` (`minItems: 2, maxItems: 6`), `candidates[].reasons` (`minItems: 1, maxItems: 3`)
+- `buildDerivationResponseSchema`: `sourceEvidenceIds` (`minItems: 1, maxItems: 20`)
+- `buildExtractionResponseSchema`: `provenanceSourceRefIds` (`minItems: 1, maxItems: 20`)
+- `buildTaskTitleResponseSchema`: none (already subset-compliant)
+
+Decision 3's own zero-behavior-change proof is a byte-identical snapshot round-trip through the neutral schema and back through Gemini translation. A subset without `minItems` cannot reconstruct it — the round-tripped schema would silently lose a real, currently-enforced provider-side constraint (bounded-but-nonempty arrays), which is a behavior change, not a refactor. Widening the subset by one primitive (rather than dropping the constraint, or blocking S2 entirely for a full ADR review) was decided inline during S2 implementation and approved by the coordinator before any builder was touched — see the S2 report for the full options considered. `neutralSchema.ts`/`geminiSchemaTranslation.ts` implement it as a direct passthrough, identical in shape to `maxItems`.

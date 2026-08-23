@@ -22,6 +22,8 @@
 
 import { fetchGeminiOrThrow } from './provider-errors'
 import { resolveGeminiModel } from './geminiModel'
+import type { NeutralObjectSchema } from './providers/schema/neutralSchema'
+import { translateNeutralSchema } from './providers/gemini/geminiSchemaTranslation'
 
 export function buildTaskTitleSystemInstruction(): string {
   return [
@@ -37,12 +39,14 @@ export function buildTaskTitlePrompt(requestText: string): string {
   return `User's task request:\n\n${requestText}`
 }
 
-export function buildTaskTitleResponseSchema() {
+// ADR-0018 S2 Phase B: emits the neutral schema subset now, not Gemini's
+// dialect -- see providers/schema/neutralSchema.ts's own header comment.
+export function buildTaskTitleResponseSchema(): NeutralObjectSchema {
   return {
-    type: 'OBJECT',
+    type: 'object',
     required: ['title'],
     properties: {
-      title: { type: 'STRING' },
+      title: { type: 'string' },
     },
   }
 }
@@ -77,6 +81,13 @@ export async function callGeminiForTaskTitle(
   // MIG-01b: thinkingConfig removed -- gemini-3.6-flash returns 400
   // INVALID_ARGUMENT on thinkingConfig:{thinkingBudget:0} (see
   // geminiModel.ts and scripts/gemini-36-probe.ts's P3 finding).
+  // ADR-0018 S2 Phase B (interim): the builder now returns the neutral
+  // schema; translateNeutralSchema() converts it back to Gemini's dialect
+  // right here so this raw fetch's request body -- and every existing
+  // test asserting its exact shape -- is unaffected by the builder
+  // rewrite. Phase C replaces this whole raw-fetch call with
+  // createProviders(env).structured.generateStructured(...), which does
+  // the same translation internally; this wrapper is temporary.
   const response = await fetchGeminiOrThrow(fetcher, modelUrl.toString(), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -87,7 +98,7 @@ export async function callGeminiForTaskTitle(
         maxOutputTokens: MAX_OUTPUT_TOKENS_TASK_TITLE,
         temperature: 0,
         responseMimeType: 'application/json',
-        responseSchema: buildTaskTitleResponseSchema(),
+        responseSchema: translateNeutralSchema(buildTaskTitleResponseSchema()),
       },
     }),
   }, 'Task title model request')

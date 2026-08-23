@@ -42,6 +42,7 @@ import {
 import { ProviderRequestError, ProviderUnavailableError, fetchGeminiOrThrow } from './provider-errors'
 import { createProviders } from './providers/createProviders'
 import { resolveGeminiModel } from './geminiModel'
+import { translateNeutralSchema } from './providers/gemini/geminiSchemaTranslation'
 import { recordProposalOutcome } from './proposal-outcome-recording'
 import { parseProposalOutcomeRequestBody } from './proposal-outcome-endpoint'
 import type { WriteIntentType } from '../../shared/writeIntentRegistry'
@@ -1479,7 +1480,13 @@ async function callGeminiReasoning(
           maxOutputTokens: 2048,
           temperature: 0,
           responseMimeType: 'application/json',
-          responseSchema: buildReasoningResponseSchema(),
+          // ADR-0018 S2 Phase B (interim): buildReasoningResponseSchema now
+          // returns the neutral schema subset; translateNeutralSchema()
+          // converts it back to Gemini's dialect right here so this raw
+          // fetch's request body is unaffected by the builder rewrite.
+          // Phase C replaces this whole raw-fetch call with
+          // createProviders(env).structured.generateStructured(...).
+          responseSchema: translateNeutralSchema(buildReasoningResponseSchema()),
         },
       }),
     },

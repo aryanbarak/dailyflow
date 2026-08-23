@@ -34,6 +34,8 @@
 import { parseModelJsonObject, ModelJsonParseError } from './modelJsonParsing'
 import { EMBEDDING_MODEL, EMBEDDING_DIMENSIONS, l2Normalize } from './embeddingConfig'
 import { resolveGeminiModel } from './geminiModel'
+import type { NeutralObjectSchema } from './providers/schema/neutralSchema'
+import { translateNeutralSchema } from './providers/gemini/geminiSchemaTranslation'
 
 const PERSONAL_MEMORY_RECORD_KINDS = ['preference', 'goal', 'working_pattern', 'commitment', 'personal_fact', 'skill'] as const
 type PersonalMemoryRecordKind = typeof PERSONAL_MEMORY_RECORD_KINDS[number]
@@ -442,9 +444,11 @@ export function buildExtractionPrompt(source: readonly SourceItemForPrompt[]): s
   return `Source material:\n\n${blocks}`
 }
 
-export function buildExtractionResponseSchema() {
+// ADR-0018 S2 Phase B: emits the neutral schema subset now, not Gemini's
+// dialect -- see providers/schema/neutralSchema.ts's own header comment.
+export function buildExtractionResponseSchema(): NeutralObjectSchema {
   return {
-    type: 'OBJECT',
+    type: 'object',
     required: ['candidates'],
     properties: {
       // Task 14 fix: NO maxItems here -- reproduced against the real
@@ -463,19 +467,19 @@ export function buildExtractionResponseSchema() {
       // provider's internal decoding-complexity budget, which could shift
       // with a future model update.
       candidates: {
-        type: 'ARRAY',
+        type: 'array',
         items: {
-          type: 'OBJECT',
+          type: 'object',
           required: ['kind', 'content', 'confidence', 'provenanceSourceKind', 'provenanceSourceRefIds'],
           properties: {
-            kind: { type: 'STRING', enum: [...PERSONAL_MEMORY_RECORD_KINDS] },
-            confidence: { type: 'STRING', enum: [...CONFIDENCE_VALUES] },
-            provenanceSourceKind: { type: 'STRING', enum: [...PROVENANCE_SOURCE_KINDS] },
-            provenanceSourceRefIds: { type: 'ARRAY', minItems: 1, maxItems: 20, items: { type: 'STRING' } },
+            kind: { type: 'string', enum: [...PERSONAL_MEMORY_RECORD_KINDS] },
+            confidence: { type: 'string', enum: [...CONFIDENCE_VALUES] },
+            provenanceSourceKind: { type: 'string', enum: [...PROVENANCE_SOURCE_KINDS] },
+            provenanceSourceRefIds: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'string' } },
             content: {
-              type: 'OBJECT',
+              type: 'object',
               properties: {
-                summary: { type: 'STRING' },
+                summary: { type: 'string' },
                 // Task 12 fix: constrain every secondary field with the SAME
                 // enum values normalizeCandidate ultimately requires
                 // (SECONDARY_FIELD_OPTIONS below), instead of leaving them as
@@ -486,12 +490,12 @@ export function buildExtractionResponseSchema() {
                 // "medium") than a prompt instruction alone -- especially
                 // with mixed-language source material, where the model is
                 // already reasoning across languages.
-                strength: { type: 'STRING', enum: [...SECONDARY_FIELD_OPTIONS.strength] },
-                timeframe: { type: 'STRING', enum: [...SECONDARY_FIELD_OPTIONS.timeframe] },
-                frequency: { type: 'STRING', enum: [...SECONDARY_FIELD_OPTIONS.frequency] },
-                status: { type: 'STRING', enum: [...SECONDARY_FIELD_OPTIONS.status] },
-                category: { type: 'STRING', enum: [...SECONDARY_FIELD_OPTIONS.category] },
-                level: { type: 'STRING', enum: [...SECONDARY_FIELD_OPTIONS.level] },
+                strength: { type: 'string', enum: [...SECONDARY_FIELD_OPTIONS.strength] },
+                timeframe: { type: 'string', enum: [...SECONDARY_FIELD_OPTIONS.timeframe] },
+                frequency: { type: 'string', enum: [...SECONDARY_FIELD_OPTIONS.frequency] },
+                status: { type: 'string', enum: [...SECONDARY_FIELD_OPTIONS.status] },
+                category: { type: 'string', enum: [...SECONDARY_FIELD_OPTIONS.category] },
+                level: { type: 'string', enum: [...SECONDARY_FIELD_OPTIONS.level] },
               },
             },
           },
@@ -557,7 +561,9 @@ async function callGeminiForExtraction(
           // real, mixed-language Persian/English material this route
           // handles) is still real on 2.5 -- accepted, 2.5 is being
           // retired (see callGemini's identical note in index.ts).
-          responseSchema: buildExtractionResponseSchema(),
+          // ADR-0018 S2 Phase B (interim): see task-title-extraction.ts's
+          // identical comment -- Phase C replaces this raw fetch entirely.
+          responseSchema: translateNeutralSchema(buildExtractionResponseSchema()),
         },
       }),
     })

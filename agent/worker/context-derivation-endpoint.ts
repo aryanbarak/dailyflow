@@ -47,6 +47,8 @@
 import { parseModelJsonObject, ModelJsonParseError } from './modelJsonParsing'
 import { ProviderCallError, type ProviderFailureTaxonomy } from './providers/providerFailureTaxonomy'
 import { resolveGeminiModel } from './geminiModel'
+import type { NeutralObjectSchema } from './providers/schema/neutralSchema'
+import { translateNeutralSchema } from './providers/gemini/geminiSchemaTranslation'
 
 const CONTEXT_FIELD_KINDS = ['objective', 'milestone', 'decision', 'risk', 'capability', 'candidate_action'] as const
 type ContextFieldKind = typeof CONTEXT_FIELD_KINDS[number]
@@ -311,9 +313,13 @@ export function buildDerivationPrompt(projectName: string, evidence: readonly Ev
   return `Project: ${projectName}\n\nEvidence:\n\n${evidenceBlocks}`
 }
 
-export function buildDerivationResponseSchema() {
+// ADR-0018 S2 Phase B: emits the neutral schema subset now, not Gemini's
+// dialect -- see providers/schema/neutralSchema.ts's own header comment.
+// `order` is `{ type: 'number', integer: true }` (amendment 2), was
+// `{ type: 'INTEGER' }` directly.
+export function buildDerivationResponseSchema(): NeutralObjectSchema {
   return {
-    type: 'OBJECT',
+    type: 'object',
     required: ['candidates'],
     properties: {
       // Task 14 fix: NO maxItems here -- the identical bug diagnosed and
@@ -326,27 +332,27 @@ export function buildDerivationResponseSchema() {
       // for serving". The invariant now lives in code (see the .slice call
       // after parsing the model's response), not in the schema.
       candidates: {
-        type: 'ARRAY',
+        type: 'array',
         items: {
-          type: 'OBJECT',
+          type: 'object',
           required: ['kind', 'content', 'confidence', 'sourceEvidenceIds'],
           properties: {
-            kind: { type: 'STRING', enum: [...CONTEXT_FIELD_KINDS] },
-            confidence: { type: 'STRING', enum: [...CONFIDENCE_VALUES] },
-            sourceEvidenceIds: { type: 'ARRAY', minItems: 1, maxItems: 20, items: { type: 'STRING' } },
+            kind: { type: 'string', enum: [...CONTEXT_FIELD_KINDS] },
+            confidence: { type: 'string', enum: [...CONFIDENCE_VALUES] },
+            sourceEvidenceIds: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'string' } },
             content: {
-              type: 'OBJECT',
+              type: 'object',
               properties: {
-                summary: { type: 'STRING' },
-                title: { type: 'STRING' },
-                status: { type: 'STRING' },
-                severity: { type: 'STRING' },
-                notes: { type: 'STRING' },
-                rationale: { type: 'STRING' },
-                since: { type: 'STRING' },
-                decidedAt: { type: 'STRING' },
-                completedAt: { type: 'STRING' },
-                order: { type: 'INTEGER' },
+                summary: { type: 'string' },
+                title: { type: 'string' },
+                status: { type: 'string' },
+                severity: { type: 'string' },
+                notes: { type: 'string' },
+                rationale: { type: 'string' },
+                since: { type: 'string' },
+                decidedAt: { type: 'string' },
+                completedAt: { type: 'string' },
+                order: { type: 'number', integer: true },
               },
             },
           },
@@ -391,7 +397,9 @@ async function callGeminiForDerivation(
           // output tokens on internal "thinking" by default) is still real
           // on 2.5 -- accepted, 2.5 is being retired (see callGemini's
           // identical note in index.ts).
-          responseSchema: buildDerivationResponseSchema(),
+          // ADR-0018 S2 Phase B (interim): see task-title-extraction.ts's
+          // identical comment -- Phase C replaces this raw fetch entirely.
+          responseSchema: translateNeutralSchema(buildDerivationResponseSchema()),
         },
       }),
     })

@@ -69,6 +69,12 @@ import { GeminiTextGenerationProvider } from '../agent/worker/providers/gemini/G
 // MIG-01b: single-source model resolution (see that module's header
 // comment) -- this script no longer hardcodes its own default.
 import { resolveGeminiModel } from '../agent/worker/geminiModel'
+// ADR-0018 S2 Phase B (interim): the four builders below now return the
+// neutral schema subset, not Gemini's dialect -- translateNeutralSchema()
+// converts back for this raw callGenerateContent helper. Phase C replaces
+// checks 1-4 with calls through the real provider+translation path (that
+// is the point of this script), removing this wrapper.
+import { translateNeutralSchema } from '../agent/worker/providers/gemini/geminiSchemaTranslation'
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? ''
 const GEMINI_MODEL = resolveGeminiModel({ GEMINI_MODEL: process.env.GEMINI_MODEL })
@@ -118,7 +124,7 @@ async function checkExtractionContract(): Promise<ContractResult> {
   const name = 'generateContent + buildExtractionResponseSchema (personal-memory-extraction-endpoint.ts)'
   try {
     const prompt = buildExtractionPrompt([{ id: 'smoke-1', provenanceSourceKind: 'chat_turn', text: 'I prefer working in the morning.' }])
-    const { status, bodyText } = await callGenerateContent(GEMINI_MODEL, buildExtractionSystemInstruction(), prompt, buildExtractionResponseSchema())
+    const { status, bodyText } = await callGenerateContent(GEMINI_MODEL, buildExtractionSystemInstruction(), prompt, translateNeutralSchema(buildExtractionResponseSchema()))
     if (status !== 200) return { name, pass: false, detail: `httpStatus=${status} body=${bodyText.slice(0, 300)}` }
     const parsed = JSON.parse(bodyText) as { candidates?: Array<{ finishReason?: string }> }
     const finishReason = parsed.candidates?.[0]?.finishReason
@@ -133,7 +139,7 @@ async function checkDerivationContract(): Promise<ContractResult> {
   const name = 'generateContent + buildDerivationResponseSchema (context-derivation-endpoint.ts)'
   try {
     const prompt = buildDerivationPrompt('Smoke Test Project', [{ id: 'smoke-1', sourceKind: 'note', title: 'Kickoff', reference: 'smoke', text: 'Project kickoff scheduled next week.' }])
-    const { status, bodyText } = await callGenerateContent(GEMINI_MODEL, buildDerivationSystemInstruction(), prompt, buildDerivationResponseSchema())
+    const { status, bodyText } = await callGenerateContent(GEMINI_MODEL, buildDerivationSystemInstruction(), prompt, translateNeutralSchema(buildDerivationResponseSchema()))
     if (status !== 200) return { name, pass: false, detail: `httpStatus=${status} body=${bodyText.slice(0, 300)}` }
     const parsed = JSON.parse(bodyText) as { candidates?: Array<{ finishReason?: string }> }
     const finishReason = parsed.candidates?.[0]?.finishReason
@@ -148,7 +154,7 @@ async function checkTaskTitleContract(): Promise<ContractResult> {
   const name = 'generateContent + buildTaskTitleResponseSchema (task-title-extraction.ts)'
   try {
     const prompt = buildTaskTitlePrompt('Create a task for tomorrow because I have a family doctor appointment at 11am.')
-    const { status, bodyText } = await callGenerateContent(GEMINI_MODEL, buildTaskTitleSystemInstruction(), prompt, buildTaskTitleResponseSchema())
+    const { status, bodyText } = await callGenerateContent(GEMINI_MODEL, buildTaskTitleSystemInstruction(), prompt, translateNeutralSchema(buildTaskTitleResponseSchema()))
     if (status !== 200) return { name, pass: false, detail: `httpStatus=${status} body=${bodyText.slice(0, 300)}` }
     const parsed = JSON.parse(bodyText) as { candidates?: Array<{ finishReason?: string }> }
     const finishReason = parsed.candidates?.[0]?.finishReason
@@ -163,7 +169,7 @@ async function checkReasoningContract(): Promise<ContractResult> {
   const name = 'generateContent + buildReasoningResponseSchema (reasoning-endpoint.ts)'
   try {
     const prompt = 'Latest user message: "I spent 45 EUR on groceries today." Propose one intent for this SmartFlow request.'
-    const { status, bodyText } = await callGenerateContent(GEMINI_MODEL, buildReasoningSystemInstruction('en'), prompt, buildReasoningResponseSchema())
+    const { status, bodyText } = await callGenerateContent(GEMINI_MODEL, buildReasoningSystemInstruction('en'), prompt, translateNeutralSchema(buildReasoningResponseSchema()))
     if (status !== 200) return { name, pass: false, detail: `httpStatus=${status} body=${bodyText.slice(0, 300)}` }
     const parsed = JSON.parse(bodyText) as { candidates?: Array<{ finishReason?: string; content?: { parts?: Array<{ text?: string }> } }> }
     const candidate = parsed.candidates?.[0]
