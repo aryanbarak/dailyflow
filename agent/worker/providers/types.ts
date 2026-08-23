@@ -29,6 +29,15 @@ export interface TextGenerationRequest {
   turns: ChatMessage[];
   maxOutputTokens?: number;
   temperature?: number;
+  // ADR-0018 S1 follow-up (part-order preservation): when providerOptions
+  // carries an attachment (the Gemini adapter's own inlineDataAttachment),
+  // this says whether it precedes or follows the turn's own text part. The
+  // adapter must not choose this itself -- S1 originally hardcoded "always
+  // after" and silently flipped two callers' pre-existing part order
+  // (transcribePdf, /documents/analyze both put the attachment BEFORE the
+  // text). No default: the Gemini adapter throws if an attachment is
+  // present without this field set, rather than guessing.
+  attachmentPosition?: 'before' | 'after';
   providerOptions?: Record<string, unknown>;
 }
 

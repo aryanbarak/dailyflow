@@ -266,6 +266,11 @@ export async function transcribePdf(
       turns: [{ role: 'user', content: TRANSCRIPTION_INSTRUCTION }],
       maxOutputTokens: 8192,
       temperature: 0,
+      // ADR-0018 S1 follow-up: restores the original raw-fetch part order
+      // (PDF part BEFORE the text instruction) -- S1's adapter briefly
+      // flipped this to "after" via an unverified assumption. See
+      // GeminiTextGenerationProvider.ts's header comment.
+      attachmentPosition: 'before',
       providerOptions: {
         inlineDataAttachment: { mimeType: 'application/pdf', data: pdfBase64 },
       },

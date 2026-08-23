@@ -65,6 +65,21 @@ function isRetryableStatus(status: number): boolean {
   return status === 429 || status >= 500
 }
 
+// ADR-0018 S1 follow-up: the response body of a non-ok Gemini call is
+// bounded before it ever reaches a thrown error's `.body` field. An
+// upstream proxy or the provider itself can return an arbitrarily large
+// error page (e.g. a gateway timeout's HTML body) -- nothing downstream
+// needs more than a diagnostic-sized excerpt (every consumer either logs
+// it as-is or parses a small JSON error envelope out of the front of it,
+// see document-memory-extraction-endpoint.ts's transcribePdf). 4000 chars
+// is generous headroom for any real Gemini JSON error envelope while
+// still bounding the worst case.
+const MAX_ERROR_BODY_CHARS = 4000
+
+function truncateErrorBody(body: string): string {
+  return body.length > MAX_ERROR_BODY_CHARS ? `${body.slice(0, MAX_ERROR_BODY_CHARS)}...(truncated)` : body
+}
+
 /**
  * Performs one Gemini fetch call and classifies any failure to reach a
  * usable HTTP response. Network-level failures (fetch itself rejecting --
@@ -87,7 +102,8 @@ export async function fetchGeminiOrThrow(
     throw new ProviderUnavailableError(`${apiLabel}: network error reaching the provider (${(err as Error).message})`)
   }
   if (!res.ok) {
-    const body = await res.text()
+    const rawBody = await res.text()
+    const body = truncateErrorBody(rawBody)
     if (isRetryableStatus(res.status)) {
       throw new ProviderUnavailableError(`${apiLabel}: provider error ${res.status}: ${body}`, res.status, body)
     }

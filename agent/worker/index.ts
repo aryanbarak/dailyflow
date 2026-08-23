@@ -242,6 +242,15 @@ async function handleGenerate(request: Request, env: Env): Promise<Response> {
     const briefing = await generateBriefing(userId, env, 'user', mode)
     return json({ success: true, briefing: briefing.content }, 200, origin)
   } catch (err) {
+    // INC-01/ADR-0018 S1 follow-up: a provider failure must surface as a
+    // distinct, honest outcome, not the generic 500 below -- mirrors the
+    // /chat mode=reasoning 503 PROVIDER_UNAVAILABLE response (same file,
+    // see that branch's own comment) for this endpoint's own single,
+    // un-retried Gemini call.
+    if (err instanceof ProviderUnavailableError) {
+      console.error('Briefing generation failed: provider unavailable', err)
+      return json({ error: 'The AI provider is temporarily unavailable.', code: 'PROVIDER_UNAVAILABLE' }, 503, origin)
+    }
     console.error('Agent error:', err)
     return json({ error: 'Failed to generate briefing' }, 500, origin)
   }
@@ -1401,6 +1410,9 @@ async function callGeminiChat(
     turns: history,
     maxOutputTokens,
     temperature,
+    // ADR-0018 S1 follow-up: attachmentPosition only matters (and is only
+    // required by the adapter) when an attachment is actually present.
+    ...(imageAttachment ? { attachmentPosition: 'after' as const } : {}),
     providerOptions: {
       thinkingConfig: { thinkingBudget: 0 },
       ...(imageAttachment
@@ -1780,6 +1792,12 @@ async function handleDocumentAnalyze(request: Request, env: Env): Promise<Respon
         turns: [{ role: 'user', content: text }],
         temperature: 0.3,
         maxOutputTokens: 4096,
+        // ADR-0018 S1 follow-up: the ORIGINAL raw fetch here pushed the
+        // fileData part BEFORE the text part (see the pre-S1 code) -- S1's
+        // adapter briefly flipped this to "after" by an unverified,
+        // wrongly-generalized assumption. 'before' restores the original
+        // order.
+        ...(body.fileData?.base64 ? { attachmentPosition: 'before' as const } : {}),
         providerOptions: body.fileData?.base64
           ? { inlineDataAttachment: { mimeType: body.fileData.mimeType, data: body.fileData.base64 } }
           : undefined,

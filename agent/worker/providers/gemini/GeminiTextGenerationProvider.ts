@@ -6,9 +6,9 @@
 //
 // Zero behavior change is the whole point of S1: every quirk below is
 // copied from the call site it replaces, not redesigned. See the S1
-// report for the two narrow, deliberate normalizations this adapter DOES
-// make (both unification-driven, both untested by any existing suite
-// because the two sites that changed shape -- briefing/callGemini and
+// report for the one narrow, deliberate normalization this adapter DOES
+// make (unification-driven, untested by any existing suite because the
+// two sites that changed shape -- briefing/callGemini and
 // /documents/analyze -- had no prior test coverage at all):
 //   1. Every turn now carries an explicit `role` ('model' for assistant,
 //      'user' otherwise) -- the old callGemini/documents-analyze call
@@ -16,13 +16,16 @@
 //      Gemini's API documents an omitted role as defaulting to 'user' for
 //      a single-turn call, so this is a no-op for the model, not a real
 //      behavior change.
-//   2. A multimodal attachment (providerOptions.inlineDataAttachment) is
-//      always appended AFTER the turn's text part, matching
-//      callGeminiChat's existing, test-verified image-attachment order.
-//      transcribePdf's OLD raw fetch put its PDF part BEFORE the text
-//      instruction -- flipped to match the one true adapter convention;
-//      part order within a single Gemini `content` has no documented
-//      semantic meaning.
+//
+// ADR-0018 S1 follow-up (part-order preservation): S1's first cut of this
+// file ALSO always appended a multimodal attachment AFTER the turn's text
+// part, on the unverified assumption that Gemini attaches no semantic
+// meaning to part order within a single `content` -- no doc citation
+// backed that claim, and it was wrong to apply unconditionally: it
+// silently flipped transcribePdf's AND /documents/analyze's original part
+// order (both put the attachment BEFORE the text instruction). Fixed by
+// making the caller say so explicitly via TextGenerationRequest's own
+// `attachmentPosition` (types.ts) -- this adapter no longer decides.
 //
 // What this adapter deliberately does NOT do (ADR-0018 Decision 3): throw
 // on a non-STOP finishReason, or on empty/missing text. Those checks stay
@@ -69,8 +72,9 @@ interface GeminiTextProviderOptions {
   // thinking disabled passes `{ thinkingBudget: 0 }` explicitly, exactly
   // as it did before migration.
   thinkingConfig?: unknown
-  // Appended as an inlineData part AFTER the last turn's text part -- see
-  // this file's own header comment for the part-order note.
+  // Attached as an inlineData part on the last turn -- before or after its
+  // text part per TextGenerationRequest.attachmentPosition (required
+  // whenever this is set; see this file's own header comment).
   inlineDataAttachment?: { mimeType: string; data: string }
 }
 
@@ -114,9 +118,24 @@ export class GeminiTextGenerationProvider implements TextGenerationProvider {
       // turn -- matches callGeminiChat's original guard exactly (an
       // attachment must never land on a 'model'/assistant turn).
       if (lastContent && lastContent.role === 'user') {
-        lastContent.parts.push({
+        // ADR-0018 S1 follow-up: no default -- the caller must say where
+        // the attachment goes (see this file's header comment for why a
+        // hardcoded convention here was wrong). A caller that sets
+        // inlineDataAttachment without attachmentPosition has a bug worth
+        // surfacing immediately, not silently guessing an order for it.
+        if (req.attachmentPosition === undefined) {
+          throw new Error(
+            'TextGenerationRequest.attachmentPosition is required when providerOptions.inlineDataAttachment is set (ADR-0018 S1 follow-up).',
+          )
+        }
+        const attachmentPart: GeminiPart = {
           inlineData: { mimeType: options.inlineDataAttachment.mimeType, data: options.inlineDataAttachment.data },
-        })
+        }
+        if (req.attachmentPosition === 'before') {
+          lastContent.parts.unshift(attachmentPart)
+        } else {
+          lastContent.parts.push(attachmentPart)
+        }
       }
     }
 

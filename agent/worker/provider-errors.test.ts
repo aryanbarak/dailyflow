@@ -84,4 +84,45 @@ describe('fetchGeminiOrThrow (INC-01)', () => {
       }
     })
   })
+
+  // ADR-0018 S1 follow-up: a non-ok response body must never reach a
+  // thrown error's `.body` field unbounded -- an upstream proxy or the
+  // provider itself can return an arbitrarily large error page.
+  describe('error body truncation (ADR-0018 S1 follow-up)', () => {
+    it('leaves a short body untouched', async () => {
+      const fetcher = vi.fn(async () => new Response('rate limited', { status: 429 }))
+
+      try {
+        await fetchGeminiOrThrow(fetcher, 'https://example.test', {}, 'Test API')
+        expect.unreachable('expected fetchGeminiOrThrow to throw')
+      } catch (err) {
+        expect((err as ProviderUnavailableError).body).toBe('rate limited')
+      }
+    })
+
+    it('truncates a body over 4000 chars to 4000 chars plus a marker, for both ProviderUnavailableError and ProviderRequestError', async () => {
+      const hugeBody = 'x'.repeat(10_000)
+
+      const unavailableFetcher = vi.fn(async () => new Response(hugeBody, { status: 503 }))
+      try {
+        await fetchGeminiOrThrow(unavailableFetcher, 'https://example.test', {}, 'Test API')
+        expect.unreachable('expected fetchGeminiOrThrow to throw')
+      } catch (err) {
+        const body = (err as ProviderUnavailableError).body as string
+        expect(body.length).toBe(4000 + '...(truncated)'.length)
+        expect(body.startsWith('x'.repeat(4000))).toBe(true)
+        expect(body.endsWith('...(truncated)')).toBe(true)
+      }
+
+      const requestFetcher = vi.fn(async () => new Response(hugeBody, { status: 400 }))
+      try {
+        await fetchGeminiOrThrow(requestFetcher, 'https://example.test', {}, 'Test API')
+        expect.unreachable('expected fetchGeminiOrThrow to throw')
+      } catch (err) {
+        const body = (err as ProviderRequestError).body
+        expect(body.length).toBe(4000 + '...(truncated)'.length)
+        expect(body.endsWith('...(truncated)')).toBe(true)
+      }
+    })
+  })
 })

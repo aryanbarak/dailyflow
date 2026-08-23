@@ -84,7 +84,7 @@ describe('GeminiTextGenerationProvider', () => {
       expect(withThinking.generationConfig.thinkingConfig).toEqual({ thinkingBudget: 0 })
     })
 
-    it('appends inlineDataAttachment as a part AFTER the text part, on the LAST turn only, and only when that turn is role: user', async () => {
+    it("appends inlineDataAttachment as a part AFTER the text part when attachmentPosition: 'after', on the LAST turn only, and only when that turn is role: user", async () => {
       const fetcher = vi.fn(async () => geminiResponse({ finishReason: 'STOP', content: { parts: [{ text: 'ok' }] } }))
       const provider = new GeminiTextGenerationProvider(ENV, fetcher)
 
@@ -94,6 +94,7 @@ describe('GeminiTextGenerationProvider', () => {
           { role: 'assistant', content: 'a reply' },
           { role: 'user', content: 'what is in this image?' },
         ],
+        attachmentPosition: 'after',
         providerOptions: { inlineDataAttachment: { mimeType: 'image/png', data: 'base64data' } },
       })
 
@@ -103,6 +104,41 @@ describe('GeminiTextGenerationProvider', () => {
         { text: 'what is in this image?' },
         { inlineData: { mimeType: 'image/png', data: 'base64data' } },
       ])
+    })
+
+    // ADR-0018 S1 follow-up: S1's first cut always appended AFTER,
+    // regardless of caller intent -- this silently flipped
+    // transcribePdf's/documents-analyze's original part order (attachment
+    // BEFORE text). attachmentPosition is now caller-controlled, with no
+    // adapter-side default in either direction.
+    it("puts inlineDataAttachment as a part BEFORE the text part when attachmentPosition: 'before'", async () => {
+      const fetcher = vi.fn(async () => geminiResponse({ finishReason: 'STOP', content: { parts: [{ text: 'ok' }] } }))
+      const provider = new GeminiTextGenerationProvider(ENV, fetcher)
+
+      await provider.generateText({
+        turns: [{ role: 'user', content: 'transcribe this' }],
+        attachmentPosition: 'before',
+        providerOptions: { inlineDataAttachment: { mimeType: 'application/pdf', data: 'pdfdata' } },
+      })
+
+      const body = JSON.parse(String(fetcher.mock.calls[0][1]?.body))
+      expect(body.contents[0].parts).toEqual([
+        { inlineData: { mimeType: 'application/pdf', data: 'pdfdata' } },
+        { text: 'transcribe this' },
+      ])
+    })
+
+    it('throws (does not guess an order) when inlineDataAttachment is set on a user turn but attachmentPosition is omitted', async () => {
+      const fetcher = vi.fn(async () => geminiResponse({ finishReason: 'STOP', content: { parts: [{ text: 'ok' }] } }))
+      const provider = new GeminiTextGenerationProvider(ENV, fetcher)
+
+      await expect(
+        provider.generateText({
+          turns: [{ role: 'user', content: 'hi' }],
+          providerOptions: { inlineDataAttachment: { mimeType: 'image/png', data: 'base64data' } },
+        }),
+      ).rejects.toThrow(/attachmentPosition is required/)
+      expect(fetcher).not.toHaveBeenCalled()
     })
 
     it('does NOT attach inlineDataAttachment when the last turn is role: assistant', async () => {
