@@ -27,11 +27,10 @@ class StubTextGenerationProvider implements TextGenerationProvider {
 class StubStructuredGenerationProvider implements StructuredGenerationProvider {
   readonly id = "stub-structured";
 
-  async generateStructured<T>(req: StructuredGenerationRequest): Promise<StructuredGenerationResult> {
-    // Deliberately never returns a "T-typed" value -- per ADR-0018
-    // Decision 1's own comment, the provider only ever hands back raw
-    // text; parsing/validation into a T stays the caller's job.
-    return { rawText: JSON.stringify({ schemaEcho: req.schema }), finishReason: "STOP" };
+  // ADR-0018 S2 (Amendments, 2026-08-23): no <T> -- dropped from the
+  // interface itself, see providers/types.ts's own comment for why.
+  async generateStructured(req: StructuredGenerationRequest): Promise<StructuredGenerationResult> {
+    return { rawText: JSON.stringify({ schemaEcho: req.schema }), finishReason: "stop" };
   }
 }
 
@@ -74,17 +73,17 @@ describe("ADR-0018 S0: provider interfaces are implementable", () => {
     expect(result.text).toContain("2 turn(s)");
   });
 
-  it("StructuredGenerationProvider: a stub implementation compiles and runs, including the generic type param at the call site", async () => {
+  it("StructuredGenerationProvider: a stub implementation compiles and runs", async () => {
     const provider: StructuredGenerationProvider = new StubStructuredGenerationProvider();
 
-    const result = await provider.generateStructured<{ title: string }>({
+    const result = await provider.generateStructured({
       turns: [{ role: "user", content: "hi" }],
       schema: { type: "object", properties: { title: { type: "string" } } },
     });
 
     expect(typeof result.rawText).toBe("string");
     expect(result.rawText).toContain("schemaEcho");
-    expect(result.finishReason).toBe("STOP");
+    expect(result.finishReason).toBe("stop");
   });
 
   it("EmbeddingProvider: a stub implementation compiles and runs, dimensions/normalizesOutput/model are real instance properties", async () => {

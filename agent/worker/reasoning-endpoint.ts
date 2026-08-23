@@ -1,5 +1,7 @@
 import { WRITE_INTENT_TARGET_FIELD_NAMES, writeIntentRegistry } from '../../shared/writeIntentRegistry'
 import { parseModelJsonObject } from './modelJsonParsing'
+import type { NeutralObjectSchema } from './providers/schema/neutralSchema'
+import { createProviders } from './providers/createProviders'
 
 const LOCAL_WORKER_MODE = 'local-qa'
 const MAX_BODY_BYTES = 32 * 1024
@@ -503,37 +505,41 @@ export function buildReasoningSystemInstruction(responseLanguage: ReasoningRespo
   ].join(' ')
 }
 
-export function buildReasoningResponseSchema() {
+// ADR-0018 S2 Phase B: emits the neutral schema subset now, not Gemini's
+// dialect -- see providers/schema/neutralSchema.ts's own header comment.
+// `issueNumber` is `{ type: 'number', integer: true }`, translating to
+// Gemini's INTEGER (amendment 2) -- was `{ type: 'INTEGER' }` directly.
+export function buildReasoningResponseSchema(): NeutralObjectSchema {
   return {
-    type: 'OBJECT',
+    type: 'object',
     required: ['type', 'confidence', 'reasons', 'language'],
     properties: {
-      type: { type: 'STRING', enum: [...SUPPORTED_INTENT_VALUES] },
-      confidence: { type: 'STRING', enum: [...SUPPORTED_CONFIDENCE_VALUES] },
-      requestedDomain: { type: 'STRING', enum: [...SUPPORTED_DOMAIN_VALUES] },
+      type: { type: 'string', enum: [...SUPPORTED_INTENT_VALUES] },
+      confidence: { type: 'string', enum: [...SUPPORTED_CONFIDENCE_VALUES] },
+      requestedDomain: { type: 'string', enum: [...SUPPORTED_DOMAIN_VALUES] },
       target: {
-        type: 'OBJECT',
+        type: 'object',
         properties: {
           // Task 23: task + calendar target fields, in the shared
           // registry's domain-grouped order -- see
           // WRITE_INTENT_TARGET_FIELD_NAMES's own comment for why order
           // must be preserved exactly (provider-contract-smoke).
-          ...Object.fromEntries(WRITE_INTENT_TARGET_FIELD_NAMES.map((name) => [name, { type: 'STRING' }])),
+          ...Object.fromEntries(WRITE_INTENT_TARGET_FIELD_NAMES.map((name) => [name, { type: 'string' as const }])),
           // EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
-          repo: { type: 'STRING' },
-          issueNumber: { type: 'INTEGER' },
-          commentBody: { type: 'STRING' },
-          updateTitle: { type: 'STRING' },
-          updateBody: { type: 'STRING' },
-          updateLabels: { type: 'ARRAY', items: { type: 'STRING' } },
+          repo: { type: 'string' },
+          issueNumber: { type: 'number', integer: true },
+          commentBody: { type: 'string' },
+          updateTitle: { type: 'string' },
+          updateBody: { type: 'string' },
+          updateLabels: { type: 'array', items: { type: 'string' } },
         },
       },
-      clarificationQuestion: { type: 'STRING' },
+      clarificationQuestion: { type: 'string' },
       reasons: {
-        type: 'ARRAY',
+        type: 'array',
         minItems: 1,
         maxItems: 3,
-        items: { type: 'STRING' },
+        items: { type: 'string' },
       },
       // Optional. Only meaningful alongside type "ask_clarification" -- a
       // specific set of 2-3 candidate tools the model is torn between, each
@@ -543,24 +549,24 @@ export function buildReasoningResponseSchema() {
       // actual tool from its own type via the same deterministic map used
       // for a single confident proposal.
       candidates: {
-        type: 'ARRAY',
+        type: 'array',
         minItems: 2,
         maxItems: 6,
         items: {
-          type: 'OBJECT',
+          type: 'object',
           required: ['type', 'reasons'],
           properties: {
-            type: { type: 'STRING', enum: [...SUPPORTED_INTENT_VALUES] },
+            type: { type: 'string', enum: [...SUPPORTED_INTENT_VALUES] },
             reasons: {
-              type: 'ARRAY',
+              type: 'array',
               minItems: 1,
               maxItems: 3,
-              items: { type: 'STRING' },
+              items: { type: 'string' },
             },
           },
         },
       },
-      language: { type: 'STRING', enum: [...PROPOSAL_LANGUAGES] },
+      language: { type: 'string', enum: [...PROPOSAL_LANGUAGES] },
     },
   }
 }
@@ -570,51 +576,40 @@ async function callGeminiOnce(
   config: LocalReasoningConfig,
   fetcher: typeof fetch,
 ): Promise<unknown> {
-  const modelUrl = new URL(
-    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(config.geminiModel ?? '')}:generateContent`,
-  )
-  modelUrl.searchParams.set('key', config.geminiApiKey ?? '')
-
-  const response = await fetcher(modelUrl.toString(), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      system_instruction: {
-        parts: [{ text: buildReasoningSystemInstruction(input.responseLanguage) }],
-      },
-      contents: [{ role: 'user', parts: [{ text: input.reasoningPrompt }] }],
-      generationConfig: {
-        // MIG-01b: 768 -> 2048. thinkingConfig removed -- gemini-3.6-flash
-        // returns 400 INVALID_ARGUMENT on thinkingConfig:{thinkingBudget:0}
-        // (see geminiModel.ts and scripts/gemini-36-probe.ts's P3/P6
-        // findings -- buildReasoningResponseSchema is P6, the biggest real
-        // schema, confirmed 200 on gemini-3.6-flash). This local-qa
-        // boundary's own GEMINI_MODEL is still explicitly required (see
-        // resolveLocalReasoningConfig) -- untouched by this slice, it
-        // validates config completeness, not a model string literal.
-        maxOutputTokens: 2048,
-        temperature: 0,
-        responseMimeType: 'application/json',
-        responseSchema: buildReasoningResponseSchema(),
-      },
-    }),
+  // ADR-0018 S2: migrated to the StructuredGenerationProvider adapter.
+  // handleLocalReasoningRequest's own catch block below is a bare
+  // `catch {}` that always returns the same generic MODEL_RESPONSE_INVALID
+  // 502 regardless of what this function throws -- so the adapter now
+  // throwing ProviderUnavailableError/ProviderRequestError instead of a
+  // plain Error changes nothing observable at the HTTP response level.
+  //
+  // SUPABASE_SERVICE_KEY: '' -- this local-qa boundary's own
+  // LocalReasoningConfig has no service-role key at all (deliberately;
+  // see resolveLocalReasoningConfig, which only ever resolves an
+  // anon-scoped, loopback-only supabaseUrl for local dev auth). The
+  // adapter's Decision 6 failure-event persistence needs SOME value to
+  // satisfy GeminiProviderEnv's structural type; an empty string makes
+  // any actual persistence attempt fail closed (a 401 from Supabase),
+  // which recordProviderFailure's own fail-safe design already swallows
+  // (console.warn, never thrown) -- this endpoint's response is
+  // unaffected either way, and persisting failure events for a local-only
+  // dev harness was never the point of Decision 6.
+  const result = await createProviders({
+    GEMINI_API_KEY: config.geminiApiKey,
+    GEMINI_MODEL: config.geminiModel,
+    SUPABASE_URL: config.supabaseUrl,
+    SUPABASE_SERVICE_KEY: '',
+  }, fetcher).structured.generateStructured({
+    system: buildReasoningSystemInstruction(input.responseLanguage),
+    turns: [{ role: 'user', content: input.reasoningPrompt }],
+    schema: buildReasoningResponseSchema(),
+    maxOutputTokens: 2048,
+    temperature: 0,
   })
 
-  if (!response.ok) throw new Error(`Model request failed with status ${response.status}.`)
-  const data = await response.json() as {
-    candidates?: Array<{
-      finishReason?: unknown
-      content?: { parts?: Array<{ text?: unknown }> }
-    }>
-  }
-  const candidate = data.candidates?.[0]
-  if (!candidate) throw new Error('Model returned no candidate.')
-  if (candidate.finishReason !== undefined && candidate.finishReason !== 'STOP') {
-    throw new Error('Model response did not finish safely.')
-  }
-  const text = candidate.content?.parts?.[0]?.text
-  if (typeof text !== 'string' || !text.trim()) throw new Error('Model returned no proposal content.')
-  return parseModelJsonObject(text)
+  if (result.finishReason !== 'stop') throw new Error('Model response did not finish safely.')
+  if (!result.rawText.trim()) throw new Error('Model returned no proposal content.')
+  return parseModelJsonObject(result.rawText)
 }
 
 export async function handleLocalReasoningRequest(

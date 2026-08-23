@@ -1,4 +1,8 @@
 import type { ConfirmedPersonalMemoryRecord } from './personal-memory-prompt-serialization'
+// ADR-0018 S2: moved to its own leaf module -- re-exported here unchanged
+// for every existing `import { ChatMessage } from './types'` -- see
+// chatMessage.ts's own header comment for why.
+export type { ChatMessage } from './chatMessage'
 
 export interface Env {
   SMARTFLOW_WORKER_MODE?: string
@@ -111,17 +115,6 @@ export interface AgentBriefing {
   mode: BriefingMode
   context: UserContext
   triggered_by: 'cron' | 'user' | 'alert'
-}
-
-export interface ChatMessage {
-  role: 'user' | 'assistant'
-  content: string
-  // Task 22-fix (C1 off-by-one): optional so every existing call site that
-  // builds a ChatMessage without it (the Gemini-facing history array
-  // doesn't need it) keeps compiling unchanged -- see flow-write-policy.ts's
-  // RecentChatTurn.createdAt for why this is needed for write-intent
-  // reassembly specifically.
-  createdAt?: string
 }
 
 export interface ChatOptions {

@@ -81,7 +81,7 @@ interface EmbeddingProvider {
 
 The four schema builders (`buildReasoningResponseSchema`, `buildDerivationResponseSchema`, `buildExtractionResponseSchema`, `buildTaskTitleResponseSchema`) are rewritten to emit a **minimal JSON-Schema subset** owned by SmartFlow:
 
-`object`, `string`, `number`, `boolean`, `array` (of the above), `enum` (string), `required`, `maxItems`, `description`. Nothing else. If a builder needs more, that is a new decision.
+`object`, `string`, `number`, `boolean`, `array` (of the above), `enum` (string), `required`, `maxItems`, `minItems` (Amendments, 2026-08-23), `description`. Nothing else. If a builder needs more, that is a new decision.
 
 `GeminiStructuredGenerationProvider` translates this subset into Gemini's `responseSchema` dialect at call time. **Proof of zero behavior change:** `shared/reasoning-response-schema.snapshot.json` is extended to cover all four builders' *Gemini-translated* output; the snapshot must be byte-identical before and after the refactor. This is the same discipline as `provider-contract-smoke` — a provider-visible artifact, diffed.
 
@@ -182,3 +182,24 @@ S0–S3 are Tier-2 (code + authored migration). Applying the `provider_failure_e
 ## Supersession and Change Control
 
 Changes to the set of capabilities, to the fallback policy table, or to the scope boundary require a superseding or amending ADR with PO approval. Adding a second provider implementation for an existing capability does **not** require a new ADR if it conforms to the interface and passes the capability's contract tests; it does require a PO-approved slice.
+
+## Amendments (2026-08-23, S2)
+
+**`minItems` added to the neutral schema subset (Decision 3).** Discovered during S2 Phase A (baseline snapshot of all four builders' current `responseSchema` output, generated from the real, unmodified builders): 3 of the 4 real builders use `minItems` today, not the 1-of-4 the original Decision 3 text anticipated —
+
+- `buildReasoningResponseSchema`: `reasons` (`minItems: 1, maxItems: 3`), `candidates` (`minItems: 2, maxItems: 6`), `candidates[].reasons` (`minItems: 1, maxItems: 3`)
+- `buildDerivationResponseSchema`: `sourceEvidenceIds` (`minItems: 1, maxItems: 20`)
+- `buildExtractionResponseSchema`: `provenanceSourceRefIds` (`minItems: 1, maxItems: 20`)
+- `buildTaskTitleResponseSchema`: none (already subset-compliant)
+
+Decision 3's own zero-behavior-change proof is a byte-identical snapshot round-trip through the neutral schema and back through Gemini translation. A subset without `minItems` cannot reconstruct it — the round-tripped schema would silently lose a real, currently-enforced provider-side constraint (bounded-but-nonempty arrays), which is a behavior change, not a refactor. Widening the subset by one primitive (rather than dropping the constraint, or blocking S2 entirely for a full ADR review) was decided inline during S2 implementation and approved by the coordinator before any builder was touched — see the S2 report for the full options considered. `neutralSchema.ts`/`geminiSchemaTranslation.ts` implement it as a direct passthrough, identical in shape to `maxItems`.
+
+**`integer` modifier added to the neutral `number` schema (Decision 3).** Same discovery pass as `minItems` above: Gemini's dialect distinguishes `type: "INTEGER"` from `type: "NUMBER"` as two different wire values, and two real fields (`buildReasoningResponseSchema`'s `target.issueNumber`, `buildDerivationResponseSchema`'s `content.order`) are `INTEGER` today. The ADR's subset names only "number" as a primitive, with no separate "integer" type, so `NeutralNumberSchema` gains an `integer?: boolean` modifier (absent/false → Gemini `NUMBER`, true → Gemini `INTEGER`) rather than introducing a second top-level type name. Same rationale and approval as the `minItems` amendment above.
+
+**`<T>` dropped from `StructuredGenerationProvider.generateStructured` (Decision 1).** The S0 interface text carried a `<T>` type parameter as a call-site type hint, but `StructuredGenerationResult` never actually carries a T-typed value — it is always just `rawText`, per Decision 1's own "the provider never returns a 'typed' object it claims is valid" comment. `<T>` had nothing to bind to. Dropped in S2 once `GeminiStructuredGenerationProvider` and its real call sites existed to confirm this.
+
+**Optional `usage` field added to `StructuredGenerationResult` (Decision 1).** Discovered migrating real call sites in S2 Phase C: `context-derivation-endpoint.ts` and `personal-memory-extraction-endpoint.ts` both persist Gemini's `usageMetadata` (`promptTokenCount`/`candidatesTokenCount`) into real `inferred_context_derivation_runs`/`personal_memory_extraction_runs` columns for cost/usage tracking — a real, currently-live behavior the original `{ rawText, finishReason }` contract had no field for. Dropping it would have been a genuine, undocumented regression to usage accounting, not a refactor. `usage?: { promptTokens?: number; responseTokens?: number }` is additive and provider-populated, the same shape of amendment as S1's `ProviderUnavailableError.status`/`.body`. Approved by the coordinator before either call site was migrated.
+
+**Optional `rawFinishReason` field added to `StructuredGenerationResult` (Decision 1/3).** Same discovery pass as `usage` above, same two call sites: both persist the PROVIDER'S OWN finishReason string (`"MAX_TOKENS"`, `"SAFETY"`) verbatim into a `failure_reason` column and diagnostic logs — existing tests (`context-derivation-endpoint.test.ts`, `personal-memory-extraction-endpoint.test.ts`) assert on the literal string, not just the taxonomy code. Decision 3's neutral `'stop'|'length'|'other'` enum deliberately collapses this detail away for the field everything else dispatches on; `rawFinishReason?: string` is a second, optional, provider-populated field carrying the untranslated value for callers that also want it. Same additive shape and same approval as `usage`.
+
+*Honesty note (ties to INC-01):* the neutral enum exists so call sites don't have to special-case Gemini's exact vocabulary — but a lossy abstraction that silently drops the provider's own diagnostic wording is the same failure shape INC-01 fixed for outright provider errors: real signal from the provider gets laundered into a vaguer SmartFlow-owned category before it reaches a log or a DB column, and something a human needed to see (`"SAFETY"` vs `"MAX_TOKENS"` vs `"RECITATION"`) is gone. `rawFinishReason` keeps that raw signal available at the one layer (the adapter boundary) that actually has it, without forcing every caller to widen the neutral enum just to stay honest about what the provider said.

@@ -39,7 +39,7 @@ import {
   undoAutoWrite,
   writeIntentOutcomeIdentity,
 } from './flow-write-policy'
-import { ProviderRequestError, ProviderUnavailableError, fetchGeminiOrThrow } from './provider-errors'
+import { ProviderRequestError, ProviderUnavailableError } from './provider-errors'
 import { createProviders } from './providers/createProviders'
 import { resolveGeminiModel } from './geminiModel'
 import { recordProposalOutcome } from './proposal-outcome-recording'
@@ -308,57 +308,45 @@ async function handleTaskSuggestions(request: Request, env: Env): Promise<Respon
       snapshot.recentlyCompleted.length > 0 ? `Recently completed: ${snapshot.recentlyCompleted.join(', ')}` : null,
     ].filter(Boolean).join('\n')
 
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${resolveGeminiModel(env)}:generateContent?key=${env.GEMINI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          system_instruction: { parts: [{ text: system }] },
-          contents: [{ parts: [{ text: dataLines }] }],
-          generationConfig: {
-            responseMimeType: 'application/json',
-            responseSchema: {
-              type: 'ARRAY',
-              items: {
-                type: 'OBJECT',
-                properties: {
-                  text: { type: 'STRING' },
-                  type: { type: 'STRING', enum: ['pattern', 'recommendation'] },
-                },
-                required: ['text', 'type'],
-              },
-            },
-            // MIG-01b: 256 -> 2048. thinkingConfig removed (gemini-3.6-flash
-            // rejects thinkingBudget:0, see geminiModel.ts) -- thinking now
-            // consumes output budget on every call, so the ceiling has to
-            // rise even though this response itself is short.
-            maxOutputTokens: 2048,
-            temperature: 0.3,
-          },
-        }),
-      }
-    )
-
-    if (!res.ok) {
-      console.error('[TaskSuggestions] Gemini error:', await res.text())
-      return json({ suggestions: [] }, 200, origin)
-    }
-
-    const data: unknown = await res.json()
-    const raw: string = (data as any)?.candidates?.[0]?.content?.parts?.[0]?.text ?? '[]'
-
+    // ADR-0018 S2: migrated to the StructuredGenerationProvider adapter.
+    // This handler's own posture (unchanged): ANY failure -- provider
+    // unavailable/rejected, or the response not parsing as a JSON array --
+    // degrades calmly to an empty suggestions list with 200, never a
+    // user-visible error. Both failure classes used to be handled by two
+    // separate checks (`!res.ok`, then a parse try/catch); one try/catch
+    // around the adapter call + parse now covers both, same outcome.
     let suggestions: Array<{ text: string; type: string }> = []
     try {
-      const parsed = JSON.parse(raw)
+      const result = await createProviders(env).structured.generateStructured({
+        system,
+        turns: [{ role: 'user', content: dataLines }],
+        schema: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['text', 'type'],
+            properties: {
+              text: { type: 'string' },
+              type: { type: 'string', enum: ['pattern', 'recommendation'] },
+            },
+          },
+        },
+        // MIG-01b: 256 -> 2048. thinkingConfig removed (gemini-3.6-flash
+        // rejects thinkingBudget:0, see geminiModel.ts) -- thinking now
+        // consumes output budget on every call, so the ceiling has to
+        // rise even though this response itself is short.
+        maxOutputTokens: 2048,
+        temperature: 0.3,
+      })
+      const parsed = JSON.parse(result.rawText || '[]')
       if (Array.isArray(parsed)) {
         suggestions = parsed
           .filter((s: any) => typeof s.text === 'string' && s.text.trim().length > 0)
           .slice(0, 3)
           .map((s: any) => ({ text: s.text.trim(), type: s.type === 'recommendation' ? 'recommendation' : 'pattern' }))
       }
-    } catch {
-      console.error('[TaskSuggestions] Failed to parse Gemini response:', raw)
+    } catch (err) {
+      console.error('[TaskSuggestions] Gemini error:', err)
     }
 
     console.log(`[TaskSuggestions] userId=${userId} total=${snapshot.total} suggestions=${suggestions.length}`)
@@ -418,49 +406,33 @@ async function handleCalendarSuggestions(request: Request, env: Env): Promise<Re
       snapshot.eventList.length > 0 ? `Upcoming events:\n${snapshot.eventList.map(e => `  ${e.date} ${e.time} — ${e.title}${e.type ? ` [${e.type}]` : ''}`).join('\n')}` : null,
     ].filter(Boolean).join('\n')
 
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${resolveGeminiModel(env)}:generateContent?key=${env.GEMINI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          system_instruction: { parts: [{ text: system }] },
-          contents: [{ parts: [{ text: dataLines }] }],
-          generationConfig: {
-            responseMimeType: 'application/json',
-            responseSchema: {
-              type: 'ARRAY',
-              items: {
-                type: 'OBJECT',
-                properties: {
-                  text: { type: 'STRING' },
-                  type: { type: 'STRING', enum: ['pattern', 'recommendation'] },
-                  suggestedDate: { type: 'STRING' },
-                },
-                required: ['text', 'type'],
-              },
-            },
-            // MIG-01b: 256 -> 2048, thinkingConfig removed -- see
-            // handleTaskSuggestions's identical comment above.
-            maxOutputTokens: 2048,
-            temperature: 0.3,
-          },
-        }),
-      }
-    )
-
-    if (!res.ok) {
-      console.error('[CalendarSuggestions] Gemini error:', await res.text())
-      return json({ suggestions: [] }, 200, origin)
-    }
-
-    const data: unknown = await res.json()
-    const raw: string = (data as any)?.candidates?.[0]?.content?.parts?.[0]?.text ?? '[]'
-
+    // ADR-0018 S2: migrated to the StructuredGenerationProvider adapter --
+    // see handleTaskSuggestions's identical comment above for this
+    // handler's own calm-degradation posture.
     const dateRe = /^\d{4}-\d{2}-\d{2}$/
     let suggestions: Array<{ text: string; type: string; suggestedDate?: string }> = []
     try {
-      const parsed = JSON.parse(raw)
+      const result = await createProviders(env).structured.generateStructured({
+        system,
+        turns: [{ role: 'user', content: dataLines }],
+        schema: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['text', 'type'],
+            properties: {
+              text: { type: 'string' },
+              type: { type: 'string', enum: ['pattern', 'recommendation'] },
+              suggestedDate: { type: 'string' },
+            },
+          },
+        },
+        // MIG-01b: 256 -> 2048, thinkingConfig removed -- see
+        // handleTaskSuggestions's identical comment above.
+        maxOutputTokens: 2048,
+        temperature: 0.3,
+      })
+      const parsed = JSON.parse(result.rawText || '[]')
       if (Array.isArray(parsed)) {
         suggestions = parsed
           .filter((s: any) => typeof s.text === 'string' && s.text.trim().length > 0)
@@ -476,8 +448,8 @@ async function handleCalendarSuggestions(request: Request, env: Env): Promise<Re
             return item
           })
       }
-    } catch {
-      console.error('[CalendarSuggestions] Failed to parse Gemini response:', raw)
+    } catch (err) {
+      console.error('[CalendarSuggestions] Gemini error:', err)
     }
 
     console.log(`[CalendarSuggestions] userId=${userId} events=${snapshot.totalThisWeek} suggestions=${suggestions.length}`)
@@ -541,55 +513,39 @@ async function handleHabitSuggestions(request: Request, env: Env): Promise<Respo
       habitLines,
     ].join('\n')
 
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${resolveGeminiModel(env)}:generateContent?key=${env.GEMINI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          system_instruction: { parts: [{ text: system }] },
-          contents: [{ parts: [{ text: dataLines }] }],
-          generationConfig: {
-            responseMimeType: 'application/json',
-            responseSchema: {
-              type: 'ARRAY',
-              items: {
-                type: 'OBJECT',
-                properties: {
-                  text: { type: 'STRING' },
-                  type: { type: 'STRING', enum: ['pattern', 'recommendation'] },
-                },
-                required: ['text', 'type'],
-              },
-            },
-            // MIG-01b: 256 -> 2048, thinkingConfig removed -- see
-            // handleTaskSuggestions's identical comment above.
-            maxOutputTokens: 2048,
-            temperature: 0.3,
-          },
-        }),
-      }
-    )
-
-    if (!res.ok) {
-      console.error('[HabitSuggestions] Gemini error:', await res.text())
-      return json({ suggestions: [] }, 200, origin)
-    }
-
-    const data: unknown = await res.json()
-    const raw: string = (data as any)?.candidates?.[0]?.content?.parts?.[0]?.text ?? '[]'
-
+    // ADR-0018 S2: migrated to the StructuredGenerationProvider adapter --
+    // see handleTaskSuggestions's identical comment above for this
+    // handler's own calm-degradation posture.
     let suggestions: Array<{ text: string; type: string }> = []
     try {
-      const parsed = JSON.parse(raw)
+      const result = await createProviders(env).structured.generateStructured({
+        system,
+        turns: [{ role: 'user', content: dataLines }],
+        schema: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['text', 'type'],
+            properties: {
+              text: { type: 'string' },
+              type: { type: 'string', enum: ['pattern', 'recommendation'] },
+            },
+          },
+        },
+        // MIG-01b: 256 -> 2048, thinkingConfig removed -- see
+        // handleTaskSuggestions's identical comment above.
+        maxOutputTokens: 2048,
+        temperature: 0.3,
+      })
+      const parsed = JSON.parse(result.rawText || '[]')
       if (Array.isArray(parsed)) {
         suggestions = parsed
           .filter((s: any) => typeof s.text === 'string' && s.text.trim().length > 0)
           .slice(0, 3)
           .map((s: any) => ({ text: s.text.trim(), type: s.type === 'recommendation' ? 'recommendation' : 'pattern' }))
       }
-    } catch {
-      console.error('[HabitSuggestions] Failed to parse Gemini response:', raw)
+    } catch (err) {
+      console.error('[HabitSuggestions] Gemini error:', err)
     }
 
     console.log(`[HabitSuggestions] userId=${userId} habits=${snapshot.total} suggestions=${suggestions.length}`)
@@ -647,55 +603,39 @@ async function handleFinanceSuggestions(request: Request, env: Env): Promise<Res
       snapshot.recentTransactions.length > 0 ? `Recent transactions:\n${snapshot.recentTransactions.map(t => `  ${t.date} ${t.type} ${t.category} €${t.amount}${t.notes ? ` (${t.notes})` : ''}`).join('\n')}` : null,
     ].filter(Boolean).join('\n')
 
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${resolveGeminiModel(env)}:generateContent?key=${env.GEMINI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          system_instruction: { parts: [{ text: system }] },
-          contents: [{ parts: [{ text: dataLines }] }],
-          generationConfig: {
-            responseMimeType: 'application/json',
-            responseSchema: {
-              type: 'ARRAY',
-              items: {
-                type: 'OBJECT',
-                properties: {
-                  text: { type: 'STRING' },
-                  type: { type: 'STRING', enum: ['insight', 'action'] },
-                },
-                required: ['text', 'type'],
-              },
-            },
-            // MIG-01b: 256 -> 2048, thinkingConfig removed -- see
-            // handleTaskSuggestions's identical comment above.
-            maxOutputTokens: 2048,
-            temperature: 0.3,
-          },
-        }),
-      }
-    )
-
-    if (!res.ok) {
-      console.error('[FinanceSuggestions] Gemini error:', await res.text())
-      return json({ suggestions: [] }, 200, origin)
-    }
-
-    const data: unknown = await res.json()
-    const raw: string = (data as any)?.candidates?.[0]?.content?.parts?.[0]?.text ?? '[]'
-
+    // ADR-0018 S2: migrated to the StructuredGenerationProvider adapter --
+    // see handleTaskSuggestions's identical comment above for this
+    // handler's own calm-degradation posture.
     let suggestions: Array<{ text: string; type: string }> = []
     try {
-      const parsed = JSON.parse(raw)
+      const result = await createProviders(env).structured.generateStructured({
+        system,
+        turns: [{ role: 'user', content: dataLines }],
+        schema: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['text', 'type'],
+            properties: {
+              text: { type: 'string' },
+              type: { type: 'string', enum: ['insight', 'action'] },
+            },
+          },
+        },
+        // MIG-01b: 256 -> 2048, thinkingConfig removed -- see
+        // handleTaskSuggestions's identical comment above.
+        maxOutputTokens: 2048,
+        temperature: 0.3,
+      })
+      const parsed = JSON.parse(result.rawText || '[]')
       if (Array.isArray(parsed)) {
         suggestions = parsed
           .filter((s: any) => typeof s.text === 'string' && s.text.trim().length > 0)
           .slice(0, 3)
           .map((s: any) => ({ text: s.text.trim(), type: s.type === 'action' ? 'action' : 'insight' }))
       }
-    } catch {
-      console.error('[FinanceSuggestions] Failed to parse Gemini response:', raw)
+    } catch (err) {
+      console.error('[FinanceSuggestions] Gemini error:', err)
     }
 
     console.log(`[FinanceSuggestions] userId=${userId} transactions=${snapshot.transactionCount} suggestions=${suggestions.length}`)
@@ -1459,42 +1399,25 @@ async function callGeminiReasoning(
   responseLanguage: ReasoningResponseLanguage,
   env: Env,
 ): Promise<string> {
-  const res = await fetchGeminiOrThrow(
-    fetch,
-    `https://generativelanguage.googleapis.com/v1beta/models/${resolveGeminiModel(env)}:generateContent?key=${env.GEMINI_API_KEY}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        system_instruction: {
-          parts: [{ text: buildReasoningSystemInstruction(responseLanguage) }],
-        },
-        contents: [{ role: 'user', parts: [{ text: reasoningPrompt }] }],
-        generationConfig: {
-          // MIG-01b: 768 -> 2048. thinkingConfig removed -- gemini-3.6-flash
-          // returns 400 INVALID_ARGUMENT on thinkingConfig:{thinkingBudget:0}
-          // (see geminiModel.ts); on gemini-2.5-flash (still reachable via
-          // an env-pin) thinking is simply enabled now, which is why the
-          // budget has to rise even though this response schema is small.
-          maxOutputTokens: 2048,
-          temperature: 0,
-          responseMimeType: 'application/json',
-          responseSchema: buildReasoningResponseSchema(),
-        },
-      }),
-    },
-    'Gemini reasoning API',
-  )
+  // ADR-0018 S2: migrated to the StructuredGenerationProvider adapter.
+  // A ProviderUnavailableError/ProviderRequestError still propagates
+  // unchanged (this function never catches either) -- INC-01's own
+  // `err instanceof ProviderUnavailableError` check in this file's mode:
+  // 'reasoning' handler (the 503 PROVIDER_UNAVAILABLE branch) is checking
+  // the SAME class the adapter throws, imported from provider-errors.ts,
+  // not a new one.
+  const result = await createProviders(env).structured.generateStructured({
+    system: buildReasoningSystemInstruction(responseLanguage),
+    turns: [{ role: 'user', content: reasoningPrompt }],
+    schema: buildReasoningResponseSchema(),
+    maxOutputTokens: 2048,
+    temperature: 0,
+  })
 
-  const data: any = await res.json()
-  const candidate = data?.candidates?.[0]
-  const finishReason: string = candidate?.finishReason ?? 'UNKNOWN'
-  const text: string = candidate?.content?.parts?.[0]?.text ?? ''
+  console.log('[Chat] reasoning mode finishReason:', result.rawFinishReason ?? result.finishReason, 'text length:', result.rawText.length)
 
-  console.log('[Chat] reasoning mode finishReason:', finishReason, 'text length:', text.length)
-
-  if (!text) throw new Error(`No content from Gemini reasoning (finishReason: ${finishReason})`)
-  return text.trim()
+  if (!result.rawText) throw new Error(`No content from Gemini reasoning (finishReason: ${result.rawFinishReason ?? result.finishReason})`)
+  return result.rawText.trim()
 }
 
 // =============================================

@@ -1,0 +1,13 @@
+{
+  "schema": {
+    "type": "OBJECT",
+    "required": [
+      "title"
+    ],
+    "properties": {
+      "title": {
+        "type": "STRING"
+      }
+    }
+  }
+}

@@ -1,0 +1,115 @@
+{
+  "schema": {
+    "type": "OBJECT",
+    "required": [
+      "candidates"
+    ],
+    "properties": {
+      "candidates": {
+        "type": "ARRAY",
+        "items": {
+          "type": "OBJECT",
+          "required": [
+            "kind",
+            "content",
+            "confidence",
+            "provenanceSourceKind",
+            "provenanceSourceRefIds"
+          ],
+          "properties": {
+            "kind": {
+              "type": "STRING",
+              "enum": [
+                "preference",
+                "goal",
+                "working_pattern",
+                "commitment",
+                "personal_fact",
+                "skill"
+              ]
+            },
+            "confidence": {
+              "type": "STRING",
+              "enum": [
+                "low",
+                "medium",
+                "high"
+              ]
+            },
+            "provenanceSourceKind": {
+              "type": "STRING",
+              "enum": [
+                "chat_turn",
+                "briefing",
+                "document"
+              ]
+            },
+            "provenanceSourceRefIds": {
+              "type": "ARRAY",
+              "minItems": 1,
+              "maxItems": 20,
+              "items": {
+                "type": "STRING"
+              }
+            },
+            "content": {
+              "type": "OBJECT",
+              "properties": {
+                "summary": {
+                  "type": "STRING"
+                },
+                "strength": {
+                  "type": "STRING",
+                  "enum": [
+                    "strong",
+                    "moderate",
+                    "mild"
+                  ]
+                },
+                "timeframe": {
+                  "type": "STRING",
+                  "enum": [
+                    "short_term",
+                    "long_term"
+                  ]
+                },
+                "frequency": {
+                  "type": "STRING",
+                  "enum": [
+                    "daily",
+                    "weekly",
+                    "occasional"
+                  ]
+                },
+                "status": {
+                  "type": "STRING",
+                  "enum": [
+                    "active",
+                    "completed",
+                    "abandoned"
+                  ]
+                },
+                "category": {
+                  "type": "STRING",
+                  "enum": [
+                    "identity",
+                    "work_status",
+                    "general"
+                  ]
+                },
+                "level": {
+                  "type": "STRING",
+                  "enum": [
+                    "beginner",
+                    "intermediate",
+                    "advanced"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

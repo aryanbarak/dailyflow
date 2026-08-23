@@ -875,7 +875,8 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
          (`supabase/tests/finance_import_batches.migration_structure.test.ts`)
          but `finance_import_rows` still has neither.
 12. **Capability-oriented AI provider abstraction — S0 and S1 (plus its
-    follow-up) merged to `main`.**
+    follow-up) merged to `main`; S2 authored on branch
+    `feat/adr-0018-s2-structured`, not merged.**
     [ADR-0018](docs/decisions/adr/ADR-0018-capability-oriented-ai-provider-abstraction.md)
     (**Status: Accepted** — PO approved 2026-08-22, all five open questions
     answered yes). Follows directly from INC-01 (2026-08-22 Gemini 429
@@ -962,21 +963,92 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
     - **6/6 `provider-contract-smoke` checks are now required before Worker
       deploy** (was 5/5 through S0) — the new adapter check must pass
       alongside the five existing schema/model contracts.
-    - **S2–S5 planned, not started:** S2 (neutral JSON-Schema subset +
-      `GeminiStructuredGenerationProvider`, 8 structured call sites,
-      snapshot-diff-empty discipline), S3 (`GeminiEmbeddingProvider`
+    - **S2 (this slice) — neutral schema subset + `GeminiStructuredGenerationProvider`,
+      zero behavior change for callers, proven by a byte-identical
+      snapshot round-trip.**
+      **Proof artifact:** `shared/reasoning-response-schema.snapshot.json`
+      (pre-existing) plus three new siblings —
+      `shared/derivation-response-schema.snapshot.json`,
+      `shared/extraction-response-schema.snapshot.json`,
+      `shared/task-title-response-schema.snapshot.json` — captured from the
+      four real builders BEFORE the neutral-schema rewrite (Phase A). Their
+      purity tests (`shared/reasoningResponseSchema.purity.test.ts`,
+      `shared/structuredResponseSchemas.purity.test.ts`) now assert
+      `translateNeutralSchema(builder())` against those SAME, untouched
+      snapshots — 8/8 assertions pass, the round-trip is byte-identical
+      including property order.
+      `agent/worker/providers/schema/neutralSchema.ts` defines the subset;
+      `providers/gemini/geminiSchemaTranslation.ts` translates it to
+      Gemini's dialect. Four ADR-0018 amendments, all discovered migrating
+      real call sites and all coordinator-approved before the relevant
+      code was touched (full rationale in the ADR's own "Amendments
+      (2026-08-23)" section): `minItems` and an `integer` modifier on the
+      neutral `number` type (3 of 4 builders and 2 target fields needed
+      them for the round-trip to stay byte-identical); `<T>` dropped from
+      `generateStructured` (dead weight, nothing ever bound it);
+      `StructuredGenerationResult` gained optional `usage` (prompt/response
+      token counts — 2 real call sites persist these into DB columns) and
+      `rawFinishReason` (the untranslated provider string — 2 real call
+      sites persist "MAX_TOKENS"/"SAFETY" verbatim, which the neutral enum
+      deliberately can't carry).
+      Migrated all 9 real `[STRUCTURED_GEN]` raw-fetch call sites (PA-01
+      §2's own audit lists them as 6 rows, one row covering the 4
+      suggestion handlers together — flagged, not silently matched to a
+      wrong "8" count): `index.ts`'s 4 suggestion handlers
+      (`/tasks`,`/calendar`,`/habits`,`/finance`), `callGeminiReasoning`
+      (`/chat` mode=reasoning), `reasoning-endpoint.ts`'s `callGeminiOnce`
+      (`/agent/reason`), `context-derivation-endpoint.ts`'s
+      `callGeminiForDerivation`, `personal-memory-extraction-endpoint.ts`'s
+      `callGeminiForExtraction`, `task-title-extraction.ts`'s
+      `callGeminiForTaskTitle`. `createProviders(env)` gains `{ structured }`.
+      `personal-memory-extraction-endpoint.ts`'s own duplicate
+      `ProviderFailureTaxonomy`/`ProviderCallError` (flagged as S2
+      territory in S1's own report) unified with
+      `providers/providerFailureTaxonomy.ts`. Failure path unchanged:
+      `ProviderUnavailableError` → `recordProviderFailure` with
+      `capability: 'structured_generation'`, fail closed (Decision 5, no
+      fallback), existing 503 `PROVIDER_UNAVAILABLE` surfaces preserved
+      (same class, re-thrown unchanged through the adapter).
+      Verification: all existing endpoint tests pass UNCHANGED (they mock
+      fetch at the Gemini URL — the adapter still hits it) plus new tests:
+      `geminiSchemaTranslation.test.ts` (17),
+      `GeminiStructuredGenerationProvider.test.ts` (35). Two genuinely new
+      normalizations, both discovered via real test failures, not
+      theoretical: (1) `GeminiStructuredGenerationProvider`'s own
+      `mapFinishReason` maps an ABSENT finishReason to `'stop'`, not
+      `'other'` (differs from the text adapter on this one point) — all
+      four pre-S2 structured builders treated a missing finishReason as
+      fine, never a rejection reason, and two real happy-path test fixtures
+      (`context-derivation-endpoint.test.ts`,
+      `personal-memory-extraction-endpoint.test.ts`) omit it entirely and
+      expect success. (2) `provider-contract-smoke.ts` checks 1–4 now go
+      through `GeminiStructuredGenerationProvider` directly instead of a
+      hand-rolled fetch — same adapter every real call site uses via
+      `createProviders()`; checks 5–6 (embedding, text-generation adapter)
+      unchanged. `agent/worker/chatMessage.ts`: `ChatMessage` extracted
+      from `types.ts` into its own leaf module (re-exported from
+      `types.ts` unchanged) — `types.ts` also defines `Env`, whose
+      `AI: Ai` field needs `@cloudflare/workers-types` (an `agent/worker`-only
+      devDependency); once this slice's `createProviders()` imports
+      reached `reasoning-endpoint.ts` (itself reachable from
+      `src/features/agent/reasoning/reasoningIntentParity.test.ts`, one of
+      four pre-existing `src/*.equivalence.test.ts` cross-implementation
+      parity tests that deliberately import into `agent/worker/`), the
+      root `npm run typecheck` gate broke on `Cannot find name 'Ai'` for
+      the first time — fixed at the root cause, not worked around.
+    - **S3–S5 planned, not started:** S3 (`GeminiEmbeddingProvider`
       wrapping `embeddingConfig.ts`, startup dimension assertion), S4 (test
       migration: fetch-level mocks → interface mocks), S5 (OCR migrated
       from the legacy `workers/ai-worker-recovered/` Worker — first
       legacy-retirement step). Each slice is its own PR, test-gated, no
       behavior change proven per-slice. See the ADR's own Implementation
       Plan table for the full gate per slice.
-    - **No smoke RUN performed for S1** — `GEMINI_API_KEY` unavailable in
-      this environment; the script's own guard confirmed it exits cleanly
-      (code 0) without attempting any network call, and import resolution
-      of the new adapter succeeded (vite-node reached the guard, meaning
-      the whole module graph — including the new
-      `GeminiTextGenerationProvider` import — resolved and transformed
+    - **No smoke RUN performed for S1 or S2** — `GEMINI_API_KEY`
+      unavailable in this environment; the script's own guard confirmed it
+      exits cleanly (code 0) without attempting any network call each
+      time, and import resolution of the new S2 adapter
+      (`GeminiStructuredGenerationProvider`) succeeded (vite-node reached
+      the guard, meaning the whole module graph resolved and transformed
       without error).
 
 Superseded/completed sprint milestones from the prior version of this

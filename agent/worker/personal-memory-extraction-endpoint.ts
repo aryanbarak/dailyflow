@@ -33,7 +33,21 @@
 
 import { parseModelJsonObject, ModelJsonParseError } from './modelJsonParsing'
 import { EMBEDDING_MODEL, EMBEDDING_DIMENSIONS, l2Normalize } from './embeddingConfig'
-import { resolveGeminiModel } from './geminiModel'
+import type { NeutralObjectSchema } from './providers/schema/neutralSchema'
+import { ProviderRequestError, ProviderUnavailableError } from './provider-errors'
+import { createProviders } from './providers/createProviders'
+import type { StructuredGenerationResult } from './providers/types'
+// ADR-0018 S2: unified with the shared taxonomy in
+// providers/providerFailureTaxonomy.ts (already used by
+// document-memory-extraction-endpoint.ts and context-derivation-endpoint.ts
+// since S1) -- this file's own duplicate was flagged as S2 territory in
+// S1's own report, since this route's Gemini calls are all structured
+// generation, out of S1's text-generation scope. Neither
+// ProviderFailureTaxonomy nor ProviderCallError was exported from this
+// file (confirmed: no other module imports either), so this is a pure
+// deletion, not a re-export shim like document-memory-extraction-
+// endpoint.ts needed for chat-attachment-context.ts.
+import { ProviderCallError, type ProviderFailureTaxonomy } from './providers/providerFailureTaxonomy'
 
 const PERSONAL_MEMORY_RECORD_KINDS = ['preference', 'goal', 'working_pattern', 'commitment', 'personal_fact', 'skill'] as const
 type PersonalMemoryRecordKind = typeof PERSONAL_MEMORY_RECORD_KINDS[number]
@@ -89,6 +103,12 @@ export interface PersonalMemoryExtractionEnv {
   SUPABASE_ANON_KEY: string
   GEMINI_API_KEY?: string
   GEMINI_MODEL?: string
+  // ADR-0018 S2: optional -- see context-derivation-endpoint.ts's
+  // ContextDerivationEnv's identical field for the full rationale (this
+  // route's own Supabase calls also deliberately forward the requesting
+  // user's JWT, never service role; only the adapter's Decision 6
+  // failure-event persistence wants this, and it fails safe when absent).
+  SUPABASE_SERVICE_KEY?: string
 }
 
 export interface PersonalMemoryExtractionDependencies {
@@ -117,32 +137,6 @@ function jsonResponse(body: unknown, status: number, origin: string): Response {
 // nobody but the authenticated owner's own browser ever sees this response.
 function errorResponse(code: string, message: string, status: number, origin: string, extra?: Record<string, unknown>): Response {
   return jsonResponse({ error: { code, message, ...extra } }, status, origin)
-}
-
-// Task 14 fix: the four-way taxonomy distinguishing WHERE a model-call
-// failure actually happened, replacing the single generic MODEL_CALL_FAILED
-// this route used to report for every case indiscriminately -- including
-// cases where the model was never successfully asked at all (a rejected
-// request, or the provider being down), which is not an "unusable
-// extraction" in any honest sense. NO_SOURCE_MATERIAL already has its own
-// code/calm message (unchanged by this task); the three below cover what
-// MODEL_CALL_FAILED used to conflate.
-type ProviderFailureTaxonomy = 'PROVIDER_REQUEST_REJECTED' | 'PROVIDER_UNAVAILABLE' | 'MODEL_OUTPUT_UNUSABLE'
-
-// Carries enough structure for the route handler to build BOTH a complete
-// server-side log line and a bounded, non-sensitive response body, from a
-// single thrown error -- see callGeminiForExtraction's own header comment
-// for the redaction rules governing what may end up in providerDetail.
-class ProviderCallError extends Error {
-  constructor(
-    message: string,
-    readonly taxonomy: ProviderFailureTaxonomy,
-    readonly providerStatus?: number,
-    readonly providerDetail?: string,
-  ) {
-    super(message)
-    this.name = 'ProviderCallError'
-  }
 }
 
 // Task 14 fix: one honest, distinct user-facing message per taxonomy bucket
@@ -442,9 +436,11 @@ export function buildExtractionPrompt(source: readonly SourceItemForPrompt[]): s
   return `Source material:\n\n${blocks}`
 }
 
-export function buildExtractionResponseSchema() {
+// ADR-0018 S2 Phase B: emits the neutral schema subset now, not Gemini's
+// dialect -- see providers/schema/neutralSchema.ts's own header comment.
+export function buildExtractionResponseSchema(): NeutralObjectSchema {
   return {
-    type: 'OBJECT',
+    type: 'object',
     required: ['candidates'],
     properties: {
       // Task 14 fix: NO maxItems here -- reproduced against the real
@@ -463,19 +459,19 @@ export function buildExtractionResponseSchema() {
       // provider's internal decoding-complexity budget, which could shift
       // with a future model update.
       candidates: {
-        type: 'ARRAY',
+        type: 'array',
         items: {
-          type: 'OBJECT',
+          type: 'object',
           required: ['kind', 'content', 'confidence', 'provenanceSourceKind', 'provenanceSourceRefIds'],
           properties: {
-            kind: { type: 'STRING', enum: [...PERSONAL_MEMORY_RECORD_KINDS] },
-            confidence: { type: 'STRING', enum: [...CONFIDENCE_VALUES] },
-            provenanceSourceKind: { type: 'STRING', enum: [...PROVENANCE_SOURCE_KINDS] },
-            provenanceSourceRefIds: { type: 'ARRAY', minItems: 1, maxItems: 20, items: { type: 'STRING' } },
+            kind: { type: 'string', enum: [...PERSONAL_MEMORY_RECORD_KINDS] },
+            confidence: { type: 'string', enum: [...CONFIDENCE_VALUES] },
+            provenanceSourceKind: { type: 'string', enum: [...PROVENANCE_SOURCE_KINDS] },
+            provenanceSourceRefIds: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'string' } },
             content: {
-              type: 'OBJECT',
+              type: 'object',
               properties: {
-                summary: { type: 'STRING' },
+                summary: { type: 'string' },
                 // Task 12 fix: constrain every secondary field with the SAME
                 // enum values normalizeCandidate ultimately requires
                 // (SECONDARY_FIELD_OPTIONS below), instead of leaving them as
@@ -486,12 +482,12 @@ export function buildExtractionResponseSchema() {
                 // "medium") than a prompt instruction alone -- especially
                 // with mixed-language source material, where the model is
                 // already reasoning across languages.
-                strength: { type: 'STRING', enum: [...SECONDARY_FIELD_OPTIONS.strength] },
-                timeframe: { type: 'STRING', enum: [...SECONDARY_FIELD_OPTIONS.timeframe] },
-                frequency: { type: 'STRING', enum: [...SECONDARY_FIELD_OPTIONS.frequency] },
-                status: { type: 'STRING', enum: [...SECONDARY_FIELD_OPTIONS.status] },
-                category: { type: 'STRING', enum: [...SECONDARY_FIELD_OPTIONS.category] },
-                level: { type: 'STRING', enum: [...SECONDARY_FIELD_OPTIONS.level] },
+                strength: { type: 'string', enum: [...SECONDARY_FIELD_OPTIONS.strength] },
+                timeframe: { type: 'string', enum: [...SECONDARY_FIELD_OPTIONS.timeframe] },
+                frequency: { type: 'string', enum: [...SECONDARY_FIELD_OPTIONS.frequency] },
+                status: { type: 'string', enum: [...SECONDARY_FIELD_OPTIONS.status] },
+                category: { type: 'string', enum: [...SECONDARY_FIELD_OPTIONS.category] },
+                level: { type: 'string', enum: [...SECONDARY_FIELD_OPTIONS.level] },
               },
             },
           },
@@ -533,86 +529,85 @@ async function callGeminiForExtraction(
   logger: Pick<Console, 'info' | 'error'>,
   documentType?: string | null,
 ): Promise<{ raw: unknown; promptTokenCount?: number; responseTokenCount?: number }> {
-  const modelUrl = new URL(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(resolveGeminiModel(env))}:generateContent`)
-  modelUrl.searchParams.set('key', env.GEMINI_API_KEY ?? '')
+  // ADR-0018 S2: migrated to the StructuredGenerationProvider adapter --
+  // mirrors context-derivation-endpoint.ts's own callGeminiForDerivation
+  // migration exactly (identical taxonomy shape, identical redaction-guard
+  // posture). REDACTED_ENDPOINT_LABEL: a fixed, key-free label replaces
+  // the old modelUrl.pathname now that the adapter owns URL construction
+  // internally -- see that file's own comment for why this satisfies the
+  // same REDACTION GUARD test requirement with less to get wrong.
+  const REDACTED_ENDPOINT_LABEL = 'generateContent (structured)'
 
-  let response: Response
+  let result: StructuredGenerationResult
   try {
-    response = await fetcher(modelUrl.toString(), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: buildExtractionSystemInstruction(documentType) }] },
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: {
-          // Already at/above the MIG-01b 2048 floor -- left as-is.
-          maxOutputTokens: MAX_OUTPUT_TOKENS_EXTRACTION,
-          temperature: 0,
-          responseMimeType: 'application/json',
-          // MIG-01b: thinkingConfig removed -- gemini-3.6-flash returns 400
-          // INVALID_ARGUMENT on thinkingConfig:{thinkingBudget:0} (see
-          // geminiModel.ts and scripts/gemini-36-probe.ts's P3 finding).
-          // The task 12 fix this replaced (gemini-2.5-flash spending output
-          // tokens on internal "thinking" by default, especially on the
-          // real, mixed-language Persian/English material this route
-          // handles) is still real on 2.5 -- accepted, 2.5 is being
-          // retired (see callGemini's identical note in index.ts).
-          responseSchema: buildExtractionResponseSchema(),
-        },
-      }),
+    result = await createProviders(
+      { ...env, SUPABASE_SERVICE_KEY: env.SUPABASE_SERVICE_KEY ?? '' },
+      fetcher,
+    ).structured.generateStructured({
+      system: buildExtractionSystemInstruction(documentType),
+      turns: [{ role: 'user', content: prompt }],
+      schema: buildExtractionResponseSchema(),
+      // Already at/above the MIG-01b 2048 floor -- left as-is.
+      maxOutputTokens: MAX_OUTPUT_TOKENS_EXTRACTION,
+      temperature: 0,
     })
-  } catch (networkError) {
-    logger.error?.(`[PersonalMemory] provider call failed before any response (network): path=${modelUrl.pathname} error=${(networkError as Error).message}`)
-    throw new ProviderCallError('The AI model provider could not be reached.', 'PROVIDER_UNAVAILABLE')
-  }
-
-  if (!response.ok) {
-    const bodyText = await response.text()
-    let providerError: { status?: unknown; message?: unknown; details?: unknown } | undefined
-    try {
-      providerError = (JSON.parse(bodyText) as { error?: typeof providerError }).error
-    } catch {
-      // Not JSON -- providerError stays undefined, bodyText itself is still logged/used below.
+  } catch (err) {
+    // Reclassifies the adapter's binary ProviderUnavailableError/
+    // ProviderRequestError back into this file's own three-way
+    // ProviderFailureTaxonomy, preserving its status>=500 rule exactly --
+    // see document-memory-extraction-endpoint.ts's transcribePdf (ADR-0018
+    // S1) for the identical pattern and full rationale.
+    if (err instanceof ProviderUnavailableError && err.status === undefined) {
+      logger.error?.(`[PersonalMemory] provider call failed before any response (network): endpoint=${REDACTED_ENDPOINT_LABEL} error=${(err as Error).message}`)
+      throw new ProviderCallError('The AI model provider could not be reached.', 'PROVIDER_UNAVAILABLE')
     }
-    const providerMessage = typeof providerError?.message === 'string' ? providerError.message : bodyText
-    // Full, unredacted (of everything except the key/URL) diagnostic, exactly
-    // as the provider sent it -- this is the line a human reads in
-    // `wrangler tail` to actually diagnose a real production failure.
-    logger.error?.(
-      `[PersonalMemory] provider rejected request: path=${modelUrl.pathname} httpStatus=${response.status} ` +
-        `providerStatus=${String(providerError?.status ?? 'unknown')} message=${providerMessage} ` +
-        `details=${providerError?.details !== undefined ? JSON.stringify(providerError.details) : 'none'}`,
-    )
-    const taxonomy: ProviderFailureTaxonomy = response.status >= 500 ? 'PROVIDER_UNAVAILABLE' : 'PROVIDER_REQUEST_REJECTED'
-    throw new ProviderCallError(
-      `Model request failed with status ${response.status}.`,
-      taxonomy,
-      response.status,
-      truncateForLog(providerMessage, 300),
-    )
+    if (err instanceof ProviderUnavailableError || err instanceof ProviderRequestError) {
+      const status = err.status as number
+      const bodyText = err.body ?? ''
+      let providerError: { status?: unknown; message?: unknown; details?: unknown } | undefined
+      try {
+        providerError = (JSON.parse(bodyText) as { error?: typeof providerError }).error
+      } catch {
+        // Not JSON -- providerError stays undefined, bodyText itself is still logged/used below.
+      }
+      const providerMessage = typeof providerError?.message === 'string' ? providerError.message : bodyText
+      // Full, unredacted (of everything except the key/URL) diagnostic, exactly
+      // as the provider sent it -- this is the line a human reads in
+      // `wrangler tail` to actually diagnose a real production failure.
+      logger.error?.(
+        `[PersonalMemory] provider rejected request: endpoint=${REDACTED_ENDPOINT_LABEL} httpStatus=${status} ` +
+          `providerStatus=${String(providerError?.status ?? 'unknown')} message=${providerMessage} ` +
+          `details=${providerError?.details !== undefined ? JSON.stringify(providerError.details) : 'none'}`,
+      )
+      const taxonomy: ProviderFailureTaxonomy = status >= 500 ? 'PROVIDER_UNAVAILABLE' : 'PROVIDER_REQUEST_REJECTED'
+      throw new ProviderCallError(
+        `Model request failed with status ${status}.`,
+        taxonomy,
+        status,
+        truncateForLog(providerMessage, 300),
+      )
+    }
+    throw err
   }
 
-  const data = (await response.json()) as {
-    candidates?: Array<{ finishReason?: unknown; content?: { parts?: Array<{ text?: unknown }> } }>
-    usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number }
-  }
-  const candidate = data.candidates?.[0]
-  if (!candidate) throw new ProviderCallError('Model returned no candidate.', 'MODEL_OUTPUT_UNUSABLE')
   // Task 12 fix: mirrors reasoning-endpoint.ts's own finishReason check,
   // which this endpoint never had. A truncated response (finishReason
   // 'MAX_TOKENS') previously fell through to the generic "not valid JSON"
   // error below with no indication of WHY -- this makes that cause explicit
-  // and immediately diagnosable from the run record / wrangler tail.
-  if (candidate.finishReason !== undefined && candidate.finishReason !== 'STOP') {
+  // and immediately diagnosable from the run record / wrangler tail. Uses
+  // result.rawFinishReason (ADR-0018 S2 amendment) for the exact provider
+  // string this route's own tests assert on -- result.finishReason (the
+  // neutral enum) decides only whether to throw.
+  if (result.finishReason !== 'stop') {
     throw new ProviderCallError(
-      `Model response did not finish safely (finishReason=${String(candidate.finishReason)}).`,
+      `Model response did not finish safely (finishReason=${result.rawFinishReason ?? 'unknown'}).`,
       'MODEL_OUTPUT_UNUSABLE',
       undefined,
-      String(candidate.finishReason),
+      result.rawFinishReason ?? 'unknown',
     )
   }
-  const text = candidate.content?.parts?.[0]?.text
-  if (typeof text !== 'string' || !text.trim()) throw new ProviderCallError('Model returned no extraction content.', 'MODEL_OUTPUT_UNUSABLE')
+  const text = result.rawText
+  if (!text.trim()) throw new ProviderCallError('Model returned no extraction content.', 'MODEL_OUTPUT_UNUSABLE')
   let raw: unknown
   try {
     raw = parseModelJsonObject(text)
@@ -623,8 +618,8 @@ async function callGeminiForExtraction(
   }
   return {
     raw,
-    promptTokenCount: data.usageMetadata?.promptTokenCount,
-    responseTokenCount: data.usageMetadata?.candidatesTokenCount,
+    promptTokenCount: result.usage?.promptTokens,
+    responseTokenCount: result.usage?.responseTokens,
   }
 }
 
