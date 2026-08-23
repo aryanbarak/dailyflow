@@ -874,6 +874,55 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
          exists for `finance_import_batches`
          (`supabase/tests/finance_import_batches.migration_structure.test.ts`)
          but `finance_import_rows` still has neither.
+12. **Capability-oriented AI provider abstraction — S0 (interfaces only)
+    authored on branch `feat/adr-0018-s0-provider-interfaces`; not pushed
+    to `main`.**
+    [ADR-0018](docs/decisions/adr/ADR-0018-capability-oriented-ai-provider-abstraction.md)
+    (**Status: Accepted** — PO approved 2026-08-22, all five open questions
+    answered yes). Follows directly from INC-01 (2026-08-22 Gemini 429
+    outage, see §6): PA-01 confirmed every AI call in `agent/worker/` is a
+    direct, unabstracted `fetch()` to `generativelanguage.googleapis.com`
+    (17 call sites), so ADR-0006's "replaceable mechanism" claim for
+    providers was not true of the code. Also amends ADR-0008 with four
+    governance items decided the same session (branch-commit authority, no
+    amend/force-push after a PR is open, the production deploy path, and
+    the "environment-only failure" labeling rule) — see ADR-0008's own new
+    "Amendments (2026-08-22)" section.
+    - **S0 (this slice) — zero behavior change, nothing wired.**
+      `agent/worker/providers/types.ts` defines the three capability
+      contracts (`TextGenerationProvider`, `StructuredGenerationProvider`,
+      `EmbeddingProvider`) and their request/result shapes exactly per the
+      ADR's Decision 1–2; `providers/index.ts` re-exports them plus
+      `ProviderUnavailableError` (re-exported from `provider-errors.ts`,
+      not moved or renamed). A type-level test
+      (`providers/providerInterfaces.test.ts`) proves the three interfaces
+      are implementable with stub classes. No call site imports from
+      `providers/` yet — that starts at S1.
+    - **Migration authored, NOT applied:**
+      `supabase/migrations/20260823000000_provider_failure_events.sql` —
+      columns per Decision 6 (`id`, `capability`, `provider_id`,
+      `http_status`, `occurred_at`, `request_id`); RLS enabled, zero grants
+      to `anon`/`authenticated`, `service_role` only — same pattern as
+      `finance_import_batches`. Static structure test:
+      `supabase/tests/provider_failure_events.migration_structure.test.ts`.
+      Requires `supabase db push` with explicit PO authorization before any
+      row can ever be written, same policy as every other pending migration
+      in this file.
+    - **S1–S5 planned, not started:** S1 (`GeminiTextGenerationProvider`,
+      4 text call sites, unify `ProviderFailureTaxonomy`, persist failure
+      events), S2 (neutral JSON-Schema subset +
+      `GeminiStructuredGenerationProvider`, 8 structured call sites,
+      snapshot-diff-empty discipline), S3 (`GeminiEmbeddingProvider`
+      wrapping `embeddingConfig.ts`, startup dimension assertion), S4 (test
+      migration: fetch-level mocks → interface mocks), S5 (OCR migrated
+      from the legacy `workers/ai-worker-recovered/` Worker — first
+      legacy-retirement step). Each slice is its own PR, test-gated, no
+      behavior change proven per-slice (byte-identical schema snapshot for
+      S2, existing endpoint tests for S1/S3). See the ADR's own
+      Implementation Plan table for the full gate per slice.
+    - **No smoke run for S0** — no model-facing/schema-shape change exists
+      yet to smoke-test; `provider-contract-smoke` first becomes relevant
+      at S1.
 
 Superseded/completed sprint milestones from the prior version of this
 document have been removed rather than carried forward as history; git

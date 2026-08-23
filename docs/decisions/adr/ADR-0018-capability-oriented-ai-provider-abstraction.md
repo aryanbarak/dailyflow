@@ -1,0 +1,184 @@
+# ADR-0018: Capability-Oriented AI Provider Abstraction
+
+- **Status:** Accepted
+- **Date:** 2026-08-22
+- **Accepted:** 2026-08-22 — PO approved 2026-08-22: all five open questions answered yes.
+- **Decision Makers:** Product Owner (decision), Coordinator/Architect (Claude — drafting), Claude Code (implementation)
+- **Supersedes:** None
+- **Superseded by:** None
+- **Related:** ADR-0006 (replaceable mechanisms), ADR-0008 (tiered governance), ADR-0011 §5 (deferred semantic retrieval), ADR-0017 (two-view registry), `docs/architecture/notes/provider-coupling-audit-v1.md` (PA-01), `pdr-evolution-plan-v1.1.md` Stage 0 Track C
+
+---
+
+## Context
+
+### Why now
+
+1. **ADR-0006 already decided this; it was never executed.** ADR-0006 lists Gemini, Cloudflare, and Supabase as *replaceable mechanisms* whose replacement must not change SmartFlow's semantics. PA-01 (2026-08-22) confirmed from code that every AI call in `agent/worker/` is a direct `fetch()` to `generativelanguage.googleapis.com` with Gemini-shaped request envelopes — 17 call sites, zero abstraction. ADR-0006's commitment is currently not true of the code.
+
+2. **Incident 2026-08-22 — provider credit depletion.** Gemini returned `429 RESOURCE_EXHAUSTED` for every call. Every AI-dependent surface (chat, reasoning, suggestions, briefing, memory extraction, embeddings) failed simultaneously. Until INC-01 (`1da24e0`) the failure was additionally *misreported* as a fabricated clarification question. No persisted record of the outage exists. One billing event silenced the entire product, and the product could not say so honestly.
+
+3. **Evolution Plan Stage 0, Track C** names provider abstraction as the first architectural step toward AI independence, *before* any Local AI Lab result, *before* any router, and explicitly *without* a "Local-First" promise the current architecture cannot keep.
+
+### What PA-01 established (confirmed from code)
+
+| Capability | Call sites | Seam realism |
+|---|---|---|
+| **Text generation** (prose out) | 4 — briefing, `/chat` mode=chat, `/documents/analyze`, PDF transcription | Clean. All reduce to `system + turns + maxTokens/temperature → string`. Only `thinkingConfig` is provider-specific. |
+| **Structured generation** (one JSON object matching a schema) | 8 — `/agent/reason`, `/chat` mode=reasoning, 4× suggestions, derivation, memory extraction, task title | Realistic at the call boundary. **Schema authoring is the hard part**: four independent hand-written builders in Gemini's `{type:'OBJECT', properties:{…}}` dialect. The `intentValidator` rescue logic is mostly generic and must stay. |
+| **Embedding** | 2 — document chunks (persisted, `vector(768)`), memory overlap dedup (transient) | Not a zero-behavior-change seam. `gemini-embedding-001` at `outputDimensionality: 768` requires client-side L2-normalization; 768 is a persisted column width. A different model is a migration, not a config swap. |
+| External (`api.barakzai.cloud`) | Learn tutor (unused), OCR (needed), photos, translate, TTS | Separately deployed legacy Worker (`workers/ai-worker-recovered/`), JS, no tests. |
+
+PA-02 (`d1b421b`) already unified the three Worker-side JSON parsers into `modelJsonParsing.ts` and the two embedding constant sets into `embeddingConfig.ts`. This ADR builds on that; it does not redo it.
+
+### What PA-01 could not decide (PO decisions recorded here)
+
+- **D8 — Scope.** `api.barakzai.cloud` is legacy. PO confirmed: Learn tutor has no remaining users; OCR is the only route still needed and will be migrated into `agent/worker/` behind the seam defined here as a later slice. This ADR covers `agent/worker/` only.
+- **D9 — Fallback policy.** The legacy Worker degrades Gemini 2.5 → 2.0 → Workers AI llama. `agent/worker/` has no fallback. Neither stance was ever written down. This ADR makes fallback a **per-capability property**, not a global switch (see Decision 5).
+- **D10 — "Zero-cross-import convention."** Investigated in PA-02: not a rule, a misapplied comment. Sibling imports within `agent/worker/` are routine. No exception needed.
+
+---
+
+## Decision
+
+### 1. Three capability contracts, not one `AIProvider`
+
+`agent/worker/` gains a `providers/` module defining exactly three interfaces:
+
+```ts
+interface TextGenerationProvider {
+  readonly id: string;                       // e.g. 'gemini'
+  generateText(req: TextGenerationRequest): Promise<TextGenerationResult>;
+}
+
+interface StructuredGenerationProvider {
+  readonly id: string;
+  generateStructured<T>(req: StructuredGenerationRequest): Promise<StructuredGenerationResult>;
+  // Result carries the raw text; parsing/validation stays in SmartFlow code
+  // (modelJsonParsing.ts + the existing validators). The provider never
+  // returns a "typed" object it claims is valid.
+}
+
+interface EmbeddingProvider {
+  readonly id: string;
+  readonly model: string;
+  readonly dimensions: number;               // 768 today — a contract, not a default
+  readonly normalizesOutput: boolean;        // false for gemini-embedding-001 @768
+  embed(texts: string[]): Promise<EmbeddingResult>;
+}
+```
+
+**Why three and not one:** the three have different failure semantics, different fallback rules (Decision 5), different test strategies, and — for embeddings — different persistence consequences. One `AIProvider` with `supportsX` flags would hide exactly the differences that matter. **Why not more than three:** PA-01 found no fourth shape in `agent/worker/`. Adding capabilities (e.g. vision, audio) requires a new ADR, not an interface extension.
+
+### 2. Request/result shapes are SmartFlow-owned and provider-neutral
+
+- `ChatMessage { role: 'user'|'assistant', content }` (`types.ts:116-125`) is already neutral and is reused.
+- System instruction is a field on the request, not a turn. The Gemini adapter maps it to `system_instruction`; an OpenAI-style adapter would map it to a `system` turn.
+- Provider-specific knobs (`thinkingConfig`, safety settings, AI Gateway routing) live in an opaque `providerOptions?: Record<string, unknown>` on the request that only the matching adapter reads. Non-matching adapters ignore it. This is the one deliberate escape hatch; it must not grow into a second API.
+- `maxOutputTokens` remains per-call. PA-01 noted these constants are tuned to Gemini's token accounting; re-tuning is a consequence of any future provider swap, not of this ADR.
+
+### 3. Structured output: neutral schema subset → adapter translation
+
+The four schema builders (`buildReasoningResponseSchema`, `buildDerivationResponseSchema`, `buildExtractionResponseSchema`, `buildTaskTitleResponseSchema`) are rewritten to emit a **minimal JSON-Schema subset** owned by SmartFlow:
+
+`object`, `string`, `number`, `boolean`, `array` (of the above), `enum` (string), `required`, `maxItems`, `description`. Nothing else. If a builder needs more, that is a new decision.
+
+`GeminiStructuredGenerationProvider` translates this subset into Gemini's `responseSchema` dialect at call time. **Proof of zero behavior change:** `shared/reasoning-response-schema.snapshot.json` is extended to cover all four builders' *Gemini-translated* output; the snapshot must be byte-identical before and after the refactor. This is the same discipline as `provider-contract-smoke` — a provider-visible artifact, diffed.
+
+Rescue/normalization logic in `intentValidator.ts`, `normalizeProposal`, and the `finishReason !== 'STOP'` checks is **not moved and not weakened**. It guards against model output, which exists regardless of provider. The provider boundary sits *below* it.
+
+### 4. Embeddings: interface now, implementation change later
+
+`EmbeddingProvider` is defined and `GeminiEmbeddingProvider` wraps the existing `embeddingConfig.ts` logic (including mandatory L2-normalization, with `normalizesOutput: false`). **No second embedding provider is implemented under this ADR.** Changing the embedding model is Evolution Plan Stage 2 work, gated by the retrieval benchmark, and will require its own ADR covering index migration (one index vs two, re-embed strategy, `vector(N)` DDL).
+
+A runtime assertion is added: at Worker startup (or first use), `provider.dimensions` must equal `EMBEDDING_DIMENSIONS`; mismatch fails closed with a logged configuration error. PA-02's static test covers the migration; this covers the running binary.
+
+### 5. Fallback is a per-capability policy, decided here, implemented later
+
+| Capability | On provider failure (network / 429 / 5xx) | Rationale |
+|---|---|---|
+| Text generation | **May** degrade to a weaker/alternate provider in a future slice. Not implemented in this ADR. | A slightly worse briefing beats no briefing. Output is prose the user reads and judges. |
+| Structured generation | **Fail closed.** Return `PROVIDER_UNAVAILABLE` (INC-01). Never substitute a weaker model. | Output feeds approval cards and write proposals. A weaker model's proposal arrives with the same apparent authority. Degradation here is a safety regression, not a UX regression. |
+| Embedding | **Fail closed.** No fallback is meaningful — a different model is a different vector space. | Mixing spaces in one index silently corrupts retrieval. |
+
+The legacy Worker's "always degrade" behavior is therefore **not** adopted wholesale; it is adopted for text generation only, and only when a second `TextGenerationProvider` exists.
+
+### 6. Provider failures are distinct, typed, and persisted
+
+`ProviderUnavailableError` (INC-01, `provider-errors.ts`) becomes the single classification for network/429/5xx across all three capabilities. This ADR adds the missing piece the incident exposed: **every `ProviderUnavailableError` is persisted** — minimum `{capability, provider_id, http_status, occurred_at, request_id}` — in a new `provider_failure_events` table (service-role only, RLS default-deny like `finance_import_batches`, retention: 30 days via scheduled cleanup in the existing `0 6 * * *` cron). No prompt content, no response bodies, no secrets.
+
+Rationale: today's outage left no trace. A representative that cannot report its own outages cannot be trusted to report anything else.
+
+### 7. Scope boundary: `agent/worker/` only; legacy Worker retires route-by-route
+
+`workers/ai-worker-recovered/` is declared **legacy**. It receives no abstraction work. The retirement order, each as its own slice with PO approval:
+
+1. **OCR** (`/ocr`) — the only route PO still uses. Re-implemented in `agent/worker/` as a `TextGenerationProvider` consumer (PDF → text) behind the seam.
+2. Photos / translate / TTS / music — PO decides per route: migrate or drop.
+3. When no route remains in use: delete the directory and the Cloudflare Worker; update `PROVENANCE.md` to record retirement.
+
+`BankImportTool.tsx` (`/import-bank`, PDF+Gemini) is already scheduled for retirement under ADR-0017; it is not re-scoped here.
+
+### 8. Governance amendments (ADR-0008)
+
+Recorded here because they were decided in the same working session and affect how this ADR is implemented:
+
+- **Branch commits.** Claude Code may commit and push to branches other than `main`. `main` changes only via pull request, `ci` green, and PO merge. (Established CI-01, PR #157; ruleset `main` active, bypass list empty.)
+- **No amend/force-push after a PR is open.** New commits only, so review history stays linear.
+- **Production deploy path.** Frontend: only `deploy-cloudflare-pages.yml` (test-gated). Cloudflare Git integration is preview-only; automatic production deployments disabled (2026-08-22). Worker: manual `wrangler deploy` after `provider-contract-smoke` 5/5 — unchanged.
+- **"Environment-only failure" is not a valid label without a clean-environment run.** CI is that environment. (Three such mislabels surfaced in CI-01: port-dependent tests, `.env`-dependent tests, order-dependent test.)
+
+---
+
+## Consequences
+
+### Positive
+- ADR-0006's "replaceable mechanism" claim becomes true for AI providers, capability by capability.
+- Fallback policy is explicit and safety-aware instead of accidental.
+- Provider outages are visible after the fact.
+- Tests move from mocking `generativelanguage.googleapis.com` URLs to mocking a three-method interface; the 6 fetch-level test files shrink.
+- The Local AI Lab (Evolution Plan Stage 2) has a concrete target: implement `EmbeddingProvider` / `TextGenerationProvider` for Ollama *if* the benchmark passes.
+
+### Negative / costs
+- Four schema builders are rewritten; regression risk is real and is bounded only by the snapshot discipline in Decision 3.
+- `providerOptions` is an escape hatch. It will be tempting to put provider-specific behavior there instead of in the interface. Reviewers must push back.
+- One new table and one cron job for failure events — small, but it is infrastructure.
+- No user-visible feature ships from this ADR. This is foundation.
+
+### Explicitly not decided here
+- Which second provider (if any) is added, or when.
+- Any router / model selection policy (Evolution Plan Stage 4, future ADR).
+- Any change to the embedding model or `vector(768)`.
+- Offline / local runtime (Evolution Plan Stage 3, future ADR).
+- Whether `ProviderFailureTaxonomy` duplication (document-memory ↔ context-derivation) is unified — it should be, inside slice S1, as it is part of the provider error contract.
+
+---
+
+## Implementation Plan (slices; each a PR; each test-gated)
+
+| Slice | Content | Behavior change | Gate |
+|---|---|---|---|
+| **S0** | `providers/` module: three interfaces, request/result types, `ProviderUnavailableError` reuse, `provider_failure_events` migration (authored, not applied) | none | `npm test`; migration structure test |
+| **S1** | `GeminiTextGenerationProvider`; 4 text call sites migrated; unify `ProviderFailureTaxonomy`; persist failure events | none (proven by existing endpoint tests) | `npm test`; smoke 5/5 before deploy |
+| **S2** | Neutral schema subset + `GeminiStructuredGenerationProvider`; 8 structured call sites migrated; snapshot extended to 4 builders | none (proven by byte-identical snapshot) | snapshot diff empty; `npm test`; smoke 5/5 |
+| **S3** | `GeminiEmbeddingProvider` wrapping `embeddingConfig.ts`; 2 embedding call sites; startup dimension assertion | none | `npm test`; smoke embedding check |
+| **S4** | Test migration: 6 fetch-level test files → interface mocks; `provider-contract-smoke` re-pointed at the adapters (stays Gemini-specific by design) | none | full suite green in CI |
+| **S5** | OCR route migrated from legacy Worker (first retirement step) | new route in `agent/worker/`; old route kept until PO confirms | PO manual test |
+
+S0–S3 are Tier-2 (code + authored migration). Applying the `provider_failure_events` migration and each Worker deploy are Tier-1 ("برو").
+
+---
+
+## Open questions for PO at review
+
+1. Accept per-capability fallback policy as written (Decision 5)?
+2. Accept `provider_failure_events` with 30-day retention (Decision 6), or prefer log-only for now?
+3. Accept OCR as the first legacy-retirement slice (Decision 7), or defer all legacy work?
+4. Accept the four governance amendments (Decision 8) as ADR-0008 addenda?
+5. Slice ordering: S1 (text) before S2 (structured) is lowest-risk-first. Any reason to reorder?
+
+---
+
+## Supersession and Change Control
+
+Changes to the set of capabilities, to the fallback policy table, or to the scope boundary require a superseding or amending ADR with PO approval. Adding a second provider implementation for an existing capability does **not** require a new ADR if it conforms to the interface and passes the capability's contract tests; it does require a PO-approved slice.
