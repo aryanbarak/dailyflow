@@ -45,6 +45,7 @@
 // this file's normalizeCandidate or inferredProjectContextFieldValidation.ts.
 
 import { parseModelJsonObject, ModelJsonParseError } from './modelJsonParsing'
+import { ProviderCallError, type ProviderFailureTaxonomy } from './providers/providerFailureTaxonomy'
 
 const CONTEXT_FIELD_KINDS = ['objective', 'milestone', 'decision', 'risk', 'capability', 'candidate_action'] as const
 type ContextFieldKind = typeof CONTEXT_FIELD_KINDS[number]
@@ -93,25 +94,13 @@ function errorResponse(code: string, message: string, status: number, origin: st
   return jsonResponse({ error: { code, message, ...extra } }, status, origin)
 }
 
-// Task 14 fix: same taxonomy and same ProviderCallError shape as
-// personal-memory-extraction-endpoint.ts's identical fix (see that file's
-// own comments for the full rationale) -- this module cannot import that
-// one (agent/worker's own zero-cross-import convention, see file header),
-// so it is duplicated here rather than shared.
-type ProviderFailureTaxonomy = 'PROVIDER_REQUEST_REJECTED' | 'PROVIDER_UNAVAILABLE' | 'MODEL_OUTPUT_UNUSABLE'
-
-class ProviderCallError extends Error {
-  constructor(
-    message: string,
-    readonly taxonomy: ProviderFailureTaxonomy,
-    readonly providerStatus?: number,
-    readonly providerDetail?: string,
-  ) {
-    super(message)
-    this.name = 'ProviderCallError'
-  }
-}
-
+// ADR-0018 S1: the "task 14" taxonomy/error class now live in
+// providers/providerFailureTaxonomy.ts, unified with document-memory-
+// extraction-endpoint.ts's former duplicate (imported above) -- the prior
+// "agent/worker's own zero-cross-import convention" justification for
+// keeping this duplicated was already found not to be a real rule (see
+// embeddingConfig.ts's own header comment). DERIVATION_TAXONOMY_MESSAGES
+// below stays this file's own domain-specific wording, unchanged.
 const DERIVATION_TAXONOMY_MESSAGES: Record<ProviderFailureTaxonomy, string> = {
   PROVIDER_REQUEST_REJECTED: 'The request to the AI model was rejected. This is a configuration issue on our side, not a problem with your data.',
   PROVIDER_UNAVAILABLE: 'The AI model is temporarily unavailable. Please try again in a moment.',

@@ -39,7 +39,8 @@ import {
   undoAutoWrite,
   writeIntentOutcomeIdentity,
 } from './flow-write-policy'
-import { ProviderUnavailableError, fetchGeminiOrThrow } from './provider-errors'
+import { ProviderRequestError, ProviderUnavailableError, fetchGeminiOrThrow } from './provider-errors'
+import { createProviders } from './providers/createProviders'
 import { recordProposalOutcome } from './proposal-outcome-recording'
 import { parseProposalOutcomeRequestBody } from './proposal-outcome-endpoint'
 import type { WriteIntentType } from '../../shared/writeIntentRegistry'
@@ -1350,41 +1351,27 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
 async function callGemini(system: string, user: string, env: Env, maxOutputTokens = 1024): Promise<string> {
   console.log('[Gemini] system prompt (first 300 chars):', system.slice(0, 300))
   console.log('[Gemini] user prompt (first 500 chars):', user.slice(0, 500))
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${env.GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: system }] },
-        contents: [{ parts: [{ text: user }] }],
-        generationConfig: {
-          maxOutputTokens,
-          temperature: 0.7,
-          // Disable thinking tokens — they count against maxOutputTokens in Gemini 2.5
-          thinkingConfig: { thinkingBudget: 0 },
-        },
-      }),
-    }
-  )
 
-  if (!res.ok) {
-    const err = await res.text()
-    throw new Error(`Gemini API error: ${err}`)
-  }
+  // ADR-0018 S1: migrated to the TextGenerationProvider adapter --
+  // thinkingConfig is passed through providerOptions (not defaulted inside
+  // the adapter, per this slice's own instruction: a model-specific quirk
+  // must not become adapter policy). "No content" still throws here, not
+  // inside the adapter (ADR-0018 Decision 3: that judgment call stays with
+  // the caller).
+  const result = await createProviders(env).text.generateText({
+    system,
+    turns: [{ role: 'user', content: user }],
+    maxOutputTokens,
+    temperature: 0.7,
+    providerOptions: { thinkingConfig: { thinkingBudget: 0 } },
+  })
 
-  const data: any = await res.json()
+  console.log('[Gemini] finishReason:', result.finishReason)
+  console.log('[Gemini] text length:', result.text.length)
+  console.log('[Gemini] full text:', result.text)
 
-  const candidate = data?.candidates?.[0]
-  const finishReason = candidate?.finishReason ?? 'UNKNOWN'
-  const text: string = candidate?.content?.parts?.[0]?.text ?? ''
-
-  console.log('[Gemini] finishReason:', finishReason)
-  console.log('[Gemini] text length:', text.length)
-  console.log('[Gemini] full text:', text)
-
-  if (!text) throw new Error(`No content from Gemini (finishReason: ${finishReason})`)
-  return text.trim()
+  if (!result.text) throw new Error(`No content from Gemini (finishReason: ${result.finishReason})`)
+  return result.text.trim()
 }
 
 // =============================================
@@ -1399,55 +1386,33 @@ async function callGeminiChat(
   // parts only (the /documents/analyze precedent in this same file) -- it
   // is never attached to any earlier turn, which is what keeps an image
   // attachment turn-scoped exactly like the text-attachment path above.
+  // ADR-0018 S1: now passed through providerOptions.inlineDataAttachment
+  // -- GeminiTextGenerationProvider owns the "last turn, 'user' role only"
+  // placement rule that used to live here (see its own comment).
   imageAttachment?: { mimeType: string; base64: string }
 ): Promise<string> {
   const maxOutputTokens = options.maxOutputTokens ?? 1024
   const temperature = options.temperature ?? 0.7
 
-  // Gemini uses 'model' for the assistant role
-  const lastIndex = history.length - 1
-  const contents = history.map((msg, index) => {
-    const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [{ text: msg.content }]
-    if (imageAttachment && index === lastIndex && msg.role === 'user') {
-      parts.push({ inlineData: { mimeType: imageAttachment.mimeType, data: imageAttachment.base64 } })
-    }
-    return {
-      role: msg.role === 'assistant' ? 'model' : 'user',
-      parts,
-    }
-  })
-
   console.log('[Chat] sending', history.length, 'turns to Gemini')
 
-  const res = await fetchGeminiOrThrow(
-    fetch,
-    `https://generativelanguage.googleapis.com/v1beta/models/${env.GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: system }] },
-        contents,
-        generationConfig: {
-          maxOutputTokens,
-          temperature,
-          // Disable thinking tokens — they count against maxOutputTokens in Gemini 2.5
-          thinkingConfig: { thinkingBudget: 0 },
-        },
-      }),
+  const result = await createProviders(env).text.generateText({
+    system,
+    turns: history,
+    maxOutputTokens,
+    temperature,
+    providerOptions: {
+      thinkingConfig: { thinkingBudget: 0 },
+      ...(imageAttachment
+        ? { inlineDataAttachment: { mimeType: imageAttachment.mimeType, data: imageAttachment.base64 } }
+        : {}),
     },
-    'Gemini Chat API',
-  )
+  })
 
-  const data: any = await res.json()
-  const candidate = data?.candidates?.[0]
-  const finishReason: string = candidate?.finishReason ?? 'UNKNOWN'
-  const text: string = candidate?.content?.parts?.[0]?.text ?? ''
+  console.log('[Chat] finishReason:', result.finishReason, 'text length:', result.text.length)
 
-  console.log('[Chat] finishReason:', finishReason, 'text length:', text.length)
-
-  if (!text) throw new Error(`No content from Gemini chat (finishReason: ${finishReason})`)
-  return text.trim()
+  if (!result.text) throw new Error(`No content from Gemini chat (finishReason: ${result.finishReason})`)
+  return result.text.trim()
 }
 
 // =============================================
@@ -1793,50 +1758,43 @@ async function handleDocumentAnalyze(request: Request, env: Env): Promise<Respon
       return json({ error: 'message is required' }, 400, origin)
     }
 
-    // Build Gemini content parts
-    const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = []
+    // Text content: embed the document text in the prompt when provided,
+    // otherwise just the message (both former no-text branches were
+    // identical).
+    const text = body.text
+      ? `${body.message}\n\nDocument text:\n${body.text.slice(0, 30000)}`
+      : body.message
 
-    // If PDF/file attachment: send as inlineData
-    if (body.fileData?.base64) {
-      parts.push({
-        inlineData: {
-          mimeType: body.fileData.mimeType,
-          data: body.fileData.base64,
-        },
+    // ADR-0018 S1: migrated to the TextGenerationProvider adapter. A
+    // non-ok HTTP response (429/5xx via ProviderUnavailableError, other
+    // non-ok via ProviderRequestError) is caught HERE, not by the outer
+    // catch below, so the pre-existing "Gemini error: <status>"/502 shape
+    // is preserved exactly -- only a genuine network-level failure (no
+    // HTTP status at all -- ProviderUnavailableError with `.status`
+    // undefined) still falls through to the outer catch's generic 500,
+    // unchanged from before this migration (the original raw fetch() was
+    // never specially caught for that case either).
+    let answer: string
+    try {
+      const result = await createProviders(env).text.generateText({
+        turns: [{ role: 'user', content: text }],
+        temperature: 0.3,
+        maxOutputTokens: 4096,
+        providerOptions: body.fileData?.base64
+          ? { inlineDataAttachment: { mimeType: body.fileData.mimeType, data: body.fileData.base64 } }
+          : undefined,
       })
+      answer = result.text
+    } catch (err) {
+      if (
+        (err instanceof ProviderUnavailableError && err.status !== undefined) ||
+        err instanceof ProviderRequestError
+      ) {
+        console.error('[documents/analyze] Gemini error:', (err as ProviderUnavailableError | ProviderRequestError).status, (err as ProviderUnavailableError | ProviderRequestError).body)
+        return json({ error: `Gemini error: ${(err as ProviderUnavailableError | ProviderRequestError).status}` }, 502, origin)
+      }
+      throw err
     }
-
-    // If text content provided: embed in prompt
-    if (body.text) {
-      parts.push({ text: `${body.message}\n\nDocument text:\n${body.text.slice(0, 30000)}` })
-    } else if (!body.fileData) {
-      parts.push({ text: body.message })
-    } else {
-      parts.push({ text: body.message })
-    }
-
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${env.GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts }],
-          generationConfig: { temperature: 0.3, maxOutputTokens: 4096 },
-        }),
-      },
-    )
-
-    if (!res.ok) {
-      const errBody = await res.text()
-      console.error('[documents/analyze] Gemini error:', res.status, errBody)
-      return json({ error: `Gemini error: ${res.status}` }, 502, origin)
-    }
-
-    const geminiData = await res.json() as {
-      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>
-    }
-    const answer = geminiData.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
 
     return json({ answer }, 200, origin)
   } catch (err) {

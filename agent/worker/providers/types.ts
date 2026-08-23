@@ -32,9 +32,14 @@ export interface TextGenerationRequest {
   providerOptions?: Record<string, unknown>;
 }
 
+// ADR-0018 S1: narrowed from a plain `string` (S0) to this neutral enum --
+// 'stop' (finished normally), 'length' (cut off by maxOutputTokens), or
+// 'other' (anything else: a safety/recitation block, an unrecognized or
+// missing value). See GeminiTextGenerationProvider's own mapFinishReason
+// for the Gemini-specific mapping into this contract.
 export interface TextGenerationResult {
   text: string;
-  finishReason: string;
+  finishReason: 'stop' | 'length' | 'other';
 }
 
 // ADR-0018 Decision 3: `schema` carries the neutral JSON-Schema subset
