@@ -46,6 +46,7 @@
 
 import { parseModelJsonObject, ModelJsonParseError } from './modelJsonParsing'
 import { ProviderCallError, type ProviderFailureTaxonomy } from './providers/providerFailureTaxonomy'
+import { resolveGeminiModel } from './geminiModel'
 
 const CONTEXT_FIELD_KINDS = ['objective', 'milestone', 'decision', 'risk', 'capability', 'candidate_action'] as const
 type ContextFieldKind = typeof CONTEXT_FIELD_KINDS[number]
@@ -367,7 +368,7 @@ async function callGeminiForDerivation(
   fetcher: typeof fetch,
   logger: Pick<Console, 'info' | 'error'>,
 ): Promise<{ raw: unknown; promptTokenCount?: number; responseTokenCount?: number }> {
-  const modelUrl = new URL(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(env.GEMINI_MODEL ?? '')}:generateContent`)
+  const modelUrl = new URL(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(resolveGeminiModel(env))}:generateContent`)
   modelUrl.searchParams.set('key', env.GEMINI_API_KEY ?? '')
 
   let response: Response
@@ -379,17 +380,17 @@ async function callGeminiForDerivation(
         system_instruction: { parts: [{ text: buildDerivationSystemInstruction() }] },
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         generationConfig: {
+          // Already at the MIG-01b 2048 floor -- left as-is.
           maxOutputTokens: 2048,
           temperature: 0,
           responseMimeType: 'application/json',
-          // Task R-3 fix (parity with personal-memory-extraction-endpoint.ts's
-          // identical task 12 fix): gemini-2.5-flash spends output tokens on
-          // internal "thinking" by default unless this is explicitly zeroed.
-          // Without it, thinking tokens can consume the entire
-          // maxOutputTokens budget before the model emits any of the actual
-          // JSON. Mirrors reasoning-endpoint.ts's proven-working
-          // callGeminiOnce, which already sets this.
-          thinkingConfig: { thinkingBudget: 0 },
+          // MIG-01b: thinkingConfig removed -- gemini-3.6-flash returns 400
+          // INVALID_ARGUMENT on thinkingConfig:{thinkingBudget:0} (see
+          // geminiModel.ts and scripts/gemini-36-probe.ts's P3 finding).
+          // The task R-3 fix this replaced (gemini-2.5-flash spending
+          // output tokens on internal "thinking" by default) is still real
+          // on 2.5 -- accepted, 2.5 is being retired (see callGemini's
+          // identical note in index.ts).
           responseSchema: buildDerivationResponseSchema(),
         },
       }),

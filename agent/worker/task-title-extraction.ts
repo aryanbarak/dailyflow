@@ -21,6 +21,7 @@
 // needs to tell those apart.
 
 import { fetchGeminiOrThrow } from './provider-errors'
+import { resolveGeminiModel } from './geminiModel'
 
 export function buildTaskTitleSystemInstruction(): string {
   return [
@@ -51,7 +52,12 @@ export interface TaskTitleEnv {
   GEMINI_MODEL?: string
 }
 
-const MAX_OUTPUT_TOKENS_TASK_TITLE = 128
+// MIG-01b: 128 -> 2048. This is the "simplest real schema" case probed by
+// scripts/gemini-36-probe.ts's P5 (buildTaskTitleResponseSchema) -- the
+// schema dialect itself was confirmed unchanged (200 on gemini-3.6-flash),
+// but thinking now consumes output budget, so 128 is no longer enough
+// headroom even for a one-field response.
+const MAX_OUTPUT_TOKENS_TASK_TITLE = 2048
 
 /**
  * Makes exactly one schema-enforced model call and returns the raw
@@ -65,9 +71,12 @@ export async function callGeminiForTaskTitle(
   env: TaskTitleEnv,
   fetcher: typeof fetch = fetch,
 ): Promise<string> {
-  const modelUrl = new URL(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(env.GEMINI_MODEL ?? '')}:generateContent`)
+  const modelUrl = new URL(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(resolveGeminiModel(env))}:generateContent`)
   modelUrl.searchParams.set('key', env.GEMINI_API_KEY ?? '')
 
+  // MIG-01b: thinkingConfig removed -- gemini-3.6-flash returns 400
+  // INVALID_ARGUMENT on thinkingConfig:{thinkingBudget:0} (see
+  // geminiModel.ts and scripts/gemini-36-probe.ts's P3 finding).
   const response = await fetchGeminiOrThrow(fetcher, modelUrl.toString(), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -78,7 +87,6 @@ export async function callGeminiForTaskTitle(
         maxOutputTokens: MAX_OUTPUT_TOKENS_TASK_TITLE,
         temperature: 0,
         responseMimeType: 'application/json',
-        thinkingConfig: { thinkingBudget: 0 },
         responseSchema: buildTaskTitleResponseSchema(),
       },
     }),

@@ -22,8 +22,13 @@
 // only a URL's pathname, mirroring the redaction-guard discipline already
 // enforced in agent/worker/*-endpoint.ts.
 //
+// MIG-01b: optionally reads SMOKE_DELAY_MS (default 0) -- milliseconds to
+// wait between each of the 6 checks, for a free-tier key (5 req/min).
+//
 // Run manually:
 //   GEMINI_API_KEY=... npx vite-node scripts/provider-contract-smoke.ts
+// On a free-tier key, space the 6 checks out:
+//   SMOKE_DELAY_MS=15000 GEMINI_API_KEY=... npx vite-node scripts/provider-contract-smoke.ts
 
 // Task 28b-guard: this check is written first, before the imports below, so
 // a reader sees it before anything else -- even though ESM hoists import
@@ -61,11 +66,23 @@ import { buildDerivationSystemInstruction, buildDerivationPrompt, buildDerivatio
 import { buildTaskTitleSystemInstruction, buildTaskTitlePrompt, buildTaskTitleResponseSchema } from '../agent/worker/task-title-extraction'
 import { buildReasoningSystemInstruction, buildReasoningResponseSchema, SUPPORTED_INTENT_VALUES } from '../agent/worker/reasoning-endpoint'
 import { GeminiTextGenerationProvider } from '../agent/worker/providers/gemini/GeminiTextGenerationProvider'
+// MIG-01b: single-source model resolution (see that module's header
+// comment) -- this script no longer hardcodes its own default.
+import { resolveGeminiModel } from '../agent/worker/geminiModel'
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? ''
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash'
+const GEMINI_MODEL = resolveGeminiModel({ GEMINI_MODEL: process.env.GEMINI_MODEL })
 const EMBEDDING_MODEL = 'gemini-embedding-001'
 const EMBEDDING_DIMENSIONS = 768
+// MIG-01b: the free tier is 5 req/min and this script makes 6 real calls
+// back-to-back -- SMOKE_DELAY_MS (default 0, i.e. no change to prior
+// behavior) lets a free-tier key space its checks out so the run's own
+// pacing isn't what triggers the very quota error it's trying to detect.
+const SMOKE_DELAY_MS = Number(process.env.SMOKE_DELAY_MS) || 0
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 interface ContractResult {
   readonly name: string;
@@ -83,10 +100,13 @@ async function callGenerateContent(model: string, systemInstruction: string, pro
       system_instruction: { parts: [{ text: systemInstruction }] },
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       generationConfig: {
-        maxOutputTokens: 256,
+        // MIG-01b: 256 -> 2048, thinkingConfig removed -- gemini-3.6-flash
+        // returns 400 INVALID_ARGUMENT on thinkingConfig:{thinkingBudget:0}
+        // (see agent/worker/geminiModel.ts and scripts/gemini-36-probe.ts's
+        // P3 finding); thinking now consumes output budget on every call.
+        maxOutputTokens: 2048,
         temperature: 0,
         responseMimeType: 'application/json',
-        thinkingConfig: { thinkingBudget: 0 },
         responseSchema,
       },
     }),
@@ -204,7 +224,9 @@ async function checkTextGenerationAdapterContract(): Promise<ContractResult> {
     })
     const result = await provider.generateText({
       turns: [{ role: 'user', content: 'Reply with exactly one short sentence confirming you received this message.' }],
-      maxOutputTokens: 128,
+      // MIG-01b: 128 -> 2048, matching production's own callGemini budget
+      // (index.ts) -- this check exercises the exact same adapter path.
+      maxOutputTokens: 2048,
       temperature: 0,
     })
     if (result.finishReason !== 'stop') return { name, pass: false, detail: `unexpected finishReason=${result.finishReason}` }
@@ -215,15 +237,42 @@ async function checkTextGenerationAdapterContract(): Promise<ContractResult> {
   }
 }
 
+const CHECKS: Array<() => Promise<ContractResult>> = [
+  checkExtractionContract,
+  checkDerivationContract,
+  checkTaskTitleContract,
+  checkReasoningContract,
+  checkEmbeddingContract,
+  checkTextGenerationAdapterContract,
+]
+
 async function main() {
   console.log(`Provider-contract smoke test -- model=${GEMINI_MODEL} embeddingModel=${EMBEDDING_MODEL}`)
-  console.log('(manual run only -- never wired into CI)\n')
+  console.log(`(manual run only -- never wired into CI; SMOKE_DELAY_MS=${SMOKE_DELAY_MS})\n`)
 
-  const results = [await checkExtractionContract(), await checkDerivationContract(), await checkTaskTitleContract(), await checkReasoningContract(), await checkEmbeddingContract(), await checkTextGenerationAdapterContract()]
+  const results: ContractResult[] = []
+  for (let i = 0; i < CHECKS.length; i += 1) {
+    if (i > 0 && SMOKE_DELAY_MS > 0) await sleep(SMOKE_DELAY_MS)
+    results.push(await CHECKS[i]())
+  }
 
   for (const result of results) {
     console.log(`${result.pass ? 'PASS' : 'FAIL'} -- ${result.name}`)
     console.log(`     ${result.detail}`)
+  }
+
+  // MIG-01b: the free tier is 5 req/min -- a run with no delay (or too
+  // short a delay) against a free-tier key can hit its own quota mid-run.
+  // Surface that distinctly from a real contract break so the reader
+  // reruns with SMOKE_DELAY_MS instead of chasing a false regression.
+  const quotaFailures = results.filter((r) => !r.pass && /free_tier/i.test(r.detail))
+  if (quotaFailures.length > 0) {
+    console.log(
+      `\nHINT: ${quotaFailures.length} check(s) failed with a free_tier quota error. This is likely` +
+        ' rate-limiting from this run itself (free tier = 5 req/min, 6 checks), not a real contract' +
+        ' break. Rerun with a larger SMOKE_DELAY_MS, e.g.:\n' +
+        '  SMOKE_DELAY_MS=15000 GEMINI_API_KEY=... npx vite-node scripts/provider-contract-smoke.ts',
+    )
   }
 
   const allPassed = results.every((r) => r.pass)

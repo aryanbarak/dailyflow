@@ -41,6 +41,7 @@ import {
 } from './flow-write-policy'
 import { ProviderRequestError, ProviderUnavailableError, fetchGeminiOrThrow } from './provider-errors'
 import { createProviders } from './providers/createProviders'
+import { resolveGeminiModel } from './geminiModel'
 import { recordProposalOutcome } from './proposal-outcome-recording'
 import { parseProposalOutcomeRequestBody } from './proposal-outcome-endpoint'
 import type { WriteIntentType } from '../../shared/writeIntentRegistry'
@@ -189,8 +190,14 @@ async function generateBriefing(
   const { system, user } = buildPrompt(context)
   console.log(`[Briefing] language=${context.language} mode=${mode} userId=${userId}`)
 
-  // ۳. Gemini رو صدا بزن — weekly needs more tokens
-  const maxOutputTokens = mode === 'weekly' ? 1500 : 1024
+  // ۳. Gemini رو صدا بزن
+  // MIG-01b: both were <2048 (weekly 1500, daily 1024) -- raised to the
+  // 2048 floor now that thinking consumes output budget on every call
+  // (thinkingConfig removed, see callGemini's own comment). Flattens the
+  // "weekly needs more tokens" margin weekly used to have over daily;
+  // flagged in the MIG-01b report as a candidate follow-up if weekly
+  // briefings start truncating at 2048 in practice.
+  const maxOutputTokens = 2048
   const rawContent = await callGemini(system, user, env, maxOutputTokens)
 
   // ADR-0011 Q5: a one-line, user-visible, deterministically-appended
@@ -302,7 +309,7 @@ async function handleTaskSuggestions(request: Request, env: Env): Promise<Respon
     ].filter(Boolean).join('\n')
 
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${env.GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${resolveGeminiModel(env)}:generateContent?key=${env.GEMINI_API_KEY}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -322,9 +329,12 @@ async function handleTaskSuggestions(request: Request, env: Env): Promise<Respon
                 required: ['text', 'type'],
               },
             },
-            maxOutputTokens: 256,
+            // MIG-01b: 256 -> 2048. thinkingConfig removed (gemini-3.6-flash
+            // rejects thinkingBudget:0, see geminiModel.ts) -- thinking now
+            // consumes output budget on every call, so the ceiling has to
+            // rise even though this response itself is short.
+            maxOutputTokens: 2048,
             temperature: 0.3,
-            thinkingConfig: { thinkingBudget: 0 },
           },
         }),
       }
@@ -409,7 +419,7 @@ async function handleCalendarSuggestions(request: Request, env: Env): Promise<Re
     ].filter(Boolean).join('\n')
 
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${env.GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${resolveGeminiModel(env)}:generateContent?key=${env.GEMINI_API_KEY}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -430,9 +440,10 @@ async function handleCalendarSuggestions(request: Request, env: Env): Promise<Re
                 required: ['text', 'type'],
               },
             },
-            maxOutputTokens: 256,
+            // MIG-01b: 256 -> 2048, thinkingConfig removed -- see
+            // handleTaskSuggestions's identical comment above.
+            maxOutputTokens: 2048,
             temperature: 0.3,
-            thinkingConfig: { thinkingBudget: 0 },
           },
         }),
       }
@@ -531,7 +542,7 @@ async function handleHabitSuggestions(request: Request, env: Env): Promise<Respo
     ].join('\n')
 
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${env.GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${resolveGeminiModel(env)}:generateContent?key=${env.GEMINI_API_KEY}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -551,9 +562,10 @@ async function handleHabitSuggestions(request: Request, env: Env): Promise<Respo
                 required: ['text', 'type'],
               },
             },
-            maxOutputTokens: 256,
+            // MIG-01b: 256 -> 2048, thinkingConfig removed -- see
+            // handleTaskSuggestions's identical comment above.
+            maxOutputTokens: 2048,
             temperature: 0.3,
-            thinkingConfig: { thinkingBudget: 0 },
           },
         }),
       }
@@ -636,7 +648,7 @@ async function handleFinanceSuggestions(request: Request, env: Env): Promise<Res
     ].filter(Boolean).join('\n')
 
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${env.GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${resolveGeminiModel(env)}:generateContent?key=${env.GEMINI_API_KEY}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -656,9 +668,10 @@ async function handleFinanceSuggestions(request: Request, env: Env): Promise<Res
                 required: ['text', 'type'],
               },
             },
-            maxOutputTokens: 256,
+            // MIG-01b: 256 -> 2048, thinkingConfig removed -- see
+            // handleTaskSuggestions's identical comment above.
+            maxOutputTokens: 2048,
             temperature: 0.3,
-            thinkingConfig: { thinkingBudget: 0 },
           },
         }),
       }
@@ -1361,18 +1374,22 @@ async function callGemini(system: string, user: string, env: Env, maxOutputToken
   console.log('[Gemini] system prompt (first 300 chars):', system.slice(0, 300))
   console.log('[Gemini] user prompt (first 500 chars):', user.slice(0, 500))
 
-  // ADR-0018 S1: migrated to the TextGenerationProvider adapter --
-  // thinkingConfig is passed through providerOptions (not defaulted inside
-  // the adapter, per this slice's own instruction: a model-specific quirk
-  // must not become adapter policy). "No content" still throws here, not
-  // inside the adapter (ADR-0018 Decision 3: that judgment call stays with
-  // the caller).
+  // ADR-0018 S1: migrated to the TextGenerationProvider adapter.
+  // MIG-01b: thinkingConfig removed -- gemini-3.6-flash returns 400
+  // INVALID_ARGUMENT on thinkingConfig:{thinkingBudget:0} (see
+  // geminiModel.ts and scripts/gemini-36-probe.ts's P3 finding). No
+  // model-conditional logic added here either way (ADR-0018 Decision 2:
+  // the adapter/call site encodes no model-specific policy) -- on
+  // gemini-2.5-flash (still reachable via an env-pinned GEMINI_MODEL,
+  // see wrangler.toml's comment) thinking is simply enabled now; accepted,
+  // 2.5 is being retired. "No content" still throws here, not inside the
+  // adapter (ADR-0018 Decision 3: that judgment call stays with the
+  // caller).
   const result = await createProviders(env).text.generateText({
     system,
     turns: [{ role: 'user', content: user }],
     maxOutputTokens,
     temperature: 0.7,
-    providerOptions: { thinkingConfig: { thinkingBudget: 0 } },
   })
 
   console.log('[Gemini] finishReason:', result.finishReason)
@@ -1400,11 +1417,15 @@ async function callGeminiChat(
   // placement rule that used to live here (see its own comment).
   imageAttachment?: { mimeType: string; base64: string }
 ): Promise<string> {
-  const maxOutputTokens = options.maxOutputTokens ?? 1024
+  // MIG-01b: 1024 -> 2048 default -- see callGemini's own comment for why
+  // (thinkingConfig removal + gemini-3.6-flash thinking consuming output
+  // budget).
+  const maxOutputTokens = options.maxOutputTokens ?? 2048
   const temperature = options.temperature ?? 0.7
 
   console.log('[Chat] sending', history.length, 'turns to Gemini')
 
+  // MIG-01b: thinkingConfig removed -- see callGemini's own comment.
   const result = await createProviders(env).text.generateText({
     system,
     turns: history,
@@ -1413,12 +1434,9 @@ async function callGeminiChat(
     // ADR-0018 S1 follow-up: attachmentPosition only matters (and is only
     // required by the adapter) when an attachment is actually present.
     ...(imageAttachment ? { attachmentPosition: 'after' as const } : {}),
-    providerOptions: {
-      thinkingConfig: { thinkingBudget: 0 },
-      ...(imageAttachment
-        ? { inlineDataAttachment: { mimeType: imageAttachment.mimeType, data: imageAttachment.base64 } }
-        : {}),
-    },
+    ...(imageAttachment
+      ? { providerOptions: { inlineDataAttachment: { mimeType: imageAttachment.mimeType, data: imageAttachment.base64 } } }
+      : {}),
   })
 
   console.log('[Chat] finishReason:', result.finishReason, 'text length:', result.text.length)
@@ -1443,7 +1461,7 @@ async function callGeminiReasoning(
 ): Promise<string> {
   const res = await fetchGeminiOrThrow(
     fetch,
-    `https://generativelanguage.googleapis.com/v1beta/models/${env.GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${resolveGeminiModel(env)}:generateContent?key=${env.GEMINI_API_KEY}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1453,11 +1471,14 @@ async function callGeminiReasoning(
         },
         contents: [{ role: 'user', parts: [{ text: reasoningPrompt }] }],
         generationConfig: {
-          maxOutputTokens: 768,
+          // MIG-01b: 768 -> 2048. thinkingConfig removed -- gemini-3.6-flash
+          // returns 400 INVALID_ARGUMENT on thinkingConfig:{thinkingBudget:0}
+          // (see geminiModel.ts); on gemini-2.5-flash (still reachable via
+          // an env-pin) thinking is simply enabled now, which is why the
+          // budget has to rise even though this response schema is small.
+          maxOutputTokens: 2048,
           temperature: 0,
           responseMimeType: 'application/json',
-          // Disable thinking tokens — they count against maxOutputTokens in Gemini 2.5
-          thinkingConfig: { thinkingBudget: 0 },
           responseSchema: buildReasoningResponseSchema(),
         },
       }),
@@ -1528,7 +1549,7 @@ async function extractAndSaveMemory(
 
   try {
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${env.GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${resolveGeminiModel(env)}:generateContent?key=${env.GEMINI_API_KEY}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1548,9 +1569,10 @@ async function extractAndSaveMemory(
                 required: ['key', 'value'],
               },
             },
-            maxOutputTokens: 512,
+            // MIG-01b: 512 -> 2048, thinkingConfig removed -- see
+            // handleTaskSuggestions's identical comment above.
+            maxOutputTokens: 2048,
             temperature: 0.1,
-            thinkingConfig: { thinkingBudget: 0 },
           },
         }),
       }
@@ -1630,7 +1652,7 @@ async function extractAndSaveMemoryFromChat(
 
   try {
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${env.GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${resolveGeminiModel(env)}:generateContent?key=${env.GEMINI_API_KEY}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1650,9 +1672,10 @@ async function extractAndSaveMemoryFromChat(
                 required: ['key', 'value'],
               },
             },
-            maxOutputTokens: 256,
+            // MIG-01b: 256 -> 2048, thinkingConfig removed -- see
+            // handleTaskSuggestions's identical comment above.
+            maxOutputTokens: 2048,
             temperature: 0.1,
-            thinkingConfig: { thinkingBudget: 0 },
           },
         }),
       }

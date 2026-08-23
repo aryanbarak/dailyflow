@@ -214,7 +214,13 @@ describe('POST /personal-memory/extraction', () => {
     expect(patchCalls).toEqual([{ completed_at: expect.any(String), outcome: 'failed', failure_reason: 'Model request failed with status 500.' }])
   })
 
-  it('task 12 fix: sends thinkingConfig: { thinkingBudget: 0 } on every Gemini call -- locks in the actual production fix (gemini-2.5-flash spends output tokens on internal thinking by default, which can exhaust maxOutputTokens before any JSON is emitted) at the wire level, not just via behavior', async () => {
+  // MIG-01b: the task 12 fix this replaced (gemini-2.5-flash spending
+  // output tokens on internal thinking by default) required
+  // thinkingConfig:{thinkingBudget:0}; gemini-3.6-flash returns 400
+  // INVALID_ARGUMENT on that same field (scripts/gemini-36-probe.ts's P3
+  // finding), so it is no longer sent at all -- this test now asserts its
+  // absence at the wire level instead of its presence.
+  it('MIG-01b: does NOT send thinkingConfig on the Gemini call -- gemini-3.6-flash rejects it (400 INVALID_ARGUMENT)', async () => {
     let sentBody: { generationConfig?: { thinkingConfig?: unknown } } | null = null
     const inner = baseFetcher()
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -225,7 +231,7 @@ describe('POST /personal-memory/extraction', () => {
       return inner(input, init)
     })
     await handlePersonalMemoryExtractionRequest(request(), validEnv, { fetcher })
-    expect(sentBody?.generationConfig?.thinkingConfig).toEqual({ thinkingBudget: 0 })
+    expect(sentBody?.generationConfig?.thinkingConfig).toBeUndefined()
   })
 
   it('task 12 fixture: a realistic Gemini response with Persian-language free-text content is accepted -- language of the summary is not itself a rejection reason', async () => {
