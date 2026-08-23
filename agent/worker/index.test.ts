@@ -4,6 +4,26 @@ import path from 'node:path'
 import worker from './index'
 import type { Env } from './types'
 import { writeIntentRegistry } from '../../shared/writeIntentRegistry'
+import { buildReasoningResponseSchema } from './reasoning-endpoint'
+import { ProviderRequestError, ProviderUnavailableError } from './provider-errors'
+// ADR-0018 S4: every model call (text-gen: briefing/plain chat/attachment
+// transcription; structured-gen: reasoning/title-extraction/suggestion
+// handlers) is mocked at the interface now, not Gemini's wire format --
+// Gemini's own envelope is GeminiTextGenerationProvider.test.ts's/
+// GeminiStructuredGenerationProvider.test.ts's coverage. This file's own
+// FetchLog.geminiCalls keeps logging every captured request (now the real
+// TextGenerationRequest/StructuredGenerationRequest objects, not a
+// reconstructed wire body) so the many existing count/content assertions
+// throughout this file keep working with minimal, mechanical changes.
+import { StubStructuredGenerationProvider, StubTextGenerationProvider, stubProviders } from './providers/testing/stubProviders'
+import type { Providers } from './providers/createProviders'
+import type { NeutralArraySchema, NeutralObjectSchema, NeutralStringSchema } from './providers/schema/neutralSchema'
+import type { StructuredGenerationRequest, TextGenerationRequest } from './providers/types'
+
+let currentProviders: Providers = stubProviders()
+vi.mock('./providers/createProviders', () => ({
+  createProviders: () => currentProviders,
+}))
 
 const SUPABASE_URL = 'https://supa.test'
 
@@ -34,15 +54,19 @@ function chatRequest(body: Record<string, unknown>) {
   })
 }
 
-// Both fields optional on ONE type (not a union) purely for test-assertion
-// convenience -- callers read whichever of `.text`/`.inlineData` the
-// production code actually put there without needing to narrow first.
-type GeminiContentPart = { text?: string; inlineData?: { mimeType?: string; data?: string } }
-type GeminiContentEntry = { role?: string; parts?: GeminiContentPart[] }
+// ADR-0018 S4: a captured call is now the REAL request object the endpoint
+// handed to the provider interface -- StructuredGenerationRequest carries
+// `schema`, TextGenerationRequest does not, so `isStructuredCall` below is
+// how tests distinguish them (previously done by inspecting Gemini's own
+// translated `generationConfig.responseSchema`).
+type CapturedProviderCall = TextGenerationRequest | StructuredGenerationRequest
+
+function isStructuredCall(call: CapturedProviderCall): call is StructuredGenerationRequest {
+  return 'schema' in call
+}
 
 interface FetchLog {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- generationConfig's shape varies per call site (reasoning schema vs plain chat config) across this file's pre-existing tests; matches the pre-task-19 baseline exactly, unchanged by task 19.
-  geminiCalls: Array<{ system_instruction?: unknown; generationConfig?: any; contents?: GeminiContentEntry[] }>
+  geminiCalls: CapturedProviderCall[]
   chatMessageWrites: Array<Record<string, unknown>>
   sessionPatches: number
   personalMemoryReads: number
@@ -235,81 +259,71 @@ function installFetchMock(
       log.sessionPatches += 1
       return new Response(null, { status: 204 })
     }
-    if (url.startsWith('https://generativelanguage.googleapis.com/')) {
-      const parsedBody = JSON.parse(String(init?.body))
-      log.geminiCalls.push(parsedBody)
-      if (geminiStatus !== null) {
-        return new Response(
-          JSON.stringify({ error: { code: geminiStatus, message: 'RESOURCE_EXHAUSTED', status: 'RESOURCE_EXHAUSTED' } }),
-          { status: geminiStatus, headers: { 'Content-Type': 'application/json' } },
-        )
-      }
-      const schema = parsedBody.generationConfig?.responseSchema
+    throw new Error(`Unexpected fetch: ${method} ${url}`)
+  })
 
-      if (schema?.type === 'ARRAY') {
-        // Background memory-extraction call
-        return new Response(
-          JSON.stringify({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: '[]' }] } }] }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } },
-        )
+  // ADR-0018 S4: every model call now goes through the provider interface,
+  // not this fetch mock -- mirrors the OLD fetch branch's own
+  // response-shape dispatch (INC-01 status override, ARRAY/title/reasoning
+  // schema fingerprinting, transcription-vs-chat distinguishing) one level
+  // up, at the request the endpoint actually built.
+  currentProviders = stubProviders({
+    text: new StubTextGenerationProvider((req) => {
+      log.geminiCalls.push(req)
+      if (geminiStatus !== null) throw new ProviderUnavailableError(`Gemini text generation: provider error ${geminiStatus}: {}`, geminiStatus, '{}')
+      const options = req.providerOptions as { inlineDataAttachment?: unknown } | undefined
+      // transcribePdf's own request -- NO system prompt at all (unlike
+      // every /chat call), and it carries an inlineData attachment. This is
+      // what lets this same stub serve BOTH a PDF attachment's
+      // transcription call AND the real chat call with independently
+      // controllable responses.
+      const isTranscriptionCall = req.system === undefined && !!options?.inlineDataAttachment
+      if (isTranscriptionCall) {
+        const status = attachment?.transcriptionStatus ?? 200
+        if (status !== 200) throw new ProviderRequestError('Gemini text generation error: transcription rejected', status, 'transcription rejected')
+        return { text: attachment?.transcriptionText ?? '', finishReason: 'stop' }
       }
-      if (schema?.type === 'OBJECT' && schema.required?.includes('title') && schema.properties?.title && !schema.properties?.type) {
+      // Plain conversational chat call.
+      return { text: chatReplyText, finishReason: 'stop' }
+    }),
+    structured: new StubStructuredGenerationProvider((req) => {
+      log.geminiCalls.push(req)
+      if (geminiStatus !== null) throw new ProviderUnavailableError(`Gemini structured generation: provider error ${geminiStatus}: {}`, geminiStatus, '{}')
+      const schema = req.schema as NeutralObjectSchema & { properties?: Record<string, unknown> }
+      if (schema.type === 'array') {
+        // Suggestion handlers' own top-level ARRAY schemas (and the
+        // disabled background memory-extraction path) all get an empty
+        // array -- no test in this file currently exercises either.
+        return { rawText: '[]', finishReason: 'stop' }
+      }
+      if (schema.type === 'object' && schema.required?.includes('title') && schema.properties?.title && !schema.properties?.type) {
         // Task 21-fix6: title-extraction call (task-title-extraction.ts)
         // -- distinguished from the reasoning schema below by shape: only
         // this one has a bare `title` property and no `type`/`confidence`.
-        return new Response(
-          JSON.stringify({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify({ title: taskTitleResult ?? '' }) }] } }] }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } },
-        )
+        return { rawText: JSON.stringify({ title: taskTitleResult ?? '' }), finishReason: 'stop' }
       }
-      if (schema?.type === 'OBJECT') {
-        // Schema-enforced reasoning call
-        const proposal = JSON.stringify({
-          type: 'inspect_tasks',
-          confidence: 'high',
-          reasons: ['The request asks to inspect active tasks.'],
-          language: 'en',
-        })
-        return new Response(
-          JSON.stringify({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: proposal }] } }] }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } },
-        )
-      }
-      // transcribePdf's own request shape -- NO system_instruction key at
-      // all (unlike every /chat call below), and its single content entry
-      // carries an inlineData part alongside the fixed transcription
-      // instruction text. This is what lets this same generic branch serve
-      // BOTH a PDF attachment's transcription call AND the real chat call
-      // with independently controllable responses.
-      const firstParts = parsedBody.contents?.[0]?.parts
-      const isTranscriptionCall = !parsedBody.system_instruction && Array.isArray(firstParts) && firstParts.some((p) => 'inlineData' in p)
-      if (isTranscriptionCall) {
-        const status = attachment?.transcriptionStatus ?? 200
-        if (status !== 200) {
-          return new Response(JSON.stringify({ error: { message: 'transcription rejected' } }), { status, headers: { 'Content-Type': 'application/json' } })
-        }
-        return new Response(
-          JSON.stringify({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: attachment?.transcriptionText ?? '' }] } }] }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } },
-        )
-      }
-      // Plain conversational chat call
-      return new Response(
-        JSON.stringify({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: chatReplyText }] } }] }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      )
-    }
-
-    throw new Error(`Unexpected fetch: ${method} ${url}`)
+      // Schema-enforced reasoning call.
+      const proposal = JSON.stringify({
+        type: 'inspect_tasks',
+        confidence: 'high',
+        reasons: ['The request asks to inspect active tasks.'],
+        language: 'en',
+      })
+      return { rawText: proposal, finishReason: 'stop' }
+    }),
   })
 
   vi.stubGlobal('fetch', mock)
   return log
 }
 
-function systemTextOf(call: { system_instruction?: unknown } | undefined): string {
-  const instruction = call?.system_instruction as { parts?: Array<{ text?: string }> } | undefined
-  return instruction?.parts?.[0]?.text ?? ''
+function systemTextOf(call: CapturedProviderCall | undefined): string {
+  return call?.system ?? ''
+}
+
+/** The chat call specifically -- distinct from a possible transcribePdf call (also text-gen, but with no system prompt) and from any structured-gen call. */
+function findChatCall(calls: CapturedProviderCall[]): TextGenerationRequest | undefined {
+  return calls.find((call): call is TextGenerationRequest => !isStructuredCall(call) && call.system !== undefined)
 }
 
 function fakeExecutionContext() {
@@ -337,10 +351,16 @@ describe('handleChat mode routing', () => {
     expect(JSON.parse(body.reply ?? '{}')).toMatchObject({ type: 'inspect_tasks' })
 
     expect(log.geminiCalls).toHaveLength(1)
-    const [call] = log.geminiCalls
-    expect(call.generationConfig.temperature).toBe(0)
-    expect(call.generationConfig.responseMimeType).toBe('application/json')
-    expect(call.generationConfig.responseSchema.properties.type.enum).toEqual([
+    const [call] = log.geminiCalls as [StructuredGenerationRequest]
+    // call.temperature/maxOutputTokens are THIS call site's own values
+    // (callGeminiReasoning, index.ts) -- responseMimeType is not asserted
+    // here any more: the adapter always sets it unconditionally,
+    // GeminiStructuredGenerationProvider.test.ts's own coverage now.
+    expect(call.temperature).toBe(0)
+    expect(call.maxOutputTokens).toBe(2048)
+    const schema = call.schema as NeutralObjectSchema
+    const typeEnum = (schema.properties.type as NeutralStringSchema).enum
+    expect(typeEnum).toEqual([
       'inspect_tasks',
       'inspect_calendar',
       'inspect_learning',
@@ -374,10 +394,9 @@ describe('handleChat mode routing', () => {
       'ask_clarification',
       'unsupported',
     ])
-    expect(call.generationConfig.responseSchema.properties.confidence.enum).toEqual(['low', 'medium', 'high'])
-    expect(call.generationConfig.responseSchema.properties.candidates.items.properties.type.enum).toEqual(
-      call.generationConfig.responseSchema.properties.type.enum,
-    )
+    expect((schema.properties.confidence as NeutralStringSchema).enum).toEqual(['low', 'medium', 'high'])
+    const candidatesItems = (schema.properties.candidates as NeutralArraySchema).items as NeutralObjectSchema
+    expect((candidatesItems.properties.type as NeutralStringSchema).enum).toEqual(typeEnum)
 
     expect(log.chatMessageWrites).toHaveLength(0)
     expect(log.sessionPatches).toBe(0)
@@ -411,8 +430,9 @@ describe('handleChat mode routing', () => {
         ctx,
       )
 
-      const [call] = log.geminiCalls
-      expect(call.generationConfig.responseSchema.properties.type.enum).toContain(intentType)
+      const [call] = log.geminiCalls as [StructuredGenerationRequest]
+      const schema = call.schema as NeutralObjectSchema
+      expect((schema.properties.type as NeutralStringSchema).enum).toContain(intentType)
     },
   )
 
@@ -430,8 +450,9 @@ describe('handleChat mode routing', () => {
       ctx,
     )
 
-    const [call] = log.geminiCalls
-    expect(call.generationConfig.responseSchema.properties.type.enum).not.toContain('import_bank_statement')
+    const [call] = log.geminiCalls as [StructuredGenerationRequest]
+    const schema = call.schema as NeutralObjectSchema
+    expect((schema.properties.type as NeutralStringSchema).enum).not.toContain('import_bank_statement')
   })
 
   it('mode absent behaves exactly like plain chat: unchanged persistence and config', async () => {
@@ -457,9 +478,9 @@ describe('handleChat mode routing', () => {
     // longer schedules any background work here.
     expect((ctx.waitUntil as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled()
 
-    const chatCall = log.geminiCalls.find((call) => !call.generationConfig?.responseSchema)
+    const chatCall = findChatCall(log.geminiCalls)
     expect(chatCall).toBeDefined()
-    expect(chatCall?.generationConfig.temperature).toBe(0.7)
+    expect(chatCall?.temperature).toBe(0.7)
 
     // ADR-0011: no confirmed personal memory exists for this user in this
     // test -- the system prompt must omit the memory section entirely
@@ -526,7 +547,7 @@ describe('handleChat mode routing', () => {
     expect(response.status).toBe(200)
     expect(log.personalMemoryReads).toBe(1)
 
-    const chatCall = log.geminiCalls.find((call) => !call.generationConfig?.responseSchema)
+    const chatCall = findChatCall(log.geminiCalls)
     const systemText = systemTextOf(chatCall)
     expect(systemText).toContain('What I know about Aryan')
     expect(systemText).toContain('Prefers async written updates (Strength: strong)')
@@ -561,7 +582,7 @@ describe('handleChat mode routing', () => {
     expect(personalMemoryUrl).not.toContain('provenance')
     expect(personalMemoryUrl).not.toContain('document')
 
-    const chatCall = log.geminiCalls.find((call) => !call.generationConfig?.responseSchema)
+    const chatCall = findChatCall(log.geminiCalls)
     const systemText = systemTextOf(chatCall)
     expect(systemText).toContain('What I know about Aryan')
     expect(systemText).toContain('Senior software engineering experience (Level: advanced)')
@@ -652,7 +673,7 @@ describe('handleChat mode routing', () => {
     const response = await worker.fetch(chatRequest({ message: 'Hello there' }), env, ctx)
     expect(response.status).toBe(200)
 
-    const chatCall = log.geminiCalls.find((call) => !call.generationConfig?.responseSchema)
+    const chatCall = findChatCall(log.geminiCalls)
     expect(systemTextOf(chatCall)).toContain('Flow AI')
     expect(systemTextOf(chatCall)).toContain('never tell the user to open SmartFlow')
   })
@@ -696,9 +717,8 @@ describe('task 19 (Attach file in Flow AI): /chat documentId wiring', () => {
     )
     expect(response.status).toBe(200)
 
-    const chatCall = log.geminiCalls.find((call) => call.system_instruction && !call.generationConfig?.responseSchema)
-    const lastContent = chatCall?.contents?.at(-1)
-    const sentText = lastContent?.parts?.[0]?.text as string
+    const chatCall = findChatCall(log.geminiCalls)
+    const sentText = chatCall?.turns.at(-1)?.content as string
     expect(sentText).toContain('What does this say about rent?')
     expect(sentText).toContain('Rent is 950 EUR per month.')
     expect(sentText).toContain('notes.txt')
@@ -725,8 +745,8 @@ describe('task 19 (Attach file in Flow AI): /chat documentId wiring', () => {
     )
     expect(response.status).toBe(200)
 
-    const chatCall = log.geminiCalls.find((call) => call.system_instruction && !call.generationConfig?.responseSchema)
-    const sentText = chatCall?.contents?.at(-1)?.parts?.[0]?.text as string
+    const chatCall = findChatCall(log.geminiCalls)
+    const sentText = chatCall?.turns.at(-1)?.content as string
     expect(sentText).toContain('Five years as a backend developer')
     expect(log.chatMessageWrites[0]).toMatchObject({ role: 'user', content: 'Summarize this resume.' })
   })
@@ -746,11 +766,15 @@ describe('task 19 (Attach file in Flow AI): /chat documentId wiring', () => {
     )
     expect(response.status).toBe(200)
 
-    const chatCall = log.geminiCalls.find((call) => call.system_instruction && !call.generationConfig?.responseSchema)
-    const lastParts = chatCall?.contents?.at(-1)?.parts
-    expect(lastParts).toHaveLength(2)
-    expect(lastParts?.[0]).toMatchObject({ text: 'What is in this image?' })
-    expect(lastParts?.[1]).toMatchObject({ inlineData: { mimeType: 'image/png' } })
+    const chatCall = findChatCall(log.geminiCalls)
+    // Part ORDER/COUNT on the wire (text part then inlineData part, exactly
+    // 2 parts) is GeminiTextGenerationProvider.test.ts's own "appends
+    // inlineDataAttachment as a part AFTER the text part" coverage now --
+    // this proves the CALL-SITE facts: the right text, and an image
+    // attachment of the right mime type, both reached the provider request.
+    expect(chatCall?.turns.at(-1)?.content).toBe('What is in this image?')
+    const options = chatCall?.providerOptions as { inlineDataAttachment?: { mimeType?: string } } | undefined
+    expect(options?.inlineDataAttachment?.mimeType).toBe('image/png')
   })
 
   it('an unreadable/empty attachment degrades CALMLY -- the turn still succeeds, with a deterministic app-authored note, not an error response', async () => {
@@ -770,8 +794,8 @@ describe('task 19 (Attach file in Flow AI): /chat documentId wiring', () => {
     expect(response.status).toBe(200)
     expect(body.reply).toBe('Hello from Gemini')
 
-    const chatCall = log.geminiCalls.find((call) => call.system_instruction && !call.generationConfig?.responseSchema)
-    const sentText = chatCall?.contents?.at(-1)?.parts?.[0]?.text as string
+    const chatCall = findChatCall(log.geminiCalls)
+    const sentText = chatCall?.turns.at(-1)?.content as string
     expect(sentText).toContain('What does this say?')
     expect(sentText).toContain('could not be read')
     // The note is app-authored, never model output -- persisted content
@@ -793,8 +817,8 @@ describe('task 19 (Attach file in Flow AI): /chat documentId wiring', () => {
     expect(log.documentReads).toBe(1)
     expect(log.storageReads).toBe(0) // never attempted a download for a document that was never found
 
-    const chatCall = log.geminiCalls.find((call) => call.system_instruction && !call.generationConfig?.responseSchema)
-    const sentText = chatCall?.contents?.at(-1)?.parts?.[0]?.text as string
+    const chatCall = findChatCall(log.geminiCalls)
+    const sentText = chatCall?.turns.at(-1)?.content as string
     expect(sentText).toContain('could not be read')
   })
 
@@ -809,8 +833,8 @@ describe('task 19 (Attach file in Flow AI): /chat documentId wiring', () => {
 
     await worker.fetch(chatRequest({ message: 'Read this note.', documentId: 'doc-5' }), env, ctx)
 
-    const chatCall = log.geminiCalls.find((call) => call.system_instruction && !call.generationConfig?.responseSchema)
-    const sentText = chatCall?.contents?.at(-1)?.parts?.[0]?.text as string
+    const chatCall = findChatCall(log.geminiCalls)
+    const sentText = chatCall?.turns.at(-1)?.content as string
     // The injected line is passed through VERBATIM as quoted document
     // content (between the attachment markers) -- not stripped, not
     // rewritten, not specially interpreted. Whether the model OBEYS it is a
@@ -830,8 +854,8 @@ describe('task 19 (Attach file in Flow AI): /chat documentId wiring', () => {
 
     expect(log.documentReads).toBe(0)
     expect(log.storageReads).toBe(0)
-    const chatCall = log.geminiCalls.find((call) => call.system_instruction && !call.generationConfig?.responseSchema)
-    expect(chatCall?.contents?.at(-1)?.parts).toHaveLength(1)
+    const chatCall = findChatCall(log.geminiCalls)
+    expect(chatCall?.providerOptions?.inlineDataAttachment).toBeUndefined()
   })
 
   it('turn-scoping across two sequential turns: the SECOND turn (no documentId) never sees the FIRST turn\'s attachment content, because history is reloaded from persisted (unaugmented) rows only', async () => {
@@ -851,8 +875,8 @@ describe('task 19 (Attach file in Flow AI): /chat documentId wiring', () => {
     // SECOND call's own outbound request carries no trace of the file).
     await worker.fetch(chatRequest({ message: 'Second turn, no file.', session_id: 'session-1' }), env, ctx)
 
-    const secondChatCall = log.geminiCalls.find((call) => call.system_instruction && !call.generationConfig?.responseSchema)
-    const sentText = secondChatCall?.contents?.at(-1)?.parts?.[0]?.text as string
+    const secondChatCall = findChatCall(log.geminiCalls)
+    const sentText = secondChatCall?.turns.at(-1)?.content as string
     expect(sentText).toBe('Second turn, no file.')
     expect(sentText).not.toContain('4471')
   })
@@ -2459,36 +2483,34 @@ describe('ADR-0018 S1 follow-up: endpoint-level coverage for callGemini (briefin
     vi.unstubAllGlobals()
   })
 
-  interface CapturedGeminiCall {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- matches this file's own pre-existing FetchLog.geminiCalls generationConfig typing (line 45): the request shape genuinely varies per call site.
-    body: any
-  }
-
-  // Every Supabase REST call besides the Gemini call itself and the auth
-  // check returns an empty result set -- the daily briefing context
-  // pipeline's own "brand-new user, no data yet" state, which every
-  // context-builder fetcher (context-builder.ts) already handles as an
-  // ordinary empty result, not an error; saveBriefing's own POST tolerates
-  // any 2xx and never throws on failure either way.
-  function installGeminiEndpointFetchMock(geminiStatus: number, geminiText: string): CapturedGeminiCall[] {
-    const geminiCalls: CapturedGeminiCall[] = []
-    const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+  // Every Supabase REST call besides the auth check returns an empty result
+  // set -- the daily briefing context pipeline's own "brand-new user, no
+  // data yet" state, which every context-builder fetcher (context-builder.ts)
+  // already handles as an ordinary empty result, not an error; saveBriefing's
+  // own POST tolerates any 2xx and never throws on failure either way.
+  //
+  // ADR-0018 S4: the model call goes through the TEXT_GEN interface now,
+  // not this fetch mock -- Gemini's own wire envelope (system_instruction
+  // presence, role mapping, maxOutputTokens) is
+  // GeminiTextGenerationProvider.test.ts's coverage; this captures the real
+  // TextGenerationRequest so the two tests below can still assert the
+  // CALL-SITE-specific facts (this endpoint's own system prompt / budget).
+  function installGeminiEndpointProviderMock(geminiStatus: number, geminiText: string): TextGenerationRequest[] {
+    const capturedRequests: TextGenerationRequest[] = []
+    currentProviders = stubProviders({
+      text: new StubTextGenerationProvider((req) => {
+        capturedRequests.push(req)
+        if (geminiStatus !== 200) throw new ProviderUnavailableError(`Gemini text generation: provider error ${geminiStatus}: provider error`, geminiStatus, 'provider error')
+        return { text: geminiText, finishReason: 'stop' }
+      }),
+    })
+    const mock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
-      if (url.startsWith('https://generativelanguage.googleapis.com/')) {
-        geminiCalls.push({ body: JSON.parse(String(init?.body)) })
-        if (geminiStatus !== 200) return new Response('provider error', { status: geminiStatus })
-        return new Response(
-          JSON.stringify({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: geminiText }] } }] }),
-          { status: 200 },
-        )
-      }
-      if (url.includes('/auth/v1/user')) {
-        return new Response(JSON.stringify({ id: 'user-1' }), { status: 200 })
-      }
+      if (url.includes('/auth/v1/user')) return new Response(JSON.stringify({ id: 'user-1' }), { status: 200 })
       return new Response('[]', { status: 200 })
     })
     vi.stubGlobal('fetch', mock)
-    return geminiCalls
+    return capturedRequests
   }
 
   function generateRequest() {
@@ -2511,17 +2533,17 @@ describe('ADR-0018 S1 follow-up: endpoint-level coverage for callGemini (briefin
     // MIG-01b: maxOutputTokens raised 1024 -> 2048 (thinking now consumes
     // output budget on gemini-3.6-flash; see generateBriefing's own
     // comment in index.ts) -- this assertion updated to match.
-    it('sends system_instruction, turn role "user", and maxOutputTokens 2048 (post-MIG-01b daily-mode constant)', async () => {
-      const geminiCalls = installGeminiEndpointFetchMock(200, 'Your briefing today.')
+    it('sends a system prompt, turn role "user", and maxOutputTokens 2048 (post-MIG-01b daily-mode constant)', async () => {
+      const geminiCalls = installGeminiEndpointProviderMock(200, 'Your briefing today.')
 
       const response = await worker.fetch(generateRequest(), testEnv(), fakeExecutionContext())
       expect(response.status).toBe(200)
 
       expect(geminiCalls).toHaveLength(1)
-      const { body } = geminiCalls[0]
-      expect(body.system_instruction?.parts?.[0]?.text?.length).toBeGreaterThan(0)
-      expect(body.contents[0].role).toBe('user')
-      expect(body.generationConfig.maxOutputTokens).toBe(2048)
+      const [call] = geminiCalls
+      expect(call.system?.length).toBeGreaterThan(0)
+      expect(call.turns[0]?.role).toBe('user')
+      expect(call.maxOutputTokens).toBe(2048)
     })
 
     // Negative path: found during this follow-up that a 429 fell through
@@ -2531,7 +2553,7 @@ describe('ADR-0018 S1 follow-up: endpoint-level coverage for callGemini (briefin
     // handleGenerate's own new ProviderUnavailableError branch) rather
     // than asserting the wrong pre-existing behavior.
     it('a 429 from Gemini returns 503 PROVIDER_UNAVAILABLE, not the generic 500', async () => {
-      installGeminiEndpointFetchMock(429, '')
+      installGeminiEndpointProviderMock(429, '')
 
       const response = await worker.fetch(generateRequest(), testEnv(), fakeExecutionContext())
       expect(response.status).toBe(503)
@@ -2541,13 +2563,12 @@ describe('ADR-0018 S1 follow-up: endpoint-level coverage for callGemini (briefin
   })
 
   describe('/documents/analyze', () => {
-    // No system_instruction assertion here: this endpoint has never sent
-    // one, before or after S1 (it has no `system` field on its request at
-    // all -- see handleDocumentAnalyze's own generateText call) -- so
-    // asserting its absence IS the zero-behavior-change proof for this
-    // field.
-    it('sends turn role "user" and maxOutputTokens 4096 (the pre-S1 constant), with no system_instruction', async () => {
-      const geminiCalls = installGeminiEndpointFetchMock(200, 'Analysis result.')
+    // No system-prompt assertion here: this endpoint has never sent one,
+    // before or after S1 (it has no `system` field on its request at all --
+    // see handleDocumentAnalyze's own generateText call) -- so asserting
+    // its absence IS the zero-behavior-change proof for this field.
+    it('sends turn role "user" and maxOutputTokens 4096 (the pre-S1 constant), with no system prompt', async () => {
+      const geminiCalls = installGeminiEndpointProviderMock(200, 'Analysis result.')
 
       const response = await worker.fetch(
         documentAnalyzeRequest({ message: 'Summarize this', text: 'Some document body text.' }),
@@ -2557,10 +2578,10 @@ describe('ADR-0018 S1 follow-up: endpoint-level coverage for callGemini (briefin
       expect(response.status).toBe(200)
 
       expect(geminiCalls).toHaveLength(1)
-      const { body } = geminiCalls[0]
-      expect(body.system_instruction).toBeUndefined()
-      expect(body.contents[0].role).toBe('user')
-      expect(body.generationConfig.maxOutputTokens).toBe(4096)
+      const [call] = geminiCalls
+      expect(call.system).toBeUndefined()
+      expect(call.turns[0]?.role).toBe('user')
+      expect(call.maxOutputTokens).toBe(4096)
     })
   })
 })
