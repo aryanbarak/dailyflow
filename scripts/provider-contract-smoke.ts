@@ -2,7 +2,10 @@
 // SmartFlow -- Provider-contract smoke script (task 16-fix, PO-mandated;
 // fifth contract added task 28b to cover the reasoning-endpoint schema;
 // sixth contract added ADR-0018 S1 to cover the new TextGenerationProvider
-// adapter -- see checkTextGenerationAdapterContract below).
+// adapter -- see checkTextGenerationAdapterContract below). ADR-0018 S2:
+// checks 1-4 (extraction/derivation/task-title/reasoning) now go through
+// GeminiStructuredGenerationProvider instead of a hand-rolled fetch --
+// same adapter every real [STRUCTURED_GEN] call site uses.
 //
 // MANUAL USE ONLY -- never wire this into CI. It makes six minimal REAL
 // calls against the live Gemini API to catch the exact class of break that
@@ -66,15 +69,16 @@ import { buildDerivationSystemInstruction, buildDerivationPrompt, buildDerivatio
 import { buildTaskTitleSystemInstruction, buildTaskTitlePrompt, buildTaskTitleResponseSchema } from '../agent/worker/task-title-extraction'
 import { buildReasoningSystemInstruction, buildReasoningResponseSchema, SUPPORTED_INTENT_VALUES } from '../agent/worker/reasoning-endpoint'
 import { GeminiTextGenerationProvider } from '../agent/worker/providers/gemini/GeminiTextGenerationProvider'
+// ADR-0018 S2 Phase C: checks 1-4 go through this adapter now -- the same
+// class every real [STRUCTURED_GEN] call site uses via createProviders()
+// -- instead of a hand-rolled fetch. That is the whole point of this
+// script: a schema/model/translation break here is a break for every one
+// of those real call sites, not just one manual fetch that happened to
+// mirror them.
+import { GeminiStructuredGenerationProvider } from '../agent/worker/providers/gemini/GeminiStructuredGenerationProvider'
 // MIG-01b: single-source model resolution (see that module's header
 // comment) -- this script no longer hardcodes its own default.
 import { resolveGeminiModel } from '../agent/worker/geminiModel'
-// ADR-0018 S2 Phase B (interim): the four builders below now return the
-// neutral schema subset, not Gemini's dialect -- translateNeutralSchema()
-// converts back for this raw callGenerateContent helper. Phase C replaces
-// checks 1-4 with calls through the real provider+translation path (that
-// is the point of this script), removing this wrapper.
-import { translateNeutralSchema } from '../agent/worker/providers/gemini/geminiSchemaTranslation'
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? ''
 const GEMINI_MODEL = resolveGeminiModel({ GEMINI_MODEL: process.env.GEMINI_MODEL })
@@ -96,91 +100,91 @@ interface ContractResult {
   readonly detail: string;
 }
 
-async function callGenerateContent(model: string, systemInstruction: string, prompt: string, responseSchema: unknown): Promise<{ status: number; bodyText: string }> {
-  const url = new URL(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`)
-  url.searchParams.set('key', GEMINI_API_KEY)
-  const response = await fetch(url.toString(), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      system_instruction: { parts: [{ text: systemInstruction }] },
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: {
-        // MIG-01b: 256 -> 2048, thinkingConfig removed -- gemini-3.6-flash
-        // returns 400 INVALID_ARGUMENT on thinkingConfig:{thinkingBudget:0}
-        // (see agent/worker/geminiModel.ts and scripts/gemini-36-probe.ts's
-        // P3 finding); thinking now consumes output budget on every call.
-        maxOutputTokens: 2048,
-        temperature: 0,
-        responseMimeType: 'application/json',
-        responseSchema,
-      },
-    }),
-  })
-  return { status: response.status, bodyText: await response.text() }
-}
+// ADR-0018 S2: shared by all 4 structured-generation checks below.
+// SUPABASE_URL/SUPABASE_SERVICE_KEY are placeholders -- these checks only
+// exercise the SUCCESS path, which never touches
+// providers/failureEvents.ts's persistence at all (that only fires on a
+// caught ProviderUnavailableError), mirroring
+// checkTextGenerationAdapterContract's own identical placeholder comment.
+const structuredProvider = new GeminiStructuredGenerationProvider({
+  GEMINI_API_KEY,
+  GEMINI_MODEL,
+  SUPABASE_URL: 'https://smoke-test.invalid',
+  SUPABASE_SERVICE_KEY: 'unused-in-the-success-path',
+})
 
 async function checkExtractionContract(): Promise<ContractResult> {
-  const name = 'generateContent + buildExtractionResponseSchema (personal-memory-extraction-endpoint.ts)'
+  const name = 'GeminiStructuredGenerationProvider + buildExtractionResponseSchema (personal-memory-extraction-endpoint.ts)'
   try {
     const prompt = buildExtractionPrompt([{ id: 'smoke-1', provenanceSourceKind: 'chat_turn', text: 'I prefer working in the morning.' }])
-    const { status, bodyText } = await callGenerateContent(GEMINI_MODEL, buildExtractionSystemInstruction(), prompt, translateNeutralSchema(buildExtractionResponseSchema()))
-    if (status !== 200) return { name, pass: false, detail: `httpStatus=${status} body=${bodyText.slice(0, 300)}` }
-    const parsed = JSON.parse(bodyText) as { candidates?: Array<{ finishReason?: string }> }
-    const finishReason = parsed.candidates?.[0]?.finishReason
-    if (finishReason !== 'STOP') return { name, pass: false, detail: `unexpected finishReason=${finishReason}` }
-    return { name, pass: true, detail: 'httpStatus=200 finishReason=STOP' }
+    const result = await structuredProvider.generateStructured({
+      system: buildExtractionSystemInstruction(),
+      turns: [{ role: 'user', content: prompt }],
+      schema: buildExtractionResponseSchema(),
+      maxOutputTokens: 2048,
+      temperature: 0,
+    })
+    if (result.finishReason !== 'stop') return { name, pass: false, detail: `unexpected finishReason=${result.rawFinishReason ?? result.finishReason}` }
+    return { name, pass: true, detail: `finishReason=stop rawFinishReason=${result.rawFinishReason ?? 'n/a'}` }
   } catch (error) {
     return { name, pass: false, detail: (error as Error).message }
   }
 }
 
 async function checkDerivationContract(): Promise<ContractResult> {
-  const name = 'generateContent + buildDerivationResponseSchema (context-derivation-endpoint.ts)'
+  const name = 'GeminiStructuredGenerationProvider + buildDerivationResponseSchema (context-derivation-endpoint.ts)'
   try {
     const prompt = buildDerivationPrompt('Smoke Test Project', [{ id: 'smoke-1', sourceKind: 'note', title: 'Kickoff', reference: 'smoke', text: 'Project kickoff scheduled next week.' }])
-    const { status, bodyText } = await callGenerateContent(GEMINI_MODEL, buildDerivationSystemInstruction(), prompt, translateNeutralSchema(buildDerivationResponseSchema()))
-    if (status !== 200) return { name, pass: false, detail: `httpStatus=${status} body=${bodyText.slice(0, 300)}` }
-    const parsed = JSON.parse(bodyText) as { candidates?: Array<{ finishReason?: string }> }
-    const finishReason = parsed.candidates?.[0]?.finishReason
-    if (finishReason !== 'STOP') return { name, pass: false, detail: `unexpected finishReason=${finishReason}` }
-    return { name, pass: true, detail: 'httpStatus=200 finishReason=STOP' }
+    const result = await structuredProvider.generateStructured({
+      system: buildDerivationSystemInstruction(),
+      turns: [{ role: 'user', content: prompt }],
+      schema: buildDerivationResponseSchema(),
+      maxOutputTokens: 2048,
+      temperature: 0,
+    })
+    if (result.finishReason !== 'stop') return { name, pass: false, detail: `unexpected finishReason=${result.rawFinishReason ?? result.finishReason}` }
+    return { name, pass: true, detail: `finishReason=stop rawFinishReason=${result.rawFinishReason ?? 'n/a'}` }
   } catch (error) {
     return { name, pass: false, detail: (error as Error).message }
   }
 }
 
 async function checkTaskTitleContract(): Promise<ContractResult> {
-  const name = 'generateContent + buildTaskTitleResponseSchema (task-title-extraction.ts)'
+  const name = 'GeminiStructuredGenerationProvider + buildTaskTitleResponseSchema (task-title-extraction.ts)'
   try {
     const prompt = buildTaskTitlePrompt('Create a task for tomorrow because I have a family doctor appointment at 11am.')
-    const { status, bodyText } = await callGenerateContent(GEMINI_MODEL, buildTaskTitleSystemInstruction(), prompt, translateNeutralSchema(buildTaskTitleResponseSchema()))
-    if (status !== 200) return { name, pass: false, detail: `httpStatus=${status} body=${bodyText.slice(0, 300)}` }
-    const parsed = JSON.parse(bodyText) as { candidates?: Array<{ finishReason?: string }> }
-    const finishReason = parsed.candidates?.[0]?.finishReason
-    if (finishReason !== 'STOP') return { name, pass: false, detail: `unexpected finishReason=${finishReason}` }
-    return { name, pass: true, detail: 'httpStatus=200 finishReason=STOP' }
+    const result = await structuredProvider.generateStructured({
+      system: buildTaskTitleSystemInstruction(),
+      turns: [{ role: 'user', content: prompt }],
+      schema: buildTaskTitleResponseSchema(),
+      maxOutputTokens: 2048,
+      temperature: 0,
+    })
+    if (result.finishReason !== 'stop') return { name, pass: false, detail: `unexpected finishReason=${result.rawFinishReason ?? result.finishReason}` }
+    return { name, pass: true, detail: `finishReason=stop rawFinishReason=${result.rawFinishReason ?? 'n/a'}` }
   } catch (error) {
     return { name, pass: false, detail: (error as Error).message }
   }
 }
 
 async function checkReasoningContract(): Promise<ContractResult> {
-  const name = 'generateContent + buildReasoningResponseSchema (reasoning-endpoint.ts)'
+  const name = 'GeminiStructuredGenerationProvider + buildReasoningResponseSchema (reasoning-endpoint.ts)'
   try {
     const prompt = 'Latest user message: "I spent 45 EUR on groceries today." Propose one intent for this SmartFlow request.'
-    const { status, bodyText } = await callGenerateContent(GEMINI_MODEL, buildReasoningSystemInstruction('en'), prompt, translateNeutralSchema(buildReasoningResponseSchema()))
-    if (status !== 200) return { name, pass: false, detail: `httpStatus=${status} body=${bodyText.slice(0, 300)}` }
-    const parsed = JSON.parse(bodyText) as { candidates?: Array<{ finishReason?: string; content?: { parts?: Array<{ text?: string }> } }> }
-    const candidate = parsed.candidates?.[0]
-    if (candidate?.finishReason !== 'STOP') return { name, pass: false, detail: `unexpected finishReason=${candidate?.finishReason}` }
-    const text = candidate.content?.parts?.[0]?.text
-    if (typeof text !== 'string' || !text.trim()) return { name, pass: false, detail: 'model returned no proposal content' }
-    const proposal = JSON.parse(text) as { type?: unknown }
+    const result = await structuredProvider.generateStructured({
+      system: buildReasoningSystemInstruction('en'),
+      turns: [{ role: 'user', content: prompt }],
+      schema: buildReasoningResponseSchema(),
+      maxOutputTokens: 2048,
+      temperature: 0,
+    })
+    if (result.finishReason !== 'stop') return { name, pass: false, detail: `unexpected finishReason=${result.rawFinishReason ?? result.finishReason}` }
+    if (!result.rawText.trim()) return { name, pass: false, detail: 'model returned no proposal content' }
+    const proposal = JSON.parse(result.rawText) as { type?: unknown }
     if (typeof proposal.type !== 'string' || !(SUPPORTED_INTENT_VALUES as readonly string[]).includes(proposal.type)) {
       return { name, pass: false, detail: `intent ${JSON.stringify(proposal.type)} is not in SUPPORTED_INTENT_VALUES` }
     }
-    return { name, pass: true, detail: `httpStatus=200 finishReason=STOP intent=${proposal.type}` }
+    return { name, pass: true, detail: `finishReason=stop intent=${proposal.type}` }
   } catch (error) {
     return { name, pass: false, detail: (error as Error).message }
   }

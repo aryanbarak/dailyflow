@@ -9,7 +9,15 @@
 // -- for embeddings -- different persistence consequences. See the ADR's
 // own "Why three and not one" note.
 
-import type { ChatMessage } from "../types";
+// ADR-0018 S2: imports from the leaf chatMessage.ts, not ../types --
+// ../types also defines `Env` (whose `AI: Ai` field needs
+// @cloudflare/workers-types, unavailable outside agent/worker's own
+// tsconfig), and importing ANYTHING from that file pulls the whole thing
+// into a compiler's graph. See chatMessage.ts's own header comment for
+// the full story (this is what broke the root typecheck gate before this
+// fix).
+import type { ChatMessage } from "../chatMessage";
+import type { NeutralSchema } from "./schema/neutralSchema";
 
 // ADR-0018 Decision 2: request shapes are SmartFlow-owned and
 // provider-neutral.
@@ -51,17 +59,21 @@ export interface TextGenerationResult {
   finishReason: 'stop' | 'length' | 'other';
 }
 
-// ADR-0018 Decision 3: `schema` carries the neutral JSON-Schema subset
-// (object/string/number/boolean/array/enum/required/maxItems/description)
-// that S2 defines and the matching adapter translates into the provider's
-// own dialect (e.g. Gemini's `responseSchema`). Left as `unknown` in S0 --
-// no schema builder is rewritten yet, and no call site is wired to this
-// interface, so narrowing it now would be speculative. S2 narrows this
-// type when the builders themselves are rewritten.
+// ADR-0018 Decision 3, narrowed in S2: `schema` carries the neutral
+// JSON-Schema subset (providers/schema/neutralSchema.ts) that the
+// matching adapter translates into the provider's own dialect (e.g.
+// Gemini's `responseSchema`) at call time. The four shared builders
+// (buildReasoningResponseSchema, buildDerivationResponseSchema,
+// buildExtractionResponseSchema, buildTaskTitleResponseSchema) all return
+// an object at the top level, but index.ts's 4 suggestion handlers
+// (their own inline schemas, not one of the four shared builders) are
+// top-level ARRAYS -- so this is the full NeutralSchema union, not the
+// narrower NeutralObjectSchema. Was `unknown` in S0, before any call site
+// emitted the neutral subset.
 export interface StructuredGenerationRequest {
   system?: string;
   turns: ChatMessage[];
-  schema: unknown;
+  schema: NeutralSchema;
   maxOutputTokens?: number;
   temperature?: number;
   providerOptions?: Record<string, unknown>;
@@ -71,9 +83,39 @@ export interface StructuredGenerationRequest {
 // "the provider never returns a 'typed' object it claims is valid."
 // Parsing/validation stays in SmartFlow code (modelJsonParsing.ts + the
 // existing validators) -- unchanged and unmoved by this ADR (Decision 3).
+// finishReason narrowed in S2 to the same neutral enum TextGenerationResult
+// already uses (S1) -- see GeminiStructuredGenerationProvider's own
+// mapFinishReason (identical to the text adapter's).
+//
+// `usage` (Amendments, 2026-08-23): discovered migrating real call sites
+// in S2 Phase C -- context-derivation-endpoint.ts and
+// personal-memory-extraction-endpoint.ts both persist Gemini's
+// usageMetadata (promptTokenCount/candidatesTokenCount) into real DB
+// columns for cost/usage tracking, which the original S0 contract had no
+// field for. Optional and provider-populated, same additive precedent as
+// S1's ProviderUnavailableError.status/.body amendment -- see the ADR's
+// own "Amendments (2026-08-23)" section.
 export interface StructuredGenerationResult {
   rawText: string;
-  finishReason: string;
+  finishReason: 'stop' | 'length' | 'other';
+  usage?: {
+    promptTokens?: number;
+    responseTokens?: number;
+  };
+  // `rawFinishReason` (Amendments, 2026-08-23): discovered migrating real
+  // call sites in S2 Phase C -- context-derivation-endpoint.ts and
+  // personal-memory-extraction-endpoint.ts both persist the PROVIDER'S OWN
+  // finishReason string (e.g. "MAX_TOKENS", "SAFETY") verbatim into a
+  // failure_reason column and diagnostic logs, for a level of detail the
+  // neutral 'stop'|'length'|'other' enum deliberately collapses away (see
+  // that enum's own comment on GeminiTextGenerationProvider's
+  // mapFinishReason -- "nobody downstream inspects finer-grained
+  // Gemini-specific values today" was true until these two real,
+  // currently-persisted diagnostic fields). Optional, provider-populated,
+  // same additive shape as the `usage` amendment above -- `finishReason`
+  // stays the one field control-flow decisions are made on; this is
+  // strictly for callers that also want the untranslated provider value.
+  rawFinishReason?: string;
 }
 
 export interface EmbeddingResult {
@@ -87,11 +129,14 @@ export interface TextGenerationProvider {
 
 export interface StructuredGenerationProvider {
   readonly id: string;
-  // The <T> type parameter is carried over verbatim from ADR-0018 Decision
-  // 1's own interface text (a call-site type hint for the caller's later
-  // parse/validate step) -- StructuredGenerationResult itself never carries
-  // a T-typed value; see that interface's own comment for why.
-  generateStructured<T>(req: StructuredGenerationRequest): Promise<StructuredGenerationResult>;
+  // ADR-0018 S2 (Amendments, 2026-08-23): the S0 interface text carried a
+  // <T> type parameter as a call-site type hint, but StructuredGenerationResult
+  // never actually carries a T-typed value (it's always just `rawText`,
+  // per Decision 1's own "never returns a 'typed' object it claims is
+  // valid" comment) -- so <T> was dead weight with nothing to bind it to.
+  // Dropped once a real implementation (GeminiStructuredGenerationProvider)
+  // and real call sites existed to confirm it was never going to be used.
+  generateStructured(req: StructuredGenerationRequest): Promise<StructuredGenerationResult>;
 }
 
 export interface EmbeddingProvider {

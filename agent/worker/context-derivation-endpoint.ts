@@ -46,9 +46,10 @@
 
 import { parseModelJsonObject, ModelJsonParseError } from './modelJsonParsing'
 import { ProviderCallError, type ProviderFailureTaxonomy } from './providers/providerFailureTaxonomy'
-import { resolveGeminiModel } from './geminiModel'
 import type { NeutralObjectSchema } from './providers/schema/neutralSchema'
-import { translateNeutralSchema } from './providers/gemini/geminiSchemaTranslation'
+import { ProviderRequestError, ProviderUnavailableError } from './provider-errors'
+import { createProviders } from './providers/createProviders'
+import type { StructuredGenerationResult } from './providers/types'
 
 const CONTEXT_FIELD_KINDS = ['objective', 'milestone', 'decision', 'risk', 'capability', 'candidate_action'] as const
 type ContextFieldKind = typeof CONTEXT_FIELD_KINDS[number]
@@ -66,6 +67,14 @@ export interface ContextDerivationEnv {
   SUPABASE_ANON_KEY: string
   GEMINI_API_KEY?: string
   GEMINI_MODEL?: string
+  // ADR-0018 S2: optional, unlike ProviderFailureEnv's required field --
+  // this route's OWN Supabase calls deliberately forward the requesting
+  // user's JWT, never service role (see file header). Only the adapter's
+  // Decision 6 failure-event persistence wants this, and it fails safe
+  // (swallowed, never thrown) when absent -- see callGeminiForDerivation's
+  // own comment. The real production caller (index.ts, the full worker
+  // Env) always has a real value; only a narrower caller (tests) might not.
+  SUPABASE_SERVICE_KEY?: string
 }
 
 export interface ContextDerivationDependencies {
@@ -374,69 +383,63 @@ async function callGeminiForDerivation(
   fetcher: typeof fetch,
   logger: Pick<Console, 'info' | 'error'>,
 ): Promise<{ raw: unknown; promptTokenCount?: number; responseTokenCount?: number }> {
-  const modelUrl = new URL(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(resolveGeminiModel(env))}:generateContent`)
-  modelUrl.searchParams.set('key', env.GEMINI_API_KEY ?? '')
+  // ADR-0018 S2: migrated to the StructuredGenerationProvider adapter.
+  // REDACTION GUARD label below intentionally does not reconstruct the
+  // real request URL (the adapter owns that internally now, and never
+  // exposes it) -- a fixed, key-free label satisfies the same guarantee
+  // (see the REDACTION GUARD test: must contain "generateContent", must
+  // never contain "key=" or the key value) with less to get wrong.
+  const REDACTED_ENDPOINT_LABEL = 'generateContent (structured)'
 
-  let response: Response
+  let result: StructuredGenerationResult
   try {
-    response = await fetcher(modelUrl.toString(), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: buildDerivationSystemInstruction() }] },
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: {
-          // Already at the MIG-01b 2048 floor -- left as-is.
-          maxOutputTokens: 2048,
-          temperature: 0,
-          responseMimeType: 'application/json',
-          // MIG-01b: thinkingConfig removed -- gemini-3.6-flash returns 400
-          // INVALID_ARGUMENT on thinkingConfig:{thinkingBudget:0} (see
-          // geminiModel.ts and scripts/gemini-36-probe.ts's P3 finding).
-          // The task R-3 fix this replaced (gemini-2.5-flash spending
-          // output tokens on internal "thinking" by default) is still real
-          // on 2.5 -- accepted, 2.5 is being retired (see callGemini's
-          // identical note in index.ts).
-          // ADR-0018 S2 Phase B (interim): see task-title-extraction.ts's
-          // identical comment -- Phase C replaces this raw fetch entirely.
-          responseSchema: translateNeutralSchema(buildDerivationResponseSchema()),
-        },
-      }),
+    result = await createProviders(
+      { ...env, SUPABASE_SERVICE_KEY: env.SUPABASE_SERVICE_KEY ?? '' },
+      fetcher,
+    ).structured.generateStructured({
+      system: buildDerivationSystemInstruction(),
+      turns: [{ role: 'user', content: prompt }],
+      schema: buildDerivationResponseSchema(),
+      // Already at the MIG-01b 2048 floor -- left as-is.
+      maxOutputTokens: 2048,
+      temperature: 0,
     })
-  } catch (networkError) {
-    logger.error?.(`[ContextDerivation] provider call failed before any response (network): path=${modelUrl.pathname} error=${(networkError as Error).message}`)
-    throw new ProviderCallError('The AI model provider could not be reached.', 'PROVIDER_UNAVAILABLE')
-  }
-
-  if (!response.ok) {
-    const bodyText = await response.text()
-    let providerError: { status?: unknown; message?: unknown; details?: unknown } | undefined
-    try {
-      providerError = (JSON.parse(bodyText) as { error?: typeof providerError }).error
-    } catch {
-      // Not JSON -- providerError stays undefined, bodyText itself is still used below.
+  } catch (err) {
+    // Reclassifies the adapter's binary ProviderUnavailableError/
+    // ProviderRequestError back into this file's own three-way
+    // ProviderFailureTaxonomy, preserving its status>=500 rule exactly --
+    // see document-memory-extraction-endpoint.ts's transcribePdf (ADR-0018
+    // S1) for the identical pattern and full rationale.
+    if (err instanceof ProviderUnavailableError && err.status === undefined) {
+      logger.error?.(`[ContextDerivation] provider call failed before any response (network): endpoint=${REDACTED_ENDPOINT_LABEL} error=${(err as Error).message}`)
+      throw new ProviderCallError('The AI model provider could not be reached.', 'PROVIDER_UNAVAILABLE')
     }
-    const providerMessage = typeof providerError?.message === 'string' ? providerError.message : bodyText
-    logger.error?.(
-      `[ContextDerivation] provider rejected request: path=${modelUrl.pathname} httpStatus=${response.status} ` +
-        `providerStatus=${String(providerError?.status ?? 'unknown')} message=${providerMessage} ` +
-        `details=${providerError?.details !== undefined ? JSON.stringify(providerError.details) : 'none'}`,
-    )
-    const taxonomy: ProviderFailureTaxonomy = response.status >= 500 ? 'PROVIDER_UNAVAILABLE' : 'PROVIDER_REQUEST_REJECTED'
-    throw new ProviderCallError(
-      `Model request failed with status ${response.status}.`,
-      taxonomy,
-      response.status,
-      truncateForLog(providerMessage, 300),
-    )
+    if (err instanceof ProviderUnavailableError || err instanceof ProviderRequestError) {
+      const status = err.status as number
+      const bodyText = err.body ?? ''
+      let providerError: { status?: unknown; message?: unknown; details?: unknown } | undefined
+      try {
+        providerError = (JSON.parse(bodyText) as { error?: typeof providerError }).error
+      } catch {
+        // Not JSON -- providerError stays undefined, bodyText itself is still used below.
+      }
+      const providerMessage = typeof providerError?.message === 'string' ? providerError.message : bodyText
+      logger.error?.(
+        `[ContextDerivation] provider rejected request: endpoint=${REDACTED_ENDPOINT_LABEL} httpStatus=${status} ` +
+          `providerStatus=${String(providerError?.status ?? 'unknown')} message=${providerMessage} ` +
+          `details=${providerError?.details !== undefined ? JSON.stringify(providerError.details) : 'none'}`,
+      )
+      const taxonomy: ProviderFailureTaxonomy = status >= 500 ? 'PROVIDER_UNAVAILABLE' : 'PROVIDER_REQUEST_REJECTED'
+      throw new ProviderCallError(
+        `Model request failed with status ${status}.`,
+        taxonomy,
+        status,
+        truncateForLog(providerMessage, 300),
+      )
+    }
+    throw err
   }
 
-  const data = (await response.json()) as {
-    candidates?: Array<{ finishReason?: unknown; content?: { parts?: Array<{ text?: unknown }> } }>
-    usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number }
-  }
-  const candidate = data.candidates?.[0]
-  if (!candidate) throw new ProviderCallError('Model returned no candidate.', 'MODEL_OUTPUT_UNUSABLE')
   // Task R-3 fix (parity with personal-memory-extraction-endpoint.ts's
   // identical task 12 fix, itself mirroring reasoning-endpoint.ts's own
   // finishReason check): a truncated response (finishReason 'MAX_TOKENS')
@@ -444,17 +447,20 @@ async function callGeminiForDerivation(
   // valid JSON" error below with no indication of WHY -- this makes that
   // cause explicit and immediately diagnosable from the run record /
   // wrangler tail, and maps it to MODEL_OUTPUT_UNUSABLE (2xx-but-unusable),
-  // never a provider error -- the request itself succeeded.
-  if (candidate.finishReason !== undefined && candidate.finishReason !== 'STOP') {
+  // never a provider error -- the request itself succeeded. Uses
+  // result.rawFinishReason (ADR-0018 S2 amendment) for the exact provider
+  // string this route's own tests assert on ("MAX_TOKENS", "SAFETY") --
+  // result.finishReason (the neutral enum) decides only whether to throw.
+  if (result.finishReason !== 'stop') {
     throw new ProviderCallError(
-      `Model response did not finish safely (finishReason=${String(candidate.finishReason)}).`,
+      `Model response did not finish safely (finishReason=${result.rawFinishReason ?? 'unknown'}).`,
       'MODEL_OUTPUT_UNUSABLE',
       undefined,
-      String(candidate.finishReason),
+      result.rawFinishReason ?? 'unknown',
     )
   }
-  const text = candidate.content?.parts?.[0]?.text
-  if (typeof text !== 'string' || !text.trim()) throw new ProviderCallError('Model returned no derivation content.', 'MODEL_OUTPUT_UNUSABLE')
+  const text = result.rawText
+  if (!text.trim()) throw new ProviderCallError('Model returned no derivation content.', 'MODEL_OUTPUT_UNUSABLE')
   let raw: unknown
   try {
     raw = parseModelJsonObject(text)
@@ -465,8 +471,8 @@ async function callGeminiForDerivation(
   }
   return {
     raw,
-    promptTokenCount: data.usageMetadata?.promptTokenCount,
-    responseTokenCount: data.usageMetadata?.candidatesTokenCount,
+    promptTokenCount: result.usage?.promptTokens,
+    responseTokenCount: result.usage?.responseTokens,
   }
 }
 

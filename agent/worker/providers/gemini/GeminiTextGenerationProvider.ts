@@ -37,7 +37,12 @@
 // whatever it found; the "was this good enough" judgment call is not the
 // provider boundary's to make.
 
-import type { ChatMessage } from '../../types'
+// ADR-0018 S2: imports from the leaf chatMessage.ts, not ../../types --
+// see that module's own header comment for why (importing anything from
+// ../../types pulls in Env's Cloudflare-specific `AI: Ai` binding, which
+// broke the root typecheck gate once this adapter became reachable from
+// a handful of src/*.equivalence.test.ts files, S1/S2).
+import type { ChatMessage } from '../../chatMessage'
 import { ProviderUnavailableError, fetchGeminiOrThrow } from '../../provider-errors'
 import { recordProviderFailure, type ProviderFailureEnv } from '../failureEvents'
 import { resolveGeminiModel } from '../../geminiModel'

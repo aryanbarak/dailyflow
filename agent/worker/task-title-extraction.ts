@@ -14,16 +14,16 @@
 // whether to trust this model's output -- this module only asks the
 // question and returns whatever the model said, unvalidated.
 //
-// INC-01: the fetch call is wrapped with provider-errors.ts's
-// fetchGeminiOrThrow so a 429/5xx/network failure throws the classifiable
-// ProviderUnavailableError instead of an indistinguishable plain Error --
+// INC-01 / ADR-0018 S2: the call goes through
+// createProviders(env).structured (GeminiStructuredGenerationProvider),
+// which wraps provider-errors.ts's fetchGeminiOrThrow internally -- a
+// 429/5xx/network failure still throws the classifiable
+// ProviderUnavailableError instead of an indistinguishable plain Error,
 // see that module's own header comment for why resolveCreateTaskTitle
 // needs to tell those apart.
 
-import { fetchGeminiOrThrow } from './provider-errors'
-import { resolveGeminiModel } from './geminiModel'
+import { createProviders } from './providers/createProviders'
 import type { NeutralObjectSchema } from './providers/schema/neutralSchema'
-import { translateNeutralSchema } from './providers/gemini/geminiSchemaTranslation'
 
 export function buildTaskTitleSystemInstruction(): string {
   return [
@@ -51,9 +51,15 @@ export function buildTaskTitleResponseSchema(): NeutralObjectSchema {
   }
 }
 
+// ADR-0018 S2: widened to satisfy GeminiProviderEnv (ProviderFailureEnv's
+// SUPABASE_URL/SUPABASE_SERVICE_KEY, for the adapter's own Decision 6
+// failure-event persistence) -- every real caller passes the full worker
+// `Env`, which already has both.
 export interface TaskTitleEnv {
   GEMINI_API_KEY?: string
   GEMINI_MODEL?: string
+  SUPABASE_URL: string
+  SUPABASE_SERVICE_KEY: string
 }
 
 // MIG-01b: 128 -> 2048. This is the "simplest real schema" case probed by
@@ -75,44 +81,40 @@ export async function callGeminiForTaskTitle(
   env: TaskTitleEnv,
   fetcher: typeof fetch = fetch,
 ): Promise<string> {
-  const modelUrl = new URL(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(resolveGeminiModel(env))}:generateContent`)
-  modelUrl.searchParams.set('key', env.GEMINI_API_KEY ?? '')
+  // ADR-0018 S2: migrated to the StructuredGenerationProvider adapter.
+  // Two narrow, deliberate, UNTESTED normalizations from routing through
+  // the adapter's neutral finishReason mapping (no existing fixture --
+  // here or in flow-write-policy.test.ts/index.test.ts's own
+  // taskTitleResult mock -- ever omits finishReason or omits the
+  // candidate entirely; every real Gemini response includes both when a
+  // candidate is returned):
+  //   1. A response with NO candidate at all now produces the SAME error
+  //      message as a present-but-not-STOP candidate ("did not finish
+  //      safely (finishReason=other)") -- the adapter's own
+  //      mapFinishReason collapses "no candidate" into 'other', so the two
+  //      cases are no longer distinguished by message text. Both still
+  //      throw, which is all resolveCreateTaskTitle's catch cares about.
+  //   2. A candidate with finishReason OMITTED (not simply absent-because-
+  //      no-candidate, but present with no finishReason field) used to be
+  //      treated as acceptable by this function's own check
+  //      (`!== undefined && !== 'STOP'`); the adapter maps a missing
+  //      finishReason to 'other', which this function now treats as
+  //      unsafe. Stricter, not looser -- and not reachable by any real
+  //      Gemini response, which always sets finishReason on a returned
+  //      candidate.
+  const result = await createProviders(env, fetcher).structured.generateStructured({
+    system: buildTaskTitleSystemInstruction(),
+    turns: [{ role: 'user', content: buildTaskTitlePrompt(requestText) }],
+    schema: buildTaskTitleResponseSchema(),
+    maxOutputTokens: MAX_OUTPUT_TOKENS_TASK_TITLE,
+    temperature: 0,
+  })
 
-  // MIG-01b: thinkingConfig removed -- gemini-3.6-flash returns 400
-  // INVALID_ARGUMENT on thinkingConfig:{thinkingBudget:0} (see
-  // geminiModel.ts and scripts/gemini-36-probe.ts's P3 finding).
-  // ADR-0018 S2 Phase B (interim): the builder now returns the neutral
-  // schema; translateNeutralSchema() converts it back to Gemini's dialect
-  // right here so this raw fetch's request body -- and every existing
-  // test asserting its exact shape -- is unaffected by the builder
-  // rewrite. Phase C replaces this whole raw-fetch call with
-  // createProviders(env).structured.generateStructured(...), which does
-  // the same translation internally; this wrapper is temporary.
-  const response = await fetchGeminiOrThrow(fetcher, modelUrl.toString(), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      system_instruction: { parts: [{ text: buildTaskTitleSystemInstruction() }] },
-      contents: [{ role: 'user', parts: [{ text: buildTaskTitlePrompt(requestText) }] }],
-      generationConfig: {
-        maxOutputTokens: MAX_OUTPUT_TOKENS_TASK_TITLE,
-        temperature: 0,
-        responseMimeType: 'application/json',
-        responseSchema: translateNeutralSchema(buildTaskTitleResponseSchema()),
-      },
-    }),
-  }, 'Task title model request')
-
-  const data = await response.json() as {
-    candidates?: Array<{ finishReason?: unknown; content?: { parts?: Array<{ text?: unknown }> } }>
+  if (result.finishReason !== 'stop') {
+    throw new Error(`Task title model response did not finish safely (finishReason=${result.finishReason}).`)
   }
-  const candidate = data.candidates?.[0]
-  if (!candidate) throw new Error('Task title model returned no candidate.')
-  if (candidate.finishReason !== undefined && candidate.finishReason !== 'STOP') {
-    throw new Error(`Task title model response did not finish safely (finishReason=${String(candidate.finishReason)}).`)
-  }
-  const text = candidate.content?.parts?.[0]?.text
-  if (typeof text !== 'string' || !text.trim()) throw new Error('Task title model returned no content.')
+  const text = result.rawText
+  if (!text.trim()) throw new Error('Task title model returned no content.')
 
   let parsed: unknown
   try {
