@@ -874,8 +874,8 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
          exists for `finance_import_batches`
          (`supabase/tests/finance_import_batches.migration_structure.test.ts`)
          but `finance_import_rows` still has neither.
-12. **Capability-oriented AI provider abstraction — S0 merged to `main`; S1
-    authored on branch `feat/adr-0018-s1-text-generation`, not pushed.**
+12. **Capability-oriented AI provider abstraction — S0 and S1 (plus its
+    follow-up) merged to `main`.**
     [ADR-0018](docs/decisions/adr/ADR-0018-capability-oriented-ai-provider-abstraction.md)
     (**Status: Accepted** — PO approved 2026-08-22, all five open questions
     answered yes). Follows directly from INC-01 (2026-08-22 Gemini 429
@@ -950,6 +950,15 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
       never a caller-visible failure), but deploying INTO a known
       missing-table state is still not the intended order — apply the
       migration first, deploy the Worker second.
+    - **DEPLOY ORDER (MIG-01b, 2026-08-23): deploy requires EITHER the old
+      account recharged (`gemini-2.5-flash`, reached only via an
+      explicitly env-pinned `GEMINI_MODEL` — `gemini-2.5-flash` is
+      otherwise unavailable to new keys) OR a billing-enabled new key
+      (`gemini-3.6-flash`, the default in `agent/worker/geminiModel.ts`
+      and `wrangler.toml`).** Whichever it is, `provider-contract-smoke`
+      must show 6/6 against that SAME model production will actually use
+      — a 6/6 run against one model is not evidence for the other; see
+      that script's own `GEMINI_MODEL`/`SMOKE_DELAY_MS` env vars.
     - **6/6 `provider-contract-smoke` checks are now required before Worker
       deploy** (was 5/5 through S0) — the new adapter check must pass
       alongside the five existing schema/model contracts.
@@ -978,3 +987,5 @@ when.
 ## 6. Incidents
 
 - **2026-08-22 — Gemini provider outage (429 RESOURCE_EXHAUSTED) surfaced as a fabricated clarification.** Cause: Gemini API credits were depleted, so every provider call failed with 429; the auto-write title-resolution path (`flow-write-policy.ts`'s `resolveCreateTitle`) treated that failure the same as the model genuinely finding no subject, so `executeAutoTaskWrite` reported the exact same "What should the task be called?" ask as a real ambiguity. User-visible symptom: in `/chat`, a task-creation message got a fabricated clarifying question instead of an honest "AI unavailable," and a follow-up turn got the generic, content-less "Something went wrong on my end." Fix: `fix/inc-01-provider-failure-honesty` branch — `agent/worker/provider-errors.ts` classifies 429/5xx/network failures distinctly from the model answering with something unusable; both the auto-write path and `/chat`'s `mode: "reasoning"` now report a distinct `PROVIDER_UNAVAILABLE`/`provider_unavailable` outcome with an honest, bounded message (EN/DE/FA) instead.
+
+- **2026-08-23 — Gemini model retirement/availability forced a migration off gemini-2.5-flash.** `gemini-2.0-flash` is fully retired; `gemini-2.5-flash` is unavailable to new API keys (the original account's own key still reaches it, but it cannot be provisioned again). `scripts/gemini-36-probe.ts` (MIG-01a) diagnosed the replacement, `gemini-3.6-flash`: `thinkingConfig:{thinkingBudget:0}` — the exact fix task 12/R-3/INC-01-era call sites relied on to stop thinking tokens from exhausting `maxOutputTokens` — is rejected outright with 400 INVALID_ARGUMENT (probe P3); the `responseSchema` dialect itself is unchanged (probe P5/P6, both 200). Fix: `feat/mig-01b-gemini-36` branch (MIG-01b) — single-source model resolution (`agent/worker/geminiModel.ts`, default `gemini-3.6-flash`), `thinkingConfig` removed from every call site (thinking is simply enabled now — accepted, since it only reaches gemini-2.5-flash via a deliberate env-pin and that model is being retired), and `maxOutputTokens` raised to a 2048 floor everywhere it was lower (thinking now spends output budget on every call). `wrangler.toml`'s `GEMINI_MODEL` var updated to `gemini-3.6-flash`.

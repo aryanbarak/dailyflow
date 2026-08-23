@@ -33,6 +33,7 @@
 
 import { parseModelJsonObject, ModelJsonParseError } from './modelJsonParsing'
 import { EMBEDDING_MODEL, EMBEDDING_DIMENSIONS, l2Normalize } from './embeddingConfig'
+import { resolveGeminiModel } from './geminiModel'
 
 const PERSONAL_MEMORY_RECORD_KINDS = ['preference', 'goal', 'working_pattern', 'commitment', 'personal_fact', 'skill'] as const
 type PersonalMemoryRecordKind = typeof PERSONAL_MEMORY_RECORD_KINDS[number]
@@ -532,7 +533,7 @@ async function callGeminiForExtraction(
   logger: Pick<Console, 'info' | 'error'>,
   documentType?: string | null,
 ): Promise<{ raw: unknown; promptTokenCount?: number; responseTokenCount?: number }> {
-  const modelUrl = new URL(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(env.GEMINI_MODEL ?? '')}:generateContent`)
+  const modelUrl = new URL(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(resolveGeminiModel(env))}:generateContent`)
   modelUrl.searchParams.set('key', env.GEMINI_API_KEY ?? '')
 
   let response: Response
@@ -544,20 +545,18 @@ async function callGeminiForExtraction(
         system_instruction: { parts: [{ text: buildExtractionSystemInstruction(documentType) }] },
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         generationConfig: {
+          // Already at/above the MIG-01b 2048 floor -- left as-is.
           maxOutputTokens: MAX_OUTPUT_TOKENS_EXTRACTION,
           temperature: 0,
           responseMimeType: 'application/json',
-          // Task 12 fix: gemini-2.5-flash spends output tokens on internal
-          // "thinking" by default unless this is explicitly zeroed. Without
-          // it, thinking tokens can consume the entire maxOutputTokens budget
-          // before the model emits any of the actual JSON -- especially with
-          // real, mixed-language (Persian/English) source material, which is
-          // more reasoning-heavy than the short fixture strings the fake-model
-          // tests used until now. The result is exactly this bug's signature:
-          // an empty or truncated `text`, reported generically as "the model
-          // did not return a usable extraction." Mirrors reasoning-endpoint.ts's
-          // proven-working callGeminiOnce, which already sets this.
-          thinkingConfig: { thinkingBudget: 0 },
+          // MIG-01b: thinkingConfig removed -- gemini-3.6-flash returns 400
+          // INVALID_ARGUMENT on thinkingConfig:{thinkingBudget:0} (see
+          // geminiModel.ts and scripts/gemini-36-probe.ts's P3 finding).
+          // The task 12 fix this replaced (gemini-2.5-flash spending output
+          // tokens on internal "thinking" by default, especially on the
+          // real, mixed-language Persian/English material this route
+          // handles) is still real on 2.5 -- accepted, 2.5 is being
+          // retired (see callGemini's identical note in index.ts).
           responseSchema: buildExtractionResponseSchema(),
         },
       }),

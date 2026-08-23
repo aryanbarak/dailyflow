@@ -44,9 +44,12 @@ if (!process.env.GEMINI_API_KEY) {
 // shape since this probe was written would otherwise go unnoticed.
 import { buildTaskTitleResponseSchema } from '../agent/worker/task-title-extraction'
 import { buildReasoningResponseSchema } from '../agent/worker/reasoning-endpoint'
+// MIG-01b: single-source model resolution (see that module's header
+// comment) -- this script no longer hardcodes its own default.
+import { resolveGeminiModel } from '../agent/worker/geminiModel'
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? ''
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.6-flash'
+const GEMINI_MODEL = resolveGeminiModel({ GEMINI_MODEL: process.env.GEMINI_MODEL })
 const MAX_DETAIL_CHARS = 500
 
 const SAY_OK = 'Say OK'

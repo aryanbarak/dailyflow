@@ -40,6 +40,7 @@
 import type { ChatMessage } from '../../types'
 import { ProviderUnavailableError, fetchGeminiOrThrow } from '../../provider-errors'
 import { recordProviderFailure, type ProviderFailureEnv } from '../failureEvents'
+import { resolveGeminiModel } from '../../geminiModel'
 import type { TextGenerationProvider, TextGenerationRequest, TextGenerationResult } from '../types'
 
 // Extends ProviderFailureEnv (not the full agent/worker/types.ts `Env`) --
@@ -147,7 +148,9 @@ export class GeminiTextGenerationProvider implements TextGenerationProvider {
     const body: Record<string, unknown> = { contents, generationConfig }
     if (req.system !== undefined) body.system_instruction = { parts: [{ text: req.system }] }
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.env.GEMINI_MODEL}:generateContent?key=${this.env.GEMINI_API_KEY}`
+    // MIG-01b: single-source model resolution (geminiModel.ts) -- see that
+    // module's header comment for why a default exists here at all.
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${resolveGeminiModel(this.env)}:generateContent?key=${this.env.GEMINI_API_KEY}`
     let res: Response
     try {
       res = await fetchGeminiOrThrow(

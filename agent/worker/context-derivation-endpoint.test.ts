@@ -395,7 +395,13 @@ describe('POST /projects/context-derivation', () => {
     expect(fullLog).toContain('generateContent')
   });
 
-  it('task R-3 fix: sends thinkingConfig: { thinkingBudget: 0 } on every Gemini call -- parity with personal-memory-extraction-endpoint.ts\'s identical task 12 fix (gemini-2.5-flash spends output tokens on internal thinking by default, which can exhaust maxOutputTokens before any JSON is emitted) at the wire level, not just via behavior', async () => {
+  // MIG-01b: the task R-3 fix this replaced (gemini-2.5-flash spending
+  // output tokens on internal thinking by default) required
+  // thinkingConfig:{thinkingBudget:0}; gemini-3.6-flash returns 400
+  // INVALID_ARGUMENT on that same field (scripts/gemini-36-probe.ts's P3
+  // finding), so it is no longer sent at all -- this test now asserts its
+  // absence at the wire level instead of its presence.
+  it('MIG-01b: does NOT send thinkingConfig on the Gemini call -- gemini-3.6-flash rejects it (400 INVALID_ARGUMENT)', async () => {
     let sentBody: { generationConfig?: { thinkingConfig?: unknown } } | null = null
     const inner = baseFetcher()
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -406,7 +412,7 @@ describe('POST /projects/context-derivation', () => {
       return inner(input, init)
     })
     await handleContextDerivationRequest(request(), validEnv, { fetcher })
-    expect(sentBody?.generationConfig?.thinkingConfig).toEqual({ thinkingBudget: 0 })
+    expect(sentBody?.generationConfig?.thinkingConfig).toBeUndefined()
   });
 
   it('task R-3 fixture: a MAX_TOKENS-truncated response is reported with that specific finishReason, mapped to MODEL_OUTPUT_UNUSABLE (2xx-but-unusable) rather than a provider error -- parity with personal-memory-extraction-endpoint.ts\'s identical task 12 fix', async () => {

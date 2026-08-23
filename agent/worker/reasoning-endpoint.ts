@@ -584,10 +584,17 @@ async function callGeminiOnce(
       },
       contents: [{ role: 'user', parts: [{ text: input.reasoningPrompt }] }],
       generationConfig: {
-        maxOutputTokens: 768,
+        // MIG-01b: 768 -> 2048. thinkingConfig removed -- gemini-3.6-flash
+        // returns 400 INVALID_ARGUMENT on thinkingConfig:{thinkingBudget:0}
+        // (see geminiModel.ts and scripts/gemini-36-probe.ts's P3/P6
+        // findings -- buildReasoningResponseSchema is P6, the biggest real
+        // schema, confirmed 200 on gemini-3.6-flash). This local-qa
+        // boundary's own GEMINI_MODEL is still explicitly required (see
+        // resolveLocalReasoningConfig) -- untouched by this slice, it
+        // validates config completeness, not a model string literal.
+        maxOutputTokens: 2048,
         temperature: 0,
         responseMimeType: 'application/json',
-        thinkingConfig: { thinkingBudget: 0 },
         responseSchema: buildReasoningResponseSchema(),
       },
     }),

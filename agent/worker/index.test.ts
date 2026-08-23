@@ -2508,7 +2508,10 @@ describe('ADR-0018 S1 follow-up: endpoint-level coverage for callGemini (briefin
   }
 
   describe('callGemini (briefing, via POST /generate, daily mode)', () => {
-    it('sends system_instruction, turn role "user", and maxOutputTokens 1024 (the pre-S1 daily-mode constant)', async () => {
+    // MIG-01b: maxOutputTokens raised 1024 -> 2048 (thinking now consumes
+    // output budget on gemini-3.6-flash; see generateBriefing's own
+    // comment in index.ts) -- this assertion updated to match.
+    it('sends system_instruction, turn role "user", and maxOutputTokens 2048 (post-MIG-01b daily-mode constant)', async () => {
       const geminiCalls = installGeminiEndpointFetchMock(200, 'Your briefing today.')
 
       const response = await worker.fetch(generateRequest(), testEnv(), fakeExecutionContext())
@@ -2518,7 +2521,7 @@ describe('ADR-0018 S1 follow-up: endpoint-level coverage for callGemini (briefin
       const { body } = geminiCalls[0]
       expect(body.system_instruction?.parts?.[0]?.text?.length).toBeGreaterThan(0)
       expect(body.contents[0].role).toBe('user')
-      expect(body.generationConfig.maxOutputTokens).toBe(1024)
+      expect(body.generationConfig.maxOutputTokens).toBe(2048)
     })
 
     // Negative path: found during this follow-up that a 429 fell through
