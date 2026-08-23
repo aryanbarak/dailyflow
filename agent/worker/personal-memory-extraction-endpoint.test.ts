@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   buildExtractionResponseSchema,
   buildExtractionSystemInstruction,
@@ -11,6 +11,33 @@ import {
   type PersonalMemoryExtractionEnv,
   type SourceItemForPrompt,
 } from './personal-memory-extraction-endpoint'
+import { ProviderRequestError, ProviderUnavailableError } from './provider-errors'
+// ADR-0018 S4: endpoint tests mock the STRUCTURED_GEN/EMBEDDING interfaces,
+// not Gemini's wire format -- Gemini's own envelope is
+// GeminiStructuredGenerationProvider.test.ts's/GeminiEmbeddingProvider
+// .test.ts's coverage now; this file only asserts what THIS endpoint does
+// with a StructuredGenerationResult/EmbeddingResult (or a thrown provider
+// error) -- status codes, DB writes, candidate filtering, batching,
+// overlap detection wiring, the honest-failure taxonomy.
+import { StubEmbeddingProvider, StubStructuredGenerationProvider, stubProviders } from './providers/testing/stubProviders'
+import type { Providers } from './providers/createProviders'
+import type { StructuredGenerationRequest, StructuredGenerationResult } from './providers/types'
+
+let currentProviders: Providers = stubProviders()
+vi.mock('./providers/createProviders', () => ({
+  createProviders: () => currentProviders,
+}))
+
+// Exposed by baseFetcher/batchAwareFetcher below so tests can inspect "was
+// the provider actually called" (previously done by inspecting fetch calls
+// for a generativelanguage.googleapis.com URL -- no longer meaningful,
+// since neither capability touches fetch any more).
+let lastStructuredProvider: StubStructuredGenerationProvider
+let lastEmbeddingProvider: StubEmbeddingProvider
+
+beforeEach(() => {
+  currentProviders = stubProviders()
+})
 
 const ORIGIN = 'https://smartflow.example'
 const SUPABASE_URL = 'https://supabase.example.co'
@@ -62,11 +89,16 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 }
 
-function geminiModelResponse(candidates: Array<Record<string, unknown>>): Response {
-  return jsonResponse({
-    candidates: [{ content: { parts: [{ text: JSON.stringify({ candidates }) }] } }],
-    usageMetadata: { promptTokenCount: 80, candidatesTokenCount: 30 },
-  })
+/** The StructuredGenerationResult a real GeminiStructuredGenerationProvider would hand back on a successful extraction call. */
+function structuredResultFor(candidates: Array<Record<string, unknown>>): StructuredGenerationResult {
+  return { rawText: JSON.stringify({ candidates }), finishReason: 'stop', usage: { promptTokens: 80, responseTokens: 30 } }
+}
+
+/** The EmbeddingResult a real GeminiEmbeddingProvider would hand back -- every fixture vector below is already unit-length by construction (a single 1 among zeros, or a deliberately-computed unit pair), matching what the real adapter's own L2-normalization guarantees. */
+function embeddingProviderFor(valuesByText: Record<string, number[]> = {}): StubEmbeddingProvider {
+  return new StubEmbeddingProvider((texts) => ({
+    vectors: texts.map((t) => valuesByText[t] ?? Array.from({ length: 768 }, (_, i) => (i === 0 ? 1 : 0))),
+  }))
 }
 
 function baseFetcher(overrides: {
@@ -78,7 +110,7 @@ function baseFetcher(overrides: {
   existingRecordsForOverlap?: Array<Record<string, unknown>>
   embeddingValuesByText?: Record<string, number[]>
   onRpc?: (body: unknown) => void
-  onGenerateContentCall?: (body: unknown) => void
+  onGenerateContentCall?: (req: StructuredGenerationRequest) => void
 } = {}) {
   const chatMessages = overrides.chatMessages ?? [{ id: CHAT_ID, content: 'I prefer async written updates over calls.' }]
   const briefings = overrides.briefings ?? [{ id: BRIEFING_ID, content: 'You are learning React Native this month.' }]
@@ -95,6 +127,13 @@ function baseFetcher(overrides: {
         provenanceSourceRefIds: [CHAT_ID],
       },
     ]
+
+  lastStructuredProvider = new StubStructuredGenerationProvider((req) => {
+    overrides.onGenerateContentCall?.(req)
+    return structuredResultFor(geminiCandidates)
+  })
+  lastEmbeddingProvider = embeddingProviderFor(overrides.embeddingValuesByText)
+  currentProviders = stubProviders({ structured: lastStructuredProvider, embedding: lastEmbeddingProvider })
 
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
@@ -116,22 +155,6 @@ function baseFetcher(overrides: {
       return jsonResponse([{ id: RUN_ID }])
     }
     if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs?`) && init?.method === 'PATCH') return new Response(null, { status: 204 })
-    // Task 18, B1: embedContent calls for the overlap-check fallback -- a
-    // deterministic, test-scripted vector per input text (so a test can
-    // control which pairs "match"), always via a REAL 768-length,
-    // already-unit-length response shape (embedTextForOverlap L2-normalizes
-    // it again itself, so any non-zero vector works).
-    if (url.startsWith('https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent')) {
-      const body = init?.body ? (JSON.parse(init.body as string) as { content: { parts: Array<{ text: string }> } }) : null
-      const text = body?.content.parts[0]?.text ?? ''
-      const scripted = overrides.embeddingValuesByText?.[text]
-      const values = scripted ?? Array.from({ length: 768 }, (_, i) => (i === 0 ? 1 : 0))
-      return jsonResponse({ embedding: { values } })
-    }
-    if (url.startsWith('https://generativelanguage.googleapis.com/')) {
-      overrides.onGenerateContentCall?.(init?.body ? JSON.parse(init.body as string) : null)
-      return geminiModelResponse(geminiCandidates)
-    }
     if (url === `${SUPABASE_URL}/rest/v1/rpc/create_personal_memory_record`) {
       overrides.onRpc?.(init?.body ? JSON.parse(init.body as string) : null)
       return jsonResponse({ outcome: 'created', field: { id: 'record-1', status: 'proposed' } })
@@ -192,6 +215,11 @@ describe('POST /personal-memory/extraction', () => {
   })
 
   it('returns 502 when the model call fails, and marks the run failed with a bounded diagnostic reason (task 12: was the static string "MODEL_CALL_FAILED"; now the actual, bounded error detail, so the run record itself is diagnosable without a live wrangler tail session)', async () => {
+    currentProviders = stubProviders({
+      structured: new StubStructuredGenerationProvider(() => {
+        throw new ProviderUnavailableError('Gemini structured generation: provider error 500: {}', 500, '{}')
+      }),
+    })
     const patchCalls: unknown[] = []
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
@@ -206,7 +234,6 @@ describe('POST /personal-memory/extraction', () => {
         patchCalls.push(init.body ? JSON.parse(init.body as string) : null)
         return new Response(null, { status: 204 })
       }
-      if (url.startsWith('https://generativelanguage.googleapis.com/')) return jsonResponse({}, 500)
       throw new Error(`Unexpected fetch: ${url}`)
     })
     const response = await handlePersonalMemoryExtractionRequest(request(), validEnv, { fetcher })
@@ -217,21 +244,15 @@ describe('POST /personal-memory/extraction', () => {
   // MIG-01b: the task 12 fix this replaced (gemini-2.5-flash spending
   // output tokens on internal thinking by default) required
   // thinkingConfig:{thinkingBudget:0}; gemini-3.6-flash returns 400
-  // INVALID_ARGUMENT on that same field (scripts/gemini-36-probe.ts's P3
-  // finding), so it is no longer sent at all -- this test now asserts its
-  // absence at the wire level instead of its presence.
-  it('MIG-01b: does NOT send thinkingConfig on the Gemini call -- gemini-3.6-flash rejects it (400 INVALID_ARGUMENT)', async () => {
-    let sentBody: { generationConfig?: { thinkingConfig?: unknown } } | null = null
-    const inner = baseFetcher()
-    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      if (url.startsWith('https://generativelanguage.googleapis.com/')) {
-        sentBody = init?.body ? JSON.parse(init.body as string) : null
-      }
-      return inner(input, init)
-    })
+  // INVALID_ARGUMENT on that same field, so it is no longer sent at all.
+  // The WIRE-level fact is GeminiStructuredGenerationProvider.test.ts's own
+  // coverage now -- this asserts the CALL-SITE-level fact: this endpoint's
+  // own request to the adapter never asks for it.
+  it('MIG-01b: never asks the provider for thinkingConfig -- gemini-3.6-flash rejects it (400 INVALID_ARGUMENT) if the adapter is ever asked to send it', async () => {
+    let capturedRequest: StructuredGenerationRequest | null = null
+    const fetcher = baseFetcher({ onGenerateContentCall: (req) => { capturedRequest = req } })
     await handlePersonalMemoryExtractionRequest(request(), validEnv, { fetcher })
-    expect(sentBody?.generationConfig?.thinkingConfig).toBeUndefined()
+    expect((capturedRequest as StructuredGenerationRequest | null)?.providerOptions?.thinkingConfig).toBeUndefined()
   })
 
   it('task 12 fixture: a realistic Gemini response with Persian-language free-text content is accepted -- language of the summary is not itself a rejection reason', async () => {
@@ -268,6 +289,9 @@ describe('POST /personal-memory/extraction', () => {
         },
       ],
     })
+    currentProviders = stubProviders({
+      structured: new StubStructuredGenerationProvider(() => ({ rawText: '```json\n' + extractionPayload + '\n```', finishReason: 'stop' })),
+    })
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       if (url === `${SUPABASE_URL}/auth/v1/user`) return jsonResponse({ id: 'user-1' })
@@ -278,9 +302,6 @@ describe('POST /personal-memory/extraction', () => {
         return jsonResponse([{ id: RUN_ID }])
       }
       if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs?`) && init?.method === 'PATCH') return new Response(null, { status: 204 })
-      if (url.startsWith('https://generativelanguage.googleapis.com/')) {
-        return jsonResponse({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: '```json\n' + extractionPayload + '\n```' }] } }] })
-      }
       if (url === `${SUPABASE_URL}/rest/v1/rpc/create_personal_memory_record`) return jsonResponse({ outcome: 'created', field: { id: 'record-1', status: 'proposed' } })
       throw new Error(`Unexpected fetch: ${url}`)
     })
@@ -301,6 +322,9 @@ describe('POST /personal-memory/extraction', () => {
   })
 
   it('task 12 fixture: garbage (non-JSON prose) model output produces a typed 502 failure whose persisted failure_reason includes the actual raw-output snippet, not a generic label', async () => {
+    currentProviders = stubProviders({
+      structured: new StubStructuredGenerationProvider(() => ({ rawText: 'Sorry, I cannot help with that request.', finishReason: 'stop' })),
+    })
     const patchCalls: unknown[] = []
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
@@ -314,9 +338,6 @@ describe('POST /personal-memory/extraction', () => {
       if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs?`) && init?.method === 'PATCH') {
         patchCalls.push(init.body ? JSON.parse(init.body as string) : null)
         return new Response(null, { status: 204 })
-      }
-      if (url.startsWith('https://generativelanguage.googleapis.com/')) {
-        return jsonResponse({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: 'Sorry, I cannot help with that request.' }] } }] })
       }
       throw new Error(`Unexpected fetch: ${url}`)
     })
@@ -334,6 +355,9 @@ describe('POST /personal-memory/extraction', () => {
   })
 
   it('task 12 fixture: a MAX_TOKENS-truncated response is reported with that specific finishReason -- this is the diagnosed production bug\'s exact signature (thinking tokens exhausting the budget before any JSON is emitted)', async () => {
+    currentProviders = stubProviders({
+      structured: new StubStructuredGenerationProvider(() => ({ rawText: '{"candidates":[{"kind":"pref', finishReason: 'length', rawFinishReason: 'MAX_TOKENS' })),
+    })
     const patchCalls: unknown[] = []
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
@@ -347,9 +371,6 @@ describe('POST /personal-memory/extraction', () => {
       if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs?`) && init?.method === 'PATCH') {
         patchCalls.push(init.body ? JSON.parse(init.body as string) : null)
         return new Response(null, { status: 204 })
-      }
-      if (url.startsWith('https://generativelanguage.googleapis.com/')) {
-        return jsonResponse({ candidates: [{ finishReason: 'MAX_TOKENS', content: { parts: [{ text: '{"candidates":[{"kind":"pref' }] } }] })
       }
       throw new Error(`Unexpected fetch: ${url}`)
     })
@@ -386,6 +407,15 @@ describe('POST /personal-memory/extraction', () => {
   })
 
   it('task 14 fix: a provider 4xx response is reported as PROVIDER_REQUEST_REJECTED with the provider\'s own (truncated) detail in the response body -- this endpoint is owner-only (authenticateUser requires a valid bearer token), so exposing it here is safe', async () => {
+    currentProviders = stubProviders({
+      structured: new StubStructuredGenerationProvider(() => {
+        throw new ProviderRequestError(
+          'Gemini structured generation error: {"error":{"code":400,"message":"The specified schema produces a constraint that has too many states for serving.","status":"INVALID_ARGUMENT"}}',
+          400,
+          '{"error":{"code":400,"message":"The specified schema produces a constraint that has too many states for serving.","status":"INVALID_ARGUMENT"}}',
+        )
+      }),
+    })
     const patchCalls: unknown[] = []
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
@@ -400,12 +430,6 @@ describe('POST /personal-memory/extraction', () => {
         patchCalls.push(init.body ? JSON.parse(init.body as string) : null)
         return new Response(null, { status: 204 })
       }
-      if (url.startsWith('https://generativelanguage.googleapis.com/')) {
-        return jsonResponse(
-          { error: { code: 400, message: 'The specified schema produces a constraint that has too many states for serving.', status: 'INVALID_ARGUMENT' } },
-          400,
-        )
-      }
       throw new Error(`Unexpected fetch: ${url}`)
     })
     const response = await handlePersonalMemoryExtractionRequest(request(), validEnv, { fetcher })
@@ -419,6 +443,15 @@ describe('POST /personal-memory/extraction', () => {
   })
 
   it('task 14 fix: a provider 5xx response is reported as PROVIDER_UNAVAILABLE, distinct from a 4xx rejection', async () => {
+    currentProviders = stubProviders({
+      structured: new StubStructuredGenerationProvider(() => {
+        throw new ProviderUnavailableError(
+          'Gemini structured generation: provider error 503: {"error":{"code":503,"message":"The model is overloaded. Please try again later.","status":"UNAVAILABLE"}}',
+          503,
+          '{"error":{"code":503,"message":"The model is overloaded. Please try again later.","status":"UNAVAILABLE"}}',
+        )
+      }),
+    })
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       if (url === `${SUPABASE_URL}/auth/v1/user`) return jsonResponse({ id: 'user-1' })
@@ -429,9 +462,6 @@ describe('POST /personal-memory/extraction', () => {
         return jsonResponse([{ id: RUN_ID }])
       }
       if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs?`) && init?.method === 'PATCH') return new Response(null, { status: 204 })
-      if (url.startsWith('https://generativelanguage.googleapis.com/')) {
-        return jsonResponse({ error: { code: 503, message: 'The model is overloaded. Please try again later.', status: 'UNAVAILABLE' } }, 503)
-      }
       throw new Error(`Unexpected fetch: ${url}`)
     })
     const response = await handlePersonalMemoryExtractionRequest(request(), validEnv, { fetcher })
@@ -442,6 +472,20 @@ describe('POST /personal-memory/extraction', () => {
   })
 
   it('task 14 fix: REDACTION GUARD -- the provider API key and the full request URL/query-string never appear in any logged output, on a provider-rejected request', async () => {
+    // The URL/key never reach this endpoint's own code any more (the
+    // adapter owns request construction internally, S2) --
+    // GeminiStructuredGenerationProvider.test.ts's own "builds the URL from
+    // GEMINI_MODEL/GEMINI_API_KEY" test already proves the wire URL carries
+    // the key; this test is only about THIS endpoint's own log lines.
+    currentProviders = stubProviders({
+      structured: new StubStructuredGenerationProvider(() => {
+        throw new ProviderRequestError(
+          'Gemini structured generation error: {"error":{"code":400,"message":"The specified schema produces a constraint that has too many states for serving.","status":"INVALID_ARGUMENT"}}',
+          400,
+          '{"error":{"code":400,"message":"The specified schema produces a constraint that has too many states for serving.","status":"INVALID_ARGUMENT"}}',
+        )
+      }),
+    })
     const logged: string[] = []
     const fakeLogger = { info: (..._args: unknown[]) => {}, error: (...args: unknown[]) => { logged.push(args.map(String).join(' ')) } }
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -454,14 +498,6 @@ describe('POST /personal-memory/extraction', () => {
         return jsonResponse([{ id: RUN_ID }])
       }
       if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs?`) && init?.method === 'PATCH') return new Response(null, { status: 204 })
-      if (url.startsWith('https://generativelanguage.googleapis.com/')) {
-        // Sanity check on the fixture itself: the key IS present in the
-        // request URL the endpoint actually calls (validEnv.GEMINI_API_KEY
-        // below) -- proving the redaction guard is about LOGGING, not about
-        // the key being absent from the real request.
-        expect(url).toContain('key=gemini-key')
-        return jsonResponse({ error: { code: 400, message: 'The specified schema produces a constraint that has too many states for serving.', status: 'INVALID_ARGUMENT' } }, 400)
-      }
       throw new Error(`Unexpected fetch: ${url}`)
     })
     const response = await handlePersonalMemoryExtractionRequest(request(), validEnv, { fetcher, logger: fakeLogger })
@@ -610,41 +646,40 @@ describe('POST /personal-memory/extraction', () => {
   })
 
   // Task 18, A3: end-to-end proof that the document's OWN type reaches the
-  // actual generateContent request's system_instruction -- not just a unit
-  // test of buildExtractionSystemInstruction in isolation.
-  it("task 18: a document-sourced run looks up the document's type and includes it in the system_instruction sent to Gemini", async () => {
-    const onGenerateContentCall = vi.fn()
+  // actual model request's system prompt -- not just a unit test of
+  // buildExtractionSystemInstruction in isolation. Gemini's own
+  // system_instruction wire encoding of this field is
+  // GeminiStructuredGenerationProvider.test.ts's coverage; this proves the
+  // CALL SITE builds the right system string in the first place.
+  it("task 18: a document-sourced run looks up the document's type and includes it in the system prompt sent to the provider", async () => {
+    let capturedRequest: StructuredGenerationRequest | null = null
     const fetcher = baseFetcher({
       documentChunks: [{ id: CHUNK_ID, content: 'Primary bank is Sparkasse Holstein.' }],
       documentType: 'financial',
       geminiCandidates: [
         { kind: 'personal_fact', content: { summary: 'Primary bank is Sparkasse Holstein', category: 'general' }, confidence: 'high', provenanceSourceKind: 'document', provenanceSourceRefIds: [CHUNK_ID] },
       ],
-      onGenerateContentCall,
+      onGenerateContentCall: (req) => { capturedRequest = req },
     })
     const response = await handlePersonalMemoryExtractionRequest(request({ documentId: DOCUMENT_ID }), validEnv, { fetcher })
     expect(response.status).toBe(200)
 
     expect(fetcher.mock.calls.some(([input]) => String(input).includes(`documents?id=eq.${DOCUMENT_ID}&select=type`))).toBe(true)
-    expect(onGenerateContentCall).toHaveBeenCalledWith(
-      expect.objectContaining({
-        system_instruction: { parts: [{ text: expect.stringContaining('financial statement') }] },
-      }),
-    )
+    expect((capturedRequest as StructuredGenerationRequest | null)?.system).toContain('financial statement')
   })
 
-  it('task 18: a document with no type set gets the base system_instruction, unchanged', async () => {
-    const onGenerateContentCall = vi.fn()
+  it('task 18: a document with no type set gets the base system prompt, unchanged', async () => {
+    let capturedRequest: StructuredGenerationRequest | null = null
     const fetcher = baseFetcher({
       documentChunks: [{ id: CHUNK_ID, content: 'Some resume-shaped text.' }],
       documentType: null,
-      onGenerateContentCall,
+      onGenerateContentCall: (req) => { capturedRequest = req },
     })
     await handlePersonalMemoryExtractionRequest(request({ documentId: DOCUMENT_ID }), validEnv, { fetcher })
 
-    const [[sentBody]] = onGenerateContentCall.mock.calls as [[{ system_instruction: { parts: Array<{ text: string }> } }]]
-    expect(sentBody.system_instruction.parts[0].text).not.toContain('financial statement')
-    expect(sentBody.system_instruction.parts[0].text).toBe(buildExtractionSystemInstruction())
+    const req = capturedRequest as StructuredGenerationRequest | null
+    expect(req?.system).not.toContain('financial statement')
+    expect(req?.system).toBe(buildExtractionSystemInstruction())
   })
 
   it('task 16: NO_SOURCE_MATERIAL with a document-specific message when the named document has no chunks', async () => {
@@ -723,19 +758,27 @@ describe('POST /personal-memory/extraction', () => {
   }
 
   /**
-   * A document-sourced fetcher where each successive generateContent call
-   * (i.e. each batch) gets its own scripted response from `perCallResponses`,
-   * cycling if there are more calls than entries. Everything else mirrors
-   * baseFetcher exactly.
+   * A document-sourced fetcher where each successive model call (i.e. each
+   * batch) gets its own scripted StructuredGenerationResult (or throws)
+   * from `perCallOutcomes`, cycling if there are more calls than entries --
+   * mirrors the pre-migration `batchAwareFetcher`'s per-call-response
+   * cycling, just at the provider interface instead of Gemini's wire
+   * format. Everything else (Supabase) mirrors baseFetcher exactly.
    */
   function batchAwareFetcher(overrides: {
     documentChunks: Array<Record<string, unknown>>
-    perCallResponses: Array<() => Response>
+    perCallOutcomes: Array<() => StructuredGenerationResult>
     existingRecordsForOverlap?: Array<Record<string, unknown>>
     onRpc?: (body: unknown) => void
-    onGenerateContentCall?: (body: unknown) => void
+    onGenerateContentCall?: (req: StructuredGenerationRequest) => void
   }) {
-    let callIndex = 0
+    lastStructuredProvider = new StubStructuredGenerationProvider((req, callIndex) => {
+      overrides.onGenerateContentCall?.(req)
+      return overrides.perCallOutcomes[callIndex % overrides.perCallOutcomes.length]()
+    })
+    lastEmbeddingProvider = embeddingProviderFor()
+    currentProviders = stubProviders({ structured: lastStructuredProvider, embedding: lastEmbeddingProvider })
+
     return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       if (url === `${SUPABASE_URL}/auth/v1/user`) return jsonResponse({ id: 'user-1' })
@@ -749,21 +792,6 @@ describe('POST /personal-memory/extraction', () => {
         return jsonResponse([{ id: RUN_ID }])
       }
       if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs?`) && init?.method === 'PATCH') return new Response(null, { status: 204 })
-      // Task 18, B1: embedContent is a DISTINCT endpoint from generateContent
-      // -- must not be swallowed by the generic generateContent branch below
-      // (perCallResponses/callIndex is for batched generateContent calls
-      // only). Returns a fixed non-matching vector -- these batch/FIX-1-3
-      // tests aren't testing overlap detection itself (see the dedicated
-      // "B1 overlap detection" describe block for that).
-      if (url.startsWith('https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent')) {
-        return jsonResponse({ embedding: { values: Array.from({ length: 768 }, (_, i) => (i === 0 ? 1 : 0)) } })
-      }
-      if (url.startsWith('https://generativelanguage.googleapis.com/')) {
-        overrides.onGenerateContentCall?.(init?.body ? JSON.parse(init.body as string) : null)
-        const responder = overrides.perCallResponses[callIndex % overrides.perCallResponses.length]
-        callIndex += 1
-        return responder()
-      }
       if (url === `${SUPABASE_URL}/rest/v1/rpc/create_personal_memory_record`) {
         overrides.onRpc?.(init?.body ? JSON.parse(init.body as string) : null)
         return jsonResponse({ outcome: 'created', field: { id: 'record-1', status: 'proposed' } })
@@ -803,24 +831,24 @@ describe('POST /personal-memory/extraction', () => {
   })
 
   it('FIX 1: the extraction call requests the raised output budget (4096) on every batch, sized for MAX_CANDIDATES_PER_RUN=12 full candidates', async () => {
-    const sentBodies: Array<{ generationConfig?: { maxOutputTokens?: number } }> = []
+    const sentRequests: StructuredGenerationRequest[] = []
     const fetcher = batchAwareFetcher({
       documentChunks: FIVE_CHUNKS_TWO_TWO_ONE,
-      perCallResponses: [() => geminiModelResponse([documentCandidate(CHUNK_ID_1, 'Skill A')])],
-      onGenerateContentCall: (body) => sentBodies.push(body as { generationConfig?: { maxOutputTokens?: number } }),
+      perCallOutcomes: [() => structuredResultFor([documentCandidate(CHUNK_ID_1, 'Skill A')])],
+      onGenerateContentCall: (req) => sentRequests.push(req),
     })
     const response = await handlePersonalMemoryExtractionRequest(request({ documentId: DOCUMENT_ID }), validEnv, { fetcher })
     expect(response.status).toBe(200)
-    expect(sentBodies.length).toBe(3) // one per batch (2+2+1 chunks)
-    for (const body of sentBodies) expect(body.generationConfig?.maxOutputTokens).toBe(4096)
+    expect(sentRequests.length).toBe(3) // one per batch (2+2+1 chunks)
+    for (const req of sentRequests) expect(req.maxOutputTokens).toBe(4096)
   })
 
   it('FIX 2 + task-14 invariant: raw candidates are merged across all batches BEFORE the MAX_CANDIDATES_PER_RUN=12 cap is applied once, to the merged total', async () => {
     const onRpc = vi.fn()
-    const fiveCandidatesPerBatch = () => geminiModelResponse(Array.from({ length: 5 }, (_, i) => documentCandidate(CHUNK_ID_1, `Skill ${i}`)))
+    const fiveCandidatesPerBatch = () => structuredResultFor(Array.from({ length: 5 }, (_, i) => documentCandidate(CHUNK_ID_1, `Skill ${i}`)))
     const fetcher = batchAwareFetcher({
       documentChunks: FIVE_CHUNKS_TWO_TWO_ONE,
-      perCallResponses: [fiveCandidatesPerBatch],
+      perCallOutcomes: [fiveCandidatesPerBatch],
       onRpc,
     })
     const response = await handlePersonalMemoryExtractionRequest(request({ documentId: DOCUMENT_ID }), validEnv, { fetcher })
@@ -838,10 +866,10 @@ describe('POST /personal-memory/extraction', () => {
     const onRpc = vi.fn()
     const fetcher = batchAwareFetcher({
       documentChunks: FIVE_CHUNKS_TWO_TWO_ONE,
-      perCallResponses: [
-        () => geminiModelResponse([documentCandidate(CHUNK_ID_1, 'Skill from batch 1'), documentCandidate(CHUNK_ID_1, 'Another skill from batch 1')]),
-        () => jsonResponse({}, 500), // batch 2 (chunks 3-4) fails
-        () => geminiModelResponse([documentCandidate(CHUNK_ID_5, 'Skill from batch 3'), documentCandidate(CHUNK_ID_5, 'Another skill from batch 3')]),
+      perCallOutcomes: [
+        () => structuredResultFor([documentCandidate(CHUNK_ID_1, 'Skill from batch 1'), documentCandidate(CHUNK_ID_1, 'Another skill from batch 1')]),
+        () => { throw new ProviderUnavailableError('Gemini structured generation: provider error 500: {}', 500, '{}') }, // batch 2 (chunks 3-4) fails
+        () => structuredResultFor([documentCandidate(CHUNK_ID_5, 'Skill from batch 3'), documentCandidate(CHUNK_ID_5, 'Another skill from batch 3')]),
       ],
       onRpc,
     })
@@ -870,11 +898,11 @@ describe('POST /personal-memory/extraction', () => {
     const onRpc = vi.fn()
     const fetcher = batchAwareFetcher({
       documentChunks: FIVE_CHUNKS_TWO_TWO_ONE,
-      perCallResponses: [
-        () => geminiModelResponse([documentCandidate(CHUNK_ID_1, 'Skill from batch 1')]),
-        () => geminiModelResponse([documentCandidate(CHUNK_ID_3, 'Skill from batch 2')]),
+      perCallOutcomes: [
+        () => structuredResultFor([documentCandidate(CHUNK_ID_1, 'Skill from batch 1')]),
+        () => structuredResultFor([documentCandidate(CHUNK_ID_3, 'Skill from batch 2')]),
         // batch 3 (chunk 5) is truncated -- the diagnosed production bug's exact signature.
-        () => jsonResponse({ candidates: [{ finishReason: 'MAX_TOKENS', content: { parts: [{ text: '{"candidates":[{"kind":"skil' }] } }] }),
+        () => ({ rawText: '{"candidates":[{"kind":"skil', finishReason: 'length', rawFinishReason: 'MAX_TOKENS' }),
       ],
       onRpc,
     })
@@ -889,6 +917,11 @@ describe('POST /personal-memory/extraction', () => {
   })
 
   it('FIX 3: when EVERY batch fails, the run fails exactly like the pre-existing all-or-nothing chat/briefing path (502, task-14 taxonomy, run marked failed) -- a budget/batching fix does not weaken this', async () => {
+    currentProviders = stubProviders({
+      structured: new StubStructuredGenerationProvider(() => {
+        throw new ProviderUnavailableError('Gemini structured generation: provider error 503: {"error":{"code":503,"message":"The model is overloaded.","status":"UNAVAILABLE"}}', 503, '{"error":{"code":503,"message":"The model is overloaded.","status":"UNAVAILABLE"}}')
+      }),
+    })
     const patchCalls: unknown[] = []
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
@@ -902,7 +935,6 @@ describe('POST /personal-memory/extraction', () => {
         patchCalls.push(init.body ? JSON.parse(init.body as string) : null)
         return new Response(null, { status: 204 })
       }
-      if (url.startsWith('https://generativelanguage.googleapis.com/')) return jsonResponse({ error: { code: 503, message: 'The model is overloaded.', status: 'UNAVAILABLE' } }, 503)
       throw new Error(`Unexpected fetch: ${url}`)
     })
     const response = await handlePersonalMemoryExtractionRequest(request({ documentId: DOCUMENT_ID }), validEnv, { fetcher })
@@ -913,17 +945,11 @@ describe('POST /personal-memory/extraction', () => {
     expect(patchCalls[0]).toMatchObject({ outcome: 'failed' })
   })
 
-  it('the chat/briefing path is completely unaffected by batching -- exactly one generateContent call for the whole run, never multiple, regardless of MAX_DOCUMENT_CHUNKS_PER_BATCH', async () => {
-    let generateContentCalls = 0
-    const inner = baseFetcher()
-    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      if (url.startsWith('https://generativelanguage.googleapis.com/')) generateContentCalls += 1
-      return inner(input, init)
-    })
-    const response = await handlePersonalMemoryExtractionRequest(request(), validEnv, { fetcher }) // no documentId -- chat/briefing path
+  it('the chat/briefing path is completely unaffected by batching -- exactly one model call for the whole run, never multiple, regardless of MAX_DOCUMENT_CHUNKS_PER_BATCH', async () => {
+    const fetcher = baseFetcher() // no documentId -- chat/briefing path
+    const response = await handlePersonalMemoryExtractionRequest(request(), validEnv, { fetcher })
     expect(response.status).toBe(200)
-    expect(generateContentCalls).toBe(1)
+    expect(lastStructuredProvider.calls).toHaveLength(1)
   })
 })
 
@@ -1073,7 +1099,7 @@ describe('cosineSimilarity (task 18, B1)', () => {
 describe('B1 overlap detection (task 18)', () => {
   const EXISTING_ID = '77777777-7777-4777-8777-777777777777'
 
-  it('deterministic match: same kind + normalized-equal summary is found WITHOUT ever calling the embedding endpoint', async () => {
+  it('deterministic match: same kind + normalized-equal summary is found WITHOUT ever calling the embedding provider', async () => {
     const onRpc = vi.fn()
     const fetcher = baseFetcher({
       existingRecordsForOverlap: [{ id: EXISTING_ID, kind: 'skill', content: { summary: 'TypeScript', level: 'intermediate' }, status: 'user_confirmed' }],
@@ -1085,7 +1111,7 @@ describe('B1 overlap detection (task 18)', () => {
     const response = await handlePersonalMemoryExtractionRequest(request(), validEnv, { fetcher })
     expect(response.status).toBe(200)
     expect(onRpc).toHaveBeenCalledWith(expect.objectContaining({ p_possible_update_of_id: EXISTING_ID }))
-    expect(fetcher.mock.calls.some(([input]) => String(input).includes(':embedContent'))).toBe(false)
+    expect(lastEmbeddingProvider.calls).toHaveLength(0)
   })
 
   it('case/whitespace-only differences still deterministically match (no embedding call)', async () => {
@@ -1099,7 +1125,7 @@ describe('B1 overlap detection (task 18)', () => {
     })
     await handlePersonalMemoryExtractionRequest(request(), validEnv, { fetcher })
     expect(onRpc).toHaveBeenCalledWith(expect.objectContaining({ p_possible_update_of_id: EXISTING_ID }))
-    expect(fetcher.mock.calls.some(([input]) => String(input).includes(':embedContent'))).toBe(false)
+    expect(lastEmbeddingProvider.calls).toHaveLength(0)
   })
 
   it('embedding fallback: cross-language paraphrase (no deterministic match) clears the threshold and is found', async () => {
@@ -1123,7 +1149,7 @@ describe('B1 overlap detection (task 18)', () => {
     })
     const response = await handlePersonalMemoryExtractionRequest(request(), validEnv, { fetcher })
     expect(response.status).toBe(200)
-    expect(fetcher.mock.calls.some(([input]) => String(input).includes(':embedContent'))).toBe(true)
+    expect(lastEmbeddingProvider.calls.length).toBeGreaterThan(0)
     expect(onRpc).toHaveBeenCalledWith(expect.objectContaining({ p_possible_update_of_id: EXISTING_ID }))
   })
 
@@ -1160,7 +1186,7 @@ describe('B1 overlap detection (task 18)', () => {
     expect(onRpc).toHaveBeenCalledWith(expect.objectContaining({ p_possible_update_of_id: null }))
     // Different kind means sameKind.length === 0 -- returns before ever
     // reaching the embedding fallback.
-    expect(fetcher.mock.calls.some(([input]) => String(input).includes(':embedContent'))).toBe(false)
+    expect(lastEmbeddingProvider.calls).toHaveLength(0)
   })
 
   it('the existing-records read is scoped to the actual kinds present among this run\'s valid candidates, and excludes superseded/rejected statuses in the query itself', async () => {
@@ -1180,6 +1206,9 @@ describe('B1 overlap detection (task 18)', () => {
   })
 
   it('an overlap-check read failure degrades to no suggestion, never fails the run', async () => {
+    currentProviders = stubProviders({
+      structured: new StubStructuredGenerationProvider(() => structuredResultFor([{ kind: 'skill', content: { summary: 'TypeScript' }, confidence: 'high', provenanceSourceKind: 'chat_turn', provenanceSourceRefIds: [CHAT_ID] }])),
+    })
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       if (url === `${SUPABASE_URL}/auth/v1/user`) return jsonResponse({ id: 'user-1' })
@@ -1188,9 +1217,6 @@ describe('B1 overlap detection (task 18)', () => {
       if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_records?`)) return new Response('boom', { status: 500 })
       if (url === `${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs` && init?.method === 'POST') return jsonResponse([{ id: RUN_ID }])
       if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_extraction_runs?`) && init?.method === 'PATCH') return new Response(null, { status: 204 })
-      if (url.startsWith('https://generativelanguage.googleapis.com/')) {
-        return geminiModelResponse([{ kind: 'skill', content: { summary: 'TypeScript' }, confidence: 'high', provenanceSourceKind: 'chat_turn', provenanceSourceRefIds: [CHAT_ID] }])
-      }
       if (url === `${SUPABASE_URL}/rest/v1/rpc/create_personal_memory_record`) return jsonResponse({ outcome: 'created', field: { id: 'record-1', status: 'proposed' } })
       throw new Error(`Unexpected fetch: ${url}`)
     })

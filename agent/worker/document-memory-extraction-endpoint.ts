@@ -36,17 +36,19 @@
 // cap before upload (chatAttachmentValidation.ts) -- this is defense in
 // depth against a documentId referencing a larger document uploaded some
 // other way (e.g. directly via the Documents page).
-// Task PA-02: EMBEDDING_MODEL/EMBEDDING_DIMENSIONS/l2Normalize now come
-// from embeddingConfig.ts (one source of truth shared with
-// personal-memory-extraction-endpoint.ts) instead of being declared here
-// -- see that module's own header comment for why the prior "zero-cross-
-// import convention" justification for the duplication did not reflect an
-// actual rule.
-import { EMBEDDING_MODEL, EMBEDDING_DIMENSIONS, l2Normalize } from './embeddingConfig'
+// Task PA-02: EMBEDDING_DIMENSIONS comes from embeddingConfig.ts (one
+// source of truth shared with personal-memory-extraction-endpoint.ts)
+// instead of being declared here -- see that module's own header comment
+// for why the prior "zero-cross-import convention" justification for the
+// duplication did not reflect an actual rule. EMBEDDING_MODEL/l2Normalize
+// moved on: ADR-0018 S3 migrated embedChunk to GeminiEmbeddingProvider,
+// which now owns both (see that adapter's own header comment).
+import { EMBEDDING_DIMENSIONS } from './embeddingConfig'
 import { createProviders } from './providers/createProviders'
 import { ProviderRequestError, ProviderUnavailableError } from './provider-errors'
+import { EmbeddingDimensionMismatchError } from './providers/gemini/GeminiEmbeddingProvider'
 import { ProviderCallError, type ProviderFailureTaxonomy } from './providers/providerFailureTaxonomy'
-import type { TextGenerationResult } from './providers/types'
+import type { EmbeddingResult, TextGenerationResult } from './providers/types'
 
 export const MAX_SOURCE_FILE_BYTES = 20 * 1024 * 1024 // matches docs_file_size_error's existing 20MB upload cap (src/i18n/index.ts); task 18 renamed from MAX_PDF_BYTES -- this bound now also gates plain-text uploads
 const MAX_EXTRACTED_TEXT_CHARS = 20000 // resumes are short documents; generous headroom for a multi-page CV, still bounded
@@ -437,53 +439,71 @@ export function chunkDocumentText(text: string, documentType: string | null): Te
 // Embedding -- reuses the same taxonomy + redaction-guard discipline as
 // transcribePdf above.
 // ---------------------------------------------------------------------------
+// ADR-0018 S3: migrated to the EmbeddingProvider adapter -- normalization
+// now lives there (once); this function's own job shrinks to the two
+// judgment calls Decision 3's precedent keeps at the call site (shape,
+// post-normalization unit-norm sanity) plus this file's own three-way
+// taxonomy reclassification, identical in pattern to S2's
+// callGeminiForDerivation (context-derivation-endpoint.ts).
 async function embedChunk(
   text: string,
   env: DocumentMemoryExtractionEnv,
   fetcher: typeof fetch,
   logger: Pick<Console, 'info' | 'error'>,
 ): Promise<number[]> {
-  const modelUrl = new URL(`https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_MODEL}:embedContent`)
-  modelUrl.searchParams.set('key', env.GEMINI_API_KEY ?? '')
+  // REDACTED_ENDPOINT_LABEL mirrors S2's callGeminiForDerivation: a fixed,
+  // key-free label -- the adapter owns URL construction internally now and
+  // never exposes it.
+  const REDACTED_ENDPOINT_LABEL = 'embedContent'
 
-  let response: Response
+  let result: EmbeddingResult
   try {
-    response = await fetcher(modelUrl.toString(), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: { parts: [{ text }] }, outputDimensionality: EMBEDDING_DIMENSIONS }),
-    })
-  } catch (networkError) {
-    logger.error?.(`[DocumentMemory] embedding call failed before any response (network): path=${modelUrl.pathname} error=${(networkError as Error).message}`)
-    throw new ProviderCallError('The AI model provider could not be reached.', 'PROVIDER_UNAVAILABLE')
-  }
-
-  if (!response.ok) {
-    const bodyText = await response.text()
-    let providerError: { status?: unknown; message?: unknown } | undefined
-    try {
-      providerError = (JSON.parse(bodyText) as { error?: typeof providerError }).error
-    } catch {
-      // Not JSON -- providerError stays undefined.
+    result = await createProviders(env, fetcher).embedding.embed([text])
+  } catch (err) {
+    // ADR-0018 Decision 4: a dimension-mismatch is OUR config bug, not a
+    // provider outage -- never reclassified into this file's own
+    // provider-failure taxonomy (that would misreport it as
+    // PROVIDER_UNAVAILABLE/PROVIDER_REQUEST_REJECTED, and it would be
+    // wrongly eligible for recordProviderFailure's persistence, which the
+    // adapter itself already guarantees it never triggers). Propagated
+    // as-is; the route handler's own catch (below) maps it to a distinct
+    // 500, not this taxonomy's 502.
+    if (err instanceof EmbeddingDimensionMismatchError) throw err
+    if (err instanceof ProviderUnavailableError && err.status === undefined) {
+      logger.error?.(`[DocumentMemory] embedding call failed before any response (network): endpoint=${REDACTED_ENDPOINT_LABEL} error=${(err as Error).message}`)
+      throw new ProviderCallError('The AI model provider could not be reached.', 'PROVIDER_UNAVAILABLE')
     }
-    const providerMessage = typeof providerError?.message === 'string' ? providerError.message : bodyText
-    logger.error?.(`[DocumentMemory] embedding provider rejected request: path=${modelUrl.pathname} httpStatus=${response.status} message=${providerMessage}`)
-    const taxonomy: ProviderFailureTaxonomy = response.status >= 500 ? 'PROVIDER_UNAVAILABLE' : 'PROVIDER_REQUEST_REJECTED'
-    throw new ProviderCallError(`Embedding request failed with status ${response.status}.`, taxonomy, response.status, truncateForLog(providerMessage, 300))
+    if (err instanceof ProviderUnavailableError || err instanceof ProviderRequestError) {
+      const status = err.status as number
+      const bodyText = err.body ?? ''
+      let providerError: { status?: unknown; message?: unknown } | undefined
+      try {
+        providerError = (JSON.parse(bodyText) as { error?: typeof providerError }).error
+      } catch {
+        // Not JSON -- providerError stays undefined, bodyText itself is still used below.
+      }
+      const providerMessage = typeof providerError?.message === 'string' ? providerError.message : bodyText
+      logger.error?.(`[DocumentMemory] embedding provider rejected request: endpoint=${REDACTED_ENDPOINT_LABEL} httpStatus=${status} message=${providerMessage}`)
+      const taxonomy: ProviderFailureTaxonomy = status >= 500 ? 'PROVIDER_UNAVAILABLE' : 'PROVIDER_REQUEST_REJECTED'
+      throw new ProviderCallError(`Embedding request failed with status ${status}.`, taxonomy, status, truncateForLog(providerMessage, 300))
+    }
+    throw err
   }
 
-  const data = (await response.json()) as { embedding?: { values?: unknown } }
-  const values = data.embedding?.values
-  if (!Array.isArray(values) || values.length !== EMBEDDING_DIMENSIONS || !values.every((v) => typeof v === 'number')) {
+  const values = result.vectors[0] ?? []
+  if (values.length !== EMBEDDING_DIMENSIONS) {
     throw new ProviderCallError(`Embedding response had an unexpected shape (expected ${EMBEDDING_DIMENSIONS} numeric values).`, 'MODEL_OUTPUT_UNUSABLE')
   }
-
-  const normalized = l2Normalize(values as number[])
-  const norm = vectorNorm(normalized)
+  // Sanity check ONLY -- the adapter already normalized this vector once;
+  // re-calling l2Normalize here would apply the same math twice. A norm
+  // meaningfully off from 1 can only mean the adapter's own degenerate
+  // (all-zero) fallback fired, which the adapter itself never normalizes
+  // away (see its own comment).
+  const norm = vectorNorm(values)
   if (Math.abs(norm - 1) > EMBEDDING_NORM_EPSILON) {
     throw new ProviderCallError(`Embedding failed to normalize to unit length (norm=${norm}).`, 'MODEL_OUTPUT_UNUSABLE')
   }
-  return normalized
+  return values
 }
 
 function vectorNorm(values: readonly number[]): number {
@@ -613,6 +633,18 @@ export async function handleDocumentMemoryExtractionRequest(
       const embedding = await embedChunk(chunk.content, env, fetcher, logger)
       embeddedChunks.push({ sectionLabel: chunk.sectionLabel, content: chunk.content, embedding })
     } catch (error) {
+      // ADR-0018 Decision 4: a config bug (provider.dimensions !==
+      // EMBEDDING_DIMENSIONS), not a provider outage -- distinct 500, not
+      // this taxonomy's 502, and NOT recorded via recordProviderFailure
+      // (already guaranteed by the adapter itself never calling it for
+      // this error). Checked first, before the taxonomy fallback below
+      // would otherwise misreport it as MODEL_OUTPUT_UNUSABLE.
+      if (error instanceof EmbeddingDimensionMismatchError) {
+        logger.error?.(`[DocumentMemory] embedding provider misconfigured: ${error.message}`)
+        return errorResponse('EMBEDDING_CONFIGURATION_ERROR', 'The embedding provider is misconfigured.', 500, origin, {
+          providerDetail: truncateForLog(error.message, 300),
+        })
+      }
       const providerError = error instanceof ProviderCallError ? error : null
       const taxonomy: ProviderFailureTaxonomy = providerError?.taxonomy ?? 'MODEL_OUTPUT_UNUSABLE'
       logger.error?.(`[DocumentMemory] embedding failed: taxonomy=${taxonomy} ${(error as Error).message}`)

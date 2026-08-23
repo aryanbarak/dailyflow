@@ -6,6 +6,23 @@ import {
   type LocalReasoningEnv,
 } from './reasoning-endpoint'
 import { writeIntentRegistry } from '../../shared/writeIntentRegistry'
+// ADR-0018 S4: the model call (callGeminiOnce, S2) is mocked at the
+// STRUCTURED_GEN interface now, not Gemini's wire format -- Gemini's own
+// envelope (responseMimeType/responseSchema always present, URL/key,
+// finishReason mapping) is GeminiStructuredGenerationProvider.test.ts's
+// coverage; the EXACT translated schema shape for this endpoint's own
+// buildReasoningResponseSchema is shared/reasoningResponseSchema.purity
+// .test.ts's byte-identical snapshot proof (ADR-0018 S2). This file only
+// asserts what THIS endpoint does with a StructuredGenerationResult --
+// status codes, proposal validation, the fail-closed paths.
+import { StubStructuredGenerationProvider, stubProviders } from './providers/testing/stubProviders'
+import type { Providers } from './providers/createProviders'
+import type { StructuredGenerationRequest, StructuredGenerationResult } from './providers/types'
+
+let currentProviders: Providers = stubProviders()
+vi.mock('./providers/createProviders', () => ({
+  createProviders: () => currentProviders,
+}))
 
 const origin = 'http://127.0.0.1:8080'
 const validEnv: LocalReasoningEnv = {
@@ -37,27 +54,28 @@ function reasoningRequest(
   })
 }
 
-function modelResponse(proposal: Record<string, unknown> = {}) {
-  return new Response(JSON.stringify({
-    candidates: [{
-      finishReason: 'STOP',
-      content: {
-        parts: [{
-          text: JSON.stringify({
-            type: 'inspect_tasks',
-            confidence: 'high',
-            requestedDomain: 'tasks',
-            reasons: ['The request asks to inspect active tasks.'],
-            language: 'en',
-            ...proposal,
-          }),
-        }],
-      },
-    }],
-  }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+/** The StructuredGenerationResult a real GeminiStructuredGenerationProvider would hand back on a successful reasoning call. */
+function structuredResultFor(proposal: Record<string, unknown> = {}): StructuredGenerationResult {
+  return {
+    rawText: JSON.stringify({
+      type: 'inspect_tasks',
+      confidence: 'high',
+      requestedDomain: 'tasks',
+      reasons: ['The request asks to inspect active tasks.'],
+      language: 'en',
+      ...proposal,
+    }),
+    finishReason: 'stop',
+  }
 }
 
-function successfulFetcher(proposal: Record<string, unknown> = {}) {
+/** Configures the structured-gen stub for a successful model call AND returns an auth-only fetcher -- callGeminiOnce (S2) no longer reaches fetch at all, so the only real HTTP call left in this endpoint's happy path is Supabase Auth. */
+function setupSuccessfulRun(proposal: Record<string, unknown> = {}): ReturnType<typeof vi.fn> {
+  currentProviders = stubProviders({ structured: new StubStructuredGenerationProvider(() => structuredResultFor(proposal)) })
+  return authOnlyFetcher()
+}
+
+function authOnlyFetcher() {
   return vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input)
     if (url === 'http://127.0.0.1:54321/auth/v1/user') {
@@ -65,9 +83,6 @@ function successfulFetcher(proposal: Record<string, unknown> = {}) {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       })
-    }
-    if (url.startsWith('https://generativelanguage.googleapis.com/')) {
-      return modelResponse(proposal)
     }
     throw new Error(`Unexpected fetch: ${url}`)
   })
@@ -78,7 +93,8 @@ function successfulFetcher(proposal: Record<string, unknown> = {}) {
 // e.domain), deduped) -- same it.each(writeIntentRegistry...) pattern task
 // 29-fix/task 36b established elsewhere. Calls buildReasoningResponseSchema
 // directly rather than going through the full HTTP handler, since this is
-// checking the schema's own shape, not request handling.
+// checking the schema's own shape, not request handling. Unaffected by the
+// S4 migration -- no fetch/provider involved.
 describe('buildReasoningResponseSchema requestedDomain enum (task 36c)', () => {
   it.each(writeIntentRegistry.map((entry) => entry.domain))(
     'includes registry domain %s',
@@ -161,7 +177,7 @@ describe('POST /agent/reason', () => {
     ['unknown security field', reasoningRequest({ userId: 'forged-user' }), 400],
     ['oversized prompt', reasoningRequest({ reasoningPrompt: 'x'.repeat(24_001) }), 400],
   ])('rejects %s', async (_label, request, status) => {
-    const fetcher = successfulFetcher()
+    const fetcher = setupSuccessfulRun()
     const response = await handleLocalReasoningRequest(request, validEnv, {
       fetcher: fetcher as unknown as typeof fetch,
     })
@@ -179,7 +195,7 @@ describe('POST /agent/reason', () => {
       },
       body: '{bad-json',
     })
-    const fetcher = successfulFetcher()
+    const fetcher = setupSuccessfulRun()
     const response = await handleLocalReasoningRequest(request, validEnv, {
       fetcher: fetcher as unknown as typeof fetch,
     })
@@ -188,8 +204,15 @@ describe('POST /agent/reason', () => {
     expect(fetcher).toHaveBeenCalledTimes(1)
   })
 
-  it('does not require a service-role key and makes one auth plus one model request', async () => {
-    const fetcher = successfulFetcher()
+  it('does not require a service-role key and makes one auth call plus one model request -- the model request never touches fetch (goes through the StructuredGenerationProvider interface) and carries this endpoint\'s own real schema builder output', async () => {
+    let capturedRequest: StructuredGenerationRequest | null = null
+    currentProviders = stubProviders({
+      structured: new StubStructuredGenerationProvider((req) => {
+        capturedRequest = req
+        return structuredResultFor()
+      }),
+    })
+    const fetcher = authOnlyFetcher()
     const response = await handleLocalReasoningRequest(reasoningRequest(), validEnv, {
       fetcher: fetcher as unknown as typeof fetch,
       now: vi.fn().mockReturnValueOnce(100).mockReturnValueOnce(125),
@@ -198,9 +221,7 @@ describe('POST /agent/reason', () => {
     const body = await response.json() as Record<string, unknown>
 
     expect(response.status).toBe(200)
-    expect(fetcher).toHaveBeenCalledTimes(2)
-    expect(fetcher.mock.calls.filter(([url]) => String(url).includes('generativelanguage')).length).toBe(1)
-    expect(fetcher.mock.calls.some(([url]) => String(url).includes('/rest/v1/'))).toBe(false)
+    expect(fetcher).toHaveBeenCalledTimes(1) // Supabase Auth only
     expect(body).toMatchObject({
       requestId: 'reasoning:test-1',
       responseLanguage: 'en',
@@ -216,46 +237,39 @@ describe('POST /agent/reason', () => {
     expect(proposal).not.toHaveProperty('requiresApproval')
     expect(proposal).not.toHaveProperty('userId')
 
-    const modelInit = fetcher.mock.calls[1]?.[1] as RequestInit
-    const modelBody = JSON.parse(String(modelInit.body)) as {
-      generationConfig: {
-        responseMimeType: string
-        responseSchema: { properties: Record<string, unknown> }
-      }
-    }
-    expect(modelBody.generationConfig.responseMimeType).toBe('application/json')
-    expect(modelBody.generationConfig.responseSchema.properties).toHaveProperty('type')
-    expect(modelBody.generationConfig.responseSchema.properties).not.toHaveProperty('toolId')
-    const candidatesSchema = modelBody.generationConfig.responseSchema.properties.candidates as {
-      items: { properties: Record<string, unknown> }
-    }
-    expect(modelBody.generationConfig.responseSchema.properties.candidates).toMatchObject({
-      type: 'ARRAY',
-      minItems: 2,
-      maxItems: 6,
-      items: {
-        type: 'OBJECT',
-        required: ['type', 'reasons'],
-      },
-    })
-    expect(candidatesSchema.items.properties).not.toHaveProperty('toolId')
+    // Gemini's own translated wire schema (responseSchema shape,
+    // responseMimeType) is GeminiStructuredGenerationProvider.test.ts's
+    // envelope coverage plus shared/reasoningResponseSchema.purity.test.ts's
+    // byte-identical snapshot proof (ADR-0018 S2) -- this instead proves
+    // the CALL SITE passes the real, unmodified schema builder output.
+    const req = capturedRequest as StructuredGenerationRequest | null
+    expect(req?.schema).toEqual(buildReasoningResponseSchema())
+    expect(req?.maxOutputTokens).toBe(2048)
+    expect(req?.temperature).toBe(0)
   })
 
-  it('sends the bearer token only to local Supabase Auth', async () => {
-    const fetcher = successfulFetcher()
+  it('sends the bearer token only to local Supabase Auth -- never into the model request', async () => {
+    let capturedRequest: StructuredGenerationRequest | null = null
+    currentProviders = stubProviders({
+      structured: new StubStructuredGenerationProvider((req) => {
+        capturedRequest = req
+        return structuredResultFor()
+      }),
+    })
+    const fetcher = authOnlyFetcher()
     await handleLocalReasoningRequest(reasoningRequest(), validEnv, {
       fetcher: fetcher as unknown as typeof fetch,
     })
 
     const authInit = fetcher.mock.calls[0]?.[1] as RequestInit
-    const modelInit = fetcher.mock.calls[1]?.[1] as RequestInit
     expect(authInit.headers).toMatchObject({ Authorization: 'Bearer local-user-token' })
-    expect(JSON.stringify(modelInit)).not.toContain('local-user-token')
-    expect(JSON.stringify(modelInit)).not.toContain('local-anon-key')
+    const serializedModelRequest = JSON.stringify(capturedRequest)
+    expect(serializedModelRequest).not.toContain('local-user-token')
+    expect(serializedModelRequest).not.toContain('local-anon-key')
   })
 
   it('fails before model execution when the Gemini key is absent', async () => {
-    const fetcher = successfulFetcher()
+    const fetcher = setupSuccessfulRun()
     const response = await handleLocalReasoningRequest(
       reasoningRequest(),
       { ...validEnv, GEMINI_API_KEY: undefined },
@@ -267,16 +281,16 @@ describe('POST /agent/reason', () => {
   })
 
   it('fails closed on malformed or unknown model output', async () => {
-    const malformedFetcher = successfulFetcher({ type: 'delete_everything' })
+    const fetcher = setupSuccessfulRun({ type: 'delete_everything' })
     const response = await handleLocalReasoningRequest(reasoningRequest(), validEnv, {
-      fetcher: malformedFetcher as unknown as typeof fetch,
+      fetcher: fetcher as unknown as typeof fetch,
     })
 
     expect(response.status).toBe(502)
   })
 
   it('accepts a well-formed disambiguation candidates array', async () => {
-    const fetcher = successfulFetcher({
+    const fetcher = setupSuccessfulRun({
       type: 'ask_clarification',
       candidates: [
         { type: 'inspect_github_issues', reasons: ['Message names a connected repository.'] },
@@ -305,7 +319,7 @@ describe('POST /agent/reason', () => {
     ['empty candidates array', { candidates: [] }],
     ['too many candidates', { candidates: Array.from({ length: 7 }, () => ({ type: 'inspect_github_issues', reasons: ['x'] })) }],
   ])('fails closed on %s', async (_label, override) => {
-    const fetcher = successfulFetcher(override)
+    const fetcher = setupSuccessfulRun(override)
     const response = await handleLocalReasoningRequest(reasoningRequest(), validEnv, {
       fetcher: fetcher as unknown as typeof fetch,
     })
@@ -323,24 +337,19 @@ describe('POST /agent/reason', () => {
   // endpoint becomes fence-tolerant, but a fenced-yet-otherwise-incomplete
   // proposal still fails closed, just one step later than before.
   it.each([
-    ['malformed JSON', '{bad-json', 'STOP'],
-    ['Markdown-fenced JSON', '```json\n{"type":"inspect_tasks"}\n```', 'STOP'],
-    ['truncated JSON', '{"type":"inspect_tasks"', 'MAX_TOKENS'],
-  ])('fails closed on %s without retry', async (_label, text, finishReason) => {
-    const fetcher = successfulFetcher()
-    fetcher.mockImplementationOnce(async () => new Response(JSON.stringify({ id: 'local-user-id' }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    })).mockImplementationOnce(async () => new Response(JSON.stringify({
-      candidates: [{ finishReason, content: { parts: [{ text }] } }],
-    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    ['malformed JSON', '{bad-json', 'stop' as const],
+    ['Markdown-fenced JSON', '```json\n{"type":"inspect_tasks"}\n```', 'stop' as const],
+    ['truncated JSON', '{"type":"inspect_tasks"', 'length' as const],
+  ])('fails closed on %s without retry', async (_label, rawText, finishReason) => {
+    currentProviders = stubProviders({ structured: new StubStructuredGenerationProvider(() => ({ rawText, finishReason })) })
+    const fetcher = authOnlyFetcher()
 
     const response = await handleLocalReasoningRequest(reasoningRequest(), validEnv, {
       fetcher: fetcher as unknown as typeof fetch,
     })
 
     expect(response.status).toBe(502)
-    expect(fetcher).toHaveBeenCalledTimes(2)
+    expect(fetcher).toHaveBeenCalledTimes(1)
   })
 
   // Task PA-02: the actual positive proof of the intentional behavior
@@ -350,14 +359,14 @@ describe('POST /agent/reason', () => {
   // this task, no fenced response -- complete or not -- could ever reach
   // normalizeProposal at all.
   it('succeeds on a markdown-fenced, otherwise-complete proposal (parseModelJsonObject strips the fence)', async () => {
-    const fetcher = successfulFetcher()
     const proposal = { type: 'inspect_tasks', confidence: 'high', requestedDomain: 'tasks', reasons: ['The request asks to inspect active tasks.'], language: 'en' }
-    fetcher.mockImplementationOnce(async () => new Response(JSON.stringify({ id: 'local-user-id' }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    })).mockImplementationOnce(async () => new Response(JSON.stringify({
-      candidates: [{ finishReason: 'STOP', content: { parts: [{ text: '```json\n' + JSON.stringify(proposal) + '\n```' }] } }],
-    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    currentProviders = stubProviders({
+      structured: new StubStructuredGenerationProvider(() => ({
+        rawText: '```json\n' + JSON.stringify(proposal) + '\n```',
+        finishReason: 'stop',
+      })),
+    })
+    const fetcher = authOnlyFetcher()
 
     const response = await handleLocalReasoningRequest(reasoningRequest(), validEnv, {
       fetcher: fetcher as unknown as typeof fetch,
@@ -369,25 +378,19 @@ describe('POST /agent/reason', () => {
   })
 
   it.each([
-    ['empty candidates', { candidates: [] }],
-    ['empty content', { candidates: [{ finishReason: 'STOP', content: { parts: [] } }] }],
-    ['blocked response', { candidates: [{ finishReason: 'SAFETY' }] }],
-  ])('fails closed on %s', async (_label, providerBody) => {
-    const fetcher = successfulFetcher()
-    fetcher.mockImplementationOnce(async () => new Response(JSON.stringify({ id: 'local-user-id' }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    })).mockImplementationOnce(async () => new Response(JSON.stringify(providerBody), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    }))
+    ['empty candidates', '', 'stop' as const],
+    ['empty content', '', 'stop' as const],
+    ['blocked response', '', 'other' as const],
+  ])('fails closed on %s', async (_label, rawText, finishReason) => {
+    currentProviders = stubProviders({ structured: new StubStructuredGenerationProvider(() => ({ rawText, finishReason })) })
+    const fetcher = authOnlyFetcher()
 
     const response = await handleLocalReasoningRequest(reasoningRequest(), validEnv, {
       fetcher: fetcher as unknown as typeof fetch,
     })
 
     expect(response.status).toBe(502)
-    expect(fetcher).toHaveBeenCalledTimes(2)
+    expect(fetcher).toHaveBeenCalledTimes(1)
   })
 
   it.each([
@@ -404,17 +407,16 @@ describe('POST /agent/reason', () => {
     ['unsupported domain', { requestedDomain: 'shopping' }],
     ['unexpected field', { arbitraryPayload: { execute: true } }],
   ])('rejects %s in model output', async (_label, extraField) => {
-    const fetcher = successfulFetcher(extraField)
+    const fetcher = setupSuccessfulRun(extraField)
     const response = await handleLocalReasoningRequest(reasoningRequest(), validEnv, {
       fetcher: fetcher as unknown as typeof fetch,
     })
 
     expect(response.status).toBe(502)
-    expect(fetcher).toHaveBeenCalledTimes(2)
   })
 
   it('keeps unsupported as a bounded proposal', async () => {
-    const fetcher = successfulFetcher({
+    const fetcher = setupSuccessfulRun({
       type: 'unsupported',
       reasons: ['The requested operation is not supported.'],
     })
@@ -429,7 +431,7 @@ describe('POST /agent/reason', () => {
 
   it.each(['en', 'de', 'fa', 'auto'])('honors response language %s', async (language) => {
     const proposalLanguage = language === 'auto' ? 'en' : language
-    const fetcher = successfulFetcher({ language: proposalLanguage })
+    const fetcher = setupSuccessfulRun({ language: proposalLanguage })
     const response = await handleLocalReasoningRequest(
       reasoningRequest({ responseLanguage: language }),
       validEnv,

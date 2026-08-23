@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   handleDocumentMemoryExtractionRequest,
   chunkDocumentText,
@@ -10,6 +10,18 @@ import {
 // shared with personal-memory-extraction-endpoint.ts) -- imported directly
 // from there now instead of re-exported through this endpoint file.
 import { l2Normalize } from './embeddingConfig'
+import { ProviderRequestError, ProviderUnavailableError } from './provider-errors'
+// ADR-0018 S4: endpoint tests mock the TEXT_GEN/EMBEDDING interfaces, not
+// Gemini's wire format -- Gemini's own envelope (URL/key, request body
+// shape, outputDimensionality) is tested in exactly one place now:
+// GeminiTextGenerationProvider.test.ts and GeminiEmbeddingProvider.test.ts.
+import { StubEmbeddingProvider, StubTextGenerationProvider, stubProviders } from './providers/testing/stubProviders'
+import type { Providers } from './providers/createProviders'
+
+let currentProviders: Providers = stubProviders()
+vi.mock('./providers/createProviders', () => ({
+  createProviders: () => currentProviders,
+}))
 
 const ORIGIN = 'https://smartflow.example'
 const SUPABASE_URL = 'https://supabase.example.co'
@@ -56,22 +68,31 @@ const RESUME_TEXT = [
   'TypeScript, Postgres, distributed systems.',
 ].join('\n')
 
-function embeddingResponse(): Response {
-  return jsonResponse({ embedding: { values: Array.from({ length: 768 }, (_, i) => i / 768) } })
+/** The unit vector a real GeminiEmbeddingProvider would hand back -- L2-normalization is the adapter's own job (ADR-0018 S3), tested there; this stub just returns an already-normalized vector like the real one would. */
+function defaultEmbeddingVector(): number[] {
+  return l2Normalize(Array.from({ length: 768 }, (_, i) => i / 768))
 }
+
+function defaultTextProvider(text: string = RESUME_TEXT, finishReason: 'stop' | 'length' | 'other' = 'stop'): StubTextGenerationProvider {
+  return new StubTextGenerationProvider(() => ({ text, finishReason }))
+}
+
+function defaultEmbeddingProvider(): StubEmbeddingProvider {
+  return new StubEmbeddingProvider((texts) => ({ vectors: texts.map(() => defaultEmbeddingVector()) }))
+}
+
+beforeEach(() => {
+  currentProviders = stubProviders({ text: defaultTextProvider(), embedding: defaultEmbeddingProvider() })
+})
 
 function baseFetcher(overrides: {
   document?: { id: string; storage_path: string; file_name: string; mime_type: string | null; type: string | null } | null
-  transcriptionText?: string
-  transcriptionFinishReason?: string
   fileBytes?: ArrayBuffer
   onChunkInsert?: (body: unknown) => void
 } = {}) {
   const document = overrides.document === undefined
     ? { id: DOCUMENT_ID, storage_path: `${AUTHENTICATED_USER_ID}/resume.pdf`, file_name: 'resume.pdf', mime_type: 'application/pdf', type: 'resume' }
     : overrides.document
-  const transcriptionText = overrides.transcriptionText ?? RESUME_TEXT
-  const finishReason = overrides.transcriptionFinishReason ?? 'STOP'
   const fileBytes = overrides.fileBytes ?? FAKE_PDF_BYTES
 
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -79,12 +100,6 @@ function baseFetcher(overrides: {
     if (url === `${SUPABASE_URL}/auth/v1/user`) return jsonResponse({ id: AUTHENTICATED_USER_ID })
     if (url.startsWith(`${SUPABASE_URL}/rest/v1/documents?`)) return jsonResponse(document ? [document] : [])
     if (url.startsWith(`${SUPABASE_URL}/storage/v1/object/documents/`)) return new Response(fileBytes, { status: 200 })
-    if (url.startsWith('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent')) {
-      return jsonResponse({ candidates: [{ finishReason, content: { parts: [{ text: transcriptionText }] } }] })
-    }
-    if (url.startsWith('https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent')) {
-      return embeddingResponse()
-    }
     if (url.startsWith(`${SUPABASE_URL}/rest/v1/document_chunks?`) && init?.method === 'DELETE') {
       return new Response(null, { status: 204 })
     }
@@ -152,19 +167,24 @@ describe('POST /documents/extract-memory', () => {
   })
 
   it('rejects an unsupported mime type (neither PDF nor plain text) with 400 before any provider call', async () => {
+    const textProvider = defaultTextProvider()
+    currentProviders = stubProviders({ text: textProvider, embedding: defaultEmbeddingProvider() })
     const fetcher = baseFetcher({ document: { id: DOCUMENT_ID, storage_path: 'x', file_name: 'photo.png', mime_type: 'image/png', type: null } })
     const response = await handleDocumentMemoryExtractionRequest(request(), validEnv, { fetcher })
     expect(response.status).toBe(400)
     const body = (await response.json()) as { error: { code: string } }
     expect(body.error.code).toBe('UNSUPPORTED_DOCUMENT_TYPE')
-    expect(fetcher.mock.calls.some(([input]) => String(input).includes('generativelanguage'))).toBe(false)
+    expect(textProvider.calls).toHaveLength(0)
   })
 
   // Task 18, A3: a plain-text document (e.g. a .txt bank statement) is now
   // a SUPPORTED mime type -- it takes the native_text path (no
   // transcription call at all), not UNSUPPORTED_DOCUMENT_TYPE.
-  it('a plain-text document is accepted and never calls the transcription (generateContent) endpoint', async () => {
+  it('a plain-text document is accepted and never calls the transcription provider', async () => {
     const plainTextBytes = new TextEncoder().encode('Primary bank is Sparkasse Holstein.\n\nMonthly rent is paid to Musterstraße Verwaltung.').buffer
+    const textProvider = defaultTextProvider()
+    const embeddingProvider = defaultEmbeddingProvider()
+    currentProviders = stubProviders({ text: textProvider, embedding: embeddingProvider })
     const onChunkInsert = vi.fn()
     const fetcher = baseFetcher({
       document: { id: DOCUMENT_ID, storage_path: 'x', file_name: 'statement.txt', mime_type: 'text/plain', type: 'financial' },
@@ -173,23 +193,25 @@ describe('POST /documents/extract-memory', () => {
     })
     const response = await handleDocumentMemoryExtractionRequest(request(), validEnv, { fetcher })
     expect(response.status).toBe(200)
-    // No generateContent (transcription) call -- only embedContent, which
-    // every accepted path (PDF or plain text) still needs.
-    expect(fetcher.mock.calls.some(([input]) => String(input).includes(':generateContent'))).toBe(false)
-    expect(fetcher.mock.calls.some(([input]) => String(input).includes(':embedContent'))).toBe(true)
+    // No transcription (text-gen) call -- only embedding, which every
+    // accepted path (PDF or plain text) still needs.
+    expect(textProvider.calls).toHaveLength(0)
+    expect(embeddingProvider.calls.length).toBeGreaterThan(0)
     expect(onChunkInsert).toHaveBeenCalled()
     const insertedRows = onChunkInsert.mock.calls[0][0] as Array<{ extraction_method: string }>
     expect(insertedRows.every((row) => row.extraction_method === 'native_text')).toBe(true)
   })
 
   it('untrusted-input bounds: an oversized PDF is rejected with a clear code before any provider call', async () => {
+    const textProvider = defaultTextProvider()
+    currentProviders = stubProviders({ text: textProvider, embedding: defaultEmbeddingProvider() })
     const oversized = new ArrayBuffer(21 * 1024 * 1024)
     const fetcher = baseFetcher({ fileBytes: oversized })
     const response = await handleDocumentMemoryExtractionRequest(request(), validEnv, { fetcher })
     expect(response.status).toBe(413)
     const body = (await response.json()) as { error: { code: string } }
     expect(body.error.code).toBe('DOCUMENT_TOO_LARGE')
-    expect(fetcher.mock.calls.some(([input]) => String(input).includes('generativelanguage'))).toBe(false)
+    expect(textProvider.calls).toHaveLength(0)
   })
 
   it('an empty stored file is NO_SOURCE_MATERIAL, not a provider error', async () => {
@@ -201,15 +223,17 @@ describe('POST /documents/extract-memory', () => {
   })
 
   it('an empty/unreadable transcription is NO_SOURCE_MATERIAL (calm state), not a provider error', async () => {
-    const fetcher = baseFetcher({ transcriptionText: '   ' })
+    currentProviders = stubProviders({ text: defaultTextProvider('   '), embedding: defaultEmbeddingProvider() })
+    const fetcher = baseFetcher()
     const response = await handleDocumentMemoryExtractionRequest(request(), validEnv, { fetcher })
     expect(response.status).toBe(422)
     const body = (await response.json()) as { error: { code: string } }
     expect(body.error.code).toBe('NO_SOURCE_MATERIAL')
   })
 
-  it('a transcription blocked/truncated (finishReason != STOP) maps to MODEL_OUTPUT_UNUSABLE, never a provider error', async () => {
-    const fetcher = baseFetcher({ transcriptionFinishReason: 'MAX_TOKENS' })
+  it('a transcription blocked/truncated (finishReason != stop) maps to MODEL_OUTPUT_UNUSABLE, never a provider error', async () => {
+    currentProviders = stubProviders({ text: defaultTextProvider(RESUME_TEXT, 'length'), embedding: defaultEmbeddingProvider() })
+    const fetcher = baseFetcher()
     const response = await handleDocumentMemoryExtractionRequest(request(), validEnv, { fetcher })
     expect(response.status).toBe(502)
     const body = (await response.json()) as { error: { code: string } }
@@ -217,18 +241,17 @@ describe('POST /documents/extract-memory', () => {
   })
 
   it('a provider 4xx on the transcription call is PROVIDER_REQUEST_REJECTED with truncated detail', async () => {
-    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      if (url === `${SUPABASE_URL}/auth/v1/user`) return jsonResponse({ id: AUTHENTICATED_USER_ID })
-      if (url.startsWith(`${SUPABASE_URL}/rest/v1/documents?`)) {
-        return jsonResponse([{ id: DOCUMENT_ID, storage_path: 'p', file_name: 'resume.pdf', mime_type: 'application/pdf', type: 'resume' }])
-      }
-      if (url.startsWith(`${SUPABASE_URL}/storage/v1/object/documents/`)) return new Response(FAKE_PDF_BYTES, { status: 200 })
-      if (url.startsWith('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent')) {
-        return jsonResponse({ error: { code: 400, message: 'Bad request to transcription model.', status: 'INVALID_ARGUMENT' } }, 400)
-      }
-      throw new Error(`Unexpected fetch: ${url}`)
+    currentProviders = stubProviders({
+      text: new StubTextGenerationProvider(() => {
+        throw new ProviderRequestError(
+          'Gemini text generation error: {"error":{"code":400,"message":"Bad request to transcription model.","status":"INVALID_ARGUMENT"}}',
+          400,
+          '{"error":{"code":400,"message":"Bad request to transcription model.","status":"INVALID_ARGUMENT"}}',
+        )
+      }),
+      embedding: defaultEmbeddingProvider(),
     })
+    const fetcher = baseFetcher()
     const response = await handleDocumentMemoryExtractionRequest(request(), validEnv, { fetcher })
     expect(response.status).toBe(502)
     const body = (await response.json()) as { error: { code: string; providerStatus?: number; providerDetail?: string } }
@@ -238,26 +261,14 @@ describe('POST /documents/extract-memory', () => {
   })
 
   it('a provider failure on the embedding call surfaces PROVIDER_UNAVAILABLE without ever writing chunks', async () => {
-    const onChunkInsert = vi.fn()
-    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      if (url === `${SUPABASE_URL}/auth/v1/user`) return jsonResponse({ id: AUTHENTICATED_USER_ID })
-      if (url.startsWith(`${SUPABASE_URL}/rest/v1/documents?`)) {
-        return jsonResponse([{ id: DOCUMENT_ID, storage_path: 'p', file_name: 'resume.pdf', mime_type: 'application/pdf', type: 'resume' }])
-      }
-      if (url.startsWith(`${SUPABASE_URL}/storage/v1/object/documents/`)) return new Response(FAKE_PDF_BYTES, { status: 200 })
-      if (url.startsWith('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent')) {
-        return jsonResponse({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: RESUME_TEXT }] } }] })
-      }
-      if (url.startsWith('https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent')) {
-        return jsonResponse({}, 500)
-      }
-      if (url === `${SUPABASE_URL}/rest/v1/document_chunks` && init?.method === 'POST') {
-        onChunkInsert(init.body ? JSON.parse(init.body as string) : null)
-        return jsonResponse([])
-      }
-      throw new Error(`Unexpected fetch: ${url}`)
+    currentProviders = stubProviders({
+      text: defaultTextProvider(),
+      embedding: new StubEmbeddingProvider(() => {
+        throw new ProviderUnavailableError('Gemini embedding: provider error 500: {}', 500, '{}')
+      }),
     })
+    const onChunkInsert = vi.fn()
+    const fetcher = baseFetcher({ onChunkInsert })
     const response = await handleDocumentMemoryExtractionRequest(request(), validEnv, { fetcher })
     expect(response.status).toBe(502)
     const body = (await response.json()) as { error: { code: string } }
@@ -268,7 +279,7 @@ describe('POST /documents/extract-memory', () => {
   it('a full successful run: authenticates, verifies ownership, downloads, transcribes, chunks, embeds, clears prior chunks, and writes the fresh set', async () => {
     let deleteCalled = false
     const fetcher = baseFetcher({
-      onChunkInsert: (body) => {
+      onChunkInsert: () => {
         expect(deleteCalled).toBe(true) // delete-before-insert ordering
       },
     })
@@ -300,13 +311,12 @@ describe('POST /documents/extract-memory', () => {
       const vector = JSON.parse(row.embedding as string) as number[]
       expect(vector.length).toBe(768)
       const norm = Math.sqrt(vector.reduce((sum, v) => sum + v * v, 0))
-      expect(norm).toBeCloseTo(1, 3) // stored embedding must be L2-normalized (gemini-embedding-001 at outputDimensionality=768 is not normalized by the provider)
+      expect(norm).toBeCloseTo(1, 3) // stored embedding must be L2-normalized (proven at the adapter level, GeminiEmbeddingProvider.test.ts -- this asserts the ENDPOINT correctly threads the provider's own vector into the persisted pgvector literal, not that normalization math is correct)
     }
+    // outputDimensionality:768 on the wire request is
+    // GeminiEmbeddingProvider.test.ts's own "request envelope shape"
+    // coverage now (ADR-0018 S3/S4) -- not re-asserted here.
 
-    // The embedding request itself must request the 768-dim truncation.
-    const embeddingCall = fetcher.mock.calls.find(([input]) => String(input).includes('gemini-embedding-001:embedContent'))
-    const embeddingRequestBody = JSON.parse((embeddingCall?.[1] as RequestInit).body as string) as { outputDimensionality?: number }
-    expect(embeddingRequestBody.outputDimensionality).toBe(768)
     // Section headers in the fixture (Summary/Experience/Education/Skills) should be recognized.
     const labels = insertedRows.map((r) => r.section_label)
     expect(labels).toContain('Experience')
@@ -315,21 +325,24 @@ describe('POST /documents/extract-memory', () => {
   })
 
   it('redaction guard: the provider API key never appears in any logged output for either the transcription or the embedding call', async () => {
+    // The URL/key never reach this endpoint's own code (the adapter owns
+    // request construction internally, S1) -- GeminiTextGenerationProvider
+    // .test.ts's own "builds the URL from GEMINI_MODEL/GEMINI_API_KEY" test
+    // already proves the wire URL carries the key; this test is only about
+    // THIS endpoint's own log lines never leaking it on a failure path.
+    currentProviders = stubProviders({
+      text: new StubTextGenerationProvider(() => {
+        throw new ProviderRequestError(
+          'Gemini text generation error: {"error":{"code":400,"message":"Bad request.","status":"INVALID_ARGUMENT"}}',
+          400,
+          '{"error":{"code":400,"message":"Bad request.","status":"INVALID_ARGUMENT"}}',
+        )
+      }),
+      embedding: defaultEmbeddingProvider(),
+    })
     const logged: string[] = []
     const fakeLogger = { info: (..._args: unknown[]) => {}, error: (...args: unknown[]) => { logged.push(args.map(String).join(' ')) } }
-    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      if (url === `${SUPABASE_URL}/auth/v1/user`) return jsonResponse({ id: AUTHENTICATED_USER_ID })
-      if (url.startsWith(`${SUPABASE_URL}/rest/v1/documents?`)) {
-        return jsonResponse([{ id: DOCUMENT_ID, storage_path: 'p', file_name: 'resume.pdf', mime_type: 'application/pdf', type: 'resume' }])
-      }
-      if (url.startsWith(`${SUPABASE_URL}/storage/v1/object/documents/`)) return new Response(FAKE_PDF_BYTES, { status: 200 })
-      if (url.startsWith('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent')) {
-        expect(url).toContain('key=gemini-key')
-        return jsonResponse({ error: { code: 400, message: 'Bad request.', status: 'INVALID_ARGUMENT' } }, 400)
-      }
-      throw new Error(`Unexpected fetch: ${url}`)
-    })
+    const fetcher = baseFetcher()
     const response = await handleDocumentMemoryExtractionRequest(request(), validEnv, { fetcher, logger: fakeLogger })
     expect(response.status).toBe(502)
     expect(logged.length).toBeGreaterThan(0)
@@ -347,8 +360,9 @@ describe('POST /documents/extract-memory', () => {
       'Skills',
       'TypeScript, Postgres, distributed systems.',
     ].join('\n')
+    currentProviders = stubProviders({ text: defaultTextProvider(injected), embedding: defaultEmbeddingProvider() })
     const onChunkInsert = vi.fn()
-    const fetcher = baseFetcher({ transcriptionText: injected, onChunkInsert })
+    const fetcher = baseFetcher({ onChunkInsert })
     const response = await handleDocumentMemoryExtractionRequest(request(), validEnv, { fetcher })
     expect(response.status).toBe(200)
     const insertedRows = onChunkInsert.mock.calls[0][0] as Array<Record<string, unknown>>
