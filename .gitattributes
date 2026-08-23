@@ -1,3 +1,6 @@
 PROJECT_STATUS.md merge=ours
 workers/ai-worker-recovered/** -text
 shared/reasoning-response-schema.snapshot.json text eol=lf
+shared/derivation-response-schema.snapshot.json text eol=lf
+shared/extraction-response-schema.snapshot.json text eol=lf
+shared/task-title-response-schema.snapshot.json text eol=lf
