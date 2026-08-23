@@ -218,6 +218,19 @@ authoritative state, merely by having been raised.
   reclassify or reopen anything merged before acceptance beyond what
   "Next agreed work" (`PROJECT_STATUS.md` §5) already schedules.
 
+## Amendments (2026-08-22)
+
+Four governance items decided in the same working session as ADR-0018
+("Capability-Oriented AI Provider Abstraction") are recorded here as
+amendments to this ADR's process. See ADR-0018 §8 ("Governance amendments")
+for the full text and rationale — not restated here, to avoid two copies of
+the same rule drifting apart:
+
+1. Branch commits.
+2. No amend/force-push after a PR is open.
+3. Production deploy path.
+4. "Environment-only failure" is not a valid label without a clean-environment run.
+
 ## Related ADRs
 
 - [ADR-0001: Architecture Decision Record Policy](ADR-0001-architecture-decision-record-policy.md) — the uniform process this ADR proposes tiering, not replacing.
