@@ -876,7 +876,11 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
          but `finance_import_rows` still has neither.
 12. **Capability-oriented AI provider abstraction — S0, S1 (plus its
     follow-up), and S2 merged to `main`; S3 authored on branch
-    `feat/adr-0018-s3-embedding`, not merged.**
+    `feat/adr-0018-s3-embedding`, not merged; S4 authored on branch
+    `feat/adr-0018-s4-test-migration`, STACKED ON S3 (branched from S3's
+    tip, not `main` — S4's own premise, "all 15 call sites go through the
+    three interfaces," requires S3's `GeminiEmbeddingProvider` to exist).
+    S3 must merge before S4 can.**
     [ADR-0018](docs/decisions/adr/ADR-0018-capability-oriented-ai-provider-abstraction.md)
     (**Status: Accepted** — PO approved 2026-08-22, all five open questions
     answered yes). Follows directly from INC-01 (2026-08-22 Gemini 429
@@ -1094,12 +1098,68 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
       that branch unreachable through real code today, and reaching it
       would require introducing module-mocking (`vi.mock`), a pattern not
       used anywhere else in `agent/worker/`'s tests.
-    - **S4–S5 planned, not started:** S4 (test migration: fetch-level
-      mocks → interface mocks), S5 (OCR migrated from the legacy
-      `workers/ai-worker-recovered/` Worker — first legacy-retirement
-      step). Each slice is its own PR, test-gated, no behavior change
-      proven per-slice. See the ADR's own Implementation Plan table for
-      the full gate per slice.
+    - **S4 (this slice) — test migration: fetch-level Gemini mocks →
+      provider-interface mocks. TESTS ONLY, zero product-code changes.**
+      Inventory: 6 test files mocked `generativelanguage.googleapis.com`
+      directly — `document-memory-extraction-endpoint.test.ts` (text-gen +
+      embedding), `chat-attachment-context.test.ts` (text-gen, reuses
+      `transcribePdf`), `context-derivation-endpoint.test.ts`
+      (structured-gen), `personal-memory-extraction-endpoint.test.ts`
+      (structured-gen + embedding, including document-source batching),
+      `reasoning-endpoint.test.ts` (structured-gen, local `/agent/reason`),
+      `index.test.ts` (text-gen + structured-gen, ~15 unrelated describe
+      blocks sharing one mega fetch-mock, of which only a handful actually
+      touch Gemini). All 6 migrated. `providers/testing/stubProviders.ts`:
+      one shared, deliberately dumb helper (`StubTextGenerationProvider`/
+      `StubStructuredGenerationProvider`/`StubEmbeddingProvider`, each
+      driven by a plain handler function) plus `stubProviders()`, used via
+      `vi.mock('./providers/createProviders', ...)` + a per-test
+      reassignable stub-set closure variable — the "createProviders/env
+      seam" the task named: no product file needed a DI change, since
+      `createProviders` was already the one factory every call site
+      depends on.
+      Envelope-assertion relocation (per the task's own rules): duplicates
+      of adapter-level tests (URL/key construction, unconditional
+      `responseMimeType`, thinkingConfig conditionality, part-order/count
+      on an inlineData attachment) were deleted with a comment pointing at
+      the adapter test that already covers them (`GeminiTextGenerationProvider
+      .test.ts`, `GeminiStructuredGenerationProvider.test.ts`,
+      `GeminiEmbeddingProvider.test.ts`); call-site-specific facts (this
+      endpoint's own system prompt content, `maxOutputTokens`/`temperature`
+      values, "does this call site ask for thinkingConfig") were kept,
+      relocated to read the captured `TextGenerationRequest`/
+      `StructuredGenerationRequest` directly instead of a reconstructed
+      Gemini wire body. `index.test.ts`'s large hand-written
+      reasoning-schema `type.enum` regression guard (deliberately redundant
+      with a separate `it.each(writeIntentRegistry)` loop, per that test's
+      own comment) was fully preserved, now reading the NEUTRAL schema
+      straight off the captured request (enum values pass through
+      translation unchanged, so the assertion paths barely changed).
+      `provider-contract-smoke.ts` and `scripts/gemini-36-probe.ts`
+      untouched — still the only place real Gemini wire calls happen
+      outside adapter unit tests.
+      Verification (coverage guardrail): every migrated file's test COUNT
+      is unchanged — `document-memory-extraction-endpoint.test.ts` 33,
+      `chat-attachment-context.test.ts` 17,
+      `context-derivation-endpoint.test.ts` 23,
+      `personal-memory-extraction-endpoint.test.ts` 67,
+      `reasoning-endpoint.test.ts` 53, `index.test.ts` 100 (293 total,
+      before and after). Full suite unaffected elsewhere. Diagnostic
+      strict `tsc` on `agent/worker/`: 255 errors on S3's tip (before S4),
+      246 after — a net IMPROVEMENT (9 pre-existing `vi.fn`/tuple-index
+      false positives removed along with the raw-fetch-mock code that
+      triggered them; zero new errors).
+      **Known debt this slice does NOT touch (TESTS ONLY, no product
+      code):** the dimension-mismatch escalation in the overlap-dedup path
+      — `personal-memory-extraction-endpoint.ts`'s `embedTextForOverlap`
+      (S3) still can't escalate a config-bug `EmbeddingDimensionMismatchError`
+      past that route's existing per-candidate `persistence_failed` catch
+      to a top-level 500; restructuring that catch remains out of scope
+      for both S3 and S4.
+    - **S5 (OCR migration) is the last ADR-0018 slice** — migrating
+      `/ocr` from the legacy `workers/ai-worker-recovered/` Worker into
+      `agent/worker/` as a `TextGenerationProvider` consumer behind the
+      seam, per the ADR's own §7 legacy-retirement order. Not started.
     - **No smoke RUN performed for S1, S2, or S3** — `GEMINI_API_KEY`
       unavailable in this environment; the script's own guard exits with a
       non-zero status (as designed — the key is required) without

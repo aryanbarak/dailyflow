@@ -17,7 +17,7 @@ import { ProviderRequestError, ProviderUnavailableError } from './provider-error
 // throughout this file keep working with minimal, mechanical changes.
 import { StubStructuredGenerationProvider, StubTextGenerationProvider, stubProviders } from './providers/testing/stubProviders'
 import type { Providers } from './providers/createProviders'
-import type { NeutralArraySchema, NeutralObjectSchema, NeutralStringSchema } from './providers/schema/neutralSchema'
+import type { NeutralArraySchema, NeutralObjectSchema, NeutralSchema, NeutralStringSchema } from './providers/schema/neutralSchema'
 import type { StructuredGenerationRequest, TextGenerationRequest } from './providers/types'
 
 let currentProviders: Providers = stubProviders()
@@ -289,7 +289,7 @@ function installFetchMock(
     structured: new StubStructuredGenerationProvider((req) => {
       log.geminiCalls.push(req)
       if (geminiStatus !== null) throw new ProviderUnavailableError(`Gemini structured generation: provider error ${geminiStatus}: {}`, geminiStatus, '{}')
-      const schema = req.schema as NeutralObjectSchema & { properties?: Record<string, unknown> }
+      const schema = req.schema as NeutralSchema
       if (schema.type === 'array') {
         // Suggestion handlers' own top-level ARRAY schemas (and the
         // disabled background memory-extraction path) all get an empty
