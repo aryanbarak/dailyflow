@@ -155,6 +155,14 @@ export interface AgentLlmReasoningRequest {
 
 export interface AgentLlmReasoningResponse {
   rawText: string;
+  // INC-01: set when the worker reported the AI provider itself as
+  // unreachable (429/5xx/network -- PROVIDER_UNAVAILABLE, or the fetch
+  // call to the worker failing outright) rather than the model responding
+  // with something unusable. reasoningOrchestrator.ts uses this to skip
+  // parseLlmIntentJson/fallbackRawProposal entirely and report an honest,
+  // distinct outcome instead of running the malformed-output rescue on an
+  // empty string that was never actually model output.
+  providerUnavailable?: boolean;
 }
 
 export type AgentLlmReasoningCaller = (

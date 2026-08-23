@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { reasonAboutUserMessage } from "./reasoningOrchestrator";
+import { PROVIDER_UNAVAILABLE_REASON_MARKER, reasonAboutUserMessage } from "./reasoningOrchestrator";
 import { buildReasoningPrompt } from "./reasoningPrompt";
 import type { AgentLlmReasoningCaller, AgentReasoningSafeContext } from "./reasoningTypes";
 
@@ -217,6 +217,86 @@ describe("reasoningOrchestrator", () => {
 
     expect(result.proposal.type).toBe("ask_clarification");
     expect(result.proposal.requiresTool).toBe(false);
+  });
+
+  // INC-01 (2026-08-22 incident): distinct from "fails closed on malformed
+  // JSON" directly above -- that test is the model answering with
+  // something unusable (legitimate ask_clarification rescue territory).
+  // These prove the DIFFERENT case: the AI provider itself never got a
+  // chance to answer (429/5xx/network, or the call to the worker failing
+  // outright), which must produce an honest, distinct outcome instead of
+  // being run through the same malformed-output rescue.
+  describe("INC-01: provider failure vs. malformed model output", () => {
+    it("reports an honest provider-unavailable outcome -- never ask_clarification -- when the worker's callLlmReasoning reports providerUnavailable", async () => {
+      const callLlmReasoning = vi.fn(async () => ({ rawText: "", providerUnavailable: true as const }));
+      const result = await reasonAboutUserMessage({
+        userMessage: "Create a task to buy milk",
+        safeContext,
+        configuredResponseLanguage: "auto",
+        interfaceLanguage: "en",
+        now,
+      }, { callLlmReasoning });
+
+      expect(result.proposal.type).not.toBe("ask_clarification");
+      expect(result.proposal.type).toBe("unsupported");
+      expect(result.proposal.requiresTool).toBe(false);
+      expect(result.proposal.requiresApproval).toBe(false);
+      expect(result.proposal.clarificationQuestion).toBe(
+        "The AI assistant is temporarily unavailable. Please try again in a moment.",
+      );
+      // The malformed-output rescue's own fixed reason text must never
+      // appear here -- proves fallbackRawProposal/parseLlmIntentJson's
+      // rescue path was never invoked for this outcome.
+      expect(result.proposal.reasons).not.toContain("LLM output could not be parsed safely.");
+      // INC-01 follow-up review point 2: a stable, exact, grep-able marker
+      // (not just prose matching /provider/i) so this outcome is
+      // distinguishable from a genuine 'unsupported' in logs/audit rows --
+      // ChatPage.tsx's resolveChatTurnOutcome checks this exact string too
+      // (see PROVIDER_UNAVAILABLE_REASON_MARKER's own header comment).
+      expect(result.proposal.reasons).toContain(PROVIDER_UNAVAILABLE_REASON_MARKER);
+    });
+
+    it("surfaces the honest message in the caller's own language (EN/DE/FA)", async () => {
+      const callLlmReasoning = vi.fn(async () => ({ rawText: "", providerUnavailable: true as const }));
+
+      const de = await reasonAboutUserMessage({
+        userMessage: "Erstelle eine Aufgabe",
+        safeContext,
+        configuredResponseLanguage: "de",
+        interfaceLanguage: "de",
+        now,
+      }, { callLlmReasoning });
+      const fa = await reasonAboutUserMessage({
+        userMessage: "یک تسک بساز",
+        safeContext,
+        configuredResponseLanguage: "fa",
+        interfaceLanguage: "fa",
+        now,
+      }, { callLlmReasoning });
+
+      expect(de.proposal.clarificationQuestion).toBe(
+        "Der KI-Assistent ist vorübergehend nicht verfügbar. Bitte versuche es gleich noch einmal.",
+      );
+      expect(fa.proposal.clarificationQuestion).toBe(
+        "دستیار هوش مصنوعی موقتاً در دسترس نیست. لطفاً کمی بعد دوباره امتحان کنید.",
+      );
+    });
+
+    it("also reports the honest outcome when callLlmReasoning rejects outright (network failure reaching the worker)", async () => {
+      const callLlmReasoning = vi.fn(async () => { throw new TypeError("Failed to fetch"); });
+      const result = await reasonAboutUserMessage({
+        userMessage: "Create a task to buy milk",
+        safeContext,
+        configuredResponseLanguage: "auto",
+        interfaceLanguage: "en",
+        now,
+      }, { callLlmReasoning });
+
+      expect(result.proposal.type).not.toBe("ask_clarification");
+      expect(result.proposal.clarificationQuestion).toBe(
+        "The AI assistant is temporarily unavailable. Please try again in a moment.",
+      );
+    });
   });
 
   it("uses configured response language over latest message language", async () => {

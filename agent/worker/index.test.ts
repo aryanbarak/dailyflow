@@ -100,6 +100,14 @@ function installFetchMock(
   // unaffected, since recordProposalOutcome never throws and this insert
   // is never on the write's own success path).
   proposalOutcomeShouldFail = false,
+  // INC-01 (2026-08-22 incident): when set, EVERY Gemini call (reasoning,
+  // title-extraction, plain chat, memory-extraction alike) fails with this
+  // HTTP status instead of succeeding -- simulates "Gemini returned 429
+  // RESOURCE_EXHAUSTED for every call" at the transport level, the exact
+  // production condition that made a provider outage masquerade as a
+  // fabricated clarification. null (default) leaves all existing tests
+  // unaffected.
+  geminiStatus: number | null = null,
 ): FetchLog {
   const chatRows = [...chatHistoryRows]
   const log: FetchLog = {
@@ -230,6 +238,12 @@ function installFetchMock(
     if (url.startsWith('https://generativelanguage.googleapis.com/')) {
       const parsedBody = JSON.parse(String(init?.body))
       log.geminiCalls.push(parsedBody)
+      if (geminiStatus !== null) {
+        return new Response(
+          JSON.stringify({ error: { code: geminiStatus, message: 'RESOURCE_EXHAUSTED', status: 'RESOURCE_EXHAUSTED' } }),
+          { status: geminiStatus, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
       const schema = parsedBody.generationConfig?.responseSchema
 
       if (schema?.type === 'ARRAY') {
@@ -451,6 +465,54 @@ describe('handleChat mode routing', () => {
     // test -- the system prompt must omit the memory section entirely
     // (never render an empty header).
     expect(systemTextOf(chatCall)).not.toContain('What I know about Aryan')
+  })
+
+  // INC-01 (2026-08-22 incident): Gemini returned 429 RESOURCE_EXHAUSTED
+  // for every call. Before this fix, mode: "reasoning" collapsed ANY
+  // model-call failure into a generic 500 with no way for the client to
+  // tell "the provider never answered" apart from "the model answered
+  // with something the schema-enforced call still couldn't use" -- both
+  // fed llmReasoningService.ts's same rawText:"" path, which
+  // reasoningOrchestrator.ts's malformed-output rescue then turned into a
+  // fabricated ask_clarification. This proves the Worker half of the fix:
+  // a provider failure now gets its own typed 503, distinguishable from
+  // both a 200 proposal and the generic 500.
+  it('INC-01: mode "reasoning" reports a 429 Gemini failure as a typed 503 PROVIDER_UNAVAILABLE, never a 200 with a proposal-shaped body', async () => {
+    installFetchMock([], null, 'Gemini should not be called', null, new Map(), [], null, null, false, false, 429)
+    const ctx = fakeExecutionContext()
+    const env = testEnv()
+
+    const response = await worker.fetch(
+      chatRequest({ message: 'Reasoning prompt text', mode: 'reasoning', responseLanguage: 'en' }),
+      env,
+      ctx,
+    )
+    const body = await response.json() as { error?: string; code?: string; reply?: string }
+
+    expect(response.status).toBe(503)
+    expect(body.code).toBe('PROVIDER_UNAVAILABLE')
+    expect(body.reply).toBeUndefined()
+  })
+
+  // Second symptom from the same incident: a follow-up plain-chat turn
+  // (Gemini still down) used to fall through to the generic, content-less
+  // "Something went wrong on my end" catch-all -- honest that SOMETHING
+  // was wrong, but not about what. This proves it now gets the same
+  // specific, typed treatment as the reasoning-mode path above, still as
+  // a normal 200 chat reply (this handler's own established convention --
+  // see 'clarify'/'failed' writeExecution outcomes elsewhere in this
+  // file -- never an HTTP error status for an ordinary turn).
+  it('INC-01: a plain chat turn reports a 429 Gemini failure with an honest, specific reply, never the generic "Something went wrong on my end"', async () => {
+    installFetchMock([], null, 'Gemini should not be called', null, new Map(), [], null, null, false, false, 429)
+    const ctx = fakeExecutionContext()
+    const env = testEnv()
+
+    const response = await worker.fetch(chatRequest({ message: 'Hello there' }), env, ctx)
+    const body = await response.json() as { reply?: string }
+
+    expect(response.status).toBe(200)
+    expect(body.reply).toBe('The AI assistant is temporarily unavailable. Please try again in a moment.')
+    expect(body.reply).not.toBe('Something went wrong on my end. Please try again.')
   })
 
   it('injects confirmed personal memory into the chat system prompt when it exists (ADR-0011)', async () => {
@@ -1097,6 +1159,33 @@ describe('ADR-0012 server-side task write policy', () => {
       expect(log.taskWrites[0]?.body?.title).toBe('Review invoices')
       expect(body.reply).toContain('15:00')
     })
+  })
+
+  // INC-01 (2026-08-22 incident): the actual production defect this
+  // incident is about. "Create a task for tomorrow" has a date but no
+  // identifiable subject -- pattern extraction alone would ALSO find
+  // nothing here (same shape as the pre-existing "falls back to a
+  // targeted clarify question... when neither the model nor the pattern
+  // extractor finds a subject" test above), so before this fix the model
+  // call failing (429) was indistinguishable from the model succeeding
+  // with an empty title: both left taskWriteIntent.title undefined, and
+  // executeAutoTaskWrite's `!intent.title` branch reported the exact same
+  // "What should the task be called?" clarification either way --
+  // fabricating a clarifying question the assistant was never actually
+  // able to ask. This proves the fix: a 429 now reports a distinct,
+  // honest provider-unavailable outcome instead.
+  it('INC-01: a 429 during auto-write title resolution reports provider_unavailable with an honest reply -- never the fabricated "What should the task be called?" clarification', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], null, null, false, false, 429)
+    const response = await worker.fetch(chatRequest({
+      message: 'Create a task for tomorrow',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { reply?: string; writeExecution?: string }
+
+    expect(body.writeExecution).toBe('provider_unavailable')
+    expect(body.reply).toBe('The AI assistant is temporarily unavailable, so I could not finish setting this up automatically. Please try again in a moment.')
+    expect(body.reply).not.toBe('What should the task be called?')
+    expect(log.taskWrites.length).toBe(0)
   })
 
   it('tampered client policy cannot execute when the server policy is off', async () => {

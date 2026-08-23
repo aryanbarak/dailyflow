@@ -728,6 +728,9 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
     `responseLanguage` instead of `useT()`'s interface language, or a
     broader pass identifying every other agent-intent-panel string with
     the same mismatch risk.
+  - INC-01 follow-up: dedicated provider-unavailable lane in ChatPage
+    overlay instead of reusing 'unsupported'; currently degrades silently
+    on the mode:'reasoning' path.
 
 ### Design debt register (Product Owner's video review, task `8`)
 
@@ -876,3 +879,7 @@ Superseded/completed sprint milestones from the prior version of this
 document have been removed rather than carried forward as history; git
 history of this file remains the record of what was previously claimed and
 when.
+
+## 6. Incidents
+
+- **2026-08-22 — Gemini provider outage (429 RESOURCE_EXHAUSTED) surfaced as a fabricated clarification.** Cause: Gemini API credits were depleted, so every provider call failed with 429; the auto-write title-resolution path (`flow-write-policy.ts`'s `resolveCreateTitle`) treated that failure the same as the model genuinely finding no subject, so `executeAutoTaskWrite` reported the exact same "What should the task be called?" ask as a real ambiguity. User-visible symptom: in `/chat`, a task-creation message got a fabricated clarifying question instead of an honest "AI unavailable," and a follow-up turn got the generic, content-less "Something went wrong on my end." Fix: `fix/inc-01-provider-failure-honesty` branch — `agent/worker/provider-errors.ts` classifies 429/5xx/network failures distinctly from the model answering with something unusable; both the auto-write path and `/chat`'s `mode: "reasoning"` now report a distinct `PROVIDER_UNAVAILABLE`/`provider_unavailable` outcome with an honest, bounded message (EN/DE/FA) instead.

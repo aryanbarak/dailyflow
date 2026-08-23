@@ -44,6 +44,7 @@ import {
 import { WRITE_DOMAIN_TARGET_FIELDS, writeIntentRegistry } from '../../shared/writeIntentRegistry'
 import type { ParsedBankRow } from '../../shared/bankStatementParser'
 import type { Env } from './types'
+import { ProviderUnavailableError } from './provider-errors'
 
 const NOW = new Date('2026-08-13T10:00:00.000Z')
 const TZ = 'Europe/Berlin'
@@ -298,6 +299,43 @@ describe('task title validation and model resolution (task 21-fix6)', () => {
       const intent = baseIntent({ notes: `Original request: ${message}`, title: undefined })
       const title = await resolveCreateTaskTitle(FAKE_ENV, intent, message, async () => '')
       expect(title).toBeUndefined()
+    })
+
+    // INC-01 (2026-08-22 incident): the case above -- resolving to undefined
+    // -- is legitimate ask_clarification territory ONLY when the model
+    // actually answered (even with an empty/unusable title). These two
+    // tests prove the DIFFERENT case: the model call never got a chance to
+    // answer at all (provider down), which must never collapse into that
+    // same undefined/clarify outcome.
+    describe('INC-01: provider failure vs. genuine "no title found"', () => {
+      it('still falls back silently to the pattern title when the provider is unavailable but pattern extraction found something -- no behavior change', async () => {
+        const intent = baseIntent({ title: PRODUCTION_TITLE })
+        const title = await resolveCreateTaskTitle(FAKE_ENV, intent, PRODUCTION_MESSAGE, async () => {
+          throw new ProviderUnavailableError('429 RESOURCE_EXHAUSTED')
+        })
+        expect(title).toBe(PRODUCTION_TITLE)
+      })
+
+      it('rethrows ProviderUnavailableError (instead of resolving to undefined) when the provider is unavailable AND pattern extraction also finds nothing -- this is the exact incident: without this, the caller cannot tell "provider down" apart from "model found no subject" and reports a fabricated clarification', async () => {
+        const message = 'Create a task for tomorrow'
+        const intent = baseIntent({ notes: `Original request: ${message}`, title: undefined })
+
+        await expect(
+          resolveCreateTaskTitle(FAKE_ENV, intent, message, async () => {
+            throw new ProviderUnavailableError('429 RESOURCE_EXHAUSTED')
+          }),
+        ).rejects.toBeInstanceOf(ProviderUnavailableError)
+      })
+
+      it('does NOT rethrow for a non-provider model failure (malformed JSON, missing field, etc.) even with no pattern fallback -- the model DID get a chance to answer, so this stays the existing clarify-eligible undefined', async () => {
+        const message = 'Create a task for tomorrow'
+        const intent = baseIntent({ notes: `Original request: ${message}`, title: undefined })
+
+        const title = await resolveCreateTaskTitle(FAKE_ENV, intent, message, async () => {
+          throw new Error('Task title model response was not valid JSON.')
+        })
+        expect(title).toBeUndefined()
+      })
     })
   })
 })

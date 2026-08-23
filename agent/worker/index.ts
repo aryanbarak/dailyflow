@@ -31,6 +31,7 @@ import {
   loadImportBatch,
   markImportBatchConsumed,
   persistImportBatch,
+  PROVIDER_UNAVAILABLE_WRITE_REPLY,
   resolveCreateEventTitle,
   resolveCreateTaskTitle,
   resolveServerFlowWriteMode,
@@ -38,6 +39,7 @@ import {
   undoAutoWrite,
   writeIntentOutcomeIdentity,
 } from './flow-write-policy'
+import { ProviderUnavailableError, fetchGeminiOrThrow } from './provider-errors'
 import { recordProposalOutcome } from './proposal-outcome-recording'
 import { parseProposalOutcomeRequestBody } from './proposal-outcome-endpoint'
 import type { WriteIntentType } from '../../shared/writeIntentRegistry'
@@ -714,10 +716,16 @@ async function respondToWriteExecution(
     | { status: 'executed'; reply: string; undoId: string; undoExpiresAt: string }
     | { status: 'clarify'; reply: string }
     | { status: 'failed'; reply: string }
+    // INC-01: title resolution never reached a real write attempt because
+    // the AI provider itself was unreachable -- semantically closer to
+    // 'clarify' (no proposal was ever formed) than 'failed' (a write was
+    // attempted and something went wrong persisting it), so it is excluded
+    // from the outcome-ledger recording below the same way 'clarify' is.
+    | { status: 'provider_unavailable'; reply: string }
     | { status: 'not_found' },
   outcomeContext: WriteExecutionOutcomeContext,
 ): Promise<Response | null> {
-  if (execution.status !== 'executed' && execution.status !== 'clarify' && execution.status !== 'failed') return null
+  if (execution.status !== 'executed' && execution.status !== 'clarify' && execution.status !== 'failed' && execution.status !== 'provider_unavailable') return null
   await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'user', content: message })
   await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: execution.reply })
   const undo = execution.status === 'executed'
@@ -990,6 +998,16 @@ async function handleFinanceImportBatchCommit(request: Request, env: Env, ctx: E
   }, 200, origin)
 }
 
+// INC-01: the plain-conversation sibling of flow-write-policy.ts's
+// PROVIDER_UNAVAILABLE_WRITE_REPLY -- same cause, different context (no
+// task/event was being set up here, just an ordinary reply), so worded
+// for a normal chat turn instead of an auto-write outcome.
+const PROVIDER_UNAVAILABLE_CHAT_REPLY: Record<Language, string> = {
+  en: 'The AI assistant is temporarily unavailable. Please try again in a moment.',
+  de: 'Der KI-Assistent ist vorübergehend nicht verfügbar. Bitte versuche es gleich noch einmal.',
+  fa: 'دستیار هوش مصنوعی موقتاً در دسترس نیست. لطفاً کمی بعد دوباره امتحان کنید.',
+}
+
 async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const origin = request.headers.get('Origin') ?? ''
 
@@ -1055,6 +1073,18 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
       console.log(`[Chat] userId=${userId} sessionId=${sessionId} mode=reasoning reply=${reply.length} chars`)
       return json({ reply }, 200, origin)
     } catch (err) {
+      // INC-01: a provider failure (429/5xx/network) is a distinct outcome
+      // from the model answering with something the schema-enforced call
+      // still couldn't use (callGeminiReasoning's own no-content/finish-
+      // reason checks) -- the former gets its own typed code + status so
+      // the client (llmReasoningService.ts's createLlmReasoningCaller) can
+      // tell "the AI never got a chance to answer" apart from "the model
+      // responded badly," instead of collapsing both into the same
+      // rawText:"" that used to feed the ask_clarification rescue.
+      if (err instanceof ProviderUnavailableError) {
+        console.error('[Chat] Reasoning mode provider error:', err)
+        return json({ error: 'The AI provider is temporarily unavailable.', code: 'PROVIDER_UNAVAILABLE' }, 503, origin)
+      }
       console.error('[Chat] Reasoning mode error:', err)
       return json({ error: 'Failed to generate reasoning proposal' }, 500, origin)
     }
@@ -1153,18 +1183,45 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
           // user title correction (that title is exact user intent) and
           // when a due-date clarification is about to short-circuit this
           // write anyway, to avoid a wasted model call.
+          //
+          // INC-01: resolveCreateTaskTitle throws ProviderUnavailableError
+          // instead of returning undefined when the provider is down AND
+          // pattern extraction also found nothing -- that specific case
+          // must never reach executeAutoTaskWrite's `!intent.title` check,
+          // since that would report the exact same "What should the task
+          // be called?" clarification a genuinely ambiguous message gets,
+          // masquerading a provider outage as the assistant asking a
+          // question it was never able to ask.
+          let providerUnavailable = false
           if (taskWriteIntent.kind === 'create_task' && !taskWriteIntent.dateClarificationNeeded && taskWriteIntent.titleSource !== 'correction') {
-            taskWriteIntent.title = await resolveCreateTaskTitle(env, taskWriteIntent, message)
+            try {
+              taskWriteIntent.title = await resolveCreateTaskTitle(env, taskWriteIntent, message)
+            } catch (err) {
+              if (!(err instanceof ProviderUnavailableError)) throw err
+              providerUnavailable = true
+            }
           }
-          const execution = await executeAutoTaskWrite({ env, userId, language, intent: taskWriteIntent, now: new Date(), timeZone })
+          const execution = providerUnavailable
+            ? { status: 'provider_unavailable' as const, reply: PROVIDER_UNAVAILABLE_WRITE_REPLY[language] }
+            : await executeAutoTaskWrite({ env, userId, language, intent: taskWriteIntent, now: new Date(), timeZone })
           const response = await respondToWriteExecution(env, ctx, userId, sessionId, origin, message, language, domain, action, mode, execution, { kind: taskWriteIntent.kind, targetFields: taskIntentTargetFields(taskWriteIntent) })
           if (response) return response
         } else if (calendarWriteIntent) {
           // Task 22: same model-title-resolution treatment as tasks above.
+          // INC-01: same provider-unavailable distinction as the task
+          // branch above.
+          let providerUnavailable = false
           if (calendarWriteIntent.kind === 'create_calendar_event' && !calendarWriteIntent.dateClarificationNeeded && calendarWriteIntent.titleSource !== 'correction') {
-            calendarWriteIntent.title = await resolveCreateEventTitle(env, calendarWriteIntent, message)
+            try {
+              calendarWriteIntent.title = await resolveCreateEventTitle(env, calendarWriteIntent, message)
+            } catch (err) {
+              if (!(err instanceof ProviderUnavailableError)) throw err
+              providerUnavailable = true
+            }
           }
-          const execution = await executeAutoCalendarWrite({ env, userId, language, intent: calendarWriteIntent, now: new Date(), timeZone })
+          const execution = providerUnavailable
+            ? { status: 'provider_unavailable' as const, reply: PROVIDER_UNAVAILABLE_WRITE_REPLY[language] }
+            : await executeAutoCalendarWrite({ env, userId, language, intent: calendarWriteIntent, now: new Date(), timeZone })
           const response = await respondToWriteExecution(env, ctx, userId, sessionId, origin, message, language, domain, action, mode, execution, { kind: calendarWriteIntent.kind, targetFields: calendarIntentTargetFields(calendarWriteIntent) })
           if (response) return response
         } else if (financeWriteIntent) {
@@ -1213,7 +1270,25 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
     const system = buildChatSystemPrompt(language, confirmedMemory)
     const fullHistory: ChatMessage[] = [...history, { role: 'user', content: modelFacingMessage }]
 
-    const rawReply = await callGeminiChat(system, fullHistory, env, {}, attachmentImage)
+    // INC-01: a provider failure (429/5xx/network) here must not fall
+    // through to the generic, content-less "Something went wrong on my
+    // end" the outer catch below reports for any OTHER unexpected turn
+    // failure (DB errors, etc.) -- that text is honest about SOMETHING
+    // being wrong but not about WHAT, and the incident's second symptom
+    // was exactly this generic message standing in for a knowable,
+    // specific cause. Caught here, before the outer catch, so this one
+    // specific cause gets a specific, honest reply instead.
+    let rawReply: string
+    try {
+      rawReply = await callGeminiChat(system, fullHistory, env, {}, attachmentImage)
+    } catch (err) {
+      if (!(err instanceof ProviderUnavailableError)) throw err
+      console.error('[Chat] provider error:', err)
+      const reply = PROVIDER_UNAVAILABLE_CHAT_REPLY[language]
+      await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'user', content: message })
+      await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: reply })
+      return json({ reply }, 200, origin)
+    }
 
     // Task 20, Part A2: deterministic post-check -- see
     // completion-claim-guard.ts for the full rationale. Applied BEFORE
@@ -1344,7 +1419,8 @@ async function callGeminiChat(
 
   console.log('[Chat] sending', history.length, 'turns to Gemini')
 
-  const res = await fetch(
+  const res = await fetchGeminiOrThrow(
+    fetch,
     `https://generativelanguage.googleapis.com/v1beta/models/${env.GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`,
     {
       method: 'POST',
@@ -1359,13 +1435,9 @@ async function callGeminiChat(
           thinkingConfig: { thinkingBudget: 0 },
         },
       }),
-    }
+    },
+    'Gemini Chat API',
   )
-
-  if (!res.ok) {
-    const err = await res.text()
-    throw new Error(`Gemini Chat API error: ${err}`)
-  }
 
   const data: any = await res.json()
   const candidate = data?.candidates?.[0]
@@ -1392,7 +1464,8 @@ async function callGeminiReasoning(
   responseLanguage: ReasoningResponseLanguage,
   env: Env,
 ): Promise<string> {
-  const res = await fetch(
+  const res = await fetchGeminiOrThrow(
+    fetch,
     `https://generativelanguage.googleapis.com/v1beta/models/${env.GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`,
     {
       method: 'POST',
@@ -1411,13 +1484,9 @@ async function callGeminiReasoning(
           responseSchema: buildReasoningResponseSchema(),
         },
       }),
-    }
+    },
+    'Gemini reasoning API',
   )
-
-  if (!res.ok) {
-    const err = await res.text()
-    throw new Error(`Gemini reasoning API error: ${err}`)
-  }
 
   const data: any = await res.json()
   const candidate = data?.candidates?.[0]

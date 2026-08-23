@@ -1,6 +1,7 @@
 ﻿import type { Env, Language } from './types'
 import { supabaseGet } from './context-builder'
 import { callGeminiForTaskTitle } from './task-title-extraction'
+import { ProviderUnavailableError } from './provider-errors'
 import { findWriteIntentDescriptor, writeIntentRegistry, type WriteIntentType } from '../../shared/writeIntentRegistry'
 import { parseFinanceDirection } from '../../shared/financeDirection'
 import type { ParsedBankRow } from '../../shared/bankStatementParser'
@@ -626,6 +627,21 @@ export async function resolveCreateTitle(
     if (validated) return validated
   } catch (err) {
     console.error('[Title] model title extraction failed, falling back to pattern extraction:', (err as Error).message)
+    // INC-01: a provider failure (429/5xx/network) with NO pattern-
+    // extractable fallback either must never silently collapse into an
+    // ordinary "no title found" outcome -- that is exactly what made a
+    // Gemini outage indistinguishable from a genuine ask_clarification
+    // upstream (executeAutoTaskWrite's own `!intent.title` branch), so the
+    // assistant appeared to be asking a question when it never got a
+    // chance to answer at all. Only escalate when BOTH conditions hold: if
+    // pattern extraction found something, degrade silently as before (the
+    // write still succeeds without the model's help) -- and if the model
+    // call failed for a non-provider reason (malformed JSON, missing
+    // field, a non-STOP finish -- the model DID answer, just unusably),
+    // this stays ordinary fallback behavior too.
+    if (err instanceof ProviderUnavailableError && !patternFallback) {
+      throw err
+    }
   }
   return patternFallback
 }
@@ -1278,6 +1294,19 @@ export function assembleFinanceWriteIntent(message: string, recentTurns: RecentC
 // case is logged as CRITICAL server-side and reported honestly to the user
 // as "please verify manually" rather than a flat, possibly-false "failed."
 // ---------------------------------------------------------------------------
+
+// INC-01: distinct from FAILED_WRITE_REPLY below -- 'failed' means a write
+// was actually attempted and something went wrong persisting it; this is
+// for when the write was never attempted at all because the AI provider
+// itself could not be reached to resolve a title. Exported so index.ts's
+// task/calendar auto-write dispatch (the only place that catches
+// resolveCreateTitle's ProviderUnavailableError) can build the same,
+// consistently-worded reply for both domains.
+export const PROVIDER_UNAVAILABLE_WRITE_REPLY: Record<Language, string> = {
+  en: 'The AI assistant is temporarily unavailable, so I could not finish setting this up automatically. Please try again in a moment.',
+  de: 'Der KI-Assistent ist vorübergehend nicht verfügbar, daher konnte ich das nicht automatisch fertigstellen. Bitte versuche es gleich noch einmal.',
+  fa: 'دستیار هوش مصنوعی موقتاً در دسترس نیست، بنابراین نتوانستم این کار را به‌طور خودکار تکمیل کنم. لطفاً کمی بعد دوباره امتحان کنید.',
+}
 
 const FAILED_WRITE_REPLY: Record<Language, { retry: string; verify: string }> = {
   en: {

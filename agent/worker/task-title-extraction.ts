@@ -13,6 +13,14 @@
 // flow-write-policy.ts's resolveCreateTaskTitle is what actually decides
 // whether to trust this model's output -- this module only asks the
 // question and returns whatever the model said, unvalidated.
+//
+// INC-01: the fetch call is wrapped with provider-errors.ts's
+// fetchGeminiOrThrow so a 429/5xx/network failure throws the classifiable
+// ProviderUnavailableError instead of an indistinguishable plain Error --
+// see that module's own header comment for why resolveCreateTaskTitle
+// needs to tell those apart.
+
+import { fetchGeminiOrThrow } from './provider-errors'
 
 export function buildTaskTitleSystemInstruction(): string {
   return [
@@ -60,7 +68,7 @@ export async function callGeminiForTaskTitle(
   const modelUrl = new URL(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(env.GEMINI_MODEL ?? '')}:generateContent`)
   modelUrl.searchParams.set('key', env.GEMINI_API_KEY ?? '')
 
-  const response = await fetcher(modelUrl.toString(), {
+  const response = await fetchGeminiOrThrow(fetcher, modelUrl.toString(), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -74,9 +82,7 @@ export async function callGeminiForTaskTitle(
         responseSchema: buildTaskTitleResponseSchema(),
       },
     }),
-  })
-
-  if (!response.ok) throw new Error(`Task title model request failed with status ${response.status}.`)
+  }, 'Task title model request')
 
   const data = await response.json() as {
     candidates?: Array<{ finishReason?: unknown; content?: { parts?: Array<{ text?: unknown }> } }>

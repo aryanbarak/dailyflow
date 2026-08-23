@@ -31,7 +31,7 @@ import {
   shouldUseReasoningForMessage,
 } from "./ChatPage";
 import { shouldAutoRunReadOnlyOverlay } from "@/features/chat/autoReadOverlayGate";
-import { getStrongReadDomainEvidence, getToolById, isAutoExecutableReadOnlyToolId } from "@/features/agent";
+import { getStrongReadDomainEvidence, getToolById, isAutoExecutableReadOnlyToolId, PROVIDER_UNAVAILABLE_REASON_MARKER } from "@/features/agent";
 import type {
   AgentReasoningResult,
   ReadOnlyRuntimeResult,
@@ -41,6 +41,7 @@ import type {
   WorkspacePlanStep,
   WorkspaceStepApproval,
 } from "@/features/workspace";
+import type { SupportedAiResponseLanguage } from "@/features/ai/responseLanguage";
 
 const now = "2026-07-15T08:00:00.000Z";
 
@@ -1350,6 +1351,81 @@ describe("ChatPage LLM reasoning UX boundary", () => {
         t,
       );
       expect(outcome.content).toBe(reply);
+    });
+
+    // INC-01 follow-up review: providerUnavailableProposal (reasoningOrchestrator.ts)
+    // reuses type 'unsupported' for a provider outage. Without the
+    // PROVIDER_UNAVAILABLE_REASON_MARKER check in resolveChatTurnOutcome,
+    // this would have fallen into the SAME branch as the "clear action
+    // request... gets the short capability sentence" test above and shown
+    // the wrong, generic "I can't do that yet" text -- or, for a message
+    // that doesn't match looksLikeExplicitActionRequest, been silently
+    // dropped like the REGRESSION GUARD case above. These prove the exact
+    // user-visible EN/DE/FA message a provider outage now produces.
+    describe("INC-01 follow-up: provider-unavailable overlay gets the honest message, never the generic 'unsupported' capability text", () => {
+      function providerUnavailableResult(language: SupportedAiResponseLanguage = "en"): AgentReasoningResult {
+        const base = reasoningResult("unsupported", undefined);
+        const clarificationQuestion =
+          language === "fa"
+            ? "دستیار هوش مصنوعی موقتاً در دسترس نیست. لطفاً کمی بعد دوباره امتحان کنید."
+            : language === "de"
+              ? "Der KI-Assistent ist vorübergehend nicht verfügbar. Bitte versuche es gleich noch einmal."
+              : "The AI assistant is temporarily unavailable. Please try again in a moment.";
+        return {
+          ...base,
+          proposal: {
+            ...base.proposal,
+            requiresTool: false,
+            toolId: undefined,
+            clarificationQuestion,
+            reasons: [PROVIDER_UNAVAILABLE_REASON_MARKER, "The AI provider failed to respond."],
+            language,
+          },
+          toolId: undefined,
+        };
+      }
+
+      it("an action-shaped message (would otherwise get the generic capability sentence) gets the honest provider-unavailable message instead", () => {
+        const t = (key: string) => key;
+        const reply = "Sure, one moment.";
+        const outcome = resolveChatTurnOutcome(
+          { intentSignal: "explicit", message: "Please set a daily study task and two daily reminders.", responseLanguage: "en", reply, overlayResult: providerUnavailableResult() },
+          t,
+        );
+        expect(outcome.content).toBe(`${reply}\n\nThe AI assistant is temporarily unavailable. Please try again in a moment.`);
+        expect(outcome.content).not.toContain("I can't do that yet");
+        expect(outcome.reasoningStates).toBeNull();
+      });
+
+      it("a NON-action-shaped message (would otherwise stay fully silent, same as the historical 11b regression case) still surfaces the honest message -- a provider outage is worth telling the user about regardless of phrasing", () => {
+        const t = (key: string) => key;
+        const reply = "به نظر می‌رسه دنبال فرصت شغلی در هامبورگ هستی -- عالیه!";
+        const outcome = resolveChatTurnOutcome(
+          { intentSignal: "explicit", message: "تصمیم دارم که در هامبورگ برایم کار پیدا کنم", responseLanguage: "fa", reply, overlayResult: providerUnavailableResult("fa") },
+          t,
+        );
+        expect(outcome.content).toBe(`${reply}\n\nدستیار هوش مصنوعی موقتاً در دسترس نیست. لطفاً کمی بعد دوباره امتحان کنید.`);
+      });
+
+      it("DE: language-matched honest message, not the generic capability sentence", () => {
+        const t = (key: string) => key;
+        const outcome = resolveChatTurnOutcome(
+          { intentSignal: "explicit", message: "Bitte erstelle eine neue Aufgabe.", responseLanguage: "de", reply: "Klingt gut.", overlayResult: providerUnavailableResult("de") },
+          t,
+        );
+        expect(outcome.content).toBe("Klingt gut.\n\nDer KI-Assistent ist vorübergehend nicht verfügbar. Bitte versuche es gleich noch einmal.");
+        expect(outcome.content).not.toContain("Das kann ich noch nicht");
+      });
+
+      it("a genuine unsupported-capability request (no PROVIDER_UNAVAILABLE_REASON_MARKER) is completely unaffected -- still gets the generic capability sentence", () => {
+        const t = (key: string) => key;
+        const reply = "That sounds useful for staying on track.";
+        const outcome = resolveChatTurnOutcome(
+          { intentSignal: "explicit", message: "Please set a daily study task and two daily reminders.", responseLanguage: "en", reply, overlayResult: unsupportedResult() },
+          t,
+        );
+        expect(outcome.content).toBe(`${reply}\n\nI can't do that yet — this isn't something Flow AI supports right now.`);
+      });
     });
 
     it("server-resolved auto write suppresses a stale client approval overlay", () => {

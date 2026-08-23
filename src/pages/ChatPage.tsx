@@ -56,6 +56,7 @@ import {
   synthesizeContext,
   getToolById,
   isAutoExecutableReadOnlyToolId,
+  PROVIDER_UNAVAILABLE_REASON_MARKER,
   reasonAboutUserMessage,
   resolveAgentReasoningTransport,
   resolveToolForStep,
@@ -1140,16 +1141,37 @@ export function resolveChatTurnOutcome(input: ChatTurnOverlayInput, t: Translate
   const offerHint = input.intentSignal === 'ambiguous' ? getAmbiguousOfferHint(input.message) : null
   const ambiguousTrailingNote = offerHint ? getAmbiguousOfferText(offerHint, input.responseLanguage) : null
 
+  // INC-01 follow-up review: providerUnavailableProposal (reasoningOrchestrator.ts)
+  // reuses type 'unsupported' for a provider outage -- so without this
+  // check, isExplicitUnsupportedActionRequest below would show it the
+  // GENERIC "I can't do that" capability text (wrong: implies the action
+  // itself is unsupported, not that the AI briefly couldn't be reached),
+  // and outside that narrow gate it would be silently dropped entirely.
+  // PROVIDER_UNAVAILABLE_REASON_MARKER is the exact, stable string that
+  // tells the two apart -- checked here, unconditionally (never gated on
+  // looksLikeExplicitActionRequest/intentSignal the way the generic
+  // capability note is), since a provider outage is worth telling the
+  // user about regardless of how their message was phrased.
+  const isProviderUnavailableOverlay =
+    !serverTerminalWrite &&
+    overlayResult !== null &&
+    overlayResult.proposal.type === 'unsupported' &&
+    overlayResult.proposal.reasons.includes(PROVIDER_UNAVAILABLE_REASON_MARKER)
+  const providerUnavailableTrailingNote = isProviderUnavailableOverlay
+    ? (overlayResult!.proposal.clarificationQuestion ?? null)
+    : null
+
   const isExplicitUnsupportedActionRequest =
     !serverTerminalWrite &&
     !input.serverWritePolicyMode &&
     input.intentSignal === 'explicit' &&
     overlayResult !== null &&
     overlayResult.proposal.type === 'unsupported' &&
+    !overlayResult.proposal.reasons.includes(PROVIDER_UNAVAILABLE_REASON_MARKER) &&
     looksLikeExplicitActionRequest(input.message)
   const capabilityTrailingNote = isExplicitUnsupportedActionRequest ? UNSUPPORTED_CAPABILITY_TEXT[input.responseLanguage] : null
 
-  const trailingNote = ambiguousTrailingNote ?? capabilityTrailingNote ?? clarificationTrailingNote
+  const trailingNote = ambiguousTrailingNote ?? providerUnavailableTrailingNote ?? capabilityTrailingNote ?? clarificationTrailingNote
 
   return {
     content: trailingNote ? `${input.reply}\n\n${trailingNote}` : input.reply,
