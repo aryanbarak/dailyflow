@@ -5,7 +5,9 @@
 // adapter -- see checkTextGenerationAdapterContract below). ADR-0018 S2:
 // checks 1-4 (extraction/derivation/task-title/reasoning) now go through
 // GeminiStructuredGenerationProvider instead of a hand-rolled fetch --
-// same adapter every real [STRUCTURED_GEN] call site uses.
+// same adapter every real [STRUCTURED_GEN] call site uses. ADR-0018 S3:
+// check 5 (embedding) now goes through GeminiEmbeddingProvider likewise --
+// same adapter both real [EMBEDDING] call sites use.
 //
 // MANUAL USE ONLY -- never wire this into CI. It makes six minimal REAL
 // calls against the live Gemini API to catch the exact class of break that
@@ -76,14 +78,18 @@ import { GeminiTextGenerationProvider } from '../agent/worker/providers/gemini/G
 // of those real call sites, not just one manual fetch that happened to
 // mirror them.
 import { GeminiStructuredGenerationProvider } from '../agent/worker/providers/gemini/GeminiStructuredGenerationProvider'
+// ADR-0018 S3: check 5 (embedding) goes through this adapter now -- same
+// principle as S2's checks 1-4 -- instead of a hand-rolled fetch.
+import { GeminiEmbeddingProvider } from '../agent/worker/providers/gemini/GeminiEmbeddingProvider'
 // MIG-01b: single-source model resolution (see that module's header
 // comment) -- this script no longer hardcodes its own default.
 import { resolveGeminiModel } from '../agent/worker/geminiModel'
+// ADR-0018 S3: single-source embedding model/dimensions -- this script no
+// longer hardcodes its own copies of either.
+import { EMBEDDING_MODEL, EMBEDDING_DIMENSIONS } from '../agent/worker/embeddingConfig'
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? ''
 const GEMINI_MODEL = resolveGeminiModel({ GEMINI_MODEL: process.env.GEMINI_MODEL })
-const EMBEDDING_MODEL = 'gemini-embedding-001'
-const EMBEDDING_DIMENSIONS = 768
 // MIG-01b: the free tier is 5 req/min and this script makes 6 real calls
 // back-to-back -- SMOKE_DELAY_MS (default 0, i.e. no change to prior
 // behavior) lets a free-tier key space its checks out so the run's own
@@ -190,24 +196,31 @@ async function checkReasoningContract(): Promise<ContractResult> {
   }
 }
 
+// ADR-0018 S3: proves GeminiEmbeddingProvider's real request envelope
+// (including its own client-side L2-normalization) still round-trips
+// against the live API -- same principle as checkTextGenerationAdapterContract
+// (S1) and checks 1-4 above (S2). SUPABASE_URL/SUPABASE_SERVICE_KEY are
+// placeholders: this check only calls embed() on the SUCCESS path, which
+// never touches providers/failureEvents.ts's persistence at all (that only
+// fires on a caught ProviderUnavailableError).
 async function checkEmbeddingContract(): Promise<ContractResult> {
-  const name = `embedContent on ${EMBEDDING_MODEL} with outputDimensionality=${EMBEDDING_DIMENSIONS}`
+  const name = `GeminiEmbeddingProvider.embed on ${EMBEDDING_MODEL} with outputDimensionality=${EMBEDDING_DIMENSIONS}`
   try {
-    const url = new URL(`https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_MODEL}:embedContent`)
-    url.searchParams.set('key', GEMINI_API_KEY)
-    const response = await fetch(url.toString(), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: { parts: [{ text: 'Smoke test content for embedding contract verification.' }] }, outputDimensionality: EMBEDDING_DIMENSIONS }),
+    const provider = new GeminiEmbeddingProvider({
+      GEMINI_API_KEY,
+      SUPABASE_URL: 'https://smoke-test.invalid',
+      SUPABASE_SERVICE_KEY: 'unused-in-the-success-path',
     })
-    const bodyText = await response.text()
-    if (response.status !== 200) return { name, pass: false, detail: `httpStatus=${response.status} body=${bodyText.slice(0, 300)}` }
-    const parsed = JSON.parse(bodyText) as { embedding?: { values?: unknown } }
-    const values = parsed.embedding?.values
-    if (!Array.isArray(values) || values.length !== EMBEDDING_DIMENSIONS) {
-      return { name, pass: false, detail: `expected ${EMBEDDING_DIMENSIONS} values, got ${Array.isArray(values) ? values.length : typeof values}` }
+    const result = await provider.embed(['Smoke test content for embedding contract verification.'])
+    const values = result.vectors[0] ?? []
+    if (values.length !== EMBEDDING_DIMENSIONS) {
+      return { name, pass: false, detail: `expected ${EMBEDDING_DIMENSIONS} values, got ${values.length}` }
     }
-    return { name, pass: true, detail: `httpStatus=200 valueCount=${values.length}` }
+    const norm = Math.sqrt(values.reduce((sum, v) => sum + v * v, 0))
+    if (Math.abs(norm - 1) > 1e-3) {
+      return { name, pass: false, detail: `adapter output was not unit-normalized (norm=${norm})` }
+    }
+    return { name, pass: true, detail: `valueCount=${values.length} norm=${norm.toFixed(6)}` }
   } catch (error) {
     return { name, pass: false, detail: (error as Error).message }
   }

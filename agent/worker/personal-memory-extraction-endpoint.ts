@@ -25,18 +25,21 @@
 // comment already documents for its own equivalent duplication. Guarded by
 // src/features/personal-memory/personalMemoryValidationEquivalence.test.ts.
 //
-// Task PA-02: parseModelJsonObject/EMBEDDING_MODEL/EMBEDDING_DIMENSIONS/
-// l2Normalize ARE imported from sibling agent/worker/*.ts modules below --
-// there is no actual "zero-cross-import" rule between sibling Worker files
-// (see modelJsonParsing.ts's own header comment); the constraint above is
+// Task PA-02: parseModelJsonObject/EMBEDDING_DIMENSIONS ARE imported from
+// sibling agent/worker/*.ts modules below -- there is no actual
+// "zero-cross-import" rule between sibling Worker files (see
+// modelJsonParsing.ts's own header comment); the constraint above is
 // specifically about not importing src/features/* into agent/worker/.
+// EMBEDDING_MODEL/l2Normalize moved on: ADR-0018 S3 migrated
+// embedTextForOverlap to GeminiEmbeddingProvider, which now owns both.
 
 import { parseModelJsonObject, ModelJsonParseError } from './modelJsonParsing'
-import { EMBEDDING_MODEL, EMBEDDING_DIMENSIONS, l2Normalize } from './embeddingConfig'
+import { EMBEDDING_DIMENSIONS } from './embeddingConfig'
 import type { NeutralObjectSchema } from './providers/schema/neutralSchema'
 import { ProviderRequestError, ProviderUnavailableError } from './provider-errors'
 import { createProviders } from './providers/createProviders'
-import type { StructuredGenerationResult } from './providers/types'
+import { EmbeddingDimensionMismatchError } from './providers/gemini/GeminiEmbeddingProvider'
+import type { EmbeddingResult, StructuredGenerationResult } from './providers/types'
 // ADR-0018 S2: unified with the shared taxonomy in
 // providers/providerFailureTaxonomy.ts (already used by
 // document-memory-extraction-endpoint.ts and context-derivation-endpoint.ts
@@ -998,39 +1001,49 @@ export function cosineSimilarity(a: readonly number[], b: readonly number[]): nu
   return sum
 }
 
-/** Mirrors document-memory-extraction-endpoint.ts's own embedChunk -- model/dimensions/normalization now come from embeddingConfig.ts, the single source of truth for both. */
+/**
+ * ADR-0018 S3: migrated to the EmbeddingProvider adapter -- normalization
+ * now lives there (once); this function's own shape/unit-norm sanity
+ * checks stay here (Decision 3's own precedent), unchanged in wording and
+ * posture (best-effort: ANY problem degrades to null, never throws --
+ * this route's overlap-check is explicitly allowed to silently fall back
+ * to "no suggestion found").
+ *
+ * ONE deliberate exception to "ANY problem returns null":
+ * EmbeddingDimensionMismatchError (Decision 4) is NOT swallowed here. A
+ * provider outage degrading quietly is the whole point of best-effort; a
+ * config bug (this deployment's embedding provider disagreeing with the
+ * EMBEDDING_DIMENSIONS every cosineSimilarity comparison assumes) silently
+ * producing wrong-width or meaningless comparisons is not something this
+ * function should hide behind its own resilience contract. It still can't
+ * become a top-level 500 from here -- the per-candidate loop further up
+ * this file (handlePersonalMemoryExtractionRequest) already catches
+ * everything from findPossibleUpdateTarget and downgrades it to a
+ * per-candidate `persistence_failed` outcome (existing, unrelated-to-S3
+ * behavior, deliberately not restructured by this interface-only slice) --
+ * but it is at least never silently indistinguishable from an ordinary
+ * network hiccup.
+ */
 async function embedTextForOverlap(
   text: string,
   env: PersonalMemoryExtractionEnv,
   fetcher: typeof fetch,
   logger: Pick<Console, 'info' | 'error'>,
 ): Promise<number[] | null> {
-  const modelUrl = new URL(`https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_MODEL}:embedContent`)
-  modelUrl.searchParams.set('key', env.GEMINI_API_KEY ?? '')
-  let response: Response
+  let result: EmbeddingResult
   try {
-    response = await fetcher(modelUrl.toString(), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: { parts: [{ text }] }, outputDimensionality: EMBEDDING_DIMENSIONS }),
-    })
-  } catch (networkError) {
-    logger.error?.(`[PersonalMemory] overlap embedding call failed before any response: path=${modelUrl.pathname} error=${(networkError as Error).message}`)
+    result = await createProviders({ ...env, SUPABASE_SERVICE_KEY: env.SUPABASE_SERVICE_KEY ?? '' }, fetcher).embedding.embed([text])
+  } catch (err) {
+    if (err instanceof EmbeddingDimensionMismatchError) throw err
+    const status = err instanceof ProviderUnavailableError || err instanceof ProviderRequestError ? err.status : undefined
+    logger.error?.(`[PersonalMemory] overlap embedding call failed: endpoint=embedContent httpStatus=${status ?? 'n/a'} error=${(err as Error).message}`)
     return null
   }
-  if (!response.ok) {
-    logger.error?.(`[PersonalMemory] overlap embedding provider rejected request: path=${modelUrl.pathname} httpStatus=${response.status}`)
-    return null
-  }
-  const data = (await response.json()) as { embedding?: { values?: unknown } }
-  const values = data.embedding?.values
-  if (!Array.isArray(values) || values.length !== EMBEDDING_DIMENSIONS || !values.every((v) => typeof v === 'number')) {
-    return null
-  }
-  const normalized = l2Normalize(values as number[])
-  const norm = Math.sqrt(normalized.reduce((sum, v) => sum + v * v, 0))
+  const values = result.vectors[0] ?? []
+  if (values.length !== EMBEDDING_DIMENSIONS) return null
+  const norm = Math.sqrt(values.reduce((sum, v) => sum + v * v, 0))
   if (Math.abs(norm - 1) > OVERLAP_EMBEDDING_NORM_EPSILON) return null
-  return normalized
+  return values
 }
 
 interface ExistingRecordForOverlap {

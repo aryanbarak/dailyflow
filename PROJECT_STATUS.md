@@ -874,9 +874,9 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
          exists for `finance_import_batches`
          (`supabase/tests/finance_import_batches.migration_structure.test.ts`)
          but `finance_import_rows` still has neither.
-12. **Capability-oriented AI provider abstraction — S0 and S1 (plus its
-    follow-up) merged to `main`; S2 authored on branch
-    `feat/adr-0018-s2-structured`, not merged.**
+12. **Capability-oriented AI provider abstraction — S0, S1 (plus its
+    follow-up), and S2 merged to `main`; S3 authored on branch
+    `feat/adr-0018-s3-embedding`, not merged.**
     [ADR-0018](docs/decisions/adr/ADR-0018-capability-oriented-ai-provider-abstraction.md)
     (**Status: Accepted** — PO approved 2026-08-22, all five open questions
     answered yes). Follows directly from INC-01 (2026-08-22 Gemini 429
@@ -1036,18 +1036,76 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
       parity tests that deliberately import into `agent/worker/`), the
       root `npm run typecheck` gate broke on `Cannot find name 'Ai'` for
       the first time — fixed at the root cause, not worked around.
-    - **S3–S5 planned, not started:** S3 (`GeminiEmbeddingProvider`
-      wrapping `embeddingConfig.ts`, startup dimension assertion), S4 (test
-      migration: fetch-level mocks → interface mocks), S5 (OCR migrated
-      from the legacy `workers/ai-worker-recovered/` Worker — first
-      legacy-retirement step). Each slice is its own PR, test-gated, no
-      behavior change proven per-slice. See the ADR's own Implementation
-      Plan table for the full gate per slice.
-    - **No smoke RUN performed for S1 or S2** — `GEMINI_API_KEY`
-      unavailable in this environment; the script's own guard confirmed it
-      exits cleanly (code 0) without attempting any network call each
-      time, and import resolution of the new S2 adapter
-      (`GeminiStructuredGenerationProvider`) succeeded (vite-node reached
+    - **S3 (this slice) — `GeminiEmbeddingProvider`, zero behavior change
+      for callers, interface-only (no model change, no second provider, no
+      vector/index change).**
+      `providers/gemini/GeminiEmbeddingProvider.ts` implements
+      `EmbeddingProvider` exactly as S0 defined it (no interface
+      amendment needed — see the ADR's own "S3 implemented as specified"
+      Amendments note): `model`/`dimensions`/`normalizesOutput` read
+      straight from `embeddingConfig.ts`; `embed(texts)` maps to the
+      EXISTING per-text `embedContent` call pattern (Gemini's batch
+      endpoint deliberately not adopted — that would change failure
+      granularity, not just transport); every returned vector is
+      L2-normalized exactly once, inside the adapter (both real call
+      sites' own local `l2Normalize` calls removed, not just their
+      fetches). Decision 4's dimension assertion
+      (`assertEmbeddingDimensions`) runs on first use, inside `embed()`,
+      before any network call — throws `EmbeddingDimensionMismatchError`
+      (a config bug, not a provider outage: never classified via
+      `provider-errors.ts`, never passed to `recordProviderFailure`). The
+      concrete Gemini adapter can never actually diverge (both its
+      `dimensions` field and the assertion's comparison target read the
+      same `EMBEDDING_DIMENSIONS` constant) — the assertion guards the
+      INTERFACE contract for whichever provider is next, tested directly
+      against a stub in `GeminiEmbeddingProvider.test.ts`.
+      Migrated both real `[EMBEDDING]` call sites (PA-01 §4):
+      `document-memory-extraction-endpoint.ts`'s `embedChunk` (persisted
+      vectors — a dimension mismatch now surfaces as a distinct
+      `EMBEDDING_CONFIGURATION_ERROR` 500, not this file's usual 502
+      taxonomy) and `personal-memory-extraction-endpoint.ts`'s
+      `embedTextForOverlap` (transient dedup — kept its existing
+      best-effort "any problem degrades to `null`" contract for real
+      provider failures, but does NOT swallow
+      `EmbeddingDimensionMismatchError` the same way, since a config bug
+      silently producing wrong-width comparisons is not the kind of thing
+      that contract should hide; it still can't escalate past this
+      route's existing, unrelated-to-S3 per-candidate
+      `persistence_failed` catch to a top-level 500 — restructuring that
+      catch was out of this interface-only slice's scope, flagged in the
+      code and here rather than silently left ambiguous).
+      `createProviders(env)` gains `{ embedding }`.
+      Verification: all existing endpoint tests pass UNCHANGED (100 tests
+      across both files) plus new tests: `GeminiEmbeddingProvider.test.ts`
+      (23 — envelope, per-text batching, unit-norm output proven against a
+      deliberately non-unit fixture, malformed-shape degradation,
+      dimension-assertion both paths, failure classification, failure-event
+      persistence including the "NOT recorded for a dimension mismatch"
+      case) and `createProviders.test.ts` (2). `provider-contract-smoke.ts`
+      check 5 (embedding) now goes through `GeminiEmbeddingProvider`
+      directly, asserting unit-norm output as part of the contract, same
+      principle as S2's checks 1–4; also stopped hand-duplicating
+      `EMBEDDING_MODEL`/`EMBEDDING_DIMENSIONS` and now imports both from
+      `embeddingConfig.ts`. One disclosed test-coverage gap: the route-level
+      "dimension mismatch → 500" wiring in
+      `document-memory-extraction-endpoint.ts` is verified by code
+      inspection and by the adapter-level assertion tests, not by a full
+      end-to-end route test — the concrete single-provider setup makes
+      that branch unreachable through real code today, and reaching it
+      would require introducing module-mocking (`vi.mock`), a pattern not
+      used anywhere else in `agent/worker/`'s tests.
+    - **S4–S5 planned, not started:** S4 (test migration: fetch-level
+      mocks → interface mocks), S5 (OCR migrated from the legacy
+      `workers/ai-worker-recovered/` Worker — first legacy-retirement
+      step). Each slice is its own PR, test-gated, no behavior change
+      proven per-slice. See the ADR's own Implementation Plan table for
+      the full gate per slice.
+    - **No smoke RUN performed for S1, S2, or S3** — `GEMINI_API_KEY`
+      unavailable in this environment; the script's own guard exits with a
+      non-zero status (as designed — the key is required) without
+      attempting any network call each time, and import resolution of
+      each slice's new adapter (`GeminiStructuredGenerationProvider` for
+      S2, `GeminiEmbeddingProvider` for S3) succeeded (vite-node reached
       the guard, meaning the whole module graph resolved and transformed
       without error).
 
