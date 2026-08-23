@@ -20,7 +20,7 @@ class StubTextGenerationProvider implements TextGenerationProvider {
   readonly id = "stub-text";
 
   async generateText(req: TextGenerationRequest): Promise<TextGenerationResult> {
-    return { text: `stub reply to ${req.turns.length} turn(s)`, finishReason: "STOP" };
+    return { text: `stub reply to ${req.turns.length} turn(s)`, finishReason: "stop" };
   }
 }
 
@@ -54,7 +54,7 @@ describe("ADR-0018 S0: provider interfaces are implementable", () => {
 
     expect(provider.id).toBe("stub-text");
     expect(result.text).toContain("1 turn(s)");
-    expect(result.finishReason).toBe("STOP");
+    expect(result.finishReason).toBe("stop");
   });
 
   it("TextGenerationRequest accepts system/temperature/maxOutputTokens/providerOptions -- all optional per ADR-0018 Decision 2", async () => {

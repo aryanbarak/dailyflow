@@ -43,6 +43,10 @@
 // import convention" justification for the duplication did not reflect an
 // actual rule.
 import { EMBEDDING_MODEL, EMBEDDING_DIMENSIONS, l2Normalize } from './embeddingConfig'
+import { createProviders } from './providers/createProviders'
+import { ProviderRequestError, ProviderUnavailableError } from './provider-errors'
+import { ProviderCallError, type ProviderFailureTaxonomy } from './providers/providerFailureTaxonomy'
+import type { TextGenerationResult } from './providers/types'
 
 export const MAX_SOURCE_FILE_BYTES = 20 * 1024 * 1024 // matches docs_file_size_error's existing 20MB upload cap (src/i18n/index.ts); task 18 renamed from MAX_PDF_BYTES -- this bound now also gates plain-text uploads
 const MAX_EXTRACTED_TEXT_CHARS = 20000 // resumes are short documents; generous headroom for a multi-page CV, still bounded
@@ -90,27 +94,12 @@ function errorResponse(code: string, message: string, status: number, origin: st
   return jsonResponse({ error: { code, message, ...extra } }, status, origin)
 }
 
-// Task 14 taxonomy, reused verbatim (same three values, same meaning) --
-// mirrors context-derivation-endpoint.ts's own duplicated copy. Kept
-// duplicated here, not unified: there is no actual rule against importing
-// it (see embeddingConfig.ts's header comment for why "zero-cross-import
-// convention" doesn't hold), this just wasn't in PA-02's scope.
-// Task 19: exported so chat-attachment-context.ts's own ProviderCallError
-// handling can share the exact same taxonomy type rather than a third
-// hand-copied union.
-export type ProviderFailureTaxonomy = 'PROVIDER_REQUEST_REJECTED' | 'PROVIDER_UNAVAILABLE' | 'MODEL_OUTPUT_UNUSABLE'
-
-export class ProviderCallError extends Error {
-  constructor(
-    message: string,
-    readonly taxonomy: ProviderFailureTaxonomy,
-    readonly providerStatus?: number,
-    readonly providerDetail?: string,
-  ) {
-    super(message)
-    this.name = 'ProviderCallError'
-  }
-}
+// ADR-0018 S1: the "task 14" taxonomy/error class now live in
+// providerFailureTaxonomy.ts (unified with context-derivation-endpoint.ts's
+// former duplicate) -- re-exported here, not moved, so every existing
+// importer of THIS file (chat-attachment-context.ts's own ProviderCallError
+// handling, task 19) keeps working unchanged.
+export { ProviderCallError, type ProviderFailureTaxonomy }
 
 export const TAXONOMY_MESSAGES: Record<ProviderFailureTaxonomy, string> = {
   PROVIDER_REQUEST_REJECTED: 'The request to the AI model was rejected. This is a configuration issue on our side, not a problem with your data.',
@@ -253,9 +242,10 @@ export function boundExtractedText(rawText: string): string {
 // instruction, temperature 0, response always treated as untrusted
 // regardless of content. Mirrors callGeminiForExtraction's / /documents/
 // analyze's inlineData pattern and the full task-14 redaction-guard
-// discipline: never logs modelUrl.toString() or response.url (both carry
-// GEMINI_API_KEY as a query param); every log line uses only
-// modelUrl.pathname.
+// discipline: the API key lives only in the URL GeminiTextGenerationProvider
+// builds internally (ADR-0018 S1) -- neither that URL nor GEMINI_API_KEY
+// itself is ever part of a thrown error's .message, so nothing this
+// function logs below can leak it.
 // ---------------------------------------------------------------------------
 const TRANSCRIPTION_INSTRUCTION = 'Return the complete plain text of this document verbatim. Output nothing else.'
 
@@ -268,61 +258,68 @@ export async function transcribePdf(
   fetcher: typeof fetch,
   logger: Pick<Console, 'info' | 'error'>,
 ): Promise<string> {
-  const modelUrl = new URL(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(env.GEMINI_MODEL ?? '')}:generateContent`)
-  modelUrl.searchParams.set('key', env.GEMINI_API_KEY ?? '')
+  const provider = createProviders(env, fetcher).text
 
-  let response: Response
+  let result: TextGenerationResult
   try {
-    response = await fetcher(modelUrl.toString(), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{
-          role: 'user',
-          parts: [{ inlineData: { mimeType: 'application/pdf', data: pdfBase64 } }, { text: TRANSCRIPTION_INSTRUCTION }],
-        }],
-        generationConfig: { maxOutputTokens: 8192, temperature: 0 },
-      }),
+    result = await provider.generateText({
+      turns: [{ role: 'user', content: TRANSCRIPTION_INSTRUCTION }],
+      maxOutputTokens: 8192,
+      temperature: 0,
+      // ADR-0018 S1 follow-up: restores the original raw-fetch part order
+      // (PDF part BEFORE the text instruction) -- S1's adapter briefly
+      // flipped this to "after" via an unverified assumption. See
+      // GeminiTextGenerationProvider.ts's header comment.
+      attachmentPosition: 'before',
+      providerOptions: {
+        inlineDataAttachment: { mimeType: 'application/pdf', data: pdfBase64 },
+      },
     })
-  } catch (networkError) {
-    logger.error?.(`[DocumentMemory] transcription call failed before any response (network): path=${modelUrl.pathname} error=${(networkError as Error).message}`)
-    throw new ProviderCallError('The AI model provider could not be reached.', 'PROVIDER_UNAVAILABLE')
-  }
-
-  if (!response.ok) {
-    const bodyText = await response.text()
-    let providerError: { status?: unknown; message?: unknown; details?: unknown } | undefined
-    try {
-      providerError = (JSON.parse(bodyText) as { error?: typeof providerError }).error
-    } catch {
-      // Not JSON -- providerError stays undefined, bodyText itself is still used below.
+  } catch (err) {
+    // ADR-0018 S1: fetchGeminiOrThrow's own binary classification (network/
+    // 429/5xx -> ProviderUnavailableError, other non-ok -> ProviderRequestError)
+    // is deliberately narrower than this route's three-way taxonomy -- a 429
+    // is retryable-per-provider-errors.ts but was NEVER >=500, so this
+    // route's own long-standing `status >= 500` rule (unchanged below) must
+    // keep classifying it PROVIDER_REQUEST_REJECTED exactly as before. Both
+    // thrown classes carry the real status/body (S1 addition to
+    // provider-errors.ts) precisely so this reclassification is possible
+    // without re-deriving anything from the error message string.
+    if (err instanceof ProviderUnavailableError && err.status === undefined) {
+      logger.error?.(`[DocumentMemory] transcription call failed before any response (network): error=${err.message}`)
+      throw new ProviderCallError('The AI model provider could not be reached.', 'PROVIDER_UNAVAILABLE')
     }
-    const providerMessage = typeof providerError?.message === 'string' ? providerError.message : bodyText
-    logger.error?.(
-      `[DocumentMemory] transcription provider rejected request: path=${modelUrl.pathname} httpStatus=${response.status} ` +
-        `providerStatus=${String(providerError?.status ?? 'unknown')} message=${providerMessage}`,
-    )
-    const taxonomy: ProviderFailureTaxonomy = response.status >= 500 ? 'PROVIDER_UNAVAILABLE' : 'PROVIDER_REQUEST_REJECTED'
-    throw new ProviderCallError(`Transcription request failed with status ${response.status}.`, taxonomy, response.status, truncateForLog(providerMessage, 300))
+    if (err instanceof ProviderUnavailableError || err instanceof ProviderRequestError) {
+      const status = err.status as number
+      const bodyText = err.body ?? ''
+      let providerError: { status?: unknown; message?: unknown; details?: unknown } | undefined
+      try {
+        providerError = (JSON.parse(bodyText) as { error?: typeof providerError }).error
+      } catch {
+        // Not JSON -- providerError stays undefined, bodyText itself is still used below.
+      }
+      const providerMessage = typeof providerError?.message === 'string' ? providerError.message : bodyText
+      logger.error?.(
+        `[DocumentMemory] transcription provider rejected request: httpStatus=${status} ` +
+          `providerStatus=${String(providerError?.status ?? 'unknown')} message=${providerMessage}`,
+      )
+      const taxonomy: ProviderFailureTaxonomy = status >= 500 ? 'PROVIDER_UNAVAILABLE' : 'PROVIDER_REQUEST_REJECTED'
+      throw new ProviderCallError(`Transcription request failed with status ${status}.`, taxonomy, status, truncateForLog(providerMessage, 300))
+    }
+    throw err
   }
 
-  const data = (await response.json()) as {
-    candidates?: Array<{ finishReason?: unknown; content?: { parts?: Array<{ text?: unknown }> } }>
-  }
-  const candidate = data.candidates?.[0]
-  if (!candidate) throw new ProviderCallError('Model returned no candidate.', 'MODEL_OUTPUT_UNUSABLE')
-  if (candidate.finishReason !== undefined && candidate.finishReason !== 'STOP') {
+  if (result.finishReason !== 'stop') {
     throw new ProviderCallError(
-      `Transcription did not finish safely (finishReason=${String(candidate.finishReason)}).`,
+      `Transcription did not finish safely (finishReason=${result.finishReason}).`,
       'MODEL_OUTPUT_UNUSABLE',
       undefined,
-      String(candidate.finishReason),
+      result.finishReason,
     )
   }
-  const text = candidate.content?.parts?.[0]?.text
-  if (typeof text !== 'string') throw new ProviderCallError('Model returned no transcription text.', 'MODEL_OUTPUT_UNUSABLE')
+  if (!result.text) throw new ProviderCallError('Model returned no transcription text.', 'MODEL_OUTPUT_UNUSABLE')
 
-  const bounded = boundExtractedText(text)
+  const bounded = boundExtractedText(result.text)
   // M1: server-side diagnostic logging of the extracted length + word-count
   // stats. Page count is not logged -- a plain-text transcription carries
   // no page-break markers, so an honest page count is not obtainable from

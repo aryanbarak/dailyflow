@@ -29,12 +29,26 @@ export interface TextGenerationRequest {
   turns: ChatMessage[];
   maxOutputTokens?: number;
   temperature?: number;
+  // ADR-0018 S1 follow-up (part-order preservation): when providerOptions
+  // carries an attachment (the Gemini adapter's own inlineDataAttachment),
+  // this says whether it precedes or follows the turn's own text part. The
+  // adapter must not choose this itself -- S1 originally hardcoded "always
+  // after" and silently flipped two callers' pre-existing part order
+  // (transcribePdf, /documents/analyze both put the attachment BEFORE the
+  // text). No default: the Gemini adapter throws if an attachment is
+  // present without this field set, rather than guessing.
+  attachmentPosition?: 'before' | 'after';
   providerOptions?: Record<string, unknown>;
 }
 
+// ADR-0018 S1: narrowed from a plain `string` (S0) to this neutral enum --
+// 'stop' (finished normally), 'length' (cut off by maxOutputTokens), or
+// 'other' (anything else: a safety/recitation block, an unrecognized or
+// missing value). See GeminiTextGenerationProvider's own mapFinishReason
+// for the Gemini-specific mapping into this contract.
 export interface TextGenerationResult {
   text: string;
-  finishReason: string;
+  finishReason: 'stop' | 'length' | 'other';
 }
 
 // ADR-0018 Decision 3: `schema` carries the neutral JSON-Schema subset

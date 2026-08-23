@@ -874,9 +874,8 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
          exists for `finance_import_batches`
          (`supabase/tests/finance_import_batches.migration_structure.test.ts`)
          but `finance_import_rows` still has neither.
-12. **Capability-oriented AI provider abstraction — S0 (interfaces only)
-    authored on branch `feat/adr-0018-s0-provider-interfaces`; not pushed
-    to `main`.**
+12. **Capability-oriented AI provider abstraction — S0 merged to `main`; S1
+    authored on branch `feat/adr-0018-s1-text-generation`, not pushed.**
     [ADR-0018](docs/decisions/adr/ADR-0018-capability-oriented-ai-provider-abstraction.md)
     (**Status: Accepted** — PO approved 2026-08-22, all five open questions
     answered yes). Follows directly from INC-01 (2026-08-22 Gemini 429
@@ -884,20 +883,60 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
     direct, unabstracted `fetch()` to `generativelanguage.googleapis.com`
     (17 call sites), so ADR-0006's "replaceable mechanism" claim for
     providers was not true of the code. Also amends ADR-0008 with four
-    governance items decided the same session (branch-commit authority, no
-    amend/force-push after a PR is open, the production deploy path, and
-    the "environment-only failure" labeling rule) — see ADR-0008's own new
+    governance items decided the same session — see ADR-0008's own
     "Amendments (2026-08-22)" section.
-    - **S0 (this slice) — zero behavior change, nothing wired.**
-      `agent/worker/providers/types.ts` defines the three capability
-      contracts (`TextGenerationProvider`, `StructuredGenerationProvider`,
-      `EmbeddingProvider`) and their request/result shapes exactly per the
-      ADR's Decision 1–2; `providers/index.ts` re-exports them plus
-      `ProviderUnavailableError` (re-exported from `provider-errors.ts`,
-      not moved or renamed). A type-level test
-      (`providers/providerInterfaces.test.ts`) proves the three interfaces
-      are implementable with stub classes. No call site imports from
-      `providers/` yet — that starts at S1.
+    - **S0 — merged.** `agent/worker/providers/types.ts` defines the three
+      capability contracts (`TextGenerationProvider`,
+      `StructuredGenerationProvider`, `EmbeddingProvider`) per the ADR's
+      Decision 1–2; `providers/index.ts` re-exports them plus
+      `ProviderUnavailableError`. Type-level test:
+      `providers/providerInterfaces.test.ts`.
+    - **S1 (this slice) — `GeminiTextGenerationProvider` + failure
+      persistence, zero behavior change for callers.**
+      `providers/gemini/GeminiTextGenerationProvider.ts` implements
+      `TextGenerationProvider`: URL/`system_instruction`/role-mapping/
+      `generationConfig`, `thinkingConfig` passed through
+      `providerOptions` only (never defaulted inside the adapter — a
+      model-specific quirk must not become adapter policy),
+      finishReason mapped to the neutral `'stop'|'length'|'other'` enum.
+      `providers/createProviders.ts` is the one factory call sites use
+      instead of importing the Gemini class directly. Migrated exactly the
+      4 `[TEXT_GEN]` call sites (PA-01 §2): `index.ts`'s `callGemini`
+      (briefing), `callGeminiChat` (`/chat` mode=chat),
+      `handleDocumentAnalyze` (`/documents/analyze`), and
+      `document-memory-extraction-endpoint.ts`'s `transcribePdf`.
+      `ProviderFailureTaxonomy`/`ProviderCallError` unified into
+      `providers/providerFailureTaxonomy.ts`, imported by
+      `document-memory-extraction-endpoint.ts` and
+      `context-derivation-endpoint.ts` (the duplicate in
+      `personal-memory-extraction-endpoint.ts` is untouched — its own
+      Gemini calls are all structured generation, S2 scope, not this
+      slice's). `providers/failureEvents.ts`'s `recordProviderFailure` is
+      fail-safe (any persistence error is caught, logged once with
+      `console.warn`, swallowed — the caller's own request is never
+      affected) and is called from the adapter's `ProviderUnavailableError`
+      path with `capability: 'text_generation'`.
+      Verification: all 4 migrated endpoints' EXISTING tests pass
+      UNCHANGED (219 tests across `index.test.ts`,
+      `document-memory-extraction-endpoint.test.ts`,
+      `chat-attachment-context.test.ts`,
+      `context-derivation-endpoint.test.ts` — the zero-behavior-change
+      proof) plus new tests: `GeminiTextGenerationProvider.test.ts` (28),
+      `failureEvents.test.ts` (5). Two of the four migrated call sites
+      (briefing/`callGemini`, `/documents/analyze`) had **no prior test
+      coverage at all** before this slice — flagged, not backfilled (out
+      of this slice's explicit scope); their request shape is exercised
+      indirectly via the adapter's own tests. Two narrow, deliberate,
+      untested normalizations from unifying 4 hand-written fetches into
+      one adapter: every turn now carries an explicit `role` (Gemini
+      documents an omitted role as defaulting to `'user'` for a
+      single-turn call — a no-op for the model), and a multimodal
+      attachment part now always comes AFTER the text part (previously
+      `transcribePdf` put it before) — part order within one Gemini
+      `content` has no documented semantic meaning. `provider-contract-smoke.ts`
+      gained a 6th check (`checkTextGenerationAdapterContract`) exercising
+      the adapter's own real request/response round trip; existing 5
+      checks unchanged.
     - **Migration authored, NOT applied:**
       `supabase/migrations/20260823000000_provider_failure_events.sql` —
       columns per Decision 6 (`id`, `capability`, `provider_id`,
@@ -905,24 +944,31 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
       to `anon`/`authenticated`, `service_role` only — same pattern as
       `finance_import_batches`. Static structure test:
       `supabase/tests/provider_failure_events.migration_structure.test.ts`.
-      Requires `supabase db push` with explicit PO authorization before any
-      row can ever be written, same policy as every other pending migration
-      in this file.
-    - **S1–S5 planned, not started:** S1 (`GeminiTextGenerationProvider`,
-      4 text call sites, unify `ProviderFailureTaxonomy`, persist failure
-      events), S2 (neutral JSON-Schema subset +
+      **DEPLOY ORDER: the `provider_failure_events` migration must be
+      applied BEFORE the S1 Worker is deployed.** `recordProviderFailure`
+      is fail-safe (a missing table degrades to a swallowed `console.warn`,
+      never a caller-visible failure), but deploying INTO a known
+      missing-table state is still not the intended order — apply the
+      migration first, deploy the Worker second.
+    - **6/6 `provider-contract-smoke` checks are now required before Worker
+      deploy** (was 5/5 through S0) — the new adapter check must pass
+      alongside the five existing schema/model contracts.
+    - **S2–S5 planned, not started:** S2 (neutral JSON-Schema subset +
       `GeminiStructuredGenerationProvider`, 8 structured call sites,
       snapshot-diff-empty discipline), S3 (`GeminiEmbeddingProvider`
       wrapping `embeddingConfig.ts`, startup dimension assertion), S4 (test
       migration: fetch-level mocks → interface mocks), S5 (OCR migrated
       from the legacy `workers/ai-worker-recovered/` Worker — first
       legacy-retirement step). Each slice is its own PR, test-gated, no
-      behavior change proven per-slice (byte-identical schema snapshot for
-      S2, existing endpoint tests for S1/S3). See the ADR's own
-      Implementation Plan table for the full gate per slice.
-    - **No smoke run for S0** — no model-facing/schema-shape change exists
-      yet to smoke-test; `provider-contract-smoke` first becomes relevant
-      at S1.
+      behavior change proven per-slice. See the ADR's own Implementation
+      Plan table for the full gate per slice.
+    - **No smoke RUN performed for S1** — `GEMINI_API_KEY` unavailable in
+      this environment; the script's own guard confirmed it exits cleanly
+      (code 0) without attempting any network call, and import resolution
+      of the new adapter succeeded (vite-node reached the guard, meaning
+      the whole module graph — including the new
+      `GeminiTextGenerationProvider` import — resolved and transformed
+      without error).
 
 Superseded/completed sprint milestones from the prior version of this
 document have been removed rather than carried forward as history; git

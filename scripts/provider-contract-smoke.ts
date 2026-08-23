@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // SmartFlow -- Provider-contract smoke script (task 16-fix, PO-mandated;
-// fifth contract added task 28b to cover the reasoning-endpoint schema).
+// fifth contract added task 28b to cover the reasoning-endpoint schema;
+// sixth contract added ADR-0018 S1 to cover the new TextGenerationProvider
+// adapter -- see checkTextGenerationAdapterContract below).
 //
-// MANUAL USE ONLY -- never wire this into CI. It makes five minimal REAL
+// MANUAL USE ONLY -- never wire this into CI. It makes six minimal REAL
 // calls against the live Gemini API to catch the exact class of break that
 // motivated this script: a provider silently retiring a model
 // (text-embedding-004, shut down Jan 2026) turns a previously-working
@@ -58,6 +60,7 @@ import { buildExtractionSystemInstruction, buildExtractionPrompt, buildExtractio
 import { buildDerivationSystemInstruction, buildDerivationPrompt, buildDerivationResponseSchema } from '../agent/worker/context-derivation-endpoint'
 import { buildTaskTitleSystemInstruction, buildTaskTitlePrompt, buildTaskTitleResponseSchema } from '../agent/worker/task-title-extraction'
 import { buildReasoningSystemInstruction, buildReasoningResponseSchema, SUPPORTED_INTENT_VALUES } from '../agent/worker/reasoning-endpoint'
+import { GeminiTextGenerationProvider } from '../agent/worker/providers/gemini/GeminiTextGenerationProvider'
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? ''
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash'
@@ -180,11 +183,43 @@ async function checkEmbeddingContract(): Promise<ContractResult> {
   }
 }
 
+// ADR-0018 S1: proves GeminiTextGenerationProvider's real request envelope
+// still round-trips against the live API -- the same class of break this
+// whole script exists to catch (PA-01's own migrated call sites all go
+// through this adapter now, so a schema/model break here is a break for
+// all 4 of them, not just one hand-written fetch). SUPABASE_URL/
+// SUPABASE_SERVICE_KEY are placeholders: this check only calls
+// generateText() on the SUCCESS path, which never touches
+// providers/failureEvents.ts's persistence at all (that only fires on a
+// caught ProviderUnavailableError) -- see that module's own fail-safe
+// design if this check is ever extended to exercise a failure path.
+async function checkTextGenerationAdapterContract(): Promise<ContractResult> {
+  const name = 'GeminiTextGenerationProvider.generateText (providers/gemini/GeminiTextGenerationProvider.ts)'
+  try {
+    const provider = new GeminiTextGenerationProvider({
+      GEMINI_API_KEY,
+      GEMINI_MODEL,
+      SUPABASE_URL: 'https://smoke-test.invalid',
+      SUPABASE_SERVICE_KEY: 'unused-in-the-success-path',
+    })
+    const result = await provider.generateText({
+      turns: [{ role: 'user', content: 'Reply with exactly one short sentence confirming you received this message.' }],
+      maxOutputTokens: 128,
+      temperature: 0,
+    })
+    if (result.finishReason !== 'stop') return { name, pass: false, detail: `unexpected finishReason=${result.finishReason}` }
+    if (!result.text.trim()) return { name, pass: false, detail: 'adapter returned empty text' }
+    return { name, pass: true, detail: `finishReason=stop textLength=${result.text.length}` }
+  } catch (error) {
+    return { name, pass: false, detail: (error as Error).message }
+  }
+}
+
 async function main() {
   console.log(`Provider-contract smoke test -- model=${GEMINI_MODEL} embeddingModel=${EMBEDDING_MODEL}`)
   console.log('(manual run only -- never wired into CI)\n')
 
-  const results = [await checkExtractionContract(), await checkDerivationContract(), await checkTaskTitleContract(), await checkReasoningContract(), await checkEmbeddingContract()]
+  const results = [await checkExtractionContract(), await checkDerivationContract(), await checkTaskTitleContract(), await checkReasoningContract(), await checkEmbeddingContract(), await checkTextGenerationAdapterContract()]
 
   for (const result of results) {
     console.log(`${result.pass ? 'PASS' : 'FAIL'} -- ${result.name}`)

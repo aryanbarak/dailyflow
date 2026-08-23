@@ -2445,3 +2445,119 @@ describe('Task 45c, ADR-0017: POST /finance/import-batch/preview and /commit', (
     })
   })
 })
+
+// =============================================
+// ADR-0018 S1 follow-up: neither callGemini (briefing) nor
+// handleDocumentAnalyze had ANY prior test coverage anywhere in the repo
+// (flagged, not silently backfilled, in the S1 report) -- this closes that
+// gap at the one level available for either (both are private to index.ts;
+// there is no named export to unit-test directly, only the default
+// export's worker.fetch entry point).
+// =============================================
+describe('ADR-0018 S1 follow-up: endpoint-level coverage for callGemini (briefing) and /documents/analyze', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  interface CapturedGeminiCall {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- matches this file's own pre-existing FetchLog.geminiCalls generationConfig typing (line 45): the request shape genuinely varies per call site.
+    body: any
+  }
+
+  // Every Supabase REST call besides the Gemini call itself and the auth
+  // check returns an empty result set -- the daily briefing context
+  // pipeline's own "brand-new user, no data yet" state, which every
+  // context-builder fetcher (context-builder.ts) already handles as an
+  // ordinary empty result, not an error; saveBriefing's own POST tolerates
+  // any 2xx and never throws on failure either way.
+  function installGeminiEndpointFetchMock(geminiStatus: number, geminiText: string): CapturedGeminiCall[] {
+    const geminiCalls: CapturedGeminiCall[] = []
+    const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.startsWith('https://generativelanguage.googleapis.com/')) {
+        geminiCalls.push({ body: JSON.parse(String(init?.body)) })
+        if (geminiStatus !== 200) return new Response('provider error', { status: geminiStatus })
+        return new Response(
+          JSON.stringify({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: geminiText }] } }] }),
+          { status: 200 },
+        )
+      }
+      if (url.includes('/auth/v1/user')) {
+        return new Response(JSON.stringify({ id: 'user-1' }), { status: 200 })
+      }
+      return new Response('[]', { status: 200 })
+    })
+    vi.stubGlobal('fetch', mock)
+    return geminiCalls
+  }
+
+  function generateRequest() {
+    return new Request('https://worker.test/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer user-token', Origin: 'https://barakzai.cloud' },
+      body: JSON.stringify({}),
+    })
+  }
+
+  function documentAnalyzeRequest(body: Record<string, unknown>) {
+    return new Request('https://worker.test/documents/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer user-token', Origin: 'https://barakzai.cloud' },
+      body: JSON.stringify(body),
+    })
+  }
+
+  describe('callGemini (briefing, via POST /generate, daily mode)', () => {
+    it('sends system_instruction, turn role "user", and maxOutputTokens 1024 (the pre-S1 daily-mode constant)', async () => {
+      const geminiCalls = installGeminiEndpointFetchMock(200, 'Your briefing today.')
+
+      const response = await worker.fetch(generateRequest(), testEnv(), fakeExecutionContext())
+      expect(response.status).toBe(200)
+
+      expect(geminiCalls).toHaveLength(1)
+      const { body } = geminiCalls[0]
+      expect(body.system_instruction?.parts?.[0]?.text?.length).toBeGreaterThan(0)
+      expect(body.contents[0].role).toBe('user')
+      expect(body.generationConfig.maxOutputTokens).toBe(1024)
+    })
+
+    // Negative path: found during this follow-up that a 429 fell through
+    // handleGenerate's generic catch to a plain 500 "Failed to generate
+    // briefing" -- the same INC-01 dishonesty this whole ADR exists to
+    // rule out, just on a second endpoint. Fixed alongside this test (see
+    // handleGenerate's own new ProviderUnavailableError branch) rather
+    // than asserting the wrong pre-existing behavior.
+    it('a 429 from Gemini returns 503 PROVIDER_UNAVAILABLE, not the generic 500', async () => {
+      installGeminiEndpointFetchMock(429, '')
+
+      const response = await worker.fetch(generateRequest(), testEnv(), fakeExecutionContext())
+      expect(response.status).toBe(503)
+      const body = await response.json() as { code?: string }
+      expect(body.code).toBe('PROVIDER_UNAVAILABLE')
+    })
+  })
+
+  describe('/documents/analyze', () => {
+    // No system_instruction assertion here: this endpoint has never sent
+    // one, before or after S1 (it has no `system` field on its request at
+    // all -- see handleDocumentAnalyze's own generateText call) -- so
+    // asserting its absence IS the zero-behavior-change proof for this
+    // field.
+    it('sends turn role "user" and maxOutputTokens 4096 (the pre-S1 constant), with no system_instruction', async () => {
+      const geminiCalls = installGeminiEndpointFetchMock(200, 'Analysis result.')
+
+      const response = await worker.fetch(
+        documentAnalyzeRequest({ message: 'Summarize this', text: 'Some document body text.' }),
+        testEnv(),
+        fakeExecutionContext(),
+      )
+      expect(response.status).toBe(200)
+
+      expect(geminiCalls).toHaveLength(1)
+      const { body } = geminiCalls[0]
+      expect(body.system_instruction).toBeUndefined()
+      expect(body.contents[0].role).toBe('user')
+      expect(body.generationConfig.maxOutputTokens).toBe(4096)
+    })
+  })
+})
