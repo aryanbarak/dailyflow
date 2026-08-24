@@ -301,10 +301,48 @@ ${CHAT_WRITE_POLICY_CONTRACT.fa}
 ${buildChatMarkdownContract('fa')}`,
 }
 
-export function buildChatSystemPrompt(language: Language, confirmedMemory: ConfirmedPersonalMemoryRecord[]): string {
+// DATE-01: production evidence showed the model inventing a date ("May 19,
+// 2024") or deflecting to "check your calendar" when asked what day it is
+// -- /chat never told it. `now`/`timeZone` are explicit, injected
+// parameters (not a bare `new Date()` inside this function) specifically
+// so this is testable with a fixed clock -- see buildPrompt's own `today`
+// line (briefing mode) for the anti-pattern this deliberately avoids: a
+// direct `new Date()` call with no timezone applied and no test covering
+// it at all (tracked as its own debt item, DATE-02, in PROJECT_STATUS).
+// Neutral, English, ISO-dated line regardless of persona language -- this
+// file's own convention for CONTEXT/data lines (buildJournalSection,
+// buildTaskSection, buildHabitSection below are the same: plain English
+// facts appended after a language-specific persona, never translated) --
+// the model needs to know the instant, not read a translated sentence.
+function buildCurrentDateTimeSection(now: Date, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    weekday: 'long',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(now)
+
+  const get = (type: string) => parts.find(p => p.type === type)?.value ?? ''
+  const isoDate = `${get('year')}-${get('month')}-${get('day')}`
+  const time = `${get('hour')}:${get('minute')}`
+
+  return `Current date and time: ${isoDate} (${get('weekday')}), ${time}, ${timeZone}`
+}
+
+export function buildChatSystemPrompt(
+  language: Language,
+  confirmedMemory: ConfirmedPersonalMemoryRecord[],
+  now: Date,
+  timeZone: string,
+): string {
   const persona = CHAT_PERSONA[language]
+  const dateTimeSection = buildCurrentDateTimeSection(now, timeZone)
   const memorySection = buildConfirmedMemorySection(confirmedMemory)
-  return memorySection ? `${persona}\n\n${memorySection}` : persona
+  return [persona, dateTimeSection, memorySection].filter(Boolean).join('\n\n')
 }
 
 const LANG_NAMES: Record<Language, string> = {

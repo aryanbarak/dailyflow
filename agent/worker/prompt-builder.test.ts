@@ -4,17 +4,23 @@ import type { ConfirmedPersonalMemoryRecord } from './personal-memory-prompt-ser
 import type { Language } from './types'
 
 // Task 11c PART 3 (conversation-lane self-awareness) + PART 1/2 (close the
-// legacy leak). buildChatSystemPrompt's own signature is
+// legacy leak). buildChatSystemPrompt's signature was originally
 // `(language: Language, confirmedMemory: ConfirmedPersonalMemoryRecord[])`
-// -- there is no third parameter for legacy user_context or unreviewed
-// goal content, so it is structurally impossible for this function to
-// inject anything beyond the two inputs it actually receives. These tests
-// lock in (a) that only confirmed memory content ever appears, never a
-// legacy-only fact, and (b) that the identity block from task 11c is
-// always present, in every language, regardless of whether confirmed
-// memory exists.
+// -- there was no third parameter for legacy user_context or unreviewed
+// goal content, so it was structurally impossible for this function to
+// inject anything beyond those two inputs. DATE-01 added `now`/`timeZone`
+// (see the describe block below) -- these tests still lock in (a) that
+// only confirmed memory content ever appears, never a legacy-only fact,
+// and (b) that the identity block from task 11c is always present, in
+// every language, regardless of whether confirmed memory exists.
 
 const now = '2026-08-10T09:00:00.000Z'
+
+// DATE-01: a fixed, injected clock -- never real Date.now -- so the
+// date-line assertions below are deterministic regardless of when the
+// suite runs.
+const FIXED_CLOCK = new Date('2026-08-24T14:30:00.000Z')
+const FIXED_TIMEZONE = 'Europe/Berlin'
 
 function confirmedSkill(summary: string): ConfirmedPersonalMemoryRecord {
   return { kind: 'skill', content: { summary }, createdAt: now }
@@ -48,7 +54,7 @@ describe('buildChatSystemPrompt', () => {
       'اگر کاربر در طول گفتگو صراحتاً زبان خاصی را درخواست کرده، به همان زبان پاسخ بده. ۲) در غیر این صورت، به زبان پیام فعلی کاربر پاسخ بده. ۳) اگر زبان نامشخص یا ترکیبی بود، به‌طور پیش‌فرض به فارسی پاسخ بده.',
     ],
   ] as const)('%s: the language line is a priority order (explicit request > message language > persona default), not an absolute command', (language, priorityText) => {
-    const prompt = buildChatSystemPrompt(language, [])
+    const prompt = buildChatSystemPrompt(language, [], FIXED_CLOCK, FIXED_TIMEZONE)
     expect(prompt).toContain(priorityText)
     expect(prompt).not.toContain('MUST reply entirely')
     expect(prompt).not.toContain('MUSST ausschließlich')
@@ -57,7 +63,7 @@ describe('buildChatSystemPrompt', () => {
 
   it('(a) contains ONLY the confirmed memory passed in -- a legacy-only fact (never confirmed) is structurally absent since there is no legacy input to this function at all', () => {
     const confirmedMemory = [confirmedSkill('TELC B2'), confirmedSkill('TypeScript'), confirmedSkill('React')]
-    const prompt = buildChatSystemPrompt('fa', confirmedMemory)
+    const prompt = buildChatSystemPrompt('fa', confirmedMemory, FIXED_CLOCK, FIXED_TIMEZONE)
 
     expect(prompt).toContain('TELC B2')
     expect(prompt).toContain('TypeScript')
@@ -103,7 +109,7 @@ describe('buildChatSystemPrompt', () => {
     ]
 
     for (const { language, mustContain } of cases) {
-      const prompt = buildChatSystemPrompt(language, [])
+      const prompt = buildChatSystemPrompt(language, [], FIXED_CLOCK, FIXED_TIMEZONE)
       for (const phrase of mustContain) {
         expect(prompt, `${language} prompt missing: "${phrase}"`).toContain(phrase)
       }
@@ -131,7 +137,7 @@ describe('buildChatSystemPrompt', () => {
     ['de', 'Behaupte niemals, dass du Zugriff auf GitHub hast, und behaupte niemals, dass dir Zugriff fehlt'],
     ['fa', 'هرگز ادعا نکن که به گیت‌هاب دسترسی داری و هرگز ادعا نکن که دسترسی نداری'],
   ] as const)('%s: CHAT_IDENTITY contains the deferring GitHub carve-out', (language, deferringPhrase) => {
-    const prompt = buildChatSystemPrompt(language, [])
+    const prompt = buildChatSystemPrompt(language, [], FIXED_CLOCK, FIXED_TIMEZONE)
     expect(prompt).toContain(deferringPhrase)
     // The pre-existing tasks/calendar/app wording must survive untouched --
     // this is an addition, not a rewrite.
@@ -139,13 +145,32 @@ describe('buildChatSystemPrompt', () => {
   })
 
   it('(b) the identity block is present regardless of whether confirmed memory exists -- not conditional on memory content', () => {
-    const withMemory = buildChatSystemPrompt('en', [confirmedSkill('React')])
-    const withoutMemory = buildChatSystemPrompt('en', [])
+    const withMemory = buildChatSystemPrompt('en', [confirmedSkill('React')], FIXED_CLOCK, FIXED_TIMEZONE)
+    const withoutMemory = buildChatSystemPrompt('en', [], FIXED_CLOCK, FIXED_TIMEZONE)
 
     for (const prompt of [withMemory, withoutMemory]) {
       expect(prompt).toContain('Flow AI')
       expect(prompt).toContain('never tell the user to open SmartFlow')
     }
+  })
+
+  // DATE-01: production evidence showed the model inventing a date ("May
+  // 19, 2024") or deflecting to "check your calendar" when asked what day
+  // it is -- /chat never told it. `now`/`timeZone` are explicit, injected
+  // parameters (see FIXED_CLOCK/FIXED_TIMEZONE above) precisely so this is
+  // assertable against a fixed instant, never real Date.now.
+  it('injects the current date, weekday, and time with timezone -- matches the injected fixed clock, not real time', () => {
+    const prompt = buildChatSystemPrompt('en', [], FIXED_CLOCK, FIXED_TIMEZONE)
+    // FIXED_CLOCK is 2026-08-24T14:30:00.000Z; Europe/Berlin is UTC+2 in
+    // August (CEST) -- 16:30 local, still Monday.
+    expect(prompt).toContain('Current date and time: 2026-08-24 (Monday), 16:30, Europe/Berlin')
+  })
+
+  it('the date/time line moves with the injected clock and timezone -- not hardcoded, not real Date.now', () => {
+    const laterInAnotherZone = buildChatSystemPrompt('en', [], new Date('2026-01-05T23:15:00.000Z'), 'America/New_York')
+    // 2026-01-05T23:15Z is 2026-01-05T18:15 in New York (EST, UTC-5) -- Monday.
+    expect(laterInAnotherZone).toContain('Current date and time: 2026-01-05 (Monday), 18:15, America/New_York')
+    expect(laterInAnotherZone).not.toContain('2026-08-24')
   })
 
   it('includes the same semantic Markdown contract in English, German, and Persian chat prompts', () => {
@@ -180,7 +205,7 @@ describe('buildChatSystemPrompt', () => {
     ]
 
     for (const { language, phrases } of cases) {
-      const prompt = buildChatSystemPrompt(language, [])
+      const prompt = buildChatSystemPrompt(language, [], FIXED_CLOCK, FIXED_TIMEZONE)
       for (const phrase of phrases) {
         expect(prompt, `${language} prompt missing: "${phrase}"`).toContain(phrase)
       }
@@ -188,7 +213,7 @@ describe('buildChatSystemPrompt', () => {
   })
 
   it('requires real headings for multi-section answers and gives a heading plus child-list example', () => {
-    const prompt = buildChatSystemPrompt('en', [])
+    const prompt = buildChatSystemPrompt('en', [], FIXED_CLOCK, FIXED_TIMEZONE)
 
     expect(prompt).toContain('When an answer has multiple logical sections, use real Markdown headings')
     expect(prompt).toContain('## Major section')
@@ -199,7 +224,7 @@ describe('buildChatSystemPrompt', () => {
   })
 
   it('does not recommend bold-list pseudo-headings for section titles', () => {
-    const prompt = buildChatSystemPrompt('en', [])
+    const prompt = buildChatSystemPrompt('en', [], FIXED_CLOCK, FIXED_TIMEZONE)
 
     expect(prompt).toContain('Do not produce pseudo-heading list items such as:')
     expect(prompt).toContain('* **API Development:**')
@@ -209,7 +234,7 @@ describe('buildChatSystemPrompt', () => {
   })
 
   it('requires sibling named items to be split into separate list items', () => {
-    const prompt = buildChatSystemPrompt('en', [])
+    const prompt = buildChatSystemPrompt('en', [], FIXED_CLOCK, FIXED_TIMEZONE)
 
     expect(prompt).toContain('Give each named item its own list item')
     expect(prompt).toContain('Preferred named-item list:')
@@ -219,7 +244,7 @@ describe('buildChatSystemPrompt', () => {
   })
 
   it('preserves simple conversational answers instead of forcing headings everywhere', () => {
-    const prompt = buildChatSystemPrompt('en', [])
+    const prompt = buildChatSystemPrompt('en', [], FIXED_CLOCK, FIXED_TIMEZONE)
 
     expect(prompt).toContain('Use normal conversational prose for simple answers')
     expect(prompt).toContain('do not force headings or lists when they are not useful')
@@ -229,7 +254,7 @@ describe('buildChatSystemPrompt', () => {
 
   it('keeps supported task-write approval/execution authority in the server policy layer', () => {
     for (const language of ['en', 'de', 'fa'] as const) {
-      const prompt = buildChatSystemPrompt(language, [])
+      const prompt = buildChatSystemPrompt(language, [], FIXED_CLOCK, FIXED_TIMEZONE)
       if (language === 'fa') {
         expect(prompt).toContain('سمت سرور')
         expect(prompt).toContain('سیاست')
@@ -248,7 +273,7 @@ describe('buildChatSystemPrompt', () => {
     const bidiControls = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/
 
     for (const language of ['en', 'de', 'fa'] as const) {
-      const prompt = buildChatSystemPrompt(language, [])
+      const prompt = buildChatSystemPrompt(language, [], FIXED_CLOCK, FIXED_TIMEZONE)
       expect(prompt).toContain('Unicode')
       expect(prompt).toContain('Flow AI')
       expect(prompt).not.toMatch(bidiControls)

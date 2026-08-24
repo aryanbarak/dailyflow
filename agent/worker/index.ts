@@ -1248,7 +1248,7 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
       }
     }
 
-    const system = buildChatSystemPrompt(language, confirmedMemory)
+    const system = buildChatSystemPrompt(language, confirmedMemory, new Date(), timeZone)
     const fullHistory: ChatMessage[] = [...history, { role: 'user', content: modelFacingMessage }]
 
     // INC-01: a provider failure (429/5xx/network) here must not fall
