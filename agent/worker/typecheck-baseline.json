@@ -1,0 +1,52 @@
+{
+  "chat-attachment-context.test.ts": {
+    "TS2345": 1,
+    "TS2322": 2
+  },
+  "chat-attachment-context.ts": {
+    "TS2345": 1
+  },
+  "context-derivation-endpoint.test.ts": {
+    "TS18046": 14,
+    "TS2339": 1,
+    "TS2352": 1
+  },
+  "document-memory-extraction-endpoint.test.ts": {
+    "TS2345": 1,
+    "TS2322": 1
+  },
+  "document-memory-extraction-endpoint.ts": {
+    "TS2345": 1
+  },
+  "github-integration.ts": {
+    "TS2345": 1
+  },
+  "personal-memory-extraction-endpoint.test.ts": {
+    "TS2352": 1,
+    "TS2339": 1
+  },
+  "providers/gemini/GeminiEmbeddingProvider.test.ts": {
+    "TS2493": 4,
+    "TS2352": 1,
+    "TS2554": 2,
+    "TS2339": 1
+  },
+  "providers/gemini/GeminiStructuredGenerationProvider.test.ts": {
+    "TS2493": 11,
+    "TS2339": 10,
+    "TS2554": 2
+  },
+  "providers/gemini/GeminiTextGenerationProvider.test.ts": {
+    "TS2493": 13,
+    "TS2339": 12,
+    "TS2554": 2
+  },
+  "reasoning-endpoint.test.ts": {
+    "TS2339": 1,
+    "TS2352": 1,
+    "TS2493": 1
+  },
+  "../../shared/bankImportBatchPreview.ts": {
+    "TS2698": 1
+  }
+}
