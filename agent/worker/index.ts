@@ -41,6 +41,13 @@ import {
 } from './flow-write-policy'
 import { ProviderRequestError, ProviderUnavailableError } from './provider-errors'
 import { createProviders } from './providers/createProviders'
+// ADR-0018 S1b follow-up: /chat's own AttachmentsUnsupportedError handler
+// (handleChat's mode:'chat' catch, below) needs the class to check against
+// -- this is a structural last resort, since callGeminiChat now pins to
+// Gemini whenever an attachment is present (see that function's own
+// comment), so the workers-ai adapter's own rejection should never
+// actually fire from this path in practice.
+import { AttachmentsUnsupportedError } from './providers/workers-ai/WorkersAITextGenerationProvider'
 import { resolveGeminiModel } from './geminiModel'
 import { recordProposalOutcome } from './proposal-outcome-recording'
 import { parseProposalOutcomeRequestBody } from './proposal-outcome-endpoint'
@@ -971,6 +978,17 @@ const PROVIDER_UNAVAILABLE_CHAT_REPLY: Record<Language, string> = {
   fa: 'دستیار هوش مصنوعی موقتاً در دسترس نیست. لطفاً کمی بعد دوباره امتحان کنید.',
 }
 
+// ADR-0018 S1b follow-up: the same honest-reply discipline as
+// PROVIDER_UNAVAILABLE_CHAT_REPLY above, for AttachmentsUnsupportedError's
+// structural-last-resort branch (callGeminiChat pins to Gemini whenever an
+// attachment is present, so this should never actually fire in practice --
+// but a generic 500 is still the wrong failure mode if it ever does).
+const ATTACHMENT_UNSUPPORTED_CHAT_REPLY: Record<Language, string> = {
+  en: 'I could not process the attached file with the AI assistant right now. Please try again without the attachment, or contact support if this keeps happening.',
+  de: 'Ich konnte die angehängte Datei gerade nicht mit dem KI-Assistenten verarbeiten. Bitte versuche es ohne den Anhang erneut oder wende dich an den Support, falls dies weiterhin auftritt.',
+  fa: 'در حال حاضر امکان پردازش فایل پیوست‌شده توسط دستیار هوش مصنوعی وجود ندارد. لطفاً بدون پیوست دوباره امتحان کنید یا در صورت تکرار با پشتیبانی تماس بگیرید.',
+}
+
 async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const origin = request.headers.get('Origin') ?? ''
 
@@ -1245,6 +1263,21 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
     try {
       rawReply = await callGeminiChat(system, fullHistory, env, {}, attachmentImage)
     } catch (err) {
+      // ADR-0018 S1b follow-up: structural last resort -- callGeminiChat
+      // pins to Gemini whenever attachmentImage is set, so this branch
+      // should not be reachable in practice, but a generic 500 is still
+      // the wrong failure mode for it if something ever does throw it
+      // (a misconfigured pin, a future refactor that drops it, ...) --
+      // same honest-reply discipline as the ProviderUnavailableError
+      // branch below, not a code-path this could silently regress into a
+      // 500 for.
+      if (err instanceof AttachmentsUnsupportedError) {
+        console.error('[Chat] attachment provider error:', err)
+        const reply = ATTACHMENT_UNSUPPORTED_CHAT_REPLY[language]
+        await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'user', content: message })
+        await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: reply })
+        return json({ reply }, 200, origin)
+      }
       if (!(err instanceof ProviderUnavailableError)) throw err
       console.error('[Chat] provider error:', err)
       const reply = PROVIDER_UNAVAILABLE_CHAT_REPLY[language]
@@ -1366,7 +1399,14 @@ async function callGeminiChat(
   console.log('[Chat] sending', history.length, 'turns to Gemini')
 
   // MIG-01b: thinkingConfig removed -- see callGemini's own comment.
-  const result = await createProviders(env).text.generateText({
+  // ADR-0018 S1b follow-up: an image attachment must WORK regardless of
+  // AI_TEXT_PROVIDER, not be rejected -- pinned to Gemini here the same
+  // way transcribePdf and /documents/analyze already are (createProviders.ts's
+  // pinTextProvider option), rather than relying on
+  // WorkersAITextGenerationProvider's generic attachments-unsupported
+  // rejection for a request that structurally cannot succeed on that
+  // provider.
+  const result = await createProviders(env, fetch, imageAttachment ? { pinTextProvider: 'gemini' } : {}).text.generateText({
     system,
     turns: history,
     maxOutputTokens,
@@ -1734,7 +1774,12 @@ async function handleDocumentAnalyze(request: Request, env: Env): Promise<Respon
     // never specially caught for that case either).
     let answer: string
     try {
-      const result = await createProviders(env).text.generateText({
+      // ADR-0018 S1b: /documents/analyze can carry a file attachment --
+      // pinned to Gemini (pinTextProvider: 'gemini' ignores
+      // AI_TEXT_PROVIDER entirely) rather than relying on
+      // WorkersAITextGenerationProvider's generic attachments-unsupported
+      // rejection.
+      const result = await createProviders(env, fetch, { pinTextProvider: 'gemini' }).text.generateText({
         turns: [{ role: 'user', content: text }],
         temperature: 0.3,
         maxOutputTokens: 4096,

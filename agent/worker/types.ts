@@ -19,7 +19,13 @@ export interface Env {
   GITHUB_ALLOWED_ORIGINS?: string
   GITHUB_APP_PRIVATE_KEY?: string
   GITHUB_CLIENT_SECRET?: string
-  AI: Ai  // Cloudflare AI Gateway
+  AI: Ai  // Cloudflare Workers AI binding
+  // ADR-0018 S1b: 'gemini' (default) | 'workers-ai' -- selects the
+  // TextGenerationProvider createProviders() constructs. Per-deployment
+  // config (wrangler.toml [vars]), not per-request; no fallback chain yet
+  // (S1c). Structured generation and embeddings are unaffected -- they
+  // stay Gemini-only per ADR-0018 Decision 5 regardless of this value.
+  AI_TEXT_PROVIDER?: string
 }
 
 export type Language = 'en' | 'de' | 'fa'

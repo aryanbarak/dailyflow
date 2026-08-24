@@ -16,13 +16,23 @@ import { ProviderRequestError, ProviderUnavailableError } from './provider-error
 // reconstructed wire body) so the many existing count/content assertions
 // throughout this file keep working with minimal, mechanical changes.
 import { StubStructuredGenerationProvider, StubTextGenerationProvider, stubProviders } from './providers/testing/stubProviders'
+import { AttachmentsUnsupportedError } from './providers/workers-ai/WorkersAITextGenerationProvider'
 import type { Providers } from './providers/createProviders'
 import type { NeutralArraySchema, NeutralObjectSchema, NeutralSchema, NeutralStringSchema } from './providers/schema/neutralSchema'
 import type { StructuredGenerationRequest, TextGenerationRequest } from './providers/types'
 
 let currentProviders: Providers = stubProviders()
+// ADR-0018 S1b follow-up: captures the `options` argument of every
+// createProviders(...) call this run (the mock itself always returns the
+// same currentProviders regardless of arguments -- this is how a test
+// proves WHICH options a call site requested, e.g. callGeminiChat's
+// { pinTextProvider: 'gemini' } when an attachment is present).
+let createProvidersCalls: Array<{ options: unknown }> = []
 vi.mock('./providers/createProviders', () => ({
-  createProviders: () => currentProviders,
+  createProviders: (...args: unknown[]) => {
+    createProvidersCalls.push({ options: args[2] })
+    return currentProviders
+  },
 }))
 
 const SUPABASE_URL = 'https://supa.test'
@@ -775,6 +785,67 @@ describe('task 19 (Attach file in Flow AI): /chat documentId wiring', () => {
     expect(chatCall?.turns.at(-1)?.content).toBe('What is in this image?')
     const options = chatCall?.providerOptions as { inlineDataAttachment?: { mimeType?: string } } | undefined
     expect(options?.inlineDataAttachment?.mimeType).toBe('image/png')
+  })
+
+  // ADR-0018 S1b follow-up: an attachment must work regardless of
+  // AI_TEXT_PROVIDER -- callGeminiChat pins to Gemini whenever
+  // imageAttachment is set (createProviders.ts's pinTextProvider option),
+  // the same pinning transcribePdf and /documents/analyze already got in
+  // S1b itself.
+  it('image attachment + AI_TEXT_PROVIDER: workers-ai -- still resolves via { pinTextProvider: "gemini" }, not the env default', async () => {
+    const log = installFetchMock([], {
+      document: { id: 'doc-3', storage_path: 'user-1/photo.png', file_name: 'photo.png', mime_type: 'image/png' },
+      fileBytes: new Uint8Array([137, 80, 78, 71]),
+    })
+    createProvidersCalls = []
+    const ctx = fakeExecutionContext()
+    const env: Env = { ...testEnv(), AI_TEXT_PROVIDER: 'workers-ai' }
+
+    const response = await worker.fetch(
+      chatRequest({ message: 'What is in this image?', documentId: 'doc-3' }),
+      env,
+      ctx,
+    )
+    expect(response.status).toBe(200)
+    const body = await response.json() as { reply?: string }
+    expect(body.reply).toBe('Hello from Gemini')
+
+    const chatCall = findChatCall(log.geminiCalls)
+    expect(chatCall?.providerOptions?.inlineDataAttachment).toBeDefined()
+    // The stub factory itself ignores arguments (same object regardless),
+    // so this is the proof that callGeminiChat actually REQUESTED the
+    // Gemini pin -- not that the mock happened to return a Gemini-shaped
+    // result anyway.
+    expect(createProvidersCalls.some((call) => (call.options as { pinTextProvider?: string } | undefined)?.pinTextProvider === 'gemini')).toBe(true)
+  })
+
+  // ADR-0018 S1b follow-up: AttachmentsUnsupportedError is a structural
+  // last resort now that callGeminiChat pins to Gemini -- this test forces
+  // it anyway (overriding the stub after installFetchMock's own default)
+  // to prove the explicit handler in handleChat, not the generic outer
+  // catch's content-less 500, is what an attachment turn gets if it ever
+  // does fire.
+  it('a forced AttachmentsUnsupportedError gets an honest, bounded reply -- never a 500', async () => {
+    installFetchMock([], {
+      document: { id: 'doc-3', storage_path: 'user-1/photo.png', file_name: 'photo.png', mime_type: 'image/png' },
+      fileBytes: new Uint8Array([137, 80, 78, 71]),
+    })
+    currentProviders = stubProviders({
+      text: new StubTextGenerationProvider(() => {
+        throw new AttachmentsUnsupportedError('workers-ai', 'test-model')
+      }),
+    })
+    const ctx = fakeExecutionContext()
+    const env = testEnv()
+
+    const response = await worker.fetch(
+      chatRequest({ message: 'What is in this image?', documentId: 'doc-3' }),
+      env,
+      ctx,
+    )
+    expect(response.status).toBe(200)
+    const body = await response.json() as { reply?: string }
+    expect(body.reply).toBe('I could not process the attached file with the AI assistant right now. Please try again without the attachment, or contact support if this keeps happening.')
   })
 
   it('an unreadable/empty attachment degrades CALMLY -- the turn still succeeds, with a deterministic app-authored note, not an error response', async () => {

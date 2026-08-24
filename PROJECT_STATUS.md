@@ -874,13 +874,13 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
          exists for `finance_import_batches`
          (`supabase/tests/finance_import_batches.migration_structure.test.ts`)
          but `finance_import_rows` still has neither.
-12. **Capability-oriented AI provider abstraction — S0, S1 (plus its
-    follow-up), and S2 merged to `main`; S3 authored on branch
-    `feat/adr-0018-s3-embedding`, not merged; S4 authored on branch
-    `feat/adr-0018-s4-test-migration`, STACKED ON S3 (branched from S3's
-    tip, not `main` — S4's own premise, "all 15 call sites go through the
-    three interfaces," requires S3's `GeminiEmbeddingProvider` to exist).
-    S3 must merge before S4 can.**
+12. **Capability-oriented AI provider abstraction — S0 through S4 all
+    merged to `main`** (S3+S4 landed together as PR #164, "S3+S4 combined,"
+    a PO decision superseding the separate-PR plan S3/S4's own branches
+    were authored under — no separate S3 PR was opened). **S1b (second
+    TextGenerationProvider, Cloudflare Workers AI) authored on branch
+    `feat/s1b-workers-ai-text`, branched from `main` post-#164, not
+    merged.**
     [ADR-0018](docs/decisions/adr/ADR-0018-capability-oriented-ai-provider-abstraction.md)
     (**Status: Accepted** — PO approved 2026-08-22, all five open questions
     answered yes). Follows directly from INC-01 (2026-08-22 Gemini 429
@@ -1159,7 +1159,164 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
     - **S5 (OCR migration) is the last ADR-0018 slice** — migrating
       `/ocr` from the legacy `workers/ai-worker-recovered/` Worker into
       `agent/worker/` as a `TextGenerationProvider` consumer behind the
-      seam, per the ADR's own §7 legacy-retirement order. Not started.
+      seam, per the ADR's own §7 legacy-retirement order. **Deferred by
+      PO in favor of S1b** (below) — not started.
+    - **S1b (this slice) — `WorkersAITextGenerationProvider`, second
+      `TextGenerationProvider` via the Cloudflare Workers AI (`env.AI`)
+      binding. No fallback chain (that is S1c, a separate later slice
+      after real-world quality comparison); structured generation and
+      embeddings stay Gemini-only, fail-closed (Decision 5), untouched.**
+      Per Decision 5/the ADR's own Supersession rule — no new ADR needed,
+      PO-approved slice.
+      Diagnosis (work item 1): `workers/ai-worker-recovered/index.js`'s
+      `callWorkersAI` (the only precedent) used
+      `@cf/meta/llama-3.1-8b-instruct` as a Gemini FALLBACK, mapping
+      `system_instruction`→a leading `{role:'system'}` message,
+      `contents[]`→user/assistant turns, `generationConfig.maxOutputTokens`/
+      `.temperature`→`max_tokens`/`temperature`. That exact model string is
+      retired from the binding's own catalog as of this slice
+      (`worker-configuration.d.ts`, `wrangler types`-generated
+      2026-08-24, workerd@1.20260611.1) — only `-fp8`/`-awq` quantized
+      variants of it remain. Model chosen instead:
+      **`@cf/google/gemma-4-26b-a4b-it`** — newest Gemma generation on the
+      binding, Mixture-of-Experts (26B total/~4B active, so latency/cost
+      track a much smaller dense model), uses the binding's newer
+      OpenAI-compatible Chat Completions shape (`finish_reason`/`usage`
+      map directly onto the neutral contract) rather than the legacy
+      bespoke one, and the Gemma family is documented as pretrained across
+      140+ languages — the broadest multilingual net of any candidate
+      reviewed, which matters most for Dari: an extremely low-resource
+      language even among "supported multilingual" models, so breadth of
+      pretraining is the best available bet, not a verified guarantee.
+      German is well within any major candidate's coverage regardless.
+      Alternate considered: `@cf/qwen/qwen3-30b-a3b-fp8` (also MoE; Qwen's
+      own docs name Persian explicitly, a stronger specific claim than
+      Gemma's general "140+ languages," but a narrower overall language
+      list and the binding's bespoke completions shape for it, not Chat
+      Completions). **Recommendation only, not yet PO-verified against
+      real Dari/Farsi output** — PO should spot-check both languages
+      against a live deploy; the model is a single named constant
+      (`DEFAULT_WORKERS_AI_TEXT_MODEL`,
+      `providers/workers-ai/WorkersAITextGenerationProvider.ts`), a
+      one-line change if a different model is preferred.
+      Diagnosis (work item 1b): `agent/worker/types.ts`'s `Env` already
+      declared `AI: Ai` (pre-existing, unclear prior origin) but
+      `wrangler.toml` had no `[ai]` binding block, so `env.AI` was
+      `undefined` at runtime despite being typed as required — a real
+      type/runtime mismatch predating this slice. Fixed: `[ai]\nbinding =
+      "AI"` added to `wrangler.toml`, `worker-configuration.d.ts`
+      regenerated via `npx wrangler types` (diff: two new fields on the
+      generated ambient `Env`, nothing else).
+      Implementation: `providers/workers-ai/WorkersAITextGenerationProvider.ts`
+      implements `TextGenerationProvider`. Deliberately defines its own
+      minimal structural types (`WorkersAIBinding`, a local chat-message/
+      response shape) rather than referencing the ambient `Ai`/
+      `ChatCompletionsOutput`/... types from `worker-configuration.d.ts`
+      anywhere — see `chatMessage.ts`'s own header comment for the exact
+      root-typecheck-gate incident (S2) this avoids: those ambient types
+      need `@cloudflare/workers-types`, unavailable to the root project's
+      `tsconfig.app.json`, and `createProviders.ts` (which this file feeds
+      into) is transitively reachable from the root gate via four
+      `src/*.equivalence.test.ts` files. Attachments: presence-only check
+      on `providerOptions.inlineDataAttachment` (the same escape-hatch key
+      the Gemini adapter reads) throws a new, typed
+      `AttachmentsUnsupportedError` (`.code === 'ATTACHMENTS_UNSUPPORTED'`)
+      — never silently drops one. Failure classification: the binding
+      throws on any inference error with no HTTP response and so no
+      status code — every binding error maps uniformly to
+      `ProviderUnavailableError` (no `ProviderRequestError` analogue is
+      possible without a status to classify by, disclosed as a
+      deliberate simplification, not an oversight). `http_status` is
+      passed as absent (→ `null`) to `recordProviderFailure`; checked the
+      `20260823000000_provider_failure_events.sql` migration's own column
+      (`http_status integer`, already nullable, no `not null`) — **no
+      follow-up migration was needed**, the contingency the task named did
+      not apply.
+      Selection (work item 3): `createProviders(env, fetcher, options)`
+      gained a third, optional `options.pinTextProvider?: 'gemini'`
+      parameter and reads `env.AI_TEXT_PROVIDER` (`'gemini'` default |
+      `'workers-ai'`) to choose `.text`'s concrete class — per-worker-
+      deployment config (`wrangler.toml [vars]`), not per-request; only
+      `.text` is selectable, `.structured`/`.embedding` stay Gemini-only
+      regardless. `transcribePdf`
+      (`document-memory-extraction-endpoint.ts`), `/documents/analyze`
+      (`index.ts`'s `handleDocumentAnalyze`), and — as of the S1b
+      follow-up below — `index.ts`'s `callGeminiChat` (`/chat` mode=chat,
+      when it carries an image attachment) all pass
+      `{ pinTextProvider: 'gemini' }` to stay on Gemini regardless of the
+      deployment's `AI_TEXT_PROVIDER`. Every attachment-carrying call site
+      is now pinned; none still depends on the generic
+      attachments-unsupported rejection for correctness.
+    - **S1b follow-up (this slice) — `/chat` image attachments pinned to
+      Gemini too; explicit `AttachmentsUnsupportedError` handler added.**
+      Closes the gap the S1b entry above flagged: `callGeminiChat` now
+      passes `{ pinTextProvider: 'gemini' }` to `createProviders` whenever
+      `imageAttachment` is set (`index.ts`), so an in-chat image
+      attachment works regardless of `AI_TEXT_PROVIDER`, the same
+      guarantee `transcribePdf`/`/documents/analyze` already had.
+      `handleChat`'s mode=`chat` catch block gained an explicit
+      `AttachmentsUnsupportedError` branch (checked before the existing
+      `ProviderUnavailableError` branch) — a structural last resort now
+      that pinning makes it unreachable through real code, but if it ever
+      does fire, `/chat` returns the same honest-reply shape as
+      `PROVIDER_UNAVAILABLE_CHAT_REPLY` (200, a bounded EN/DE/FA message,
+      persisted as the turn) instead of falling through to the generic
+      content-less 500. New tests in `index.test.ts` (102 total, was 100):
+      one proves `AI_TEXT_PROVIDER: 'workers-ai'` + an image attachment
+      still resolves via the Gemini pin (asserted by capturing
+      `createProviders`'s own `options` argument through the existing
+      `vi.mock` seam — the mock always returns the same stub set
+      regardless of arguments, so this is the only way to prove the pin
+      was actually REQUESTED, not just that the stub happened to succeed);
+      the other forces `AttachmentsUnsupportedError` directly (overriding
+      the stub after `installFetchMock`'s own default) and asserts the
+      exact honest reply text, 200, not 500.
+      A `TS2320` typecheck regression was caught and fixed during this
+      slice: `CreateProvidersEnv`'s first draft `extends GeminiProviderEnv,
+      Partial<WorkersAIProviderEnv>` — TS rejects two extended interfaces
+      whose shared `ProviderFailureEnv` fields disagree on optionality
+      (`Partial<>` makes them all optional). Fixed by declaring the new
+      `AI?: WorkersAIBinding` field directly on `CreateProvidersEnv`
+      instead of spreading in the whole partial interface.
+      Smoke (work item 4): NOT added as an automated check —
+      `env.AI` is a runtime Worker binding, unreachable from
+      `vite-node`/`provider-contract-smoke.ts`'s process the way `fetch`
+      is (Cloudflare's Workers AI binding does not exist outside an actual
+      `workerd` runtime, local `wrangler dev` or deployed). Documented
+      instead as a manual post-deploy check in that script's own header:
+      run `npx wrangler dev`, temporarily set `AI_TEXT_PROVIDER =
+      "workers-ai"` for a local request, and confirm a real `/chat`
+      response; see the script header for the exact steps. Saying so
+      plainly rather than faking a check that cannot exist outside a real
+      Worker runtime.
+      Tests (work item 5): `WorkersAITextGenerationProvider.test.ts` (18 —
+      request mapping incl. system/role/max_tokens/temperature, text
+      extraction incl. missing/null content, finishReason mapping table,
+      attachments-rejection incl. "does NOT call env.AI.run", failure
+      classification, failure-event persistence incl. fail-safe and the
+      "not recorded for an attachments rejection" case) and 6 new
+      `createProviders.test.ts` cases (default-to-gemini, typo-falls-back-
+      to-gemini, workers-ai selection, `.structured`/`.embedding` stay
+      Gemini under workers-ai selection, `pinTextProvider` override both
+      with and without `AI_TEXT_PROVIDER: 'workers-ai'` set). All existing
+      endpoint tests for the two pinned call sites pass UNCHANGED (pinning
+      via `createProviders(..., { pinTextProvider: 'gemini' })` rather
+      than direct `new GeminiTextGenerationProvider(...)` construction
+      was a deliberate second design pass — the first, direct-construction
+      draft bypassed S4's `vi.mock('./providers/createProviders', ...)`
+      test seam entirely and broke 11 tests across `index.test.ts` and
+      `document-memory-extraction-endpoint.test.ts`; reverted in favor of
+      keeping pinning inside the factory, where S4's existing stub-provider
+      mocks still intercept it transparently).
+      Verification: `npx vitest run agent/worker` 855/855 passed (24 files);
+      root `npx vitest run` 3697 passed/76 skipped/2 failed (same
+      pre-existing `ChatPageHeader` flake S4 already documented, confirmed
+      unrelated); root `npm run typecheck` clean (77 baseline-tracked
+      errors remain, 80 were in the baseline — no new/regressed, matching
+      S4's own baseline exactly); lint clean on every touched/created file
+      (`index.ts`'s 11 pre-existing `no-explicit-any` errors, `git blame`-
+      confirmed all from commits between 2026-06-14 and 2026-06-22, none on
+      this slice's own one-hunk diff at line 1737).
     - **No smoke RUN performed for S1, S2, or S3** — `GEMINI_API_KEY`
       unavailable in this environment; the script's own guard exits with a
       non-zero status (as designed — the key is required) without
