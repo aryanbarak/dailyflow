@@ -1239,23 +1239,38 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
       deployment config (`wrangler.toml [vars]`), not per-request; only
       `.text` is selectable, `.structured`/`.embedding` stay Gemini-only
       regardless. `transcribePdf`
-      (`document-memory-extraction-endpoint.ts`) and `/documents/analyze`
-      (`index.ts`'s `handleDocumentAnalyze`) — the two call sites the task
-      named as always/possibly carrying an attachment — pass
+      (`document-memory-extraction-endpoint.ts`), `/documents/analyze`
+      (`index.ts`'s `handleDocumentAnalyze`), and — as of the S1b
+      follow-up below — `index.ts`'s `callGeminiChat` (`/chat` mode=chat,
+      when it carries an image attachment) all pass
       `{ pinTextProvider: 'gemini' }` to stay on Gemini regardless of the
-      deployment's `AI_TEXT_PROVIDER`, rather than relying on the
-      generic attachments-unsupported rejection. `index.ts`'s
-      `callGeminiChat` (`/chat` mode=chat) also carries an OPTIONAL image
-      attachment but was deliberately left un-pinned (the task only named
-      the two always/mostly-attachment call sites) — flagged rather than
-      silently decided either way: if a deployment ever flips
-      `AI_TEXT_PROVIDER` to `'workers-ai'` globally, an in-chat image
-      attachment will fail honestly with `ATTACHMENTS_UNSUPPORTED`
-      (propagated as a thrown error through `callGeminiChat`) rather than
-      being silently dropped, but will not gracefully fall back to Gemini
-      the way the two pinned call sites do — worth an explicit PO call on
-      whether to pin this third site too before `AI_TEXT_PROVIDER` is ever
-      flipped in production.
+      deployment's `AI_TEXT_PROVIDER`. Every attachment-carrying call site
+      is now pinned; none still depends on the generic
+      attachments-unsupported rejection for correctness.
+    - **S1b follow-up (this slice) — `/chat` image attachments pinned to
+      Gemini too; explicit `AttachmentsUnsupportedError` handler added.**
+      Closes the gap the S1b entry above flagged: `callGeminiChat` now
+      passes `{ pinTextProvider: 'gemini' }` to `createProviders` whenever
+      `imageAttachment` is set (`index.ts`), so an in-chat image
+      attachment works regardless of `AI_TEXT_PROVIDER`, the same
+      guarantee `transcribePdf`/`/documents/analyze` already had.
+      `handleChat`'s mode=`chat` catch block gained an explicit
+      `AttachmentsUnsupportedError` branch (checked before the existing
+      `ProviderUnavailableError` branch) — a structural last resort now
+      that pinning makes it unreachable through real code, but if it ever
+      does fire, `/chat` returns the same honest-reply shape as
+      `PROVIDER_UNAVAILABLE_CHAT_REPLY` (200, a bounded EN/DE/FA message,
+      persisted as the turn) instead of falling through to the generic
+      content-less 500. New tests in `index.test.ts` (102 total, was 100):
+      one proves `AI_TEXT_PROVIDER: 'workers-ai'` + an image attachment
+      still resolves via the Gemini pin (asserted by capturing
+      `createProviders`'s own `options` argument through the existing
+      `vi.mock` seam — the mock always returns the same stub set
+      regardless of arguments, so this is the only way to prove the pin
+      was actually REQUESTED, not just that the stub happened to succeed);
+      the other forces `AttachmentsUnsupportedError` directly (overriding
+      the stub after `installFetchMock`'s own default) and asserts the
+      exact honest reply text, 200, not 500.
       A `TS2320` typecheck regression was caught and fixed during this
       slice: `CreateProvidersEnv`'s first draft `extends GeminiProviderEnv,
       Partial<WorkersAIProviderEnv>` — TS rejects two extended interfaces
