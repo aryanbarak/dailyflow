@@ -731,6 +731,18 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
   - INC-01 follow-up: dedicated provider-unavailable lane in ChatPage
     overlay instead of reusing 'unsupported'; currently degrades silently
     on the mode:'reasoning' path.
+  - **DATE-02 (not started): `buildPrompt`'s briefing-mode `today` line has
+    the same class of bug DATE-01 just fixed for `/chat`.** Calls
+    `new Date().toLocaleDateString(...)` directly inside the function
+    (`agent/worker/prompt-builder.ts`'s `buildPrompt`) — no injected clock
+    (untestable — no test asserts this line's content at all, confirmed by
+    grep), and no `timeZone` applied (Workers runtime defaults to UTC, so
+    a briefing generated late in the evening in the user's own zone can
+    show the wrong calendar day). Same fix pattern as DATE-01: explicit
+    `now`/`timeZone` parameters, timezone reused from wherever the
+    briefing's own caller already resolves one (or `/chat`'s per-request
+    resolution pattern, if briefing generation has no equivalent yet — not
+    investigated as part of DATE-01, out of that slice's scope).
 
 ### Design debt register (Product Owner's video review, task `8`)
 
@@ -1325,6 +1337,14 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
       S2, `GeminiEmbeddingProvider` for S3) succeeded (vite-node reached
       the guard, meaning the whole module graph resolved and transformed
       without error).
+
+- **DATE-01** — `/chat` (mode=chat) now injects the current date, weekday,
+  and time with timezone into `buildChatSystemPrompt` (neutral ISO-dated
+  line, explicit injected `now`/`timeZone` parameters, timezone reused from
+  the request's existing client-supplied `timeZone` field rather than a
+  stored setting — `user_settings` has no timezone column) — fixes the
+  model inventing a date or deflecting to "check your calendar"
+  (`agent/worker/prompt-builder.ts`, `agent/worker/index.ts`).
 
 Superseded/completed sprint milestones from the prior version of this
 document have been removed rather than carried forward as history; git
