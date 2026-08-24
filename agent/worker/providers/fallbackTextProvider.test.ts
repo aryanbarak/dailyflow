@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { FallbackTextGenerationProvider } from './fallbackTextProvider'
 import { ProviderUnavailableError } from '../provider-errors'
-import { FALLBACK_SUCCESS_MARKER } from './failureEvents'
 import type { TextGenerationProvider, TextGenerationRequest, TextGenerationResult } from './types'
 
 const ENV = { SUPABASE_URL: 'https://supa.test', SUPABASE_SERVICE_KEY: 'service-key' }
@@ -27,7 +26,7 @@ describe('FallbackTextGenerationProvider (ADR-0018 S1c)', () => {
     expect(fetcher).not.toHaveBeenCalled()
   })
 
-  it('primary unavailable -- secondary serves the request and a fallback-success event is recorded with the SECONDARY\'s real, unmangled provider_id', async () => {
+  it('primary unavailable -- secondary serves the request and a fallback-success event is recorded with the SECONDARY\'s real, unmangled provider_id and event_kind: \'fallback_success\' (request_id NOT repurposed as a marker)', async () => {
     const primary = stubProvider('gemini', async () => {
       throw new ProviderUnavailableError('gemini down', 503, 'body')
     })
@@ -39,7 +38,8 @@ describe('FallbackTextGenerationProvider (ADR-0018 S1c)', () => {
         capability: 'text_generation',
         provider_id: 'workers-ai',
         http_status: null,
-        request_id: FALLBACK_SUCCESS_MARKER,
+        request_id: null,
+        event_kind: 'fallback_success',
       })
       return new Response(null, { status: 201 })
     })
@@ -101,6 +101,33 @@ describe('FallbackTextGenerationProvider (ADR-0018 S1c)', () => {
     const result = await wrapper.generateText(REQ)
 
     expect(result).toBe(secondaryResult)
+    warnSpy.mockRestore()
+  })
+
+  // Deploy-order guard (20260824000000_provider_failure_events_event_kind.sql's
+  // own header comment): this migration is authored, NOT yet applied --
+  // deploying this wrapper's code BEFORE it lands means every
+  // recordFallbackSuccess insert hits exactly this Postgres error
+  // (event_kind is not a real column yet). Proves that specific,
+  // currently-live deploy-order gap is fail-safe, not just persistence
+  // failures in the abstract.
+  it('a missing event_kind column (migration not yet applied) is swallowed the same fail-safe way -- the caller still gets the secondary\'s real result', async () => {
+    const primary = stubProvider('gemini', async () => {
+      throw new ProviderUnavailableError('gemini down')
+    })
+    const secondaryResult: TextGenerationResult = { text: 'from secondary', finishReason: 'stop' }
+    const secondary = stubProvider('workers-ai', async () => secondaryResult)
+    const fetcher = vi.fn(async () => new Response(
+      JSON.stringify({ code: '42703', message: 'column "event_kind" of relation "provider_failure_events" does not exist' }),
+      { status: 400 },
+    ))
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const wrapper = new FallbackTextGenerationProvider(primary, secondary, ENV, fetcher)
+    const result = await wrapper.generateText(REQ)
+
+    expect(result).toBe(secondaryResult)
+    expect(warnSpy).toHaveBeenCalledTimes(1)
     warnSpy.mockRestore()
   })
 })

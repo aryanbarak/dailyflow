@@ -13,6 +13,9 @@
 // No prompt content, no response bodies, no secrets -- matches the
 // migration's own column list exactly (capability, provider_id,
 // http_status, request_id; id/occurred_at are server-assigned defaults).
+// ADR-0018 S1c adds one more optional column, event_kind (see
+// 20260824000000_provider_failure_events_event_kind.sql) -- still no
+// prompt/response content, purely a fixed-vocabulary discriminant.
 
 // Deliberately its own minimal structural type, not agent/worker/types.ts's
 // full `Env` -- this module is called from adapters constructed with
@@ -34,9 +37,22 @@ export interface ProviderFailureEvent {
   request_id?: string
 }
 
+interface ProviderEventRow {
+  capability: ProviderFailureCapability
+  provider_id: string
+  http_status: number | null
+  request_id: string | null
+  // ADR-0018 S1c: absent for an ordinary failure row (recordProviderFailure)
+  // -- JSON.stringify drops an `undefined` property, so the insert omits
+  // the key entirely and the column's own `default 'failure'` applies.
+  // Only recordFallbackSuccess ever sets this, to the one other known
+  // value.
+  event_kind?: 'fallback_success'
+}
+
 async function insertProviderEvent(
   env: ProviderFailureEnv,
-  row: { capability: ProviderFailureCapability; provider_id: string; http_status: number | null; request_id: string | null },
+  row: ProviderEventRow,
   fetcher: typeof fetch,
   logLabel: string,
 ): Promise<void> {
@@ -88,25 +104,32 @@ export async function recordProviderFailure(
 // TextGenerationProvider adapter does this itself, S1/S1b) -- this
 // function records the DIFFERENT fact that the secondary then succeeded.
 //
-// Reuses this table rather than adding a Tier-1 migration for one boolean
-// (task instruction: "check the table first; prefer an encoding without
-// migration"). `provider_id` stays the real, unmangled id of the provider
-// that actually served the request (e.g. 'workers-ai' or 'gemini') --
-// never a synthesized string like 'workers-ai:fallback' (task instruction:
-// "NOT a mangled provider_id"). Disambiguated from an ordinary FAILURE row
-// for that same provider_id by `request_id`, repurposed as a fixed
-// sentinel: real request ids (llmReasoningService.ts's requestIdFactory)
-// are per-call generated values that will never coincidentally equal this
-// literal string, and no failure row ever sets `request_id` to it. No
-// `http_status` -- a fallback success is not an HTTP outcome, and this
-// column is already nullable for exactly this "not applicable" case (see
-// recordProviderFailure's own http_status:null path for network-level
-// failures).
-export const FALLBACK_SUCCESS_MARKER = 'fallback_success'
-
+// Reuses this table (task instruction: "check the table first") via a
+// dedicated `event_kind` column (20260824000000_provider_failure_events_
+// event_kind.sql, authored, NOT yet applied -- see that migration's own
+// header for the required deploy order) rather than repurposing an
+// existing free-text column as a sentinel. An earlier draft of this
+// function set `request_id` to a fixed marker string to distinguish a
+// fallback-success row from an ordinary failure row -- rejected on
+// review as the same mangled-identity problem the task explicitly
+// forbids for `provider_id`, just moved to a different column.
+// `provider_id` stays (and always stayed) the real, unmangled id of the
+// provider that actually served the request (e.g. 'workers-ai' or
+// 'gemini'); `request_id`, when the caller has a real one, keeps only its
+// original per-call meaning -- exactly like `recordProviderFailure`'s own
+// optional `request_id`. No `http_status` -- a fallback success is not an
+// HTTP outcome, and this column is already nullable for exactly this
+// "not applicable" case (see recordProviderFailure's own
+// http_status:null path for network-level failures).
+//
+// Fail-safe the same way recordProviderFailure is (via the shared
+// insertProviderEvent helper): a missing `event_kind` column -- the exact
+// state this codebase is in until the migration above is applied -- never
+// becomes the caller's own failure, only a swallowed console.warn.
 export interface FallbackSuccessEvent {
   capability: ProviderFailureCapability
   provider_id: string
+  request_id?: string
 }
 
 export async function recordFallbackSuccess(
@@ -120,7 +143,8 @@ export async function recordFallbackSuccess(
       capability: event.capability,
       provider_id: event.provider_id,
       http_status: null,
-      request_id: FALLBACK_SUCCESS_MARKER,
+      request_id: event.request_id ?? null,
+      event_kind: 'fallback_success',
     },
     fetcher,
     'a fallback-success marker',
