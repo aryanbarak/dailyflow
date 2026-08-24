@@ -890,9 +890,12 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
     merged to `main`** (S3+S4 landed together as PR #164, "S3+S4 combined,"
     a PO decision superseding the separate-PR plan S3/S4's own branches
     were authored under — no separate S3 PR was opened). **S1b (second
-    TextGenerationProvider, Cloudflare Workers AI) authored on branch
-    `feat/s1b-workers-ai-text`, branched from `main` post-#164, not
-    merged.**
+    TextGenerationProvider, Cloudflare Workers AI) — merged to `main` via
+    PR #165** (this entry previously read "not merged"; stale — corrected
+    per ADR-0008's dissent rule, `feat/s1b-workers-ai-text` merged
+    `5182681`, confirmed from `git log`). **S1c (fallback text-generation
+    chain) — authored on branch `feat/s1c-text-fallback`, PR opened, not yet
+    merged — see its own entry below.**
     [ADR-0018](docs/decisions/adr/ADR-0018-capability-oriented-ai-provider-abstraction.md)
     (**Status: Accepted** — PO approved 2026-08-22, all five open questions
     answered yes). Follows directly from INC-01 (2026-08-22 Gemini 429
@@ -954,19 +957,18 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
       gained a 6th check (`checkTextGenerationAdapterContract`) exercising
       the adapter's own real request/response round trip; existing 5
       checks unchanged.
-    - **Migration authored, NOT applied:**
+    - **Migration — APPLIED to production 2026-08-23** (this entry
+      previously read "authored, NOT applied"; stale, corrected):
       `supabase/migrations/20260823000000_provider_failure_events.sql` —
       columns per Decision 6 (`id`, `capability`, `provider_id`,
       `http_status`, `occurred_at`, `request_id`); RLS enabled, zero grants
       to `anon`/`authenticated`, `service_role` only — same pattern as
       `finance_import_batches`. Static structure test:
       `supabase/tests/provider_failure_events.migration_structure.test.ts`.
-      **DEPLOY ORDER: the `provider_failure_events` migration must be
-      applied BEFORE the S1 Worker is deployed.** `recordProviderFailure`
-      is fail-safe (a missing table degrades to a swallowed `console.warn`,
-      never a caller-visible failure), but deploying INTO a known
-      missing-table state is still not the intended order — apply the
-      migration first, deploy the Worker second.
+      The deploy-order note this entry previously carried ("apply the
+      migration before deploying the S1 Worker") is now moot — the
+      migration is applied, so `recordProviderFailure`'s fail-safe
+      missing-table path is no longer the live state.
     - **DEPLOY ORDER (MIG-01b, 2026-08-23): deploy requires EITHER the old
       account recharged (`gemini-2.5-flash`, reached only via an
       explicitly env-pinned `GEMINI_MODEL` — `gemini-2.5-flash` is
@@ -1337,6 +1339,76 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
       S2, `GeminiEmbeddingProvider` for S3) succeeded (vite-node reached
       the guard, meaning the whole module graph resolved and transformed
       without error).
+    - **S1c (fallback text-generation chain) — authored on branch
+      `feat/s1c-text-fallback`, PR opened, not yet merged.** Implements
+      ADR-0018 Decision 5's text-generation fallback (structured
+      generation and embeddings are explicitly out of scope and untouched
+      — Decision 5 keeps both fail-closed). New
+      `providers/fallbackTextProvider.ts`: `FallbackTextGenerationProvider`
+      wraps a primary/secondary `TextGenerationProvider` pair behind the
+      same interface. Fires ONLY on `ProviderUnavailableError` — a model
+      that answers (even badly: empty text, wrong language, a non-STOP
+      finishReason) is never a trigger, that judgment stays at the call
+      site per Decision 3, unchanged. One fallback attempt only — a second
+      `ProviderUnavailableError` from the secondary propagates unchanged
+      (no retry loop); every existing `err instanceof
+      ProviderUnavailableError` → 503 `PROVIDER_UNAVAILABLE` catch in
+      `index.ts` already handles this correctly with no changes needed
+      there. `createProviders.ts` gains `AI_TEXT_FALLBACK` (`'on'` |
+      absent/default off) — `'on'` wraps `.text` with primary/secondary
+      ORDER taken from the existing `AI_TEXT_PROVIDER` selection (whichever
+      it already selects is primary, the other of the two current
+      `TextGenerationProvider`s is secondary); `.structured`/`.embedding`
+      are constructed identically in both branches of `createProviders`,
+      never passed through the new `buildTextProvider` helper at all.
+      Attachment pinning (`{ pinTextProvider: 'gemini' }`) bypasses the
+      wrapper entirely via an early return in `buildTextProvider`, before
+      `AI_TEXT_FALLBACK` is even read — an attachment-carrying request
+      always gets exactly one plain Gemini call.
+      Failure-event persistence: the primary's own failure is already
+      recorded by its own adapter's existing `recordProviderFailure` call
+      (S1/S1b, unchanged). New `failureEvents.ts` export
+      `recordFallbackSuccess` persists the DIFFERENT fact that the
+      secondary then served the request — reuses the existing
+      `provider_failure_events` table rather than a new migration (per
+      task instruction, table checked first): `provider_id` is the
+      secondary's real, unmangled id (e.g. `'workers-ai'`), never a
+      synthesized/mangled value; disambiguated from an ordinary failure
+      row for that same `provider_id` by a fixed `request_id` sentinel
+      (`FALLBACK_SUCCESS_MARKER = 'fallback_success'`, exported) that no
+      real request id will ever coincidentally equal; `http_status` stays
+      `null` (not an HTTP outcome). No migration needed — `request_id` was
+      already nullable text with no fixed vocabulary.
+      No "answered by backup model" annotation is shown to the user in
+      this slice (task instruction) — `TextGenerationResult` carries no
+      such field and none was added.
+      `wrangler.toml`: `AI_TEXT_FALLBACK` documented and set to `"on"` for
+      production (default is off; every other consumer of
+      `createProviders` that doesn't set this var is unaffected).
+      Tests: `fallbackTextProvider.test.ts` (5 — primary ok skips the
+      wrapper entirely with no event recorded; primary unavailable ->
+      secondary serves the request and the fallback-success event is
+      recorded with the secondary's real id; both fail -> the secondary's
+      own `ProviderUnavailableError` propagates unchanged, no event, no
+      third attempt; a non-`ProviderUnavailableError` from the primary
+      propagates immediately without trying the secondary; a
+      fallback-success persistence failure is swallowed the same fail-safe
+      way `recordProviderFailure` already is). `createProviders.test.ts`
+      gained 7 cases under `AI_TEXT_FALLBACK` (default off unwrapped;
+      typo/off-value unwrapped; `'on'` wraps; order-from-`AI_TEXT_PROVIDER`
+      both directions via the wrapper's own `.id`; pin bypasses the
+      wrapper even with the flag on; `.structured`/`.embedding` stay the
+      plain Gemini adapters and are structurally incapable of being the
+      fallback wrapper — the "structured path never touches the fallback
+      wrapper" guard the task asked for). `failureEvents.test.ts` gained 2
+      cases for `recordFallbackSuccess` (correct row shape incl. the
+      unmangled `provider_id` and the sentinel `request_id`; fail-safe
+      swallow). Verification: `npm test` 3720 passed/76 skipped/0 failed
+      (full suite, all pre-existing suites unaffected); `npm run
+      typecheck` clean on both targets (`src/`: 77 baseline-tracked errors
+      remain, 80 were in the baseline; `agent/worker/`: 88 remain, 88 were
+      in the baseline — no new/regressed on either); `npx eslint` clean on
+      every file this slice touched or created.
 
 - **DATE-01** — `/chat` (mode=chat) now injects the current date, weekday,
   and time with timezone into `buildChatSystemPrompt` (neutral ISO-dated

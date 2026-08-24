@@ -4,6 +4,7 @@ import { GeminiTextGenerationProvider } from './gemini/GeminiTextGenerationProvi
 import { GeminiStructuredGenerationProvider } from './gemini/GeminiStructuredGenerationProvider'
 import { GeminiEmbeddingProvider } from './gemini/GeminiEmbeddingProvider'
 import { WorkersAITextGenerationProvider, type WorkersAIBinding } from './workers-ai/WorkersAITextGenerationProvider'
+import { FallbackTextGenerationProvider } from './fallbackTextProvider'
 
 const ENV = { GEMINI_API_KEY: 'test-key', GEMINI_MODEL: 'gemini-3.6-flash', SUPABASE_URL: 'https://supa.test', SUPABASE_SERVICE_KEY: 'service-key' }
 
@@ -66,6 +67,58 @@ describe('createProviders', () => {
     it('is a no-op when AI_TEXT_PROVIDER is already "gemini" (or absent)', () => {
       const providers = createProviders(ENV, fetch, { pinTextProvider: 'gemini' })
       expect(providers.text).toBeInstanceOf(GeminiTextGenerationProvider)
+    })
+  })
+
+  // ADR-0018 S1c: AI_TEXT_FALLBACK opts a deployment into the two-provider
+  // text chain. Default off; only `.text` is ever affected.
+  describe('AI_TEXT_FALLBACK (ADR-0018 S1c)', () => {
+    const AI: WorkersAIBinding = { run: vi.fn() }
+
+    it('defaults to off -- .text is the plain single provider, not wrapped, when AI_TEXT_FALLBACK is absent', () => {
+      const providers = createProviders({ ...ENV, AI })
+      expect(providers.text).toBeInstanceOf(GeminiTextGenerationProvider)
+      expect(providers.text).not.toBeInstanceOf(FallbackTextGenerationProvider)
+    })
+
+    it('any value other than exactly "on" (e.g. a typo) leaves .text unwrapped', () => {
+      const providers = createProviders({ ...ENV, AI, AI_TEXT_FALLBACK: 'true' })
+      expect(providers.text).toBeInstanceOf(GeminiTextGenerationProvider)
+      expect(providers.text).not.toBeInstanceOf(FallbackTextGenerationProvider)
+    })
+
+    it('AI_TEXT_FALLBACK: "on" wraps .text in FallbackTextGenerationProvider', () => {
+      const providers = createProviders({ ...ENV, AI, AI_TEXT_FALLBACK: 'on' })
+      expect(providers.text).toBeInstanceOf(FallbackTextGenerationProvider)
+    })
+
+    it('order from AI_TEXT_PROVIDER: default (gemini) -- primary is Gemini, secondary is Workers AI (id reflects gemini->workers-ai)', () => {
+      const providers = createProviders({ ...ENV, AI, AI_TEXT_FALLBACK: 'on' })
+      expect(providers.text.id).toBe('fallback(gemini->workers-ai)')
+    })
+
+    it('order from AI_TEXT_PROVIDER: "workers-ai" -- primary is Workers AI, secondary is Gemini (id reflects workers-ai->gemini)', () => {
+      const providers = createProviders({ ...ENV, AI, AI_TEXT_PROVIDER: 'workers-ai', AI_TEXT_FALLBACK: 'on' })
+      expect(providers.text.id).toBe('fallback(workers-ai->gemini)')
+    })
+
+    it('pinTextProvider bypasses the fallback wrapper entirely, even when AI_TEXT_FALLBACK is "on"', () => {
+      const providers = createProviders({ ...ENV, AI, AI_TEXT_FALLBACK: 'on' }, fetch, { pinTextProvider: 'gemini' })
+      expect(providers.text).toBeInstanceOf(GeminiTextGenerationProvider)
+      expect(providers.text).not.toBeInstanceOf(FallbackTextGenerationProvider)
+    })
+
+    it('.structured and .embedding stay the plain Gemini adapters, never wrapped, when AI_TEXT_FALLBACK is "on"', () => {
+      const providers = createProviders({ ...ENV, AI, AI_TEXT_FALLBACK: 'on' })
+      expect(providers.structured).toBeInstanceOf(GeminiStructuredGenerationProvider)
+      expect(providers.embedding).toBeInstanceOf(GeminiEmbeddingProvider)
+      // Neither capability exposes a `generateText` method, so there is no
+      // way for either to structurally BE a FallbackTextGenerationProvider
+      // (a compile-time guarantee, not just this runtime instanceof check)
+      // -- asserted directly as the task's own "structured path never
+      // touches the fallback wrapper" guard.
+      expect(providers.structured).not.toBeInstanceOf(FallbackTextGenerationProvider)
+      expect(providers.embedding).not.toBeInstanceOf(FallbackTextGenerationProvider)
     })
   })
 })

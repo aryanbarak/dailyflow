@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { recordProviderFailure } from './failureEvents'
+import { FALLBACK_SUCCESS_MARKER, recordFallbackSuccess, recordProviderFailure } from './failureEvents'
 import type { Env } from '../types'
 
 const ENV: Env = {
@@ -86,6 +86,46 @@ describe('recordProviderFailure (ADR-0018 Decision 6, fail-safe persistence)', (
     const loggedText = warnSpy.mock.calls.flat().join(' ')
     expect(loggedText).not.toContain('SUPABASE_SERVICE_KEY')
     expect(loggedText).not.toContain('service-key')
+    warnSpy.mockRestore()
+  })
+})
+
+// ADR-0018 S1c: FallbackTextGenerationProvider's own persisted marker that
+// a secondary provider served a request after the primary failed.
+describe('recordFallbackSuccess (ADR-0018 S1c)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('inserts provider_id as the REAL, unmangled id of the provider that served the request, with the fallback marker in request_id and no http_status', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe('https://supa.test/rest/v1/provider_failure_events')
+      const body = JSON.parse(String(init?.body))
+      expect(body).toEqual({
+        capability: 'text_generation',
+        provider_id: 'workers-ai',
+        http_status: null,
+        request_id: FALLBACK_SUCCESS_MARKER,
+      })
+      return new Response(null, { status: 201 })
+    })
+    vi.stubGlobal('fetch', fetcher)
+
+    await recordFallbackSuccess(ENV, { capability: 'text_generation', provider_id: 'workers-ai' })
+
+    expect(fetcher).toHaveBeenCalledTimes(1)
+  })
+
+  it('swallows a persistence failure the same fail-safe way recordProviderFailure does', async () => {
+    const fetcher = vi.fn(async () => new Response('table missing', { status: 404 }))
+    vi.stubGlobal('fetch', fetcher)
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    await expect(
+      recordFallbackSuccess(ENV, { capability: 'text_generation', provider_id: 'gemini' }),
+    ).resolves.toBeUndefined()
+
+    expect(warnSpy).toHaveBeenCalledTimes(1)
     warnSpy.mockRestore()
   })
 })
