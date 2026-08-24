@@ -28,6 +28,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # TC-01: agent/worker is a separate deployable unit with its own
+      # package.json/package-lock.json (@cloudflare/workers-types,
+      # typescript, wrangler -- not an npm workspace of the root project,
+      # so root's `npm ci` above never installs these). The extended
+      # typecheck gate (scripts/typecheck-gate.mjs) needs
+      # agent/worker/node_modules/typescript/bin/tsc to exist to run its
+      # agent/worker/ target at all.
+      - name: Install agent/worker dependencies
+        working-directory: agent/worker
+        run: npm ci
+
       - name: Typecheck
         run: npm run typecheck
 

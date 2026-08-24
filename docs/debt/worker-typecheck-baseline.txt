@@ -1,0 +1,137 @@
+# agent/worker/ typecheck baseline -- TC-01
+#
+# Every error (88 total) `tsc --noEmit -p agent/worker/tsconfig.json`
+# reports as of the commit that generated this file. agent/worker had NO
+# tsconfig.json and NO typecheck gate at all before TC-01 -- these are
+# pre-existing errors this task's own gate now tolerates
+# (agent/worker/typecheck-baseline.json is what the gate script itself
+# actually reads; this file is the human-readable listing of the same
+# data, for review). NOT fixed by TC-01 on purpose (task instruction: 'Do
+# not fix [them] now'). TC-01's own task text estimated '~39 hidden strict
+# errors' -- the real count under a genuinely strict tsconfig.json (see
+# that file's own settings) turned out higher; not adjusted down to match
+# the estimate, since the point of this gate is the real number.
+#
+# A file outside agent/worker/ (e.g. ../../shared/...) can appear here: tsc
+# type-checks every file reachable via import from agent/worker's own
+# program, not only files physically inside this directory.
+#
+# Regenerate together with agent/worker/typecheck-baseline.json via:
+#   node scripts/typecheck-gate.mjs --update-baseline
+#
+# A shrinking count here is always a welcome side effect of unrelated work;
+# a GROWING count for an existing (file, code) pair, or any error in a file/
+# code pair not already listed, fails the gate (see typecheck-gate.mjs).
+chat-attachment-context.test.ts(52,93): error TS2345: Argument of type 'ArrayBufferLike' is not assignable to parameter of type 'BodyInit | null | undefined'.
+  Type 'SharedArrayBuffer' is not assignable to type 'BodyInit | null | undefined'.
+    Type 'SharedArrayBuffer' is not assignable to type 'ArrayBuffer'.
+      Types of property '[Symbol.toStringTag]' are incompatible.
+        Type '"SharedArrayBuffer"' is not assignable to type '"ArrayBuffer"'.
+chat-attachment-context.test.ts(108,7): error TS2322: Type 'ArrayBufferLike' is not assignable to type 'ArrayBuffer | undefined'.
+  Type 'SharedArrayBuffer' is not assignable to type 'ArrayBuffer'.
+    Types of property '[Symbol.toStringTag]' are incompatible.
+      Type '"SharedArrayBuffer"' is not assignable to type '"ArrayBuffer"'.
+chat-attachment-context.test.ts(124,7): error TS2322: Type 'ArrayBufferLike' is not assignable to type 'ArrayBuffer | undefined'.
+  Type 'SharedArrayBuffer' is not assignable to type 'ArrayBuffer'.
+    Types of property '[Symbol.toStringTag]' are incompatible.
+      Type '"SharedArrayBuffer"' is not assignable to type '"ArrayBuffer"'.
+chat-attachment-context.ts(143,62): error TS2345: Argument of type '{ fatal: false; }' is not assignable to parameter of type 'TextDecoderConstructorOptions'.
+  Property 'ignoreBOM' is missing in type '{ fatal: false; }' but required in type 'TextDecoderConstructorOptions'.
+context-derivation-endpoint.test.ts(206,12): error TS18046: 'json' is of type 'unknown'.
+context-derivation-endpoint.test.ts(218,12): error TS18046: 'json' is of type 'unknown'.
+context-derivation-endpoint.test.ts(219,12): error TS18046: 'json' is of type 'unknown'.
+context-derivation-endpoint.test.ts(220,12): error TS18046: 'json' is of type 'unknown'.
+context-derivation-endpoint.test.ts(221,12): error TS18046: 'json' is of type 'unknown'.
+context-derivation-endpoint.test.ts(247,12): error TS18046: 'json' is of type 'unknown'.
+context-derivation-endpoint.test.ts(248,12): error TS18046: 'json' is of type 'unknown'.
+context-derivation-endpoint.test.ts(249,12): error TS18046: 'json' is of type 'unknown'.
+context-derivation-endpoint.test.ts(269,24): error TS2339: Property 'user_id' does not exist on type 'never'.
+context-derivation-endpoint.test.ts(280,12): error TS18046: 'json' is of type 'unknown'.
+context-derivation-endpoint.test.ts(281,12): error TS18046: 'json' is of type 'unknown'.
+context-derivation-endpoint.test.ts(295,12): error TS18046: 'json' is of type 'unknown'.
+context-derivation-endpoint.test.ts(296,12): error TS18046: 'json' is of type 'unknown'.
+context-derivation-endpoint.test.ts(310,20): error TS2352: Conversion of type 'NeutralObjectSchema' to type '{ properties: { candidates: { maxItems?: number | undefined; items: { properties: { sourceEvidenceIds: { minItems?: number | undefined; maxItems?: number | undefined; }; }; }; }; }; }' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Types of property 'properties' are incompatible.
+    Property 'candidates' is missing in type 'Record<string, NeutralSchema>' but required in type '{ candidates: { maxItems?: number | undefined; items: { properties: { sourceEvidenceIds: { minItems?: number | undefined; maxItems?: number | undefined; }; }; }; }; }'.
+context-derivation-endpoint.test.ts(328,12): error TS18046: 'json' is of type 'unknown'.
+context-derivation-endpoint.test.ts(329,12): error TS18046: 'json' is of type 'unknown'.
+document-memory-extraction-endpoint.test.ts(102,93): error TS2345: Argument of type 'ArrayBufferLike' is not assignable to parameter of type 'BodyInit | null | undefined'.
+  Type 'SharedArrayBuffer' is not assignable to type 'BodyInit | null | undefined'.
+    Type 'SharedArrayBuffer' is not assignable to type 'ArrayBuffer'.
+      Types of property '[Symbol.toStringTag]' are incompatible.
+        Type '"SharedArrayBuffer"' is not assignable to type '"ArrayBuffer"'.
+document-memory-extraction-endpoint.test.ts(191,7): error TS2322: Type 'ArrayBufferLike' is not assignable to type 'ArrayBuffer | undefined'.
+  Type 'SharedArrayBuffer' is not assignable to type 'ArrayBuffer'.
+    Types of property '[Symbol.toStringTag]' are incompatible.
+      Type '"SharedArrayBuffer"' is not assignable to type '"ArrayBuffer"'.
+document-memory-extraction-endpoint.ts(603,65): error TS2345: Argument of type '{ fatal: false; }' is not assignable to parameter of type 'TextDecoderConstructorOptions'.
+  Property 'ignoreBOM' is missing in type '{ fatal: false; }' but required in type 'TextDecoderConstructorOptions'.
+github-integration.ts(1976,40): error TS2345: Argument of type '{ fatal: true; }' is not assignable to parameter of type 'TextDecoderConstructorOptions'.
+  Property 'ignoreBOM' is missing in type '{ fatal: true; }' but required in type 'TextDecoderConstructorOptions'.
+personal-memory-extraction-endpoint.test.ts(385,20): error TS2352: Conversion of type 'NeutralObjectSchema' to type '{ properties: { candidates: { maxItems?: number | undefined; items: { properties: { provenanceSourceRefIds: { minItems?: number | undefined; maxItems?: number | undefined; }; }; }; }; }; }' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Types of property 'properties' are incompatible.
+    Property 'candidates' is missing in type 'Record<string, NeutralSchema>' but required in type '{ candidates: { maxItems?: number | undefined; items: { properties: { provenanceSourceRefIds: { minItems?: number | undefined; maxItems?: number | undefined; }; }; }; }; }'.
+personal-memory-extraction-endpoint.test.ts(591,24): error TS2339: Property 'user_id' does not exist on type 'never'.
+providers/gemini/GeminiEmbeddingProvider.test.ts(41,49): error TS2493: Tuple type '[]' of length '0' has no element at index '1'.
+providers/gemini/GeminiEmbeddingProvider.test.ts(41,78): error TS2352: Conversion of type 'undefined' to type 'RequestInit<CfProperties<unknown>>' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+providers/gemini/GeminiEmbeddingProvider.test.ts(53,14): error TS2493: Tuple type '[]' of length '0' has no element at index '0'.
+providers/gemini/GeminiEmbeddingProvider.test.ts(190,61): error TS2493: Tuple type '[]' of length '0' has no element at index '0'.
+providers/gemini/GeminiEmbeddingProvider.test.ts(202,85): error TS2554: Expected 0 arguments, but got 2.
+providers/gemini/GeminiEmbeddingProvider.test.ts(215,16): error TS2493: Tuple type '[]' of length '0' has no element at index '1'.
+providers/gemini/GeminiEmbeddingProvider.test.ts(216,44): error TS2339: Property 'body' does not exist on type 'never'.
+providers/gemini/GeminiEmbeddingProvider.test.ts(232,95): error TS2554: Expected 0 arguments, but got 2.
+providers/gemini/GeminiStructuredGenerationProvider.test.ts(37,60): error TS2493: Tuple type '[]' of length '0' has no element at index '1'.
+providers/gemini/GeminiStructuredGenerationProvider.test.ts(37,64): error TS2339: Property 'body' does not exist on type 'never'.
+providers/gemini/GeminiStructuredGenerationProvider.test.ts(47,73): error TS2493: Tuple type '[]' of length '0' has no element at index '1'.
+providers/gemini/GeminiStructuredGenerationProvider.test.ts(47,77): error TS2339: Property 'body' does not exist on type 'never'.
+providers/gemini/GeminiStructuredGenerationProvider.test.ts(51,70): error TS2493: Tuple type '[]' of length '0' has no element at index '1'.
+providers/gemini/GeminiStructuredGenerationProvider.test.ts(51,74): error TS2339: Property 'body' does not exist on type 'never'.
+providers/gemini/GeminiStructuredGenerationProvider.test.ts(68,60): error TS2493: Tuple type '[]' of length '0' has no element at index '1'.
+providers/gemini/GeminiStructuredGenerationProvider.test.ts(68,64): error TS2339: Property 'body' does not exist on type 'never'.
+providers/gemini/GeminiStructuredGenerationProvider.test.ts(81,64): error TS2493: Tuple type '[]' of length '0' has no element at index '1'.
+providers/gemini/GeminiStructuredGenerationProvider.test.ts(81,68): error TS2339: Property 'body' does not exist on type 'never'.
+providers/gemini/GeminiStructuredGenerationProvider.test.ts(86,64): error TS2493: Tuple type '[]' of length '0' has no element at index '1'.
+providers/gemini/GeminiStructuredGenerationProvider.test.ts(86,68): error TS2339: Property 'body' does not exist on type 'never'.
+providers/gemini/GeminiStructuredGenerationProvider.test.ts(96,71): error TS2493: Tuple type '[]' of length '0' has no element at index '1'.
+providers/gemini/GeminiStructuredGenerationProvider.test.ts(96,75): error TS2339: Property 'body' does not exist on type 'never'.
+providers/gemini/GeminiStructuredGenerationProvider.test.ts(104,68): error TS2493: Tuple type '[]' of length '0' has no element at index '1'.
+providers/gemini/GeminiStructuredGenerationProvider.test.ts(104,72): error TS2339: Property 'body' does not exist on type 'never'.
+providers/gemini/GeminiStructuredGenerationProvider.test.ts(114,48): error TS2493: Tuple type '[]' of length '0' has no element at index '0'.
+providers/gemini/GeminiStructuredGenerationProvider.test.ts(252,85): error TS2554: Expected 0 arguments, but got 2.
+providers/gemini/GeminiStructuredGenerationProvider.test.ts(266,16): error TS2493: Tuple type '[]' of length '0' has no element at index '1'.
+providers/gemini/GeminiStructuredGenerationProvider.test.ts(267,44): error TS2339: Property 'body' does not exist on type 'never'.
+providers/gemini/GeminiStructuredGenerationProvider.test.ts(274,95): error TS2554: Expected 0 arguments, but got 2.
+providers/gemini/GeminiStructuredGenerationProvider.test.ts(282,16): error TS2493: Tuple type '[]' of length '0' has no element at index '1'.
+providers/gemini/GeminiStructuredGenerationProvider.test.ts(283,44): error TS2339: Property 'body' does not exist on type 'never'.
+providers/gemini/GeminiTextGenerationProvider.test.ts(30,73): error TS2493: Tuple type '[]' of length '0' has no element at index '1'.
+providers/gemini/GeminiTextGenerationProvider.test.ts(30,77): error TS2339: Property 'body' does not exist on type 'never'.
+providers/gemini/GeminiTextGenerationProvider.test.ts(34,70): error TS2493: Tuple type '[]' of length '0' has no element at index '1'.
+providers/gemini/GeminiTextGenerationProvider.test.ts(34,74): error TS2339: Property 'body' does not exist on type 'never'.
+providers/gemini/GeminiTextGenerationProvider.test.ts(50,60): error TS2493: Tuple type '[]' of length '0' has no element at index '1'.
+providers/gemini/GeminiTextGenerationProvider.test.ts(50,64): error TS2339: Property 'body' does not exist on type 'never'.
+providers/gemini/GeminiTextGenerationProvider.test.ts(63,64): error TS2493: Tuple type '[]' of length '0' has no element at index '1'.
+providers/gemini/GeminiTextGenerationProvider.test.ts(63,68): error TS2339: Property 'body' does not exist on type 'never'.
+providers/gemini/GeminiTextGenerationProvider.test.ts(67,64): error TS2493: Tuple type '[]' of length '0' has no element at index '1'.
+providers/gemini/GeminiTextGenerationProvider.test.ts(67,68): error TS2339: Property 'body' does not exist on type 'never'.
+providers/gemini/GeminiTextGenerationProvider.test.ts(76,71): error TS2493: Tuple type '[]' of length '0' has no element at index '1'.
+providers/gemini/GeminiTextGenerationProvider.test.ts(76,75): error TS2339: Property 'body' does not exist on type 'never'.
+providers/gemini/GeminiTextGenerationProvider.test.ts(83,68): error TS2493: Tuple type '[]' of length '0' has no element at index '1'.
+providers/gemini/GeminiTextGenerationProvider.test.ts(83,72): error TS2339: Property 'body' does not exist on type 'never'.
+providers/gemini/GeminiTextGenerationProvider.test.ts(101,60): error TS2493: Tuple type '[]' of length '0' has no element at index '1'.
+providers/gemini/GeminiTextGenerationProvider.test.ts(101,64): error TS2339: Property 'body' does not exist on type 'never'.
+providers/gemini/GeminiTextGenerationProvider.test.ts(124,60): error TS2493: Tuple type '[]' of length '0' has no element at index '1'.
+providers/gemini/GeminiTextGenerationProvider.test.ts(124,64): error TS2339: Property 'body' does not exist on type 'never'.
+providers/gemini/GeminiTextGenerationProvider.test.ts(153,60): error TS2493: Tuple type '[]' of length '0' has no element at index '1'.
+providers/gemini/GeminiTextGenerationProvider.test.ts(153,64): error TS2339: Property 'body' does not exist on type 'never'.
+providers/gemini/GeminiTextGenerationProvider.test.ts(163,48): error TS2493: Tuple type '[]' of length '0' has no element at index '0'.
+providers/gemini/GeminiTextGenerationProvider.test.ts(255,85): error TS2554: Expected 0 arguments, but got 2.
+providers/gemini/GeminiTextGenerationProvider.test.ts(269,16): error TS2493: Tuple type '[]' of length '0' has no element at index '1'.
+providers/gemini/GeminiTextGenerationProvider.test.ts(270,44): error TS2339: Property 'body' does not exist on type 'never'.
+providers/gemini/GeminiTextGenerationProvider.test.ts(277,95): error TS2554: Expected 0 arguments, but got 2.
+providers/gemini/GeminiTextGenerationProvider.test.ts(285,16): error TS2493: Tuple type '[]' of length '0' has no element at index '1'.
+providers/gemini/GeminiTextGenerationProvider.test.ts(286,44): error TS2339: Property 'body' does not exist on type 'never'.
+reasoning-endpoint.test.ts(103,48): error TS2339: Property 'enum' does not exist on type 'NeutralSchema'.
+  Property 'enum' does not exist on type 'NeutralObjectSchema'.
+reasoning-endpoint.test.ts(264,22): error TS2352: Conversion of type 'undefined' to type 'RequestInit<CfProperties<unknown>>' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+reasoning-endpoint.test.ts(264,46): error TS2493: Tuple type '[input: URL | RequestInfo<unknown, CfProperties<unknown>>]' of length '1' has no element at index '1'.
+../../shared/bankImportBatchPreview.ts(100,53): error TS2698: Spread types may only be created from object types.

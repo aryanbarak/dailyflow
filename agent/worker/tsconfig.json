@@ -1,0 +1,25 @@
+{
+  // SmartFlow -- TC-01: agent/worker's own tsconfig. This subproject is a
+  // separate, zero-runtime-dependency deployable unit (see e.g.
+  // chatMessage.ts's own header comment) with its own package.json/
+  // node_modules/@cloudflare/workers-types -- it never previously had a
+  // tsconfig.json of its own, so `tsc` here had nothing to run against
+  // outside ad hoc, uncommitted local checks. worker-configuration.d.ts
+  // (wrangler-generated) supplies the ambient Ai/Env runtime types; nothing
+  // else needs to reach outside this directory.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ES2022",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true
+  },
+  "include": ["**/*.ts"],
+  "exclude": ["node_modules", ".wrangler"]
+}
