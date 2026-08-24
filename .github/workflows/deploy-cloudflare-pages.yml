@@ -32,6 +32,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # HOTFIX-01: TC-01 added this same step to ci.yml only -- this
+      # workflow's own typecheck step calls the same two-target gate
+      # (npm run typecheck -> scripts/typecheck-gate.mjs), whose
+      # agent/worker/ target needs agent/worker/node_modules/typescript/
+      # bin/tsc to exist. Root's `npm ci` above never installs it (agent/
+      # worker is a separate deployable unit, not an npm workspace -- see
+      # ci.yml's own comment on its equivalent step).
+      - name: Install agent/worker dependencies
+        working-directory: agent/worker
+        run: npm ci
+
       - name: Typecheck
         run: npm run typecheck
 
