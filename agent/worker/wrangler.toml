@@ -5,10 +5,24 @@ compatibility_date = "2024-01-01"
 [triggers]
 crons = ["0 6 * * *"]  # هر روز ساعت ۶ UTC = ۸ صبح آلمان
 
+# ADR-0018 S1b: makes env.AI (Env.AI: Ai, agent/worker/types.ts) a real
+# binding at runtime -- the type existed before this binding did (see
+# PROJECT_STATUS.md's S1b entry), so env.AI was `undefined` at runtime
+# despite being typed as required until this line was added.
+[ai]
+binding = "AI"
+
 [vars]
 GEMINI_MODEL = "gemini-3.6-flash"
 SUPABASE_URL = "https://taqxwnlwllbywaklwyno.supabase.co"
 SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRhcXh3bmx3bGxieXdha2x3eW5vIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc4ODQzNjEsImV4cCI6MjA5MzQ2MDM2MX0.TmhuyWcwEUwnSvxXJiZ2HueY6Jr0sudmyJWlpM-X7_Y"
+# ADR-0018 S1b: 'gemini' (default) | 'workers-ai' -- selects the
+# TextGenerationProvider createProviders() constructs for this deployment.
+# See providers/workers-ai/WorkersAITextGenerationProvider.ts's header
+# comment for the model choice/rationale, and createProviders.ts for the
+# selection logic. Structured generation and embeddings are unaffected
+# (ADR-0018 Decision 5: Gemini-only, fail-closed, regardless of this var).
+AI_TEXT_PROVIDER = "gemini"
 
 # Secrets — با wrangler secret put تنظیم کن:
 # wrangler secret put SUPABASE_SERVICE_KEY

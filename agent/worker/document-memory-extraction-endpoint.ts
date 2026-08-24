@@ -260,7 +260,13 @@ export async function transcribePdf(
   fetcher: typeof fetch,
   logger: Pick<Console, 'info' | 'error'>,
 ): Promise<string> {
-  const provider = createProviders(env, fetcher).text
+  // ADR-0018 S1b: transcribePdf always carries a PDF attachment -- pinned
+  // to Gemini (pinTextProvider: 'gemini' ignores AI_TEXT_PROVIDER
+  // entirely) rather than relying on WorkersAITextGenerationProvider's
+  // generic attachments-unsupported rejection, so a deployment that flips
+  // the env default to 'workers-ai' for chat cannot also silently break
+  // document transcription.
+  const provider = createProviders(env, fetcher, { pinTextProvider: 'gemini' }).text
 
   let result: TextGenerationResult
   try {

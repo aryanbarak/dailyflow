@@ -1734,7 +1734,12 @@ async function handleDocumentAnalyze(request: Request, env: Env): Promise<Respon
     // never specially caught for that case either).
     let answer: string
     try {
-      const result = await createProviders(env).text.generateText({
+      // ADR-0018 S1b: /documents/analyze can carry a file attachment --
+      // pinned to Gemini (pinTextProvider: 'gemini' ignores
+      // AI_TEXT_PROVIDER entirely) rather than relying on
+      // WorkersAITextGenerationProvider's generic attachments-unsupported
+      // rejection.
+      const result = await createProviders(env, fetch, { pinTextProvider: 'gemini' }).text.generateText({
         turns: [{ role: 'user', content: text }],
         temperature: 0.3,
         maxOutputTokens: 4096,

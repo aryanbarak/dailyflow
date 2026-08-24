@@ -34,6 +34,27 @@
 //   GEMINI_API_KEY=... npx vite-node scripts/provider-contract-smoke.ts
 // On a free-tier key, space the 6 checks out:
 //   SMOKE_DELAY_MS=15000 GEMINI_API_KEY=... npx vite-node scripts/provider-contract-smoke.ts
+//
+// ADR-0018 S1b -- WorkersAITextGenerationProvider has NO automated check
+// here (still 6/6, not 7/7): env.AI is a Cloudflare Workers AI runtime
+// binding, unlike Gemini's plain fetch() -- it does not exist outside an
+// actual workerd runtime (no local, no vite-node), so it cannot be reached
+// from this script's process the way every other check here is. Verify it
+// manually, post-deploy, instead:
+//   1. cd agent/worker && npx wrangler dev
+//   2. In agent/worker/.dev.vars (or wrangler.toml [vars] for a real
+//      deploy check), temporarily set AI_TEXT_PROVIDER=workers-ai.
+//   3. POST a normal /chat request (mode=chat, no attachment) at the local
+//      dev URL and confirm a real, non-empty response -- that proves
+//      env.AI.run(DEFAULT_WORKERS_AI_TEXT_MODEL, ...) round-trips for
+//      real, the same class of break this whole script exists to catch
+//      for Gemini.
+//   4. Revert AI_TEXT_PROVIDER back to gemini (or remove the override)
+//      before any real deploy -- 'gemini' is the committed wrangler.toml
+//      default and this manual check must never be what flips it.
+// See providers/workers-ai/WorkersAITextGenerationProvider.ts for the
+// adapter and createProviders.ts for the AI_TEXT_PROVIDER selection this
+// verifies.
 
 // Task 28b-guard: this check is written first, before the imports below, so
 // a reader sees it before anything else -- even though ESM hoists import
