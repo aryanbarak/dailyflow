@@ -22,7 +22,7 @@ SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS
 # comment for the model choice/rationale, and createProviders.ts for the
 # selection logic. Structured generation and embeddings are unaffected
 # (ADR-0018 Decision 5: Gemini-only, fail-closed, regardless of this var).
-AI_TEXT_PROVIDER = "gemini"
+AI_TEXT_PROVIDER = "workers-ai"
 # ADR-0018 S1c: 'on' | absent/anything else (default off). 'on' wraps the
 # AI_TEXT_PROVIDER-selected TextGenerationProvider as the PRIMARY of a
 # fallback chain, with the other text provider as secondary -- one
