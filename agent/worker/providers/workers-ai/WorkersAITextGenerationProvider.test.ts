@@ -33,7 +33,7 @@ describe('WorkersAITextGenerationProvider', () => {
 
   describe('request mapping', () => {
     it('sends no system message when req.system is absent, a leading system message when present', async () => {
-      const run = vi.fn(async () => chatCompletion('hi'))
+      const run = vi.fn(async (_model: string, _inputs: Record<string, unknown>) => chatCompletion('hi'))
       const provider = new WorkersAITextGenerationProvider(makeEnv(run))
 
       await provider.generateText({ turns: [{ role: 'user', content: 'hello' }] })
@@ -49,7 +49,7 @@ describe('WorkersAITextGenerationProvider', () => {
     })
 
     it('maps role: assistant -> assistant, everything else -> user', async () => {
-      const run = vi.fn(async () => chatCompletion('ok'))
+      const run = vi.fn(async (_model: string, _inputs: Record<string, unknown>) => chatCompletion('ok'))
       const provider = new WorkersAITextGenerationProvider(makeEnv(run))
 
       await provider.generateText({
@@ -69,7 +69,7 @@ describe('WorkersAITextGenerationProvider', () => {
     })
 
     it('sends max_tokens/temperature only when provided on the request', async () => {
-      const run = vi.fn(async () => chatCompletion('ok'))
+      const run = vi.fn(async (_model: string, _inputs: Record<string, unknown>) => chatCompletion('ok'))
       const provider = new WorkersAITextGenerationProvider(makeEnv(run))
 
       await provider.generateText({ turns: [{ role: 'user', content: 'hi' }] })
@@ -83,7 +83,7 @@ describe('WorkersAITextGenerationProvider', () => {
     })
 
     it('calls env.AI.run with DEFAULT_WORKERS_AI_TEXT_MODEL', async () => {
-      const run = vi.fn(async () => chatCompletion('ok'))
+      const run = vi.fn(async (_model: string, _inputs: Record<string, unknown>) => chatCompletion('ok'))
       const provider = new WorkersAITextGenerationProvider(makeEnv(run))
 
       await provider.generateText({ turns: [{ role: 'user', content: 'hi' }] })
@@ -142,7 +142,7 @@ describe('WorkersAITextGenerationProvider', () => {
     })
 
     it('does not reject a request with providerOptions but no inlineDataAttachment key', async () => {
-      const run = vi.fn(async () => chatCompletion('ok'))
+      const run = vi.fn(async (_model: string, _inputs: Record<string, unknown>) => chatCompletion('ok'))
       const provider = new WorkersAITextGenerationProvider(makeEnv(run))
 
       const result = await provider.generateText({
@@ -176,7 +176,7 @@ describe('WorkersAITextGenerationProvider', () => {
   describe('failure-event persistence (ADR-0018 Decision 6)', () => {
     it('records a failure event (capability text_generation, provider_id workers-ai, http_status null -- no HTTP status exists for a binding error)', async () => {
       const run = vi.fn(async () => { throw new Error('binding unavailable') })
-      const supabaseInsert = vi.fn(async () => new Response(null, { status: 201 }))
+      const supabaseInsert = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(null, { status: 201 }))
       const env = makeEnv(run)
       const provider = new WorkersAITextGenerationProvider(env, supabaseInsert)
 
