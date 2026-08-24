@@ -19,6 +19,18 @@ const MIGRATION_PATH = join(
 );
 const sql = readFileSync(MIGRATION_PATH, "utf8");
 
+// ADR-0018 S1c: a SEPARATE, additive migration -- the 20260823000000
+// migration above is already applied to production (2026-08-23) and is
+// immutable; this one is authored only, not applied, per this file's own
+// header comment's static-structure-test rationale.
+const EVENT_KIND_MIGRATION_PATH = join(
+  __dirname,
+  "..",
+  "migrations",
+  "20260824000000_provider_failure_events_event_kind.sql",
+);
+const eventKindSql = readFileSync(EVENT_KIND_MIGRATION_PATH, "utf8");
+
 describe("provider_failure_events migration structure (ADR-0018 Decision 6)", () => {
   it("defines the table", () => {
     expect(sql).toMatch(/create table if not exists public\.provider_failure_events/);
@@ -64,5 +76,26 @@ describe("provider_failure_events migration structure (ADR-0018 Decision 6)", ()
 
   it("documents the table's purpose and trust model in a COMMENT ON TABLE", () => {
     expect(sql).toContain("comment on table public.provider_failure_events is");
+  });
+});
+
+describe("provider_failure_events event_kind migration structure (ADR-0018 S1c)", () => {
+  it("is a separate, additive ALTER TABLE against the existing table -- not an edit to the applied 20260823000000 migration", () => {
+    expect(eventKindSql).toMatch(/alter table public\.provider_failure_events\s+add column if not exists event_kind/);
+    // Confirms this file did NOT touch the already-applied migration's own
+    // CREATE TABLE statement.
+    expect(sql).toContain("create table if not exists public.provider_failure_events");
+    expect(sql).not.toContain("event_kind");
+  });
+
+  it("declares event_kind as text, NOT NULL, defaulted to 'failure', constrained to exactly the two known kinds", () => {
+    expect(eventKindSql).toContain(
+      "add column if not exists event_kind text not null default 'failure'",
+    );
+    expect(eventKindSql).toContain("check (event_kind in ('failure', 'fallback_success'))");
+  });
+
+  it("documents the column's purpose in a COMMENT ON COLUMN", () => {
+    expect(eventKindSql).toContain("comment on column public.provider_failure_events.event_kind is");
   });
 });
