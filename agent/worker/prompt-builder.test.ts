@@ -21,6 +21,40 @@ function confirmedSkill(summary: string): ConfirmedPersonalMemoryRecord {
 }
 
 describe('buildChatSystemPrompt', () => {
+  // LANG-01: production evidence (AI_TEXT_PROVIDER=workers-ai) showed the
+  // model literally refusing to reply in Persian ("I am required to reply
+  // entirely in English, but I can fully understand your messages in
+  // Persian") -- CHAT_PERSONA's language line used to be an absolute
+  // command ("You MUST reply entirely in English") regardless of what
+  // language the user actually wrote in, sourced only from the account's
+  // stored `language` setting (fetchUserLanguage), never the message
+  // itself. Reworded to an explicit priority order -- explicit in-
+  // conversation request, then the current message's own language, then
+  // the persona's own language as a last-resort default -- so a Gemma-
+  // class model that follows instructions literally (unlike Gemini, which
+  // was silently softening the old absolute wording) still produces the
+  // right behavior.
+  it.each([
+    [
+      'en',
+      "1) If the user explicitly requests a specific language in the conversation, reply in that language. 2) Otherwise, reply in the language of the user's current message. 3) If the language is unclear or mixed, default to English.",
+    ],
+    [
+      'de',
+      'Wenn der Nutzer in der Unterhaltung ausdrücklich eine bestimmte Sprache verlangt, antworte in dieser Sprache. 2) Andernfalls antworte in der Sprache der aktuellen Nachricht des Nutzers. 3) Ist die Sprache unklar oder gemischt, antworte standardmäßig auf Deutsch.',
+    ],
+    [
+      'fa',
+      'اگر کاربر در طول گفتگو صراحتاً زبان خاصی را درخواست کرده، به همان زبان پاسخ بده. ۲) در غیر این صورت، به زبان پیام فعلی کاربر پاسخ بده. ۳) اگر زبان نامشخص یا ترکیبی بود، به‌طور پیش‌فرض به فارسی پاسخ بده.',
+    ],
+  ] as const)('%s: the language line is a priority order (explicit request > message language > persona default), not an absolute command', (language, priorityText) => {
+    const prompt = buildChatSystemPrompt(language, [])
+    expect(prompt).toContain(priorityText)
+    expect(prompt).not.toContain('MUST reply entirely')
+    expect(prompt).not.toContain('MUSST ausschließlich')
+    expect(prompt).not.toContain('تمام پاسخ‌ها را باید به فارسی بنویسی')
+  })
+
   it('(a) contains ONLY the confirmed memory passed in -- a legacy-only fact (never confirmed) is structurally absent since there is no legacy input to this function at all', () => {
     const confirmedMemory = [confirmedSkill('TELC B2'), confirmedSkill('TypeScript'), confirmedSkill('React')]
     const prompt = buildChatSystemPrompt('fa', confirmedMemory)
