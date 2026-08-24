@@ -8,9 +8,25 @@
 // evaluation) time, not lazily per call, so a plain top-level static
 // import + beforeEach stub is too late -- confirmed the hard way while
 // writing this file.
+//
+// FLAKE-01: this file originally queried the global `screen` (document.
+// body-wide), NOT scoped to each test's own render() container -- the one
+// part of "mirrors ChatEmptyStateRTL.test.tsx's own pattern" (above) this
+// file did NOT actually copy; that sibling scopes every query to its own
+// `const { container } = render(...)` instead. A `screen` query makes a
+// test's pass/fail depend on the ENTIRE document body being exactly what
+// this one render produced -- if anything else is ever mounted at the
+// same time for any reason (a previous test's cleanup() racing an async
+// effect, a future regression, a testing-library/jsdom edge case), a
+// same-named accessible name anywhere else in the body turns into "found
+// multiple elements" here, in a file with NO code of its own to blame.
+// Every render() below now captures its own `container` and every query
+// is scoped to it via `within(container)` -- this test can now only ever
+// see the DOM it itself created, matching the sibling file's own
+// discipline exactly.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, within } from "@testing-library/react";
 import type { useAppearance as UseAppearance } from "@/features/settings/appearanceStore";
 import type { ChatPageHeader as ChatPageHeaderComponent } from "./ChatPageHeader";
 
@@ -60,7 +76,7 @@ afterEach(() => {
 describe("ChatPageHeader composition (task 17c, D4)", () => {
   it("renders exactly two icon-only trigger buttons before the brand text -- More then Conversations, in that DOM order", async () => {
     const { ChatPageHeader } = await freshModules();
-    render(
+    const { container } = render(
       <ChatPageHeader
         compact={false}
         prefersReducedMotion
@@ -69,14 +85,14 @@ describe("ChatPageHeader composition (task 17c, D4)", () => {
         onStartNewChat={vi.fn()}
       />,
     );
-    const moreButton = screen.getByLabelText("More");
-    const conversationsButton = screen.getByLabelText("Conversations");
+    const moreButton = within(container).getByLabelText("More");
+    const conversationsButton = within(container).getByLabelText("Conversations");
     expect(moreButton.compareDocumentPosition(conversationsButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("the More button uses the hamburger (Menu) icon and the Conversations button uses History -- NOT the hamburger (task 17c D4: 'ICON CHANGE per PO -- use a history/chat-list icon... NOT the hamburger')", async () => {
     const { ChatPageHeader } = await freshModules();
-    render(
+    const { container } = render(
       <ChatPageHeader
         compact={false}
         prefersReducedMotion
@@ -85,8 +101,8 @@ describe("ChatPageHeader composition (task 17c, D4)", () => {
         onStartNewChat={vi.fn()}
       />,
     );
-    const moreButton = screen.getByLabelText("More");
-    const conversationsButton = screen.getByLabelText("Conversations");
+    const moreButton = within(container).getByLabelText("More");
+    const conversationsButton = within(container).getByLabelText("Conversations");
     expect(moreButton.querySelector("svg")?.classList.toString()).toContain("lucide-menu");
     expect(conversationsButton.querySelector("svg")?.classList.toString()).toContain("lucide-history");
     expect(conversationsButton.querySelector("svg")?.classList.toString()).not.toContain("lucide-menu");
@@ -94,7 +110,7 @@ describe("ChatPageHeader composition (task 17c, D4)", () => {
 
   it("renders the full, untruncated 'Flow AI' brand text", async () => {
     const { ChatPageHeader } = await freshModules();
-    render(
+    const { container } = render(
       <ChatPageHeader
         compact={false}
         prefersReducedMotion
@@ -103,7 +119,7 @@ describe("ChatPageHeader composition (task 17c, D4)", () => {
         onStartNewChat={vi.fn()}
       />,
     );
-    const heading = screen.getByRole("heading", { level: 1 });
+    const heading = within(container).getByRole("heading", { level: 1 });
     expect(heading.textContent).toBe("Flow AI");
     expect(heading.className).not.toContain("truncate");
   });
@@ -113,7 +129,7 @@ describe("ChatPageHeader composition (task 17c, D4)", () => {
     const onOpenMoreMenu = vi.fn();
     const onOpenConversations = vi.fn();
     const onStartNewChat = vi.fn();
-    render(
+    const { container } = render(
       <ChatPageHeader
         compact={false}
         prefersReducedMotion
@@ -122,9 +138,9 @@ describe("ChatPageHeader composition (task 17c, D4)", () => {
         onStartNewChat={onStartNewChat}
       />,
     );
-    screen.getByLabelText("More").click();
-    screen.getByLabelText("Conversations").click();
-    screen.getByText("New Chat").click();
+    within(container).getByLabelText("More").click();
+    within(container).getByLabelText("Conversations").click();
+    within(container).getByText("New Chat").click();
     expect(onOpenMoreMenu).toHaveBeenCalledTimes(1);
     expect(onOpenConversations).toHaveBeenCalledTimes(1);
     expect(onStartNewChat).toHaveBeenCalledTimes(1);
@@ -137,7 +153,7 @@ describe("ChatPageHeader RTL mirroring (task 17c, D4)", () => {
     act(() => {
       useAppearance.setState({ language: "fa" });
     });
-    render(
+    const { container } = render(
       <div dir="rtl">
         <ChatPageHeader
           compact={false}
@@ -148,14 +164,14 @@ describe("ChatPageHeader RTL mirroring (task 17c, D4)", () => {
         />
       </div>,
     );
-    expect(screen.getByLabelText("بیشتر")).not.toBeNull();
-    expect(screen.getByLabelText("مکالمات")).not.toBeNull();
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Flow AI");
+    expect(within(container).getByLabelText("بیشتر")).not.toBeNull();
+    expect(within(container).getByLabelText("مکالمات")).not.toBeNull();
+    expect(within(container).getByRole("heading", { level: 1 }).textContent).toBe("Flow AI");
   });
 
   it("does not itself set a flex-row-reverse or hardcoded direction class (mirroring must come from the ancestor's real dir, not a local override that could fight it)", async () => {
     const { ChatPageHeader } = await freshModules();
-    render(
+    const { container } = render(
       <ChatPageHeader
         compact={false}
         prefersReducedMotion
@@ -164,6 +180,6 @@ describe("ChatPageHeader RTL mirroring (task 17c, D4)", () => {
         onStartNewChat={vi.fn()}
       />,
     );
-    expect(screen.getByRole("heading", { level: 1 }).closest("div")?.innerHTML).not.toMatch(/flex-row-reverse/);
+    expect(within(container).getByRole("heading", { level: 1 }).closest("div")?.innerHTML).not.toMatch(/flex-row-reverse/);
   });
 });
