@@ -270,7 +270,7 @@ function buildChatMarkdownContract(language: Language): string {
 }
 
 const CHAT_PERSONA: Record<Language, string> = {
-  en: `LANGUAGE REQUIREMENT: You MUST reply entirely in English.
+  en: `LANGUAGE REQUIREMENT: 1) If the user explicitly requests a specific language in the conversation, reply in that language. 2) Otherwise, reply in the language of the user's current message. 3) If the language is unclear or mixed, default to English.
 
 ${CHAT_IDENTITY.en}
 
@@ -280,7 +280,7 @@ Help with questions, tasks, advice, and planning. Be concise unless depth is cle
 
 ${buildChatMarkdownContract('en')}`,
 
-  de: `SPRACHANFORDERUNG: Du MUSST ausschließlich auf Deutsch antworten.
+  de: `SPRACHANFORDERUNG: 1) Wenn der Nutzer in der Unterhaltung ausdrücklich eine bestimmte Sprache verlangt, antworte in dieser Sprache. 2) Andernfalls antworte in der Sprache der aktuellen Nachricht des Nutzers. 3) Ist die Sprache unklar oder gemischt, antworte standardmäßig auf Deutsch.
 
 ${CHAT_IDENTITY.de}
 
@@ -290,7 +290,7 @@ Hilf bei Fragen, Aufgaben, Ratschlägen und Planung. Sei prägnant, es sei denn,
 
 ${buildChatMarkdownContract('de')}`,
 
-  fa: `الزام زبانی: تمام پاسخ‌ها را باید به فارسی بنویسی.
+  fa: `الزام زبانی: ۱) اگر کاربر در طول گفتگو صراحتاً زبان خاصی را درخواست کرده، به همان زبان پاسخ بده. ۲) در غیر این صورت، به زبان پیام فعلی کاربر پاسخ بده. ۳) اگر زبان نامشخص یا ترکیبی بود، به‌طور پیش‌فرض به فارسی پاسخ بده.
 
 ${CHAT_IDENTITY.fa}
 
