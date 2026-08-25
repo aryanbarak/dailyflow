@@ -144,7 +144,18 @@ current detail rather than this file:
 - Write tools (verified fresh in this task, see §2.3 below):
   `tasks.complete`, `github.issues.comment`, `github.issues.update`,
   `github.files.update`.
-- GitHub Read-only Integration V1 Slice 1 — live in production.
+- GitHub Read-only Integration V1 Slice 1 — confirmed live in production
+  (PO-verified 2026-08-25, GH-04): GitHub App "SmartFlow Agent" is
+  registered with read-only permissions, connected to account
+  `aryanbarak`, and the deployed Worker successfully lists real
+  repositories today. Unlike the rest of this subsection, this line has
+  since been independently confirmed rather than merely carried forward —
+  see `docs/architecture/github-read-only-integration-v1.md`'s Status
+  header. GitHub credentials exist as Worker **secrets**
+  (`GITHUB_APP_PRIVATE_KEY`, `GITHUB_CLIENT_SECRET`), not `[vars]` — an
+  earlier read-only status check (GH-01) correctly found no `GITHUB_*`
+  `[vars]` entries but did not check secrets, which was out of its
+  declared scope, not a wrong finding.
 - AI response language resolution (`auto`/`en`/`de`/`fa`) and RTL/LTR handling.
 - Unified Execution Intent Lifecycle Foundation Slice 1 (`26f342b`).
 
@@ -1548,6 +1559,38 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
   errors remain, 80 were in the baseline; `agent/worker/`: 88 remain, 88
   were in the baseline — no new/regressed on either); `npx eslint` clean
   on both touched files.
+
+- **GH-04** — Docs-only correction, no code/config/registration changes.
+  PO confirmed GitHub App "SmartFlow Agent" (read-only permissions) is
+  registered, connected to account `aryanbarak`, and the deployed Worker
+  successfully lists real repositories in production — resolving the
+  self-contradiction GH-01 flagged at this file's §2.2 GitHub line and
+  the design doc's own "no real GitHub request... has been performed"
+  claim, both now superseded. GH-01's missing-`[vars]` finding was
+  correct but incomplete: GitHub credentials exist as Worker secrets
+  (`GITHUB_APP_PRIVATE_KEY`, `GITHUB_CLIENT_SECRET`), which GH-01
+  declared out of scope, not a config gap.
+  `docs/architecture/github-read-only-integration-v1.md` updated:
+  Status header now reflects live/confirmed status with the secrets-vs-
+  vars clarification; original Purpose/Scope/Worker Routes/Configuration
+  Contract/Manual Registration Checklist text is kept as the historical
+  record of Slice 1 as originally designed rather than rewritten in
+  place; a new "Routes Beyond Slice 1 Scope" section (after Worker
+  Routes) tables the 10 routes GH-01/GH-02 found beyond the original 6 —
+  5 read-only extensions with no dedicated ADR (follow this doc's own
+  read-only registration checklist), `github.issues.comment`/
+  `github.issues.update` under ADR-0004 (disclosed browser-only-approval
+  gap), and `github.files.update`/`code-proposals/approve` under ADR-0005
+  (server-verified approval) — and states plainly that no independent
+  kill switch exists for the write routes (GH-02's finding: `resolveConfig()`
+  gates all read+write routes in one place). Testing Status section
+  corrected in place: real counts from GH-01's fresh run (139 Worker
+  tests, 115 frontend tests across 20 files, vs. the doc's stale 24/19)
+  with the original 4 migration/type-structure and 5 live-RLS counts
+  confirmed still accurate. The Manual Registration Checklist's item 6
+  ("Metadata read-only only") is noted as superseded by the actual grant,
+  which needed more than Metadata once the read surface grew past
+  `repositories.list` alone.
 
 Superseded/completed sprint milestones from the prior version of this
 document have been removed rather than carried forward as history; git

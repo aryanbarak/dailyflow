@@ -1,7 +1,24 @@
 # GitHub Read-only Integration V1 - Slice 1
 
-**Status:** Implemented locally; real GitHub App registration and authenticated provider QA pending  
-**Last updated:** 2026-07-22
+**Status:** Live in production, read-only permissions confirmed 2026-08-25.
+GitHub App "SmartFlow Agent" is registered with read-only permissions,
+connected to account `aryanbarak`, and the deployed Worker successfully
+lists real repositories. GitHub credentials exist as Worker **secrets**
+(`GITHUB_APP_PRIVATE_KEY`, `GITHUB_CLIENT_SECRET`, etc. — see
+`agent/worker/wrangler.toml`'s own comment pointing at `wrangler secret
+put`), not `[vars]`; an earlier read-only status check (GH-01) found no
+`GITHUB_*` `[vars]` entries and correctly reported that as evidence
+against production readiness, but did not check secrets — that was out of
+its declared scope, not a wrong finding.  
+**Last updated:** 2026-08-25 (GH-04 status correction)
+
+The scope and trust-boundary description below (Purpose, Scope, Worker
+Routes, Configuration Contract, Manual Registration Checklist) documents
+Slice 1 as originally designed and is left as the historical record of
+that design. The surface actually built and now live is materially
+larger — see "Routes Beyond Slice 1 Scope (GH-04, 2026-08-25)" after the
+Worker Routes table below for what is not covered by this doc's original
+text.
 
 ## Purpose
 
@@ -88,6 +105,42 @@ IDs cannot be supplied by the user or LLM.
 
 Disconnect does not uninstall the GitHub App. The user manages installation and
 repository access separately in GitHub settings.
+
+## Routes Beyond Slice 1 Scope (GH-04, 2026-08-25)
+
+The table above is Slice 1's original 6 routes. Code inspection
+(`agent/worker/github-integration.ts`, GH-01/GH-02) confirms 10 additional
+routes are implemented and live, none of which this doc originally
+described. Five extend the read-only surface without a dedicated new ADR
+— they follow the same read-only tool-registration checklist this doc
+already defines under "Adding a New Read-only Tool"; four are governed by
+ADR-0004 or ADR-0005; one (`code-proposals/approve`) is a SmartFlow-side
+approval step that itself only calls GitHub to read, never to mutate.
+
+| Method | Route | Purpose | Governing ADR |
+| --- | --- | --- | --- |
+| `GET` | `/github/repository-inventory` | Cached repository name/metadata inventory backing the tools below, avoiding a re-list of installation repositories on every call. | None dedicated — extends this doc's own read-only registration pattern. |
+| `GET` | `/github/issues` | `github.issues.list` — list issues for a connected repository. | None dedicated — same pattern. |
+| `GET` | `/github/epics` | `github.epics.list` — list epics (reuses the issues endpoint with `state=all` plus label filtering). | None dedicated — same pattern. |
+| `GET` | `/github/pulls` | `github.pulls.list` — list open pull requests. | None dedicated — same pattern. |
+| `GET` | `/github/workflow_runs` | `github.workflow_runs.list` — list recent Actions workflow runs. | None dedicated — same pattern. |
+| `GET` | `/github/files/read` | Read a single file's contents; supports reviewing a code proposal before approval. | ADR-0005 (read leg of the code-write flow). |
+| `POST` | `/github/issues/comment` | `github.issues.comment` — post a comment on an issue. | **ADR-0004** — reuses the `tasks.complete`-style write pipeline; ADR-0004 discloses that server-side approval enforcement is not implemented for this tool (browser-UX-only gate). |
+| `PATCH` | `/github/issues/update` | `github.issues.update` — update issue fields (e.g. state, labels). | **ADR-0004** — same disclosed gap as above. |
+| `POST` | `/github/code-proposals/approve` | Records a server-verified approval artifact (`agent_code_proposal_approvals`) for a pending file-write proposal. Calls GitHub only to read the current branch head for staleness checking; makes no GitHub mutation itself. | **ADR-0005**. |
+| `POST` | `/github/files/update` | `github.files.update` — commit a single file change to a non-default branch, creating the branch first if needed. The only write route with genuine server-side approval enforcement (the Worker re-derives base SHA/content digest/risk level itself rather than trusting the browser). | **ADR-0005**. |
+
+Both `github.issues.comment`/`github.issues.update` and `github.files.update`
+share SmartFlow's standard write-execution pipeline
+(`src/features/agent/writeRuntime.ts`'s `SUPPORTED_WRITE_TOOL_IDS`,
+`executionPolicy.ts`, `agent_write_log` audit) — none of the three GitHub
+write tools has a bespoke or weaker mechanism. There is no independent
+kill switch for the write routes: `resolveConfig()` in
+`github-integration.ts` gates the entire read+write route dispatch chain
+in one place: registering the App with write permissions activates all
+three write routes' code paths, since the write routes cannot be disabled
+independently of the read routes short of not granting GitHub the write
+scopes in the first place (see GH-02's finding and recommendation).
 
 ## Database Model and RLS
 
@@ -259,6 +312,22 @@ tests. The full default repository suite passes 474 tests and intentionally
 skips the 5 environment-gated live-RLS tests; those 5 pass when run explicitly
 against the local stack.
 
+**Corrected 2026-08-25 (GH-04, sourced from GH-01's fresh live test run):**
+the counts above are Slice 1's original counts as of 2026-07-22 and
+undersell the surface actually built by roughly 5-6x — they predate the
+10 routes documented above under "Routes Beyond Slice 1 Scope." Re-run
+2026-08-24/25: `agent/worker/github-integration.test.ts` alone passes
+**139** Worker tests (not 24); the frontend GitHub client/UI test files
+pass **115** tests across 20 files (not 19); `supabase/tests/
+github_read_only_connections.test.ts` plus its `.rls.test.ts` companion
+still match the original counts exactly — 4 migration/type-structure
+tests and 5 live-RLS tests (still skipped by default, still passing when
+run explicitly against the local stack). The whole-repository default
+suite total has also grown well past the 474 figure above — 3752
+passed/76 skipped/0 failed as of the most recent full-suite run recorded
+elsewhere in `PROJECT_STATUS.md` (TITLE-01) — but that number covers the
+entire repository, not GitHub specifically, and is not re-derived here.
+
 The complete migration history was replayed successfully on a clean local
 Supabase database. Live tests with two real local users verify own-row reads,
 cross-user isolation, denied browser mutations, service-only attempts, unique
@@ -276,6 +345,11 @@ pending and is not represented as passed.
 No real GitHub request, App registration, installation, or authenticated GitHub
 QA has been performed. The slice must not be marked complete until that manual
 prerequisite and QA pass.
+
+**Superseded 2026-08-25 (GH-04):** this manual prerequisite has been
+completed. PO confirmed GitHub App "SmartFlow Agent" (read-only
+permissions) is registered, connected to account `aryanbarak`, and the
+deployed Worker successfully lists real repositories in production.
 
 ## Manual GitHub App Registration Checklist
 
@@ -306,6 +380,15 @@ through chat or commit them.
     rejection, and cross-user isolation using synthetic QA data only.
 15. Register separate staging/production Apps later with HTTPS callbacks and
     environment-specific secrets. Do not reuse the local QA App.
+
+**Note (GH-04, 2026-08-25):** item 6 above ("no repository permission
+beyond ... Metadata") reflects Slice 1's original read-only-repositories-
+only plan. The App as actually registered and confirmed live grants more
+than Metadata alone, because the read surface itself grew (see "Routes
+Beyond Slice 1 Scope" above) before registration happened — see GH-02's
+permission analysis for the full Issues/Contents/Pull requests/Actions
+breakdown of what a read-only registration needs versus what the write
+routes would additionally require if ever granted.
 
 ## References
 
