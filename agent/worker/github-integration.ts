@@ -4,6 +4,13 @@ const GITHUB_AUTH_ORIGIN = 'https://github.com'
 const GITHUB_API_ORIGIN = 'https://api.github.com'
 const CONNECT_ATTEMPT_TTL_MS = 10 * 60 * 1000
 const GITHUB_TIMEOUT_MS = 8_000
+// GH-06: databaseRequest() itself has no timeout by default (unchanged for
+// every existing caller) -- this bounds only the one call site
+// (cacheRepositoryNames) that GH-05 identified as an awaited, un-timed
+// Supabase write sitting in front of listRepositories()'s HTTP response.
+// Shorter than GITHUB_TIMEOUT_MS: a same-network Supabase REST call has no
+// reason to need as much slack as a cross-provider GitHub API call.
+const GITHUB_CACHE_WRITE_TIMEOUT_MS = 5_000
 const MAX_REPOSITORIES = 20
 const MAX_ISSUES = 20
 const MAX_EPICS = 20
@@ -447,19 +454,35 @@ function serviceHeaders(config: GitHubBaseConfig, prefer?: string) {
   }
 }
 
+// GH-06: `timeoutMs` is optional and defaults to unbounded -- every existing
+// caller keeps its exact prior behavior. Only cacheRepositoryNames passes
+// it today (see GITHUB_CACHE_WRITE_TIMEOUT_MS's own comment for why). Never
+// retried on abort or on any other failure -- one attempt, fail closed,
+// same posture as githubFetch().
 async function databaseRequest(
   config: GitHubBaseConfig,
   deps: GitHubIntegrationDependencies,
   path: string,
   init: RequestInit = {},
+  timeoutMs?: number,
 ) {
-  const response = await deps.fetcher(`${config.supabaseUrl}/rest/v1/${path}`, {
-    ...init,
-    headers: {
-      ...serviceHeaders(config),
-      ...(init.headers ?? {}),
-    },
-  })
+  const controller = timeoutMs !== undefined ? new AbortController() : undefined
+  const timeout = controller ? setTimeout(() => controller.abort(), timeoutMs) : undefined
+  let response: Response
+  try {
+    response = await deps.fetcher(`${config.supabaseUrl}/rest/v1/${path}`, {
+      ...init,
+      headers: {
+        ...serviceHeaders(config),
+        ...(init.headers ?? {}),
+      },
+      signal: controller?.signal,
+    })
+  } catch {
+    throw new GitHubIntegrationError('CONNECTION_STORAGE_FAILED', 500, 'Connection state could not be stored safely.')
+  } finally {
+    if (timeout) clearTimeout(timeout)
+  }
   if (!response.ok) {
     throw new GitHubIntegrationError('CONNECTION_STORAGE_FAILED', 500, 'Connection state could not be stored safely.')
   }
@@ -984,7 +1007,7 @@ async function cacheRepositoryNames(
       repository_names_cache: boundedNames,
       repository_names_cached_at: deps.now().toISOString(),
     }),
-  })
+  }, GITHUB_CACHE_WRITE_TIMEOUT_MS)
 }
 
 async function listRepositories(

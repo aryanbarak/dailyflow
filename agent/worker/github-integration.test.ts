@@ -47,6 +47,11 @@ interface FakeOptions {
   workflowRunsByRepo?: Record<string, unknown[]>
   workflowRunsFailureByRepo?: Record<string, number>
   repositoryCacheWriteStatus?: number
+  // GH-06: simulates the cache-write PATCH aborting the way a real
+  // AbortController fires when GITHUB_CACHE_WRITE_TIMEOUT_MS elapses --
+  // same simulated-abort shape as rejectGitHub below, applied to the
+  // Supabase-bound call instead of a GitHub-bound one.
+  repositoryCacheWriteHangs?: boolean
   // EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
   accessibleRepos?: string[]
   labelsByRepo?: Record<string, string[]>
@@ -150,6 +155,9 @@ function fakeProvider(options: FakeOptions = {}) {
         return response(null, 201)
       }
       if (method === 'PATCH') {
+        if (options.repositoryCacheWriteHangs) {
+          throw new DOMException('Aborted', 'AbortError')
+        }
         const status = options.repositoryCacheWriteStatus ?? 204
         if (status >= 300) {
           return response({ message: 'provider detail must not escape' }, status)
@@ -870,6 +878,31 @@ describe('GitHub repository listing boundary', () => {
     expect(body.repositories[0].name).toBe('smart-academy')
     // The write was attempted and failed closed on the cache alone -- the
     // verifiedConnection() fixture never had repository_names_cache set.
+    expect(fake.connection).not.toHaveProperty('repository_names_cache')
+  })
+
+  // GH-06: GH-05 found this exact call site -- an awaited, un-timed
+  // Supabase write sitting in front of the HTTP response -- as the one
+  // GitHub-route-specific hang candidate. This proves the fix: even when
+  // the cache write never settles on its own, databaseRequest's own
+  // AbortController (GITHUB_CACHE_WRITE_TIMEOUT_MS) still bounds it, and
+  // the repositories response still succeeds with correct data, same as
+  // the ordinary-failure case above.
+  it('still responds successfully with correct repository data when the cache write hangs past its timeout', async () => {
+    const repositories = [{ id: 1, name: 'smart-academy', owner: { login: 'aryan' }, visibility: 'private', default_branch: 'main', archived: false }]
+    const fake = fakeProvider({ repositories, repositoryCacheWriteHangs: true })
+    fake.connection = verifiedConnection()
+    const result = await handleGitHubIntegrationRequest(apiRequest('/github/repositories'), env(), fake.dependencies)
+    expect(result?.status).toBe(200)
+    const body = await result!.json() as { repositories: Array<{ name: string }> }
+    expect(body.repositories).toHaveLength(1)
+    expect(body.repositories[0].name).toBe('smart-academy')
+    // The write was attempted (databaseRequest still calls the fetcher
+    // before its AbortController fires) but never completed, so the cache
+    // itself was never updated -- same failure-closed shape as an ordinary
+    // 500, just reached via a hang instead of an error status.
+    const cacheWrite = fake.calls.find((call) => call.method === 'PATCH' && call.url.includes('/rest/v1/github_connections'))
+    expect(cacheWrite).toBeDefined()
     expect(fake.connection).not.toHaveProperty('repository_names_cache')
   })
 

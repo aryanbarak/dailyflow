@@ -758,6 +758,7 @@ const en = {
   chat_open_more_menu: 'More',
   chat_empty: 'Start a conversation with your personal assistant.',
   chat_error_send: 'Failed to send. Try again.',
+  chat_error_provider_unavailable: 'The AI assistant is temporarily unavailable. Please try again in a moment.',
   chat_error_load: 'Could not load chat history.',
   chat_enter_hint: 'Enter to send · Shift+Enter for new line',
 
@@ -1854,6 +1855,7 @@ const de: TranslationDict = {
   chat_open_more_menu: 'Mehr',
   chat_empty: 'Starte ein Gespräch mit deinem persönlichen Assistenten.',
   chat_error_send: 'Senden fehlgeschlagen. Erneut versuchen.',
+  chat_error_provider_unavailable: 'Der KI-Assistent ist vorübergehend nicht verfügbar. Bitte versuche es gleich noch einmal.',
   chat_error_load: 'Chatverlauf konnte nicht geladen werden.',
   chat_enter_hint: 'Enter zum Senden · Shift+Enter für neue Zeile',
 
@@ -2875,6 +2877,7 @@ const fa: TranslationDict = {
   chat_open_more_menu: 'بیشتر',
   chat_empty: 'یک مکالمه با دستیار شخصی خود شروع کنید.',
   chat_error_send: 'ارسال ناموفق بود. دوباره تلاش کنید.',
+  chat_error_provider_unavailable: 'دستیار هوش مصنوعی موقتاً در دسترس نیست. لطفاً کمی بعد دوباره امتحان کنید.',
   chat_error_load: 'تاریخچه چت بارگذاری نشد.',
   chat_enter_hint: 'Enter برای ارسال · Shift+Enter برای خط جدید',
 

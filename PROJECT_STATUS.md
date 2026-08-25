@@ -1592,6 +1592,91 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
   which needed more than Metadata once the read surface grew past
   `repositories.list` alone.
 
+- **GH-06** — fixes the two root causes GH-05 (read-only diagnosis pass,
+  no PROJECT_STATUS entry of its own) confirmed for GitHub chat requests
+  hanging indefinitely and losing data on refresh.
+  **Fix A (Worker)** — `agent/worker/github-integration.ts`'s
+  `listRepositories()` awaited an un-timed Supabase write
+  (`cacheRepositoryNames` → `databaseRequest`) before returning its HTTP
+  response, the one GitHub-route-specific hang candidate GH-05 found.
+  `databaseRequest` gained an optional `timeoutMs` parameter (default
+  unbounded — every other of its 13 other call sites is byte-for-byte
+  unchanged), backed by the same `AbortController` discipline
+  `githubFetch()` already uses for every GitHub-bound call; only the
+  `cacheRepositoryNames` call site passes it, via a new
+  `GITHUB_CACHE_WRITE_TIMEOUT_MS = 5_000` constant. On timeout the write
+  still fails silently exactly as it already did on an ordinary error
+  (existing `try/catch`, unchanged) — the repositories response still
+  returns 200 with correct data. New test: "still responds successfully
+  with correct repository data when the cache write hangs past its
+  timeout" (`github-integration.test.ts`), simulating the abort the same
+  way the existing `rejectGitHub` fixture already simulates a GitHub-side
+  one.
+  **Fix B (Browser)** — `ChatPage.tsx`'s `chatCallPromise` and
+  `overlayPromise` (via `llmReasoningService.ts`'s `createLlmReasoningCaller`)
+  had no timeout at all, so a Worker stall on either one hung
+  `Promise.all` indefinitely — nothing downstream, including the
+  tool-execution step's own correct 10s timeout, ever got a chance to
+  run, and since nothing had been shown or persisted yet, a refresh lost
+  the message with no trace. Both now reuse `executionEngine.ts`'s
+  `withTimeout` (exported for this purpose, default timeout message
+  parameterized so `executeAgentTool`'s own internal call is
+  byte-for-byte unchanged) instead of a new mechanism:
+  `overlayPromise`'s reasoning fetch at 10s (`llmReasoningService.ts`) —
+  on timeout it now *rejects* instead of hanging, which
+  `reasoningOrchestrator.ts`'s pre-existing INC-01 catch
+  (`.catch(() => ({ rawText: "", providerUnavailable: true }))`) already
+  turns into the same honest `PROVIDER_UNAVAILABLE`-marked overlay
+  `ChatPage.tsx` already renders correctly — no new overlay-side handling
+  needed. `chatCallPromise` at `CHAT_REQUEST_TIMEOUT_MS = 15_000`
+  (`ChatPage.tsx`) — this is the genuinely new case, since a
+  chatCallPromise timeout is the one path where nothing else in the turn
+  has produced anything to show or persist. New exported, independently
+  tested pure functions: `isChatRequestTimeoutError` (distinguishes
+  `withTimeout`'s `{ code: "TIMEOUT" }` rejection from an ordinary
+  network/HTTP failure on the same call, which keeps the pre-existing
+  `setSendError` + restored-draft path unchanged) and
+  `buildChatTimeoutFailureMessages` (the honest bounded message pair,
+  reusing this app's established provider-unavailable wording convention
+  — new i18n key `chat_error_provider_unavailable`, EN/DE/FA, mirroring
+  `context_derivation_error_provider_unavailable`'s existing phrasing).
+  `handleSend`'s catch block: on a `chatCallPromise` timeout specifically,
+  both messages are appended to local state immediately AND persisted
+  directly via a browser-side, RLS-scoped
+  `supabase.from('agent_chat_messages').insert(...)` (the existing
+  `agent_chat_messages_insert_own` policy already permits
+  `auth.uid() = user_id`), best-effort (wrapped in its own try/catch, same
+  fail-safe posture as every other secondary write in this codebase) —
+  since the abandoned Worker request may itself never persist anything
+  for this turn. No retry logic added anywhere (neither fix) — fail
+  closed, one attempt, matching this codebase's existing posture.
+  New short architecture note:
+  [`docs/architecture/notes/github-chat-tool-dependency-chain.md`](docs/architecture/notes/github-chat-tool-dependency-chain.md) —
+  records that GitHub chat-tool messages depend on a 3-stage chain (chat
+  reply + reasoning overlay + tool execution) unlike single-round-trip
+  message types, and what to check before adding another multi-step chat
+  tool.
+  Tests: `github-integration.test.ts` 140 (was 139), `llmReasoningService.test.ts`
+  11 (was 10, new timeout-rejection test using `vi.useFakeTimers()` +
+  `advanceTimersByTimeAsync`), `ChatPage.test.tsx` 98 (was 95, 3 new:
+  `isChatRequestTimeoutError`'s discriminator cases,
+  `buildChatTimeoutFailureMessages`'s content/shape, and its
+  per-language `responseLanguage` propagation). Full suite: `npm test`
+  3757 passed/76 skipped/0 failed (was 3752/76/0 per TITLE-01's own
+  count — +5 matches the 5 new tests above exactly, zero regressions).
+  `npm run typecheck` clean on both targets, unchanged baselines (`src/`:
+  77/80, `agent/worker/`: 88/88). `npx eslint` on every touched file: one
+  pre-existing error (`github-integration.ts`'s unrelated
+  `no-control-regex` on a control-character-stripping regex, confirmed
+  present on `main` before this branch, not touched) and 15 pre-existing
+  `react-refresh/only-export-components` warnings on `ChatPage.tsx` (an
+  already-established, already-accepted pattern in this exact file, since
+  it already mixes component and pure-function exports throughout —
+  confirmed via `git stash` comparison) plus 2 new instances of the exact
+  same warning class from this fix's own new pure-function exports,
+  consistent with the file's existing convention rather than a new kind
+  of problem.
+
 Superseded/completed sprint milestones from the prior version of this
 document have been removed rather than carried forward as history; git
 history of this file remains the record of what was previously claimed and

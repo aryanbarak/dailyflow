@@ -1,8 +1,18 @@
+import { withTimeout } from "../executionEngine";
 import type {
   AgentIntentProposal,
   AgentLlmReasoningCaller,
   AgentLlmReasoningRequest,
 } from "./reasoningTypes";
+
+// GH-06: the reasoning-overlay fetch previously had no timeout at all, so a
+// Worker stall here hung Promise.all in ChatPage.tsx's handleSend
+// indefinitely -- reasonAboutUserMessage's own `.catch(() => ({ rawText:
+// "", providerUnavailable: true }))` (reasoningOrchestrator.ts) already
+// treats ANY rejection from this caller as a provider-unavailable outcome
+// (INC-01), so making this fetch reject on timeout -- instead of never
+// settling -- is sufficient; no new honest-failure plumbing is needed here.
+const REASONING_FETCH_TIMEOUT_MS = 10_000;
 
 export type AgentReasoningParseResult =
   | { ok: true; value: unknown }
@@ -60,14 +70,18 @@ export function createLlmReasoningCaller(
           responseLanguage: request.responseLanguage,
           mode: "reasoning",
         };
-    const response = await fetcher(options.endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(options.accessToken ? { Authorization: `Bearer ${options.accessToken}` } : {}),
-      },
-      body: JSON.stringify(body),
-    });
+    const response = await withTimeout(
+      fetcher(options.endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(options.accessToken ? { Authorization: `Bearer ${options.accessToken}` } : {}),
+        },
+        body: JSON.stringify(body),
+      }),
+      REASONING_FETCH_TIMEOUT_MS,
+      "Reasoning overlay request timed out.",
+    );
 
     if (!response.ok) {
       // INC-01: a 503 carrying the worker's typed PROVIDER_UNAVAILABLE

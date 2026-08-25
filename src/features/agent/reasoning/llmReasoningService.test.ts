@@ -110,6 +110,35 @@ describe("llmReasoningService", () => {
     expect(result).toEqual({ rawText: "" });
   });
 
+  // GH-06: previously this fetch had no timeout at all, so a Worker stall
+  // hung ChatPage.tsx's Promise.all([chatCallPromise, overlayPromise])
+  // indefinitely. Proves the caller now rejects (with a TIMEOUT-coded
+  // error, the same withTimeout convention executionEngine.ts already
+  // uses) instead of hanging when the fetch never settles --
+  // reasoningOrchestrator.ts's own `.catch(() => ({ rawText: "",
+  // providerUnavailable: true }))` around this exact call is what turns
+  // that rejection into the honest provider-unavailable outcome, so this
+  // test only needs to prove the rejection happens, not re-test that
+  // existing INC-01 catch behavior.
+  it("GH-06: rejects with a TIMEOUT-coded error instead of hanging forever when the fetch never settles", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetcher = vi.fn(() => new Promise<Response>(() => undefined));
+      const caller = createLlmReasoningCaller({
+        endpoint: "https://example.test/chat",
+        accessToken: "token",
+        fetcher: fetcher as unknown as typeof fetch,
+      });
+
+      const resultPromise = caller({ prompt: "Return JSON", responseLanguage: "en", sessionId: "session-1" });
+      const assertion = expect(resultPromise).rejects.toMatchObject({ code: "TIMEOUT" });
+      await vi.advanceTimersByTimeAsync(10_000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("returns empty raw text when no endpoint is configured", async () => {
     await expect(
       createLlmReasoningCaller({})({
