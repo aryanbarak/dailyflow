@@ -63,6 +63,7 @@ import {
   runReadOnlyTool,
   runWriteTool,
   approveWorkspaceStep,
+  withTimeout,
   type AgentReasoningResult,
   type AgentReasoningGitHubInventory,
   type ReadOnlyRuntimeResult,
@@ -99,7 +100,7 @@ import {
 import { findWriteIntentDescriptor, writeIntentRegistry } from '../../shared/writeIntentRegistry'
 import { reportProposalOutcome, writeProposalTargetFields, type ProposalOutcomeDomain } from '@/features/agent/proposalOutcomeReporting'
 
-interface ChatMsg {
+export interface ChatMsg {
   id: string
   role: 'user' | 'assistant'
   content: string
@@ -1253,6 +1254,56 @@ export function resolveAutoReadTurnContent(input: AutoReadTurnInput): string {
   return provenance ? `${input.reply}\n\n${dataText}\n\n${provenance}` : `${input.reply}\n\n${dataText}`
 }
 
+// GH-06: chatCallPromise's own fetch is now wrapped in withTimeout
+// (CHAT_REQUEST_TIMEOUT_MS) instead of being unbounded -- see handleSend's
+// try/catch. This is the exact rejection shape withTimeout
+// (executionEngine.ts) produces on a timeout; nothing else handleSend
+// awaits can produce this same { code: "TIMEOUT" } shape as an escaping
+// rejection (executeAgentTool/runReadOnlyTool already catch their own
+// handler-timeout internally and return a normal, non-throwing result --
+// see readOnlyRuntime.ts -- and overlayPromise never rejects at all, by
+// its own explicit .catch(() => null)), so checking the code alone is
+// sufficient to identify "the primary /chat reply timed out" specifically,
+// without also matching an ordinary network/HTTP failure from the same
+// call, which keeps the pre-existing setSendError + restore-draft path.
+export const CHAT_REQUEST_TIMEOUT_MS = 15_000
+
+export function isChatRequestTimeoutError(error: unknown): boolean {
+  return Boolean(
+    error &&
+    typeof error === 'object' &&
+    'code' in error &&
+    (error as { code?: unknown }).code === 'TIMEOUT',
+  )
+}
+
+export interface ChatTimeoutFailureMessages {
+  user: ChatMsg
+  assistant: ChatMsg
+}
+
+// GH-06: what the user sees, and what gets persisted, when the primary
+// /chat reply times out -- reuses the same honest-bounded-message
+// convention already established for AI provider failures elsewhere in
+// this app (context_derivation_error_provider_unavailable,
+// doc_memory_error_provider_unavailable) rather than a generic send-failed
+// banner, since a timeout is genuinely ambiguous (the Worker may still be
+// processing) rather than a definite rejection. Never silence: the
+// returned pair is both appended to local state AND persisted directly to
+// agent_chat_messages via the browser's own RLS-scoped insert (handleSend),
+// since the abandoned /chat request itself may never persist anything.
+export function buildChatTimeoutFailureMessages(
+  userText: string,
+  responseLanguage: SupportedAiResponseLanguage,
+  t: Translate,
+  now: () => number = Date.now,
+): ChatTimeoutFailureMessages {
+  return {
+    user: { id: `u-${now()}`, role: 'user', content: userText },
+    assistant: { id: `a-${now() + 1}`, role: 'assistant', content: t('chat_error_provider_unavailable'), language: responseLanguage },
+  }
+}
+
 interface ContextTaskSnapshot {
   id?: string
   title?: string
@@ -1954,23 +2005,36 @@ export default function ChatPage() {
       // production bug: a message misclassified 'explicit' by a keyword
       // collision never reached this call at all.
       const chatCallPromise = (async (): Promise<{ reply: string; writePolicy?: { mode?: 'auto' | 'ask' | 'off' }; writeExecution?: string; undo?: ChatMsg['undo'] }> => {
-        const res = await fetch(`${workerUrl}/chat`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${session.access_token}`,
-          },
-          body: JSON.stringify({
-            message: text,
-            session_id: sessionId,
-            responseLanguage,
-            responseLanguageInstruction,
-            timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-            // Task 19: turn-scoped -- only ever the document attached to
-            // THIS specific turn, never a stale reference from an earlier one.
-            documentId: sentDocument?.id ?? null,
+        // GH-06: previously an unbounded fetch -- a Worker stall here hung
+        // this whole promise forever, which in turn hung the Promise.all
+        // below indefinitely (nothing downstream, including the read-tool
+        // step's own 10s timeout, ever got a chance to run). withTimeout
+        // lets the request keep running server-side but stops the browser
+        // from waiting past CHAT_REQUEST_TIMEOUT_MS -- the rejection is
+        // caught below and turned into an honest, persisted message
+        // (isChatRequestTimeoutError / buildChatTimeoutFailureMessages)
+        // instead of an indefinite spinner.
+        const res = await withTimeout(
+          fetch(`${workerUrl}/chat`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${session.access_token}`,
+            },
+            body: JSON.stringify({
+              message: text,
+              session_id: sessionId,
+              responseLanguage,
+              responseLanguageInstruction,
+              timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+              // Task 19: turn-scoped -- only ever the document attached to
+              // THIS specific turn, never a stale reference from an earlier one.
+              documentId: sentDocument?.id ?? null,
+            }),
           }),
-        })
+          CHAT_REQUEST_TIMEOUT_MS,
+          'Chat request timed out.',
+        )
         if (!res.ok) throw new Error(`Worker responded ${res.status}`)
         return (await res.json()) as { reply: string; writePolicy?: { mode?: 'auto' | 'ask' | 'off' }; writeExecution?: string; undo?: ChatMsg['undo'] }
       })()
@@ -2135,13 +2199,41 @@ export default function ChatPage() {
       }
 
       void refreshSessions()
-    } catch {
-      setSendError(t('chat_error_send'))
-      if (!overrideText) setDraft(text)
+    } catch (err) {
+      // GH-06: a chatCallPromise timeout is not an ordinary send failure --
+      // the Worker may still be processing, and the user's draft was
+      // already cleared as "sent," so this gets an honest, persisted
+      // transcript entry instead of the generic error banner + restored
+      // draft used for every other failure (network reject, non-ok
+      // status, session creation failure). Never a blank gap: appended to
+      // local state immediately, and persisted directly (best-effort, same
+      // fail-safe posture as every other secondary write in this codebase)
+      // since the abandoned Worker request itself may never persist
+      // anything for this turn.
+      if (isChatRequestTimeoutError(err) && sessionId) {
+        const failureMessages = buildChatTimeoutFailureMessages(text, responseLanguage, t)
+        setMessages(prev => [...prev, failureMessages.user, failureMessages.assistant])
+        if (user?.id) {
+          const ownerId = user.id
+          const ownerSessionId = sessionId
+          try {
+            await supabase.from('agent_chat_messages').insert([
+              { user_id: ownerId, session_id: ownerSessionId, role: 'user', content: failureMessages.user.content },
+              { user_id: ownerId, session_id: ownerSessionId, role: 'assistant', content: failureMessages.assistant.content },
+            ])
+          } catch (persistError) {
+            console.error('[ChatPage] Failed to persist chat-timeout fallback message:', persistError)
+          }
+        }
+        void refreshSessions()
+      } else {
+        setSendError(t('chat_error_send'))
+        if (!overrideText) setDraft(text)
+      }
     } finally {
       setSending(false)
     }
-  }, [draft, sending, workerUrl, t, activeSessionId, createSession, refreshSessions, interfaceLanguage, workspace, tasks, tasksLoading, tasksError, githubRepositoryInventory, attachedDocument])
+  }, [draft, sending, workerUrl, t, activeSessionId, createSession, refreshSessions, interfaceLanguage, workspace, tasks, tasksLoading, tasksError, githubRepositoryInventory, attachedDocument, user])
 
   useEffect(() => {
     const prompt = (location.state as { initialPrompt?: string } | null)?.initialPrompt

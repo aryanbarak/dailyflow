@@ -158,11 +158,24 @@ function isSupportedReadOnlyTool(
   );
 }
 
-async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
+// GH-06: exported so ChatPage.tsx and llmReasoningService.ts can reuse the
+// same Promise.race-against-setTimeout convention for their own outer /chat
+// and reasoning-overlay fetches, instead of each inventing its own timeout
+// mechanism. `timeoutMessage` defaults to this module's own original
+// wording so the internal call below (executeAgentTool's handler timeout)
+// is byte-for-byte unchanged; external callers pass their own accurate
+// message. The rejection is always `{ code: "TIMEOUT", ... }` regardless of
+// caller -- callers that need to distinguish a timeout from any other
+// failure check `.code === "TIMEOUT"`, never the message text.
+export async function withTimeout<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  timeoutMessage = "Handler execution timed out.",
+): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timeoutId = setTimeout(() => {
-      reject(error("TIMEOUT", "Handler execution timed out.", true));
+      reject(error("TIMEOUT", timeoutMessage, true));
     }, timeoutMs);
   });
 

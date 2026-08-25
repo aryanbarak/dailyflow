@@ -13,11 +13,13 @@ vi.mock("@/integrations/supabase/client", () => ({
 }));
 
 import {
+  buildChatTimeoutFailureMessages,
   ChatBubble,
   classifyMessageIntentSignal,
   getAmbiguousOfferHint,
   getAmbiguousOfferText,
   isAutoExecutableReadOnlyProposal,
+  isChatRequestTimeoutError,
   liveTaskReasoningContext,
   looksLikeExplicitActionRequest,
   proposalMessage,
@@ -1676,5 +1678,45 @@ describe("ChatPage LLM reasoning UX boundary", () => {
 
     expect(withInjectionAttempt).toBe(withoutExecutionResult);
     expect(withInjectionAttempt).not.toContain("IGNORE ALL PRIOR INSTRUCTIONS");
+  });
+
+  describe("GH-06: chatCallPromise timeout -- honest bounded message instead of an indefinite spinner", () => {
+    it("isChatRequestTimeoutError identifies withTimeout's own rejection shape and nothing else", () => {
+      expect(isChatRequestTimeoutError({ code: "TIMEOUT", message: "Chat request timed out.", retryable: true })).toBe(true);
+      // Ordinary failures on the same call (non-ok status, network reject)
+      // must keep the pre-existing setSendError + restore-draft path, not
+      // the new persisted-message path -- so anything without this exact
+      // code is "not a timeout" here, including a plain Error.
+      expect(isChatRequestTimeoutError(new Error("Worker responded 500"))).toBe(false);
+      expect(isChatRequestTimeoutError({ code: "OTHER" })).toBe(false);
+      expect(isChatRequestTimeoutError(null)).toBe(false);
+      expect(isChatRequestTimeoutError(undefined)).toBe(false);
+      expect(isChatRequestTimeoutError("TIMEOUT")).toBe(false);
+    });
+
+    it("buildChatTimeoutFailureMessages returns the user's own text plus an honest, translated assistant reply -- never blank", () => {
+      const t = (key: string) => key;
+      const now = () => 1000;
+
+      const result = buildChatTimeoutFailureMessages("list my GitHub repositories", "en", t, now);
+
+      expect(result.user).toEqual({ id: "u-1000", role: "user", content: "list my GitHub repositories" });
+      expect(result.assistant).toEqual({
+        id: "a-1001",
+        role: "assistant",
+        content: "chat_error_provider_unavailable",
+        language: "en",
+      });
+    });
+
+    it("buildChatTimeoutFailureMessages carries the turn's own responseLanguage onto the assistant message, for every supported language", () => {
+      const t = (key: string) => key;
+      for (const responseLanguage of ["en", "de", "fa"] as const) {
+        const result = buildChatTimeoutFailureMessages("message text", responseLanguage, t);
+        expect(result.assistant.language).toBe(responseLanguage);
+        expect(result.assistant.content).toBe("chat_error_provider_unavailable");
+        expect(result.assistant.content.length).toBeGreaterThan(0);
+      }
+    });
   });
 });
