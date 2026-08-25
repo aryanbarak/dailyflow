@@ -1450,6 +1450,105 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
   model inventing a date or deflecting to "check your calendar"
   (`agent/worker/prompt-builder.ts`, `agent/worker/index.ts`).
 
+- **TITLE-01** — Persian/Dari task-title extraction: two production
+  defects, both fixed at the deterministic title-validation gate
+  (`flow-write-policy.ts`'s `validateCandidateTitle`), not by touching
+  trigger detection or `extractTaskTitle` itself.
+  **Defect A** — a task created from «یک وظیفه بساز به نام آزمایش جمنای»
+  was titled «به نام آزمایش جمنای» instead of «آزمایش جمنای». Diagnosed:
+  `extractTaskTitle`'s fallback strips only the matched create-trigger
+  phrase («یک وظیفه بساز»), not the Persian framing preposition «به نام»
+  ("named"/"called") that follows it; `isTitleSubstantiallyTheMessage`
+  doesn't catch it either (matchRatio 1.0 but coverageRatio ≈0.57, just
+  under the 0.6 threshold). Given the PO's report that Gemini structured
+  was intermittently 429ing when this task was created, the pattern
+  fallback (not the model) most likely produced the stored title —
+  reproduced end-to-end in the new tests via a `ProviderUnavailableError`
+  model call. Fixed with a new `TITLE_FRAMING_PREFIX` bounded regex
+  (Persian: «به نام», «به اسم», «با نام», «با عنوان», «تحت عنوان»; English:
+  "called", "named", "titled", "with the name") applied inside
+  `cleanTitleEdges` — the one gate BOTH the pattern-fallback candidate and
+  the model's own candidate pass through in `resolveCreateTitle`, so one
+  fix covers both paths (defense in depth, per task instruction) without
+  two implementations that could drift.
+  **Defect B** — a task titled «به زبان فارسی پاسخ بده Preserve code
+  product names titles URLs and technical» was created from what the PO
+  identified as `src/features/ai/responseLanguage.ts`'s
+  `getAiResponseLanguageInstruction('fa')` steering text, not a real task
+  request. Diagnosed (grep-verified, not assumed): `TasksPage.tsx`'s
+  `buildTaskAssistantRequestBody` ("ask about my tasks" mini Q&A widget)
+  is the ONE call site in the frontend that folds this instruction
+  directly into the `message` field via `withAiResponseLanguageInstruction`
+  — every other call site (`AgentBriefingCard.tsx`, `WeeklyBriefingPage.tsx`,
+  `HabitsPage.tsx`, `FinancePage.tsx`, `CalendarPage.tsx`, `ChatPage.tsx`,
+  `reasoningPrompt.ts`) sends it as its own separate
+  `responseLanguageInstruction` body field, keeping `message` pure. That
+  combined message reaches `POST /chat`'s `mode='chat'` branch (the
+  default when no `mode` is sent, which this widget never sends), which
+  runs the same deterministic auto-write detector as any other chat
+  message. The visible instruction text alone matches NONE of this file's
+  create/update trigger regexes (verified directly against every pattern)
+  — so the create-task match came from real content in the "User
+  question: ..." tail the widget appends after the instruction+context
+  boilerplate; the actual bug is that `extractTaskTitle`'s fallback +
+  `boundText`'s 80-char, START-anchored truncation spends the whole title
+  budget on the leading boilerplate before ever reaching the real subject
+  (a manual character count of the fa instruction text, after
+  `extractTaskTitle`'s own comma/period/"task"-keyword stripping, lands
+  the 80-char cutoff almost exactly at "...and technical", matching the
+  reported title). Tightening the create-trigger regex would not have
+  helped (the match is on legitimate content, not the visible instruction
+  text) — per the task's own alternate-branch instruction for this exact
+  situation, fixed with a new `looksLikeInstructionFragment` bounded
+  leading-phrase check (Persian «به زبان … پاسخ بده», «پاسخ بده»; English
+  "respond in", "reply in"; German "antworte auf") in
+  `validateCandidateTitle`, which rejects the candidate outright —
+  upstream this becomes `executeAutoTaskWrite`'s existing
+  `!intent.title` → "What should the task be called?" clarify branch,
+  never a created task.
+  **Not fixed here (disclosed, out of this ticket's deterministic-layer
+  scope):** the true root cause of Defect B is `TasksPage.tsx` baking the
+  language instruction into `message` instead of sending it as its own
+  `responseLanguageInstruction` field like every other call site — a
+  one-line frontend fix that would additionally stop the auto-write
+  detector from ever scanning this boilerplate at all. Recommended
+  follow-up, not attempted in this ticket (scoped to the backend
+  deterministic layer per the task instruction).
+  **Defect B's existing production task row must be deleted manually by
+  the Product Owner — no DB cleanup script was written or run as part of
+  this fix**, per the task's own instruction.
+  Tests: `flow-write-policy.test.ts` gained a new `TITLE-01` describe
+  block — 9 `cleanTitleEdges` framing-prefix cases (5 fa + 4 en) plus 2
+  edge cases (genuine subject untouched, mid-title occurrence not
+  stripped); a 3-test Defect A end-to-end reproduction via
+  `resolveCreateTaskTitle` (raw `parseTaskWriteIntent` output still
+  carries the framing prefix — proving this is a validator-layer fix, not
+  an extraction-layer one; pattern-fallback path resolves correctly;
+  defense-in-depth model-path case also resolves correctly); 7
+  `looksLikeInstructionFragment` cases (fa/en/de positive cases, 2
+  negative cases including a title that merely mentions "reply" without
+  it being the leading verb); a 4-test Defect B end-to-end reproduction
+  (isolating the new check from the pre-existing length/overlap checks by
+  using a short instruction-leading clause that passes both on its own;
+  `validateCandidateTitle` rejects it; `resolveCreateTaskTitle` resolves
+  to `undefined` when both the model and pattern-fallback candidates are
+  instruction-shaped; a genuine model title alongside the same
+  instruction-shaped pattern fallback still resolves correctly, proving
+  the rejection is scoped to the bad candidate only). Stash-break-restore
+  proof performed on the Defect A pattern-fallback-path test: with
+  `flow-write-policy.ts`'s fix stashed (test file kept), the test failed
+  with `expected 'به نام آزمایش جمنای' to be 'آزمایش جمنای'` — exactly the
+  reported production defect; restoring the fix made it pass again.
+  Verification: `npm test` 3752 passed/76 skipped/0 failed (full suite,
+  including the full pre-existing `flow-write-policy.test.ts` suite — 205
+  tests, zero regressions, all existing trigger-detection positive cases
+  unchanged since this fix touches only `validateCandidateTitle`/
+  `cleanTitleEdges`, not `parseTaskWriteIntent`/`detectWriteDomainSignal`);
+  `npm run typecheck` clean on both targets (`src/`: 77 baseline-tracked
+  errors remain, 80 were in the baseline; `agent/worker/`: 88 remain, 88
+  were in the baseline — no new/regressed on either); `npx eslint` clean
+  on both touched files.
+
 Superseded/completed sprint milestones from the prior version of this
 document have been removed rather than carried forward as history; git
 history of this file remains the record of what was previously claimed and

@@ -19,6 +19,7 @@ import {
   isTitleSubstantiallyTheMessage,
   isValidIban,
   loadImportBatch,
+  looksLikeInstructionFragment,
   markImportBatchConsumed,
   parseCalendarWriteIntent,
   parseDeterministicDueDate,
@@ -336,6 +337,164 @@ describe('task title validation and model resolution (task 21-fix6)', () => {
         })
         expect(title).toBeUndefined()
       })
+    })
+  })
+})
+
+// TITLE-01: Persian/Dari task-title extraction fixes.
+//
+// Defect A -- a production task was created titled «به نام آزمایش جمنای»
+// from «یک وظیفه بساز به نام آزمایش جمنای» -- correct title is
+// «آزمایش جمنای». Diagnosis (confirmed by trace, not assumed): the
+// message's cleanPersianCreate trigger fires on «یک وظیفه بساز», leaving
+// extractTaskTitle's fallback branch to strip only that trigger phrase --
+// "به نام" (the framing preposition introducing the real subject) was
+// never in its strip list, so it survives into the candidate title.
+// isTitleSubstantiallyTheMessage does NOT reject it either: matchRatio is
+// 1.0 (every title word appears in the raw message) but coverageRatio is
+// ~0.57 (4 of 7 raw words) -- just under the 0.6 threshold -- so the
+// candidate passes validateCandidateTitle's overlap check untouched. Given
+// the PO's report that Gemini structured was intermittently 429ing when
+// this task was created, resolveCreateTitle most likely fell through to
+// exactly this pattern-fallback candidate (INC-01's own
+// ProviderUnavailableError-with-a-fallback-available path, ligne 630+
+// above, degrades silently by design) -- reproduced end-to-end below via
+// both a failing AND a (defectively) matching model call, since the fix
+// must hold either way (defense in depth, per the task instruction).
+//
+// Defect B -- a production task was created titled
+// «به زبان فارسی پاسخ بده Preserve code product names titles URLs and
+// technical» from an original request that is (visibly, per the PO's own
+// report) the fa response-language steering instruction
+// (src/features/ai/responseLanguage.ts's getAiResponseLanguageInstruction).
+// Diagnosis: TasksPage.tsx's buildTaskAssistantRequestBody is the ONE
+// call site that folds this instruction directly into the `message` field
+// (via withAiResponseLanguageInstruction) rather than sending it as its
+// own separate responseLanguageInstruction body field the way every other
+// call site does (AgentBriefingCard.tsx, WeeklyBriefingPage.tsx,
+// HabitsPage.tsx, FinancePage.tsx, CalendarPage.tsx, ChatPage.tsx,
+// reasoningPrompt.ts -- grep-verified). That combined message reaches
+// POST /chat's mode='chat' branch (index.ts:1026, the default when no
+// `mode` field is sent, which buildTaskAssistantRequestBody never sends),
+// which runs the SAME deterministic auto-write detector as any other chat
+// message (index.ts:1111). The visible instruction text alone matches
+// NONE of this file's create/update trigger regexes (verified: no
+// create/add/set up before "task", no Persian create verb anywhere, no
+// "دارم"/"I have" implicit-schedule trigger) -- so the create-task match
+// necessarily came from real content in the "User question: ..." tail the
+// widget appends after the instruction+context boilerplate. The bug is
+// specifically in TITLE EXTRACTION, not trigger classification:
+// extractTaskTitle's fallback + boundText's 80-char, START-anchored
+// truncation spends the entire title budget on the leading boilerplate
+// before ever reaching the real subject -- a manual character count of
+// the fa instruction text (after extractTaskTitle's own comma/period/
+// "task"-keyword stripping) lands the 80-char cutoff almost exactly at
+// "...and technical", matching the reported title. Tightening the create
+// trigger's regex would not address this (the match is on legitimate
+// content elsewhere in the string, not on the visible instruction text) --
+// this is why the fix lives in validateCandidateTitle (the same gate
+// Defect A's fix uses), per the task's own alternate-branch instruction
+// for exactly this situation.
+describe('TITLE-01: framing-token stripping (Defect A) and instruction-fragment rejection (Defect B)', () => {
+  const FAKE_ENV = {
+    SUPABASE_URL: 'https://supa.test', SUPABASE_ANON_KEY: 'anon', SUPABASE_SERVICE_KEY: 'service',
+    GEMINI_API_KEY: 'key', GEMINI_MODEL: 'gemini-2.5-flash', AI: {} as unknown as Env['AI'],
+  } as Env
+
+  describe('cleanTitleEdges strips a leading title-framing preposition (Defect A)', () => {
+    it.each([
+      ['fa: به نام', 'به نام آزمایش جمنای', 'آزمایش جمنای'],
+      ['fa: به اسم', 'به اسم آزمایش جمنای', 'آزمایش جمنای'],
+      ['fa: با نام', 'با نام آزمایش جمنای', 'آزمایش جمنای'],
+      ['fa: با عنوان', 'با عنوان آزمایش جمنای', 'آزمایش جمنای'],
+      ['fa: تحت عنوان', 'تحت عنوان آزمایش جمنای', 'آزمایش جمنای'],
+      ['en: called', 'called grocery shopping', 'grocery shopping'],
+      ['en: named', 'named grocery shopping', 'grocery shopping'],
+      ['en: titled', 'titled grocery shopping', 'grocery shopping'],
+      ['en: with the name', 'with the name grocery shopping', 'grocery shopping'],
+    ])('%s', (_label, candidate, expected) => {
+      expect(cleanTitleEdges(candidate)).toBe(expected)
+    })
+
+    it('leaves a genuine subject with no framing prefix untouched', () => {
+      expect(cleanTitleEdges('آزمایش جمنای')).toBe('آزمایش جمنای')
+    })
+
+    it('only strips a LEADING framing token, not one appearing mid-title', () => {
+      expect(cleanTitleEdges('Review the file called report.pdf')).toBe('Review the file called report.pdf')
+    })
+  })
+
+  describe('Defect A end-to-end: the exact reported message resolves to the real subject, not the framing phrase', () => {
+    const message = 'یک وظیفه بساز به نام آزمایش جمنای'
+    const expectedTitle = 'آزمایش جمنای'
+
+    it('extractTaskTitle\'s own fallback candidate (intent.title) still carries the framing prefix -- the fix is a validator-layer fix, not a change to extraction itself', () => {
+      expect(parseTaskWriteIntent(message, NOW, TZ)?.title).toBe('به نام آزمایش جمنای')
+    })
+
+    it('the pattern-fallback path (model unavailable) resolves to the real subject', async () => {
+      const intent = parseTaskWriteIntent(message, NOW, TZ)!
+      const title = await resolveCreateTaskTitle(FAKE_ENV, intent, message, async () => {
+        throw new ProviderUnavailableError('429 RESOURCE_EXHAUSTED')
+      })
+      expect(title).toBe(expectedTitle)
+    })
+
+    it('defense in depth: a model candidate carrying the SAME framing prefix is also cleaned, not just the pattern fallback', async () => {
+      const intent = parseTaskWriteIntent(message, NOW, TZ)!
+      const title = await resolveCreateTaskTitle(FAKE_ENV, intent, message, async () => 'به نام آزمایش جمنای')
+      expect(title).toBe(expectedTitle)
+    })
+  })
+
+  describe('looksLikeInstructionFragment (Defect B)', () => {
+    it.each([
+      ['fa: full instruction opening', 'به زبان فارسی پاسخ بده Preserve code product names titles URLs and technical', true],
+      ['fa: bare leading verb', 'پاسخ بده به این پیام', true],
+      ['en: respond in', 'Respond in English please', true],
+      ['en: reply in', 'Reply in German for this thread', true],
+      ['de: antworte auf', 'Antworte auf Deutsch bitte', true],
+      ['a genuine task title, unrelated', 'آزمایش جمنای', false],
+      ['a genuine EN title that merely mentions replying, not as the leading verb', 'Draft a reply in the shared doc', false],
+    ])('%s', (_label, candidate, expected) => {
+      expect(looksLikeInstructionFragment(candidate)).toBe(expected)
+    })
+  })
+
+  describe('Defect B end-to-end: the exact reported instruction text never becomes a task title', () => {
+    // The literal leading clause of getAiResponseLanguageInstruction('fa')
+    // (src/features/ai/responseLanguage.ts) -- deliberately SHORT (well
+    // under the 60-char default bound) and, against the realistic
+    // reconstructed rawMessage below, covers too small a share of it to
+    // trip isTitleSubstantiallyTheMessage either. Isolates these tests to
+    // the NEW instruction-fragment rejection specifically, proving it is
+    // the operative reason, not a side effect of the length/overlap checks
+    // this file already had (the FULL boilerplate text IS also too long
+    // and IS also mostly-the-message -- that's not what this fix is for,
+    // and is not what these tests claim to prove).
+    const instructionLeadingClause = 'به زبان فارسی پاسخ بده'
+    const rawMessage = `${instructionLeadingClause}. Preserve code, product names, task titles, URLs, and technical identifiers as needed.\n[Task context — use this real data to answer accurately:\nOpen: 3, Completed: 5]\nUser question: create a task to review the PR`
+
+    it('the leading clause alone passes the length AND overlap checks on its own -- proving the rejection below comes from the new check, not those', () => {
+      expect(instructionLeadingClause.length).toBeLessThan(60)
+      expect(isTitleSubstantiallyTheMessage(instructionLeadingClause, rawMessage)).toBe(false)
+    })
+
+    it('validateCandidateTitle rejects the instruction-leading candidate outright', () => {
+      expect(validateCandidateTitle(instructionLeadingClause, rawMessage)).toBeUndefined()
+    })
+
+    it('resolveCreateTaskTitle resolves to undefined when BOTH the model and the pattern fallback candidates are instruction-shaped -- this is what upstream turns into a clarify question, never a created task (executeAutoTaskWrite\'s own `!intent.title` branch)', async () => {
+      const intent: ParsedTaskWriteIntent = { kind: 'create_task', title: instructionLeadingClause, notes: `Original request: ${rawMessage}` }
+      const title = await resolveCreateTaskTitle(FAKE_ENV, intent, rawMessage, async () => instructionLeadingClause)
+      expect(title).toBeUndefined()
+    })
+
+    it('a GENUINE model title alongside the same instruction-shaped pattern fallback still resolves correctly -- rejection is scoped to the instruction-shaped candidate only', async () => {
+      const intent: ParsedTaskWriteIntent = { kind: 'create_task', title: instructionLeadingClause, notes: `Original request: ${rawMessage}` }
+      const title = await resolveCreateTaskTitle(FAKE_ENV, intent, rawMessage, async () => 'review the PR')
+      expect(title).toBe('review the PR')
     })
   })
 })

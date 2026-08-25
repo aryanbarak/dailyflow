@@ -529,18 +529,42 @@ function createTaskNotes(message: string, timeOfDay?: string) {
 
 const MAX_MODEL_TITLE_LENGTH = 60
 
+// TITLE-01 Defect A: a Persian/English framing preposition that introduces
+// a title's real subject rather than being part of it -- "به نام X" plays
+// the exact same syntactic role as English "called X"/"named X". Left in a
+// candidate, it collides with the real subject the same way a leftover
+// "task:" prefix would (see extractTaskTitle's own colon-prefix handling
+// above) -- e.g. a request "create a task named X" leaking as "named X"
+// rather than "X". Applied inside cleanTitleEdges, the ONE gate both the
+// pattern-fallback candidate (extractTaskTitle's own output, via
+// resolveCreateTitle's patternFallback) and the model's own candidate
+// (validateCandidateTitle runs on modelTitle too, before resolveCreateTitle
+// ever falls back to the pattern) pass through -- one fix covers both
+// paths, per the task's own defense-in-depth instruction, instead of two
+// implementations that could drift apart. Bounded prefix list (task
+// instruction: no full NLP, not general title-framing detection) -- extend
+// only for a new, confirmed production leak of the same class, same
+// discipline as extractTaskTitle's own DO-NOT-add-a-pattern comment.
+// Accepted, disclosed tradeoff: a genuine title that happens to START with
+// one of these words as real subject content (e.g. "Named entity
+// recognition project") would also be stripped -- same class of narrow
+// risk this file already accepts for its other bounded lists.
+const TITLE_FRAMING_PREFIX = /^(?:به\s*نام|به\s*اسم|با\s*نام|با\s*عنوان|تحت\s*عنوان|called|named|titled|with\s+the\s+name)\s+/i
+
 /**
  * Strips stray leading/trailing punctuation and digit fragments -- e.g. a
- * leftover "؟۰۰" or ": " artifact at the edge of an otherwise-good title.
- * Exported for direct unit testing.
+ * leftover "؟۰۰" or ": " artifact at the edge of an otherwise-good title --
+ * and a leading title-framing preposition (TITLE-01 Defect A; see
+ * TITLE_FRAMING_PREFIX above). Exported for direct unit testing.
  */
 export function cleanTitleEdges(value: string): string {
-  return normalizeDigits(value)
+  const edgeCleaned = normalizeDigits(value)
     .trim()
     .replace(/^[\s:：\-–—.,،؟?]+/, '')
     .replace(/[\s:：\-–—.,،؟?]+[0-9]*$/, '')
     .replace(/\s+/g, ' ')
     .trim()
+  return edgeCleaned.replace(TITLE_FRAMING_PREFIX, '').trim()
 }
 
 /**
@@ -568,13 +592,61 @@ export function isTitleSubstantiallyTheMessage(title: string, rawMessage: string
   return matchRatio >= 0.9 && coverageRatio >= 0.6
 }
 
+// TITLE-01 Defect B: a candidate that is itself a response-language
+// steering instruction -- not real task content -- must never reach the
+// database as a task title. Diagnosis: this class of garbage leaks in when
+// an internal-use instruction preamble
+// (src/features/ai/responseLanguage.ts's getAiResponseLanguageInstruction;
+// the leading clauses are duplicated here in BOUNDED form only -- the
+// Worker cannot import frontend modules, the same constraint documented
+// elsewhere in this codebase, e.g. personal-memory-prompt-serialization.ts)
+// gets concatenated ahead of a user's real message -- TasksPage.tsx's
+// "ask about my tasks" widget (buildTaskAssistantRequestBody) is the
+// confirmed call site: it is the one place in the frontend that folds this
+// instruction INTO the `message` field via withAiResponseLanguageInstruction,
+// rather than sending it as its own separate responseLanguageInstruction
+// body field the way every other call site does (AgentBriefingCard,
+// WeeklyBriefingPage, HabitsPage, FinancePage, CalendarPage, ChatPage,
+// reasoningPrompt.ts). That combined message reaches this same deterministic
+// auto-write pipeline (POST /chat, mode defaults to 'chat' when unset --
+// index.ts:1026), and detectWriteDomainSignal/parseTaskWriteIntent
+// legitimately matched a create-task trigger somewhere in the REAL
+// question portion of that combined string (confirmed: the visible
+// instruction text alone matches none of this file's create/update
+// triggers). The bug is specifically in TITLE EXTRACTION: extractTaskTitle's
+// fallback + boundText's 80-char, START-anchored truncation consumes the
+// whole title budget on the leading instruction/context boilerplate before
+// ever reaching the real subject -- reproducibly landing mid-sentence
+// around "...and technical" for the fa instruction text, matching the
+// exact production title. Fixing the trigger regex itself would not help
+// (the match is on real content, not the visible instruction text) --
+// this is a title-quality problem, so it belongs at this gate, same as
+// every other rejection reason below. Bounded leading-phrase list, same
+// principle and same accepted tradeoff as TITLE_FRAMING_PREFIX above --
+// not general instruction detection. (A structural fix at the true root --
+// TasksPage.tsx should send responseLanguageInstruction as its own field
+// like every other call site, not fold it into `message` -- is out of this
+// ticket's deterministic-layer scope; flagged in PROJECT_STATUS.md as a
+// recommended follow-up, not silently left unfixed.)
+const INSTRUCTION_LEADING_PATTERN = /^(?:به\s*زبان\s+\S+\s+پاسخ\s*بده|پاسخ\s*بده|respond\s+in\s+|reply\s+in\s+|antworte\s+auf\s+)/i
+
+/**
+ * True when `title` opens with a known response-language-instruction
+ * leading phrase rather than real task content (TITLE-01 Defect B; see
+ * INSTRUCTION_LEADING_PATTERN above). Exported for direct unit testing.
+ */
+export function looksLikeInstructionFragment(title: string): boolean {
+  return INSTRUCTION_LEADING_PATTERN.test(title)
+}
+
 /**
  * The single gate every candidate title -- model-proposed or pattern-
  * fallback -- must pass before it can reach the database. Rejects (returns
- * undefined) when the candidate is empty, too long for a subject line, or
- * substantially the whole user message; never truncates or rewrites a
- * candidate into something the model/pattern never actually said.
- * Exported for direct unit testing.
+ * undefined) when the candidate is empty, too long for a subject line,
+ * substantially the whole user message, or itself a response-language
+ * instruction fragment; never truncates or rewrites a candidate into
+ * something the model/pattern never actually said. Exported for direct
+ * unit testing.
  */
 export function validateCandidateTitle(candidate: string | undefined, rawMessage: string, maxLength = MAX_MODEL_TITLE_LENGTH): string | undefined {
   if (!candidate) return undefined
@@ -582,6 +654,7 @@ export function validateCandidateTitle(candidate: string | undefined, rawMessage
   if (!cleaned) return undefined
   if (cleaned.length > maxLength) return undefined
   if (isTitleSubstantiallyTheMessage(cleaned, rawMessage)) return undefined
+  if (looksLikeInstructionFragment(cleaned)) return undefined
   return cleaned
 }
 
