@@ -34,7 +34,7 @@ import {
   shouldUseReasoningForMessage,
 } from "./ChatPage";
 import { shouldAutoRunReadOnlyOverlay } from "@/features/chat/autoReadOverlayGate";
-import { getStrongReadDomainEvidence, getToolById, isAutoExecutableReadOnlyToolId, PROVIDER_UNAVAILABLE_REASON_MARKER, withTimeout } from "@/features/agent";
+import { ENGINEERING_TASK_CONFIRMATION_REASON_MARKER, getStrongReadDomainEvidence, getToolById, isAutoExecutableReadOnlyToolId, PROVIDER_UNAVAILABLE_REASON_MARKER, withTimeout } from "@/features/agent";
 import type {
   AgentReasoningResult,
   ReadOnlyRuntimeResult,
@@ -964,6 +964,74 @@ describe("ChatPage LLM reasoning UX boundary", () => {
       toolId: undefined,
     };
   }
+
+  // ENG-06g: the client half. The validator now routes a hedged
+  // engineering-task response to ask_clarification instead of
+  // 'unsupported' -- but every other overlay ask_clarification is silent
+  // unless the SERVER confirmed a write trigger
+  // (isServerConfirmedClarification, task 42). Without an explicit surface
+  // the fix would have swapped a false "Flow AI doesn't support this" for
+  // no message at all, which is not more honest to someone waiting on an
+  // approval card. These pin that the question actually reaches the user,
+  // and that an ordinary clarification stays silent.
+  describe("ENG-06g: the engineering-task confirmation surfaces; ordinary clarifications stay silent", () => {
+    const confirmationOverlay = (question: string): AgentReasoningResult => ({
+      ...reasoningResult("ask_clarification", undefined),
+      proposal: {
+        ...reasoningResult("ask_clarification", undefined).proposal,
+        type: "ask_clarification",
+        clarificationQuestion: question,
+        reasons: [
+          ENGINEERING_TASK_CONFIRMATION_REASON_MARKER,
+          "The model's response carried an engineering-task-shaped target (repo + instruction) but hedged on the type -- asked for confirmation instead of claiming the capability is missing.",
+        ],
+      },
+    });
+
+    it("appends the confirmation question WITHOUT a server-confirmed write trigger", () => {
+      const t = (key: string) => key;
+      const reply = "I can look at that repository for you.";
+      const question = "Did you mean that as an engineering task on the repository you named? Say yes and I'll put it up for your approval.";
+
+      const outcome = resolveChatTurnOutcome(
+        {
+          intentSignal: "explicit",
+          message: "add a line to README.md in the smartflow repo",
+          responseLanguage: "en",
+          reply,
+          overlayResult: confirmationOverlay(question),
+        },
+        t,
+      );
+
+      expect(outcome.content).toBe(`${reply}
+
+${question}`);
+      // And never the capability denial this fix exists to stop.
+      expect(outcome.content).not.toContain("isn't something Flow AI supports");
+    });
+
+    it("does not surface an ordinary ask_clarification that lacks the marker", () => {
+      const t = (key: string) => key;
+      const reply = "Sure -- what would you like me to look at?";
+      const ordinary: AgentReasoningResult = {
+        ...reasoningResult("ask_clarification", undefined),
+        proposal: {
+          ...reasoningResult("ask_clarification", undefined).proposal,
+          type: "ask_clarification",
+          clarificationQuestion: "Which exact item should I use?",
+          reasons: ["Clarification requested."],
+        },
+      };
+
+      const outcome = resolveChatTurnOutcome(
+        { intentSignal: "explicit", message: "tell me about my week", responseLanguage: "en", reply, overlayResult: ordinary },
+        t,
+      );
+
+      expect(outcome.content).toBe(reply);
+    });
+  });
 
   it("root-cause trace: the exact production evidence message classifies 'explicit', via the bare Persian 'کار' keyword, not the self-statement carve-out (which never fires -- no standalone 'من')", () => {
     expect(classifyMessageIntentSignal("تصمیم دارم که در هامبورگ برایم کار پیدا کنم")).toBe("explicit");

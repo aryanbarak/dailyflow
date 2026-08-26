@@ -59,6 +59,7 @@ import {
   isAutoExecutableReadOnlyToolId,
   PROVIDER_UNAVAILABLE_REASON_MARKER,
   MODEL_RESPONSE_INCOMPLETE_REASON_MARKER,
+  ENGINEERING_TASK_CONFIRMATION_REASON_MARKER,
   reasonAboutUserMessage,
   resolveAgentReasoningTransport,
   resolveToolForStep,
@@ -1228,7 +1229,33 @@ export function resolveChatTurnOutcome(input: ChatTurnOverlayInput, t: Translate
     looksLikeExplicitActionRequest(input.message)
   const capabilityTrailingNote = isExplicitUnsupportedActionRequest ? UNSUPPORTED_CAPABILITY_TEXT[input.responseLanguage] : null
 
-  const trailingNote = ambiguousTrailingNote ?? providerUnavailableTrailingNote ?? modelResponseIncompleteTrailingNote ?? capabilityTrailingNote ?? clarificationTrailingNote
+  // ENG-06g: the one ask_clarification that surfaces WITHOUT the
+  // server-confirmed write trigger isServerConfirmedClarification
+  // requires. That gate (task 42) exists to stop the overlay inventing a
+  // question about ordinary small talk; it does not apply here, because
+  // this outcome only exists when the MODEL returned a real repo plus a
+  // real instruction and merely hedged on the type
+  // (intentValidator.ts's ENGINEERING_TASK_CONFIRMATION branch).
+  // Surfacing it is the point of the fix: without this line the change
+  // would swap a false "Flow AI can't do that" for total silence, which
+  // is not more honest to someone waiting on an approval card -- it just
+  // moves the failure somewhere the user cannot see it.
+  const isEngineeringTaskConfirmation =
+    !serverTerminalWrite &&
+    overlayResult !== null &&
+    overlayResult.proposal.type === 'ask_clarification' &&
+    overlayResult.proposal.reasons.includes(ENGINEERING_TASK_CONFIRMATION_REASON_MARKER) &&
+    Boolean(overlayResult.proposal.clarificationQuestion)
+  const engineeringTaskConfirmationNote = isEngineeringTaskConfirmation
+    ? overlayResult!.proposal.clarificationQuestion!
+    : null
+
+  // Ordered ahead of capabilityTrailingNote deliberately: when both could
+  // apply, the question is the true statement and the denial is the false
+  // one. (In practice they are mutually exclusive -- the capability note
+  // requires type 'unsupported' and this requires 'ask_clarification' --
+  // but the ordering documents the intent if that ever changes.)
+  const trailingNote = ambiguousTrailingNote ?? providerUnavailableTrailingNote ?? modelResponseIncompleteTrailingNote ?? engineeringTaskConfirmationNote ?? capabilityTrailingNote ?? clarificationTrailingNote
 
   return {
     content: trailingNote ? `${input.reply}\n\n${trailingNote}` : input.reply,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveDisambiguationCandidates, validateAgentIntentProposal } from "./intentValidator";
+import { ENGINEERING_TASK_CONFIRMATION_REASON_MARKER, resolveDisambiguationCandidates, validateAgentIntentProposal } from "./intentValidator";
 import type { AgentReasoningSafeContext } from "./reasoningTypes";
 import type { SupportedAiResponseLanguage } from "@/features/ai/responseLanguage";
 
@@ -1120,6 +1120,150 @@ describe("Task 45c, ADR-0017 (import_bank_statement is UI-only, never chat-propo
       const result = validateWithContext(hedgedProposal(userMessage), userMessage, context, "de");
 
       expect(result.proposal.type).not.toBe("propose_engineering_task");
+    });
+  });
+
+  // ENG-06g. Root cause, reproduced against this validator before the fix:
+  // requestLooksUnsupported() matches bare generic verbs (add/create/update
+  // in English, اضافه کن/بساز in Persian), which any "add a line to
+  // README.md in <repo>" request satisfies by definition. That made the
+  // outcome depend entirely on whether the model's own type happened to
+  // land inside CONFIRMED_WRITE_INTENT_TYPES -- for a byte-identical
+  // message, propose_engineering_task produced an approval card while
+  // ask_clarification / inspect_github_repositories / unsupported all
+  // produced "Flow AI doesn't support this". Since ENG-04 shipped the
+  // capability, that sentence is false, and the user hit it on roughly one
+  // classification in three.
+  describe("ENG-06g: a hedged engineering-task response asks, it does not deny the capability", () => {
+    // Natural phrasing on purpose: contains a generic write verb and NOT
+    // the literal trigger phrase requestLooksLikeEngineeringTask wants.
+    // Widening that gate is the arms race this fix deliberately avoids.
+    const FA_MESSAGE = "در مخزن smartflow یک خط به فایل README.md اضافه کن";
+    const EN_MESSAGE = "add a line to README.md in the smartflow repo";
+
+    const shapedTarget = {
+      repo: "aryanbarak/smartflow",
+      engineeringInstruction: "Add a line to README.md describing the reasoning lane.",
+      engineeringTaskClass: "fix",
+    };
+
+    const responseWithType = (type: string, userMessage: string, language: "en" | "fa") => ({
+      id: "intent-eng-06g",
+      type,
+      confidence: "high",
+      userMessage,
+      requestedDomain: "github",
+      target: shapedTarget,
+      requiresTool: true,
+      requiresApproval: true,
+      reasons: ["Model output."],
+      language,
+      generatedAt: now.toISOString(),
+      schemaVersion: 1,
+    });
+
+    // The primary variant is unchanged -- the fix must not disturb the
+    // path that already worked.
+    it.each([
+      ["fa", FA_MESSAGE],
+      ["en", EN_MESSAGE],
+    ])("still proposes the engineering task when the model returns propose_engineering_task (%s)", (language, userMessage) => {
+      const result = validateWithContext(
+        responseWithType("propose_engineering_task", userMessage, language as "en" | "fa"),
+        userMessage,
+        context,
+        language as SupportedAiResponseLanguage,
+      );
+
+      expect(result.proposal.type).toBe("propose_engineering_task");
+      expect(result.proposal.reasons).not.toContain(ENGINEERING_TASK_CONFIRMATION_REASON_MARKER);
+    });
+
+    // The three variants that used to deny the capability.
+    it.each([
+      ["ask_clarification", "fa", FA_MESSAGE],
+      ["ask_clarification", "en", EN_MESSAGE],
+      ["inspect_github_repositories", "fa", FA_MESSAGE],
+      ["inspect_github_repositories", "en", EN_MESSAGE],
+      ["unsupported", "fa", FA_MESSAGE],
+      ["unsupported", "en", EN_MESSAGE],
+    ])("routes a hedged %s (%s) to an honest confirmation, never to the capability denial", (type, language, userMessage) => {
+      const result = validateWithContext(
+        responseWithType(type, userMessage, language as "en" | "fa"),
+        userMessage,
+        context,
+        language as SupportedAiResponseLanguage,
+      );
+
+      // The whole point: NOT 'unsupported', which is what renders
+      // UNSUPPORTED_CAPABILITY_TEXT ("Flow AI doesn't support this").
+      expect(result.proposal.type).toBe("ask_clarification");
+      expect(result.proposal.type).not.toBe("unsupported");
+      expect(result.proposal.reasons).toContain(ENGINEERING_TASK_CONFIRMATION_REASON_MARKER);
+      expect(result.proposal.reasons).not.toContain("Unsupported action was rejected.");
+      // It must be a real question the user can answer.
+      expect(result.proposal.clarificationQuestion).toBeTruthy();
+    });
+
+    // ENG-04's safety bar: this is a QUESTION, not a promotion. A false
+    // positive on the promotion path launches an unattended coding-agent
+    // run against a real repository, so the hedged case must never acquire
+    // a tool or an approval.
+    it.each([
+      ["ask_clarification"],
+      ["inspect_github_repositories"],
+      ["unsupported"],
+    ])("never promotes a hedged %s to an executable proposal", (type) => {
+      const result = validateWithContext(
+        responseWithType(type, FA_MESSAGE, "fa"),
+        FA_MESSAGE,
+        context,
+        "fa",
+      );
+
+      expect(result.proposal.type).not.toBe("propose_engineering_task");
+      expect(result.proposal.requiresTool).toBe(false);
+      expect(result.proposal.requiresApproval).toBe(false);
+      expect(result.proposal.toolId).toBeUndefined();
+    });
+
+    it("asks in the caller's own language", () => {
+      const fa = validateWithContext(responseWithType("ask_clarification", FA_MESSAGE, "fa"), FA_MESSAGE, context, "fa");
+      const en = validateWithContext(responseWithType("ask_clarification", EN_MESSAGE, "en"), EN_MESSAGE, context, "en");
+
+      expect(fa.proposal.clarificationQuestion).toContain("تسک مهندسی");
+      expect(en.proposal.clarificationQuestion).toContain("engineering task");
+    });
+
+    // The regression guard the fix is most likely to break: a genuinely
+    // unsupported request must still be told so. Same generic write verb,
+    // no engineering-task-shaped target at all.
+    it.each([
+      ["no target at all", undefined],
+      ["a target with neither repo nor instruction", { title: "buy milk" }],
+      ["a repo with no instruction", { repo: "aryanbarak/smartflow" }],
+      ["an instruction with no repo", { engineeringInstruction: "Add a line to README.md." }],
+    ])("still reports a genuinely unsupported request as unsupported when the target has %s", (_label, target) => {
+      const userMessage = "send a postcard to my accountant and pay the invoice";
+      const raw = {
+        id: "intent-unsupported",
+        type: "unsupported",
+        confidence: "high",
+        userMessage,
+        target,
+        requiresTool: false,
+        requiresApproval: false,
+        reasons: ["Model output."],
+        language: "en",
+        generatedAt: now.toISOString(),
+        schemaVersion: 1,
+      };
+
+      const result = validateWithContext(raw, userMessage, context, "en");
+
+      expect(result.proposal.type).toBe("unsupported");
+      expect(result.proposal.reasons).toContain("Unsupported action was rejected.");
+      expect(result.proposal.reasons).not.toContain(ENGINEERING_TASK_CONFIRMATION_REASON_MARKER);
     });
   });
 });

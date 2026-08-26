@@ -133,6 +133,47 @@ const domainByIntent: Partial<Record<AgentIntentType, AgentIntentDomain>> = {
   propose_engineering_task: "github",
 };
 
+// ENG-06g: a stable, grep-able marker on the ONE clarification that must
+// reach the user unconditionally. Every other ask_clarification the
+// overlay produces stays silent unless the SERVER confirmed a write
+// trigger (task 42's rule in ChatPage.tsx, which exists so the overlay's
+// own opinion about an ordinary conversational message cannot manufacture
+// a question). This case is different in kind: it only fires when the
+// MODEL ITSELF returned an engineering-task-shaped target (a real repo
+// plus a real instruction), so there is no risk of inventing a question
+// out of small talk -- and staying silent here would replace a false
+// statement with no statement, which is not an improvement for someone
+// waiting on an approval card. Same marker convention as
+// PROVIDER_UNAVAILABLE_REASON_MARKER / MODEL_RESPONSE_INCOMPLETE_REASON_MARKER.
+export const ENGINEERING_TASK_CONFIRMATION_REASON_MARKER = "ENGINEERING_TASK_CONFIRMATION";
+
+// ENG-06g: deliberately a QUESTION, never a promotion. ENG-04 made
+// propose_engineering_task's gate narrow on purpose -- a false positive
+// launches an unattended coding-agent run against a real repository -- so
+// this asks the user to confirm and stops. requiresTool/requiresApproval
+// stay false (createSafeProposal's own defaults), which is what keeps
+// this off every auto-execution path.
+function engineeringTaskConfirmationQuestion(language: SupportedAiResponseLanguage) {
+  const copy = {
+    en: "Did you mean that as an engineering task on the repository you named? Say yes and I'll put it up for your approval.",
+    de: "War das als Entwicklungsaufgabe für das genannte Repository gemeint? Sag kurz Ja, dann lege ich es dir zur Freigabe vor.",
+    fa: "منظورتان یک تسک مهندسی روی همان مخزنی بود که نام بردید؟ اگر بله بگویید، آن را برای تأیید شما آماده می‌کنم.",
+  } as const;
+  return copy[language];
+}
+
+// ENG-06g: "the model's own answer describes a supported engineering
+// task, whatever type it stamped on it". Reads through normalizeTarget so
+// the same bounded/sanitised field handling every other target read uses
+// applies here too -- this must never become a second, looser way to read
+// a repo name. Both fields are required: a bare repo mention is not an
+// engineering task (it is equally consistent with an issue-comment or a
+// read), and an instruction with no repo has nothing to run against.
+function hasEngineeringTaskShapedTarget(rawTarget: unknown): boolean {
+  const target = normalizeTarget(rawTarget);
+  return Boolean(target?.repo && target.engineeringInstruction);
+}
+
 function textFor(language: SupportedAiResponseLanguage, key: "clarify" | "unsupported" | "low") {
   const copy = {
     en: {
@@ -175,6 +216,12 @@ function createSafeProposal(
     now: Date;
     question?: string;
     reason: string;
+    // ENG-06g: when present, becomes reasons[0] with `reason` as
+    // reasons[1] -- the same marker-first shape reasoningOrchestrator.ts's
+    // providerUnavailableProposal/modelResponseIncompleteProposal already
+    // use, so ChatPage.tsx can identify the outcome with the same
+    // `reasons.includes(MARKER)` check it uses for those.
+    reasonMarker?: string;
   },
 ): AgentReasoningValidationResult {
   const proposal: AgentIntentProposal = {
@@ -187,7 +234,7 @@ function createSafeProposal(
     requiresApproval: false,
     clarificationQuestion:
       input.question ?? textFor(input.language, type === "unsupported" ? "unsupported" : "clarify"),
-    reasons: [input.reason],
+    reasons: input.reasonMarker ? [input.reasonMarker, input.reason] : [input.reason],
     language: input.language,
     generatedAt: input.now.toISOString(),
     schemaVersion: AGENT_INTENT_SCHEMA_VERSION,
@@ -965,6 +1012,38 @@ export function validateAgentIntentProposal(input: {
     type === "unsupported" ||
     (requestLooksUnsupported(input.userMessage) && !CONFIRMED_WRITE_INTENT_TYPES.has(type))
   ) {
+    // ENG-06g. This branch tells the user "Flow AI doesn't support this"
+    // (ChatPage.tsx's UNSUPPORTED_CAPABILITY_TEXT). Since ENG-04 that
+    // sentence can be FALSE, and measurably was: requestLooksUnsupported
+    // matches bare generic verbs (add/create/update, اضافه کن/بساز), which
+    // a "add a line to README.md in <repo>" request satisfies by
+    // definition. So the outcome hung entirely on whether the model's own
+    // type landed inside CONFIRMED_WRITE_INTENT_TYPES -- reproduced
+    // directly against this validator: an identical message yielded a
+    // card for propose_engineering_task but this capability denial for
+    // ask_clarification, inspect_github_repositories, and unsupported.
+    // Roughly one classification in three, and the user was told the
+    // product lacks a feature it shipped in ENG-04. Same dishonest-failure
+    // family as INC-01's fabricated clarification: a confident, wrong
+    // statement about the system's own ability.
+    //
+    // The honest reading of that state is "I think you asked for an
+    // engineering task and I'm not sure" -- a question, not a denial. Note
+    // this deliberately does NOT widen requestLooksLikeEngineeringTask
+    // (chasing natural phrasing is an arms race) and does NOT promote to
+    // propose_engineering_task: the evidence here is the model's own
+    // hedged output, which is exactly the evidence ENG-04 decided was too
+    // weak to launch an unattended real-repo run on.
+    if (hasEngineeringTaskShapedTarget(input.rawProposal.target)) {
+      return createSafeProposal("ask_clarification", {
+        userMessage: input.userMessage,
+        language: input.language,
+        now,
+        question: engineeringTaskConfirmationQuestion(input.language),
+        reasonMarker: ENGINEERING_TASK_CONFIRMATION_REASON_MARKER,
+        reason: "The model's response carried an engineering-task-shaped target (repo + instruction) but hedged on the type -- asked for confirmation instead of claiming the capability is missing.",
+      });
+    }
     return createSafeProposal("unsupported", {
       userMessage: input.userMessage,
       language: input.language,
