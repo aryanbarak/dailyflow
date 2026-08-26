@@ -4,6 +4,8 @@ import {
   parseLlmIntentJson,
 } from "./llmReasoningService";
 import { validateAgentIntentProposal } from "./intentValidator";
+import { PROVIDER_UNAVAILABLE_REASON_MARKER, reasonAboutUserMessage } from "./reasoningOrchestrator";
+import type { AgentReasoningSafeContext } from "./reasoningTypes";
 
 describe("llmReasoningService", () => {
   it("parses JSON-only intent output", () => {
@@ -132,8 +134,152 @@ describe("llmReasoningService", () => {
 
       const resultPromise = caller({ prompt: "Return JSON", responseLanguage: "en", sessionId: "session-1" });
       const assertion = expect(resultPromise).rejects.toMatchObject({ code: "TIMEOUT" });
-      await vi.advanceTimersByTimeAsync(10_000);
+      // ENG-06: advance to the CURRENT ceiling (20_000, was 10_000). The
+      // behaviour this test guards -- rejects rather than hangs -- is
+      // unchanged; only the deadline moved.
+      await vi.advanceTimersByTimeAsync(20_000);
       await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // ENG-06 regression: the reasoning ceiling used to be 10_000 -- SHORTER
+  // than the plain-chat lane's CHAT_REQUEST_TIMEOUT_MS (15_000,
+  // ChatPage.tsx) despite being the heavier, structured-generation call.
+  // A detailed engineering-task proposal that took ~12-14s therefore hit
+  // the reasoning ceiling first and the user got the honest chat reply
+  // with no approval card at all. This proves a 13s call now RESOLVES
+  // with the model's real proposal -- and that it was still in flight (not
+  // already rejected) at the old 10s mark, which is what makes this a
+  // regression test for the constant rather than a restatement of the
+  // GH-06 timeout test above.
+  it("ENG-06: a 13s structured reasoning call resolves with the proposal instead of timing out at the old 10s ceiling", async () => {
+    vi.useFakeTimers();
+    try {
+      const proposal = {
+        type: "propose_engineering_task",
+        confidence: "high",
+        requestedDomain: "github",
+        target: {
+          repo: "aryanbarak/smartflow",
+          engineeringInstruction: "Widen the reasoning overlay fetch ceiling.".repeat(40),
+          engineeringTaskClass: "fix",
+        },
+        reasons: ["The request names an engineering task explicitly."],
+        language: "en",
+      };
+      const fetcher = vi.fn(() => new Promise<Response>((resolve) => {
+        setTimeout(
+          () => resolve(new Response(JSON.stringify({
+            requestId: "reasoning:eng-06",
+            proposal,
+            responseLanguage: "en",
+          }), { status: 200, headers: { "Content-Type": "application/json" } })),
+          13_000,
+        );
+      }));
+      const caller = createLlmReasoningCaller({
+        endpoint: "http://127.0.0.1:8787/agent/reason",
+        accessToken: "local-token",
+        fetcher: fetcher as unknown as typeof fetch,
+        transport: "structured-reasoning",
+        requestIdFactory: () => "reasoning:eng-06",
+      });
+
+      const settled = vi.fn();
+      const resultPromise = caller({
+        prompt: "Bounded reasoning prompt",
+        responseLanguage: "en",
+        sessionId: "session-1",
+      }).then((value) => {
+        settled(value);
+        return value;
+      });
+
+      // Past the OLD ceiling: under 10_000 this had already rejected by
+      // now, which is exactly what produced the missing approval card.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(settled).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(3_000);
+      const result = await resultPromise;
+
+      expect(result).toEqual({ rawText: JSON.stringify(proposal) });
+      // Not the PROVIDER_UNAVAILABLE fallback path: that outcome is
+      // signalled by this flag (or by a rejection the orchestrator's catch
+      // converts into one), and neither happened here.
+      expect(result.providerUnavailable).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // ENG-06, end to end through the orchestrator: the caller resolving is
+  // only half the fix -- what the user was actually deprived of is the
+  // approval card. This drives the REAL caller through
+  // reasonAboutUserMessage (the same `.catch(() => ({ rawText: "",
+  // providerUnavailable: true }))` seam that converted the old timeout
+  // into the honest-but-cardless outcome) and proves a 13s call now yields
+  // the model's engineering-task proposal, not providerUnavailableProposal.
+  it("ENG-06: a 13s call still produces an engineering-task proposal, not the PROVIDER_UNAVAILABLE fallback", async () => {
+    vi.useFakeTimers();
+    try {
+      const now = new Date("2026-07-15T08:00:00.000Z");
+      const safeContext: AgentReasoningSafeContext = {
+        tasks: [],
+        events: [],
+        learningProgress: { lessons: [] },
+        workspace: null,
+      };
+      const fetcher = vi.fn(() => new Promise<Response>((resolve) => {
+        setTimeout(
+          () => resolve(new Response(JSON.stringify({
+            requestId: "reasoning:eng-06-e2e",
+            proposal: {
+              id: "intent-eng-06",
+              type: "propose_engineering_task",
+              confidence: "high",
+              requestedDomain: "github",
+              target: {
+                repo: "aryanbarak/smartflow",
+                engineeringInstruction: "Widen the reasoning overlay fetch ceiling to match the chat lane.",
+                engineeringTaskClass: "fix",
+              },
+              requiresTool: true,
+              requiresApproval: true,
+              reasons: ["The request names an engineering task explicitly."],
+              language: "en",
+              generatedAt: now.toISOString(),
+              schemaVersion: 1,
+            },
+            responseLanguage: "en",
+          }), { status: 200, headers: { "Content-Type": "application/json" } })),
+          13_000,
+        );
+      }));
+      const callLlmReasoning = createLlmReasoningCaller({
+        endpoint: "http://127.0.0.1:8787/agent/reason",
+        accessToken: "local-token",
+        fetcher: fetcher as unknown as typeof fetch,
+        transport: "structured-reasoning",
+        requestIdFactory: () => "reasoning:eng-06-e2e",
+      });
+
+      const resultPromise = reasonAboutUserMessage({
+        userMessage: "Please run an engineering task on aryanbarak/smartflow to widen the reasoning fetch ceiling.",
+        safeContext,
+        configuredResponseLanguage: "auto",
+        interfaceLanguage: "en",
+        now,
+        sessionId: "session-1",
+      }, { callLlmReasoning });
+
+      await vi.advanceTimersByTimeAsync(13_000);
+      const result = await resultPromise;
+
+      expect(result.proposal.type).toBe("propose_engineering_task");
+      expect(result.proposal.reasons).not.toContain(PROVIDER_UNAVAILABLE_REASON_MARKER);
     } finally {
       vi.useRealTimers();
     }
