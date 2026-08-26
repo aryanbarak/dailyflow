@@ -34,7 +34,7 @@ import {
   shouldUseReasoningForMessage,
 } from "./ChatPage";
 import { shouldAutoRunReadOnlyOverlay } from "@/features/chat/autoReadOverlayGate";
-import { ENGINEERING_TASK_CONFIRMATION_REASON_MARKER, getStrongReadDomainEvidence, getToolById, isAutoExecutableReadOnlyToolId, PROVIDER_UNAVAILABLE_REASON_MARKER, withTimeout } from "@/features/agent";
+import { ENGINEERING_TASK_NOT_PROPOSED_REASON_MARKER, getStrongReadDomainEvidence, getToolById, isAutoExecutableReadOnlyToolId, PROVIDER_UNAVAILABLE_REASON_MARKER, withTimeout } from "@/features/agent";
 import type {
   AgentReasoningResult,
   ReadOnlyRuntimeResult,
@@ -982,7 +982,7 @@ describe("ChatPage LLM reasoning UX boundary", () => {
         type: "ask_clarification",
         clarificationQuestion: question,
         reasons: [
-          ENGINEERING_TASK_CONFIRMATION_REASON_MARKER,
+          ENGINEERING_TASK_NOT_PROPOSED_REASON_MARKER,
           "The model's response carried an engineering-task-shaped target (repo + instruction) but hedged on the type -- asked for confirmation instead of claiming the capability is missing.",
         ],
       },
@@ -991,7 +991,10 @@ describe("ChatPage LLM reasoning UX boundary", () => {
     it("appends the confirmation question WITHOUT a server-confirmed write trigger", () => {
       const t = (key: string) => key;
       const reply = "I can look at that repository for you.";
-      const question = "Did you mean that as an engineering task on the repository you named? Say yes and I'll put it up for your approval.";
+      // RULING 2: a statement plus a workaround that works today -- not a
+      // question, because a "yes" reaches the classifier with no history
+      // to resolve it (ENG-06h).
+      const statement = 'I understood this as an engineering task, but I was not confident enough to open a proposal card for it. Send the same request again with the words "engineering task" in it and I will open the card directly.';
 
       const outcome = resolveChatTurnOutcome(
         {
@@ -999,14 +1002,16 @@ describe("ChatPage LLM reasoning UX boundary", () => {
           message: "add a line to README.md in the smartflow repo",
           responseLanguage: "en",
           reply,
-          overlayResult: confirmationOverlay(question),
+          overlayResult: confirmationOverlay(statement),
         },
         t,
       );
 
       expect(outcome.content).toBe(`${reply}
 
-${question}`);
+${statement}`);
+      // Never a question -- nothing may imply "yes" will work.
+      expect(outcome.content).not.toContain("Did you mean");
       // And never the capability denial this fix exists to stop.
       expect(outcome.content).not.toContain("isn't something Flow AI supports");
     });

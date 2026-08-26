@@ -59,7 +59,7 @@ import {
   isAutoExecutableReadOnlyToolId,
   PROVIDER_UNAVAILABLE_REASON_MARKER,
   MODEL_RESPONSE_INCOMPLETE_REASON_MARKER,
-  ENGINEERING_TASK_CONFIRMATION_REASON_MARKER,
+  ENGINEERING_TASK_NOT_PROPOSED_REASON_MARKER,
   reasonAboutUserMessage,
   resolveAgentReasoningTransport,
   resolveToolForStep,
@@ -1240,13 +1240,13 @@ export function resolveChatTurnOutcome(input: ChatTurnOverlayInput, t: Translate
   // would swap a false "Flow AI can't do that" for total silence, which
   // is not more honest to someone waiting on an approval card -- it just
   // moves the failure somewhere the user cannot see it.
-  const isEngineeringTaskConfirmation =
+  const isEngineeringTaskNotProposed =
     !serverTerminalWrite &&
     overlayResult !== null &&
     overlayResult.proposal.type === 'ask_clarification' &&
-    overlayResult.proposal.reasons.includes(ENGINEERING_TASK_CONFIRMATION_REASON_MARKER) &&
+    overlayResult.proposal.reasons.includes(ENGINEERING_TASK_NOT_PROPOSED_REASON_MARKER) &&
     Boolean(overlayResult.proposal.clarificationQuestion)
-  const engineeringTaskConfirmationNote = isEngineeringTaskConfirmation
+  const engineeringTaskNotProposedNote = isEngineeringTaskNotProposed
     ? overlayResult!.proposal.clarificationQuestion!
     : null
 
@@ -1255,7 +1255,7 @@ export function resolveChatTurnOutcome(input: ChatTurnOverlayInput, t: Translate
   // one. (In practice they are mutually exclusive -- the capability note
   // requires type 'unsupported' and this requires 'ask_clarification' --
   // but the ordering documents the intent if that ever changes.)
-  const trailingNote = ambiguousTrailingNote ?? providerUnavailableTrailingNote ?? modelResponseIncompleteTrailingNote ?? engineeringTaskConfirmationNote ?? capabilityTrailingNote ?? clarificationTrailingNote
+  const trailingNote = ambiguousTrailingNote ?? providerUnavailableTrailingNote ?? modelResponseIncompleteTrailingNote ?? engineeringTaskNotProposedNote ?? capabilityTrailingNote ?? clarificationTrailingNote
 
   return {
     content: trailingNote ? `${input.reply}\n\n${trailingNote}` : input.reply,

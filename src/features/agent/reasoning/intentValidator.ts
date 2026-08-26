@@ -133,45 +133,132 @@ const domainByIntent: Partial<Record<AgentIntentType, AgentIntentDomain>> = {
   propose_engineering_task: "github",
 };
 
-// ENG-06g: a stable, grep-able marker on the ONE clarification that must
-// reach the user unconditionally. Every other ask_clarification the
-// overlay produces stays silent unless the SERVER confirmed a write
-// trigger (task 42's rule in ChatPage.tsx, which exists so the overlay's
-// own opinion about an ordinary conversational message cannot manufacture
-// a question). This case is different in kind: it only fires when the
-// MODEL ITSELF returned an engineering-task-shaped target (a real repo
-// plus a real instruction), so there is no risk of inventing a question
-// out of small talk -- and staying silent here would replace a false
-// statement with no statement, which is not an improvement for someone
-// waiting on an approval card. Same marker convention as
+// ENG-06g: a stable, grep-able marker on the outcomes that must reach the
+// user unconditionally. Every other ask_clarification the overlay produces
+// stays silent unless the SERVER confirmed a write trigger (task 42's rule
+// in ChatPage.tsx, which exists so the overlay's own opinion about an
+// ordinary conversational message cannot manufacture a message). These are
+// different in kind: they only fire when the MODEL ITSELF returned an
+// engineering-task-shaped target, so there is no risk of inventing one out
+// of small talk -- and staying silent would replace a false statement with
+// no statement, which is not an improvement for someone waiting on an
+// approval card. Same marker convention as
 // PROVIDER_UNAVAILABLE_REASON_MARKER / MODEL_RESPONSE_INCOMPLETE_REASON_MARKER.
-export const ENGINEERING_TASK_CONFIRMATION_REASON_MARKER = "ENGINEERING_TASK_CONFIRMATION";
+//
+// One marker drives SURFACING for all three outcomes below; the three are
+// told apart in logs by their distinct reasons[1] codes, and told apart by
+// the user by three distinct messages. Merging the surfacing check keeps
+// ChatPage.tsx to one condition; splitting the reasons keeps ENG-06f's
+// "every cause is greppable" discipline.
+export const ENGINEERING_TASK_NOT_PROPOSED_REASON_MARKER = "ENGINEERING_TASK_NOT_PROPOSED";
 
-// ENG-06g: deliberately a QUESTION, never a promotion. ENG-04 made
-// propose_engineering_task's gate narrow on purpose -- a false positive
-// launches an unattended coding-agent run against a real repository -- so
-// this asks the user to confirm and stops. requiresTool/requiresApproval
-// stay false (createSafeProposal's own defaults), which is what keeps
-// this off every auto-execution path.
-function engineeringTaskConfirmationQuestion(language: SupportedAiResponseLanguage) {
-  const copy = {
-    en: "Did you mean that as an engineering task on the repository you named? Say yes and I'll put it up for your approval.",
-    de: "War das als Entwicklungsaufgabe für das genannte Repository gemeint? Sag kurz Ja, dann lege ich es dir zur Freigabe vor.",
-    fa: "منظورتان یک تسک مهندسی روی همان مخزنی بود که نام بردید؟ اگر بله بگویید، آن را برای تأیید شما آماده می‌کنم.",
+// ENG-06g-fix RULING 1: three distinct outcomes, each with its own reason
+// code so a log line says which one fired.
+export const ENGINEERING_TASK_NOT_PROPOSED_REASONS = {
+  // (a) The repo is real -- present in the user's own connected inventory.
+  lowConfidence: "Engineering-task-shaped target on a CONNECTED repository, but the model hedged on the type -- told the user how to open the card directly.",
+  // (b) The repo is well-formed but not the user's.
+  repoNotConnected: "Engineering-task-shaped target naming a repository that is NOT in the user's connected inventory -- reported honestly, the model's raw repo string never echoed.",
+  // (c) We could not check.
+  inventoryUnknown: "Engineering-task-shaped target, but the connected-repository inventory was unavailable -- reported as a read failure, never as a capability denial.",
+} as const;
+
+// ENG-06g-fix RULING 2: a STATEMENT, not a question.
+//
+// The first cut of this asked "did you mean an engineering task?" -- which
+// promised a follow-up the system cannot honour: AgentReasoningInput
+// carries no conversation history by design (reasoningTypes.ts) and
+// reasoningPrompt.ts forbids it, so a bare "yes" on the next turn reaches
+// the classifier with nothing to resolve. Answering would have done
+// nothing. Closing that loop needs cross-turn proposal state and is
+// ENG-06h, not this change.
+//
+// So this states what happened and gives the workaround that actually
+// works TODAY: re-sending with the explicit trigger phrase promotes the
+// hedge deterministically, via the requestLooksLikeEngineeringTask gate.
+// The quoted phrase per language comes from that gate's own patterns, and
+// the tests re-run the REAL gate against this function's output, so the
+// advice cannot drift out of sync with the gate it points at. No question
+// mark anywhere.
+export function engineeringTaskTriggerPhraseFor(language: SupportedAiResponseLanguage) {
+  const phrases = {
+    en: "engineering task",
+    de: "Entwicklungsaufgabe",
+    fa: "تسک مهندسی",
   } as const;
-  return copy[language];
+  return phrases[language];
 }
 
-// ENG-06g: "the model's own answer describes a supported engineering
-// task, whatever type it stamped on it". Reads through normalizeTarget so
-// the same bounded/sanitised field handling every other target read uses
-// applies here too -- this must never become a second, looser way to read
-// a repo name. Both fields are required: a bare repo mention is not an
-// engineering task (it is equally consistent with an issue-comment or a
-// read), and an instruction with no repo has nothing to run against.
-function hasEngineeringTaskShapedTarget(rawTarget: unknown): boolean {
+function engineeringTaskNotProposedMessage(
+  outcome: "lowConfidence" | "repoNotConnected" | "inventoryUnknown",
+  language: SupportedAiResponseLanguage,
+) {
+  const copy = {
+    // (a) Understood, not confident enough, here is the lever that works.
+    lowConfidence: {
+      en: 'I understood this as an engineering task, but I was not confident enough to open a proposal card for it. Send the same request again with the words "engineering task" in it and I will open the card directly.',
+      de: 'Ich habe das als Entwicklungsaufgabe verstanden, war mir aber nicht sicher genug, um dafür eine Freigabekarte zu öffnen. Schick dieselbe Anfrage noch einmal mit dem Wort "Entwicklungsaufgabe", dann öffne ich die Karte direkt.',
+      fa: 'این را به‌عنوان یک تسک مهندسی فهمیدم، اما آن‌قدر مطمئن نبودم که کارت پیشنهاد را باز کنم. همان درخواست را یک‌بار دیگر همراه با عبارت «تسک مهندسی» بفرستید تا کارت مستقیماً باز شود.',
+    },
+    // (b) Deliberately does NOT echo the model's raw repo string -- that
+    // string is exactly what is in doubt here, and repeating it back would
+    // lend it a credibility this branch exists to withhold (GH-07: repo
+    // identity is already known-unreliable).
+    repoNotConnected: {
+      en: "The repository this refers to is not one of the GitHub repositories connected to your account, so I cannot prepare an engineering task for it.",
+      de: "Das gemeinte Repository gehört nicht zu den GitHub-Repositories, die mit deinem Konto verbunden sind, daher kann ich dafür keine Entwicklungsaufgabe vorbereiten.",
+      fa: "مخزنی که به آن اشاره شده جزو مخزن‌های گیت‌هاب متصل به حساب شما نیست، بنابراین نمی‌توانم برای آن تسک مهندسی آماده کنم.",
+    },
+    // (c) A READ FAILURE, not a capability denial -- names the real reason
+    // and closes with INC-01's own retry sentence, reused VERBATIM from
+    // reasoningOrchestrator.ts's providerUnavailableProposal so the
+    // honest-failure voice stays consistent instead of gaining a fourth
+    // variant.
+    inventoryUnknown: {
+      en: "I could not read your connected GitHub repositories just now, so I cannot tell which repository this refers to. Please try again in a moment.",
+      de: "Ich konnte deine verbundenen GitHub-Repositories gerade nicht laden, daher kann ich nicht sagen, um welches Repository es geht. Bitte versuche es gleich noch einmal.",
+      fa: "در حال حاضر نتوانستم فهرست مخزن‌های گیت‌هاب متصل به حساب شما را بخوانم، بنابراین نمی‌توانم بگویم منظور کدام مخزن است. لطفاً کمی بعد دوباره امتحان کنید.",
+    },
+  } as const;
+  return copy[outcome][language];
+}
+
+// ENG-06g-fix RULING 1: "the model's own answer describes a supported
+// engineering task, whatever type it stamped on it" -- now with the repo
+// actually CHECKED rather than merely shaped.
+//
+// safeRepoIdentifier below only ever proved the string looks like
+// `owner/name`; it never consulted anything real, so the previous version
+// of this guard trusted the same non-deterministic classifier this whole
+// fix exists to work around. safeContext.githubRepositoryInventory is the
+// user's real connected-repository list -- already populated by
+// ChatPage.tsx and already fed to the reasoning prompt, just never read by
+// this validator until now.
+type EngineeringTaskShape =
+  | { kind: "none" }
+  | { kind: "lowConfidence" }
+  | { kind: "repoNotConnected" }
+  | { kind: "inventoryUnknown" };
+
+function classifyEngineeringTaskShape(
+  rawTarget: unknown,
+  safeContext: AgentReasoningSafeContext,
+): EngineeringTaskShape {
   const target = normalizeTarget(rawTarget);
-  return Boolean(target?.repo && target.engineeringInstruction);
+  // Both fields required: a bare repo mention is not an engineering task
+  // (equally consistent with an issue comment or a read), and an
+  // instruction with no repo has nothing to run against.
+  if (!target?.repo || !target.engineeringInstruction) return { kind: "none" };
+
+  const inventory = safeContext.githubRepositoryInventory;
+  // An absent field and an explicit "unknown" are the same fact: the list
+  // was never loaded. Deliberately NOT read as "the user has no
+  // repositories" -- see AgentReasoningGitHubInventory's own comment on
+  // why collapsing those two is a different, wrong claim.
+  if (!inventory || inventory.status === "unknown") return { kind: "inventoryUnknown" };
+  return inventory.names.includes(target.repo)
+    ? { kind: "lowConfidence" }
+    : { kind: "repoNotConnected" };
 }
 
 function textFor(language: SupportedAiResponseLanguage, key: "clarify" | "unsupported" | "low") {
@@ -1034,14 +1121,19 @@ export function validateAgentIntentProposal(input: {
     // propose_engineering_task: the evidence here is the model's own
     // hedged output, which is exactly the evidence ENG-04 decided was too
     // weak to launch an unattended real-repo run on.
-    if (hasEngineeringTaskShapedTarget(input.rawProposal.target)) {
+    // ENG-06g-fix RULING 1: three outcomes, kept distinct rather than
+    // collapsed. Only (a) has a validated repo behind it; (b) and (c) each
+    // say what is actually true instead of borrowing (a)'s wording or
+    // falling back to the capability denial below.
+    const engineeringShape = classifyEngineeringTaskShape(input.rawProposal.target, input.safeContext);
+    if (engineeringShape.kind !== "none") {
       return createSafeProposal("ask_clarification", {
         userMessage: input.userMessage,
         language: input.language,
         now,
-        question: engineeringTaskConfirmationQuestion(input.language),
-        reasonMarker: ENGINEERING_TASK_CONFIRMATION_REASON_MARKER,
-        reason: "The model's response carried an engineering-task-shaped target (repo + instruction) but hedged on the type -- asked for confirmation instead of claiming the capability is missing.",
+        question: engineeringTaskNotProposedMessage(engineeringShape.kind, input.language),
+        reasonMarker: ENGINEERING_TASK_NOT_PROPOSED_REASON_MARKER,
+        reason: ENGINEERING_TASK_NOT_PROPOSED_REASONS[engineeringShape.kind],
       });
     }
     return createSafeProposal("unsupported", {
