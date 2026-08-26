@@ -8,6 +8,7 @@ import { financeCreateTransactionHandler } from "./handlers/financeCreateTransac
 import { githubIssuesCommentHandler } from "./handlers/githubIssuesCommentHandler";
 import { githubIssuesUpdateHandler } from "./handlers/githubIssuesUpdateHandler";
 import { githubFilesUpdateHandler } from "./handlers/githubFilesUpdateHandler";
+import { engineeringTaskProposeHandler } from "./handlers/engineeringTaskProposeHandler";
 
 const registeredWriteHandlers: readonly AgentWriteToolHandler[] = Object.freeze([
   tasksCompleteHandler,
@@ -19,6 +20,7 @@ const registeredWriteHandlers: readonly AgentWriteToolHandler[] = Object.freeze(
   githubIssuesCommentHandler,
   githubIssuesUpdateHandler,
   githubFilesUpdateHandler,
+  engineeringTaskProposeHandler,
 ]);
 
 export function getWriteHandlerByToolId(toolId: string): AgentWriteToolHandler | undefined {
@@ -29,4 +31,4 @@ export function listRegisteredWriteHandlers(): readonly AgentWriteToolHandler[] 
   return registeredWriteHandlers;
 }
 
-export { tasksCompleteHandler, tasksCreateHandler, tasksUpdateHandler, calendarCreateEventHandler, calendarUpdateEventHandler, financeCreateTransactionHandler, githubIssuesCommentHandler, githubIssuesUpdateHandler, githubFilesUpdateHandler };
+export { tasksCompleteHandler, tasksCreateHandler, tasksUpdateHandler, calendarCreateEventHandler, calendarUpdateEventHandler, financeCreateTransactionHandler, githubIssuesCommentHandler, githubIssuesUpdateHandler, githubFilesUpdateHandler, engineeringTaskProposeHandler };

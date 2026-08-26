@@ -239,6 +239,22 @@ export interface GitHubFileUpdateClient {
   updateFile(input: GitHubFileUpdateInput): Promise<GitHubFileUpdateResult>;
 }
 
+// ENG-04 -- see docs/architecture/notes/eng-04-companion-chat-approval-wiring-v1.md.
+export interface EngineeringTaskProposeInput {
+  repo: string;
+  instruction: string;
+  taskClass: string;
+}
+
+export interface EngineeringTaskProposeResult {
+  id: string;
+  status: string;
+}
+
+export interface EngineeringTaskClient {
+  propose(input: EngineeringTaskProposeInput): Promise<EngineeringTaskProposeResult>;
+}
+
 export interface ExecutionContext {
   tasks?: readonly ExecutionContextTask[];
   events?: readonly ExecutionContextEvent[];
@@ -255,6 +271,7 @@ export interface ExecutionContext {
   githubFileContentClient?: GitHubFileContentClient;
   githubIssueUpdateClient?: GitHubIssueUpdateClient;
   githubFileUpdateClient?: GitHubFileUpdateClient;
+  engineeringTaskClient?: EngineeringTaskClient;
 }
 
 export interface ExecutionRequest {

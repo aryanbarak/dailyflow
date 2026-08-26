@@ -28,6 +28,7 @@
           "create_finance_transaction",
           "write_github_issue_comment",
           "write_github_issue_update",
+          "propose_engineering_task",
           "ask_clarification",
           "unsupported"
         ]
@@ -131,6 +132,12 @@
             "items": {
               "type": "STRING"
             }
+          },
+          "engineeringInstruction": {
+            "type": "STRING"
+          },
+          "engineeringTaskClass": {
+            "type": "STRING"
           }
         }
       },
@@ -176,6 +183,7 @@
                 "create_finance_transaction",
                 "write_github_issue_comment",
                 "write_github_issue_update",
+                "propose_engineering_task",
                 "ask_clarification",
                 "unsupported"
               ]
@@ -219,6 +227,7 @@
     "create_finance_transaction",
     "write_github_issue_comment",
     "write_github_issue_update",
+    "propose_engineering_task",
     "ask_clarification",
     "unsupported"
   ]

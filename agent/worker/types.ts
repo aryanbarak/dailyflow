@@ -26,6 +26,11 @@ export interface Env {
   // (S1c). Structured generation and embeddings are unaffected -- they
   // stay Gemini-only per ADR-0018 Decision 5 regardless of this value.
   AI_TEXT_PROVIDER?: string
+  // ENG-04: shared secret the companion presents to claim/report on
+  // engineering_tasks. Not a Supabase user credential -- the companion is
+  // not a logged-in user, so this is the sole authentication mechanism for
+  // GET /engineering-tasks/pending and POST /engineering-tasks/:id/report.
+  ENGINEERING_TASKS_COMPANION_TOKEN?: string
 }
 
 export type Language = 'en' | 'de' | 'fa'

@@ -404,6 +404,72 @@ export const githubTools: AgentToolDefinition[] = [
     ],
   },
   {
+    // ENG-04 -- see docs/architecture/notes/eng-04-companion-chat-approval-wiring-v1.md.
+    // riskLevel "high": this authorizes an unattended, real-repo, real-cost
+    // Claude Code run with no mid-execution pause, matching github.files.update's
+    // own risk classification for real repository mutation -- the fact that
+    // THIS call only submits the task (the actual mutation happens later,
+    // out of band, once the companion runs it) does not lower the risk of
+    // what approving it sets in motion.
+    id: "engineering.task.propose",
+    name: "Submit an engineering task",
+    description: "Submits an approved, unattended engineering task to the SmartFlow coding companion. The companion runs Claude Code end to end (edit, commit, push to a fresh branch) with no mid-execution pause, then reports back a verified result. Never merges to the default branch.",
+    domain: "github",
+    capability: "create",
+    mode: "write",
+    riskLevel: "high",
+    requiresApproval: true,
+    approvalScope: "single_step",
+    reversible: false,
+    externalEffect: true,
+    inputSchema: [
+      {
+        name: "repo",
+        type: "string",
+        required: true,
+        description: "Repository identifier as owner/name. Must belong to the verified GitHub App installation AND the companion's own local allowlist.",
+      },
+      {
+        name: "instruction",
+        type: "string",
+        required: true,
+        description: "The engineering task instruction Claude Code will receive verbatim.",
+      },
+      {
+        name: "taskClass",
+        type: "string",
+        required: true,
+        description: "A caller-supplied label for the kind of change (e.g. docs_fix, test_fix). Logged only in this slice -- not yet used for any auto/ask/off policy.",
+      },
+    ],
+    outputSchema: {
+      type: "object",
+      description: "Confirmation that the task was queued -- not the task's result. The actual outcome arrives later as a separate chat message once the companion reports back.",
+      fields: [
+        { name: "id", type: "string", required: true, description: "The created engineering_tasks row id." },
+        { name: "status", type: "string", required: true, description: "Always 'pending' at submission time." },
+      ],
+      containsSensitiveData: false,
+    },
+    enabled: true,
+    version: "1.0.0",
+    tags: ["github", "engineering-task", "write", "eng-04"],
+    examples: [
+      {
+        title: "Submit a documentation fix task",
+        input: { repo: "aryan/smartflow", instruction: "Fix the typo in README.md's install section.", taskClass: "docs_fix" },
+        expectedOutcome: "Creates a pending engineering_tasks row; the companion picks it up on its next poll.",
+      },
+    ],
+    constraints: [
+      "Runs entirely unattended once approved -- no mid-execution pause. Approval here is the only gate; there is no second approval before the companion acts.",
+      "The companion always creates its own uniquely-named branch and never touches, checks out, commits to, or merges into the default branch or any other existing branch, under any circumstance.",
+      "Merging the resulting branch is out of scope -- it always remains a manual PR.",
+      "The companion independently re-checks its own repository allowlist before running anything; a repo accepted here is not automatically trusted there.",
+      "No auto/ask/off standing authorization in this slice -- every task requires this same explicit approval, regardless of taskClass.",
+    ],
+  },
+  {
     id: "github.pulls.list",
     name: "List open GitHub pull requests",
     description: "List bounded open-pull-request metadata across the user's verified GitHub App installation.",

@@ -54,6 +54,8 @@ export const SUPPORTED_WRITE_TOOL_IDS = Object.freeze([
   "github.issues.comment",
   "github.issues.update",
   "github.files.update",
+  // ENG-04 -- see docs/architecture/notes/eng-04-companion-chat-approval-wiring-v1.md.
+  "engineering.task.propose",
 ] as const);
 
 export type SupportedWriteToolId = typeof SUPPORTED_WRITE_TOOL_IDS[number];
@@ -106,6 +108,9 @@ export interface WriteRuntimeProposalTarget {
   // shared/writeIntentRegistry.ts's entry comment for why this tool never
   // actually executes through this runtime.
   batchId?: string;
+  // ENG-04 (repo above is reused).
+  engineeringInstruction?: string;
+  engineeringTaskClass?: string;
 }
 
 export interface WriteRuntimeRequest {
@@ -144,6 +149,14 @@ export interface WriteRuntimeResult {
   completedAt: string;
   durationMs: number;
   runtimeVersion: typeof WRITE_RUNTIME_VERSION;
+  // ENG-04: a narrow, additive escape hatch for write tools whose result is
+  // itself a submission receipt that a caller needs to track something by
+  // (here: engineering.task.propose's {id, status}, so the chat UI can poll
+  // for the async result later). Deliberately generic/typed `unknown`, not
+  // widened per-tool -- callers that need this already know which tool they
+  // called and can narrow it themselves. Every other write tool leaves this
+  // undefined; nothing about their existing behavior changes.
+  resultData?: unknown;
   executionIntent?: {
     intentId: string;
     canonicalHash: string;
@@ -210,7 +223,8 @@ function isNonRegistryWriteToolId(toolId: SupportedWriteToolId): toolId is NonRe
   return toolId === "tasks.complete" ||
     toolId === "github.issues.comment" ||
     toolId === "github.issues.update" ||
-    toolId === "github.files.update";
+    toolId === "github.files.update" ||
+    toolId === "engineering.task.propose";
 }
 
 // Each supported write tool has its own capability -- this used to be a bare
@@ -237,6 +251,8 @@ export function expectedCapabilityForToolId(toolId: SupportedWriteToolId): Agent
       return "update";
     case "github.files.update":
       return "update";
+    case "engineering.task.propose":
+      return "create";
   }
 }
 
@@ -260,6 +276,8 @@ export function expectedStepShapeForToolId(
       return { actionType: "update", domain: "github" };
     case "github.files.update":
       return { actionType: "update", domain: "github" };
+    case "engineering.task.propose":
+      return { actionType: "create", domain: "github" };
   }
 }
 
@@ -399,6 +417,11 @@ function safeSummaryFor(
     if (toolId === "github.issues.comment") return "Comment added.";
     if (toolId === "github.issues.update") return "Issue updated.";
     if (toolId === "github.files.update") return "File updated.";
+    // ENG-04: honest, bounded claim -- this only means the task was
+    // SUBMITTED to the companion queue, never that it finished. The actual
+    // result surfaces later as a separate chat message once the companion
+    // reports back (see ChatPage.tsx's engineering-task status polling).
+    if (toolId === "engineering.task.propose") return "Engineering task submitted. Your machine will pick it up and report back when it's done.";
     // Task 23: the four task/calendar summaries come from the shared registry.
     const writeEntry = toolId ? findWriteIntentDescriptorByToolId(toolId) : undefined;
     if (writeEntry) return writeEntry.successSummary;
@@ -635,6 +658,14 @@ function buildHandlerInput(
       path: target?.path,
       proposedContent: target?.proposedContent,
       ...(target?.commitMessage !== undefined ? { commitMessage: target.commitMessage } : {}),
+    };
+  }
+
+  if (toolId === "engineering.task.propose") {
+    return {
+      repo: target?.repo,
+      instruction: target?.engineeringInstruction,
+      taskClass: target?.engineeringTaskClass,
     };
   }
 
@@ -982,6 +1013,7 @@ export async function runWriteTool(
     completedAt,
     durationMs: duration(startedAt, completedAt),
     runtimeVersion: WRITE_RUNTIME_VERSION,
+    ...(resolved.toolId === "engineering.task.propose" && handlerResult.data ? { resultData: handlerResult.data } : {}),
     ...(lifecycleIntent
       ? {
           executionIntent: {

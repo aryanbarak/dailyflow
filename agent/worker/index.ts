@@ -10,6 +10,7 @@ import {
   type ReasoningResponseLanguage,
 } from './reasoning-endpoint'
 import { handleGitHubIntegrationRequest } from './github-integration'
+import { handleEngineeringTasksRequest } from './engineering-tasks-endpoint'
 import { handleContextDerivationRequest } from './context-derivation-endpoint'
 import { handlePersonalMemoryExtractionRequest } from './personal-memory-extraction-endpoint'
 import { handleDocumentMemoryExtractionRequest } from './document-memory-extraction-endpoint'
@@ -87,6 +88,9 @@ export default {
 
     const githubResponse = await handleGitHubIntegrationRequest(request, env)
     if (githubResponse) return githubResponse
+
+    const engineeringTasksResponse = await handleEngineeringTasksRequest(request, env)
+    if (engineeringTasksResponse) return engineeringTasksResponse
 
     const origin = request.headers.get('Origin') ?? ''
     if (request.method === 'OPTIONS') {

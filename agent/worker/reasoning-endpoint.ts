@@ -42,6 +42,8 @@ export const SUPPORTED_INTENT_VALUES = [
   ...writeIntentRegistry.filter((entry) => entry.exposure === 'chat').map((entry) => entry.intentType),
   'write_github_issue_comment',
   'write_github_issue_update',
+  // ENG-04: see reasoningTypes.ts's own comment on this value.
+  'propose_engineering_task',
   'ask_clarification',
   'unsupported',
 ] as const
@@ -86,6 +88,8 @@ const TARGET_FIELDS = new Set([
   ...WRITE_INTENT_TARGET_FIELD_NAMES,
   // EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
   'repo', 'issueNumber', 'commentBody', 'updateTitle', 'updateBody', 'updateLabels',
+  // ENG-04: propose_engineering_task's own fields (repo above is shared).
+  'engineeringInstruction', 'engineeringTaskClass',
 ])
 const MAX_UPDATE_LABELS = 20
 const CANDIDATE_FIELDS = new Set(['type', 'reasons'])
@@ -399,6 +403,9 @@ function normalizeProposal(raw: unknown, responseLanguage: ReasoningRequest['res
       updateTitle: boundedString(rawTarget.updateTitle, 200),
       updateBody: boundedString(rawTarget.updateBody, 10_000),
       updateLabels: boundedStringArray(rawTarget.updateLabels, MAX_UPDATE_LABELS, 100),
+      // ENG-04.
+      engineeringInstruction: boundedString(rawTarget.engineeringInstruction, 4000),
+      engineeringTaskClass: boundedString(rawTarget.engineeringTaskClass, 100),
     }
     if (Object.values(target).some((value) => value !== undefined)) proposal.target = target
   }
@@ -532,6 +539,9 @@ export function buildReasoningResponseSchema(): NeutralObjectSchema {
           updateTitle: { type: 'string' },
           updateBody: { type: 'string' },
           updateLabels: { type: 'array', items: { type: 'string' } },
+          // ENG-04.
+          engineeringInstruction: { type: 'string' },
+          engineeringTaskClass: { type: 'string' },
         },
       },
       clarificationQuestion: { type: 'string' },

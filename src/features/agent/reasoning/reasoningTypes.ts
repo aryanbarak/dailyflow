@@ -33,6 +33,12 @@ export type AgentIntentType =
   | WriteIntentType
   | "write_github_issue_comment"
   | "write_github_issue_update"
+  // ENG-04: proposes a real engineering task to the companion (ENG-03),
+  // gated by the same proposal -> approval -> execution -> audit pattern
+  // as every other write here (ADR-0004/0005) -- approval happens before
+  // the task is ever created, not mid-execution (see
+  // docs/architecture/notes/eng-04-companion-chat-approval-wiring-v1.md).
+  | "propose_engineering_task"
   | "ask_clarification"
   | "unsupported";
 
@@ -91,6 +97,12 @@ export interface AgentIntentTarget {
   updateTitle?: string;
   updateBody?: string;
   updateLabels?: string[];
+  // ENG-04: propose_engineering_task's own fields. `repo` above is reused
+  // (same semantic as the github.* write fields). Never fuzzy-matched --
+  // same "explicit and well-formed or ask_clarification" rule as
+  // repo/issueNumber/commentBody above.
+  engineeringInstruction?: string;
+  engineeringTaskClass?: string;
 }
 
 export interface AgentIntentProposal {
@@ -178,7 +190,7 @@ export interface AgentReasoningValidationResult {
   // AgentIntentType/AgentIntentDomain above. The remaining 9 read-tool ids
   // plus tasks.complete/github.issues.comment/github.issues.update (12
   // non-registry ids total) have no registry entry and stay hand-written.
-  toolId?: "tasks.list" | "calendar.list_today" | "learning.get_progress" | "workspace.get_context" | "github.repositories.list" | "github.issues.list" | "github.epics.list" | "github.pulls.list" | "github.workflow_runs.list" | "tasks.complete" | WriteIntentToolId | "github.issues.comment" | "github.issues.update";
+  toolId?: "tasks.list" | "calendar.list_today" | "learning.get_progress" | "workspace.get_context" | "github.repositories.list" | "github.issues.list" | "github.epics.list" | "github.pulls.list" | "github.workflow_runs.list" | "tasks.complete" | WriteIntentToolId | "github.issues.comment" | "github.issues.update" | "engineering.task.propose";
   validationReasons: string[];
 }
 
