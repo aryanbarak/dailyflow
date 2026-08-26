@@ -14,6 +14,7 @@ vi.mock("@/integrations/supabase/client", () => ({
 
 import {
   buildChatTimeoutFailureMessages,
+  CHAT_REQUEST_TIMEOUT_MS,
   ChatBubble,
   classifyMessageIntentSignal,
   getAmbiguousOfferHint,
@@ -33,7 +34,7 @@ import {
   shouldUseReasoningForMessage,
 } from "./ChatPage";
 import { shouldAutoRunReadOnlyOverlay } from "@/features/chat/autoReadOverlayGate";
-import { getStrongReadDomainEvidence, getToolById, isAutoExecutableReadOnlyToolId, PROVIDER_UNAVAILABLE_REASON_MARKER } from "@/features/agent";
+import { getStrongReadDomainEvidence, getToolById, isAutoExecutableReadOnlyToolId, PROVIDER_UNAVAILABLE_REASON_MARKER, withTimeout } from "@/features/agent";
 import type {
   AgentReasoningResult,
   ReadOnlyRuntimeResult,
@@ -1707,6 +1708,103 @@ describe("ChatPage LLM reasoning UX boundary", () => {
         content: "chat_error_provider_unavailable",
         language: "en",
       });
+    });
+
+    // ENG-06f. Precise about what the measurement does and does not show,
+    // because the distinction matters for whether this change is a fix or
+    // a precaution:
+    //
+    // ENG-06e captured three consecutive real plain-chat turns at
+    // 14 071 / 13 649 / 11 458 ms. ALL THREE are under the old 15 000 ms
+    // ceiling -- none of them timed out, and no failing turn was ever
+    // captured. What was measured is a MARGIN: the worst turn finished at
+    // 94% of the ceiling. The PO's reported failure is consistent with a
+    // turn slightly slower than any that was captured, but that remains
+    // inference, not an observed timeout.
+    //
+    // So these tests pin two different things. First: the observed range
+    // must keep resolving, with headroom -- a guard against a future
+    // ceiling cut, not proof of a fix.
+    it.each([
+      [11_458, "ENG-06e fastest observed"],
+      [13_649, "ENG-06e middle observed"],
+      [14_071, "ENG-06e slowest observed -- was 94% of the old ceiling"],
+    ])("ENG-06f: a %ims chat call (%s) resolves well inside the current ceiling", async (latencyMs) => {
+      vi.useFakeTimers();
+      try {
+        const pending = new Promise<string>((resolve) => {
+          setTimeout(() => resolve("worker reply"), latencyMs);
+        });
+        const guarded = withTimeout(pending, CHAT_REQUEST_TIMEOUT_MS, "Chat request timed out.");
+
+        await vi.advanceTimersByTimeAsync(latencyMs);
+        await expect(guarded).resolves.toBe("worker reply");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // Second, and this is the actual regression: a turn only slightly
+    // slower than the slowest one measured. 15 500 ms is 1.10x the
+    // observed max and 18 000 ms is 1.28x -- both well inside the
+    // session-to-session variance actually recorded for THIS lane (5 001
+    // ms in ENG-06c at 19:26Z vs 14 071 ms in ENG-06e at 21:50Z, a 2.8x
+    // swing on comparable traffic ~2.5 hours apart). Under the old
+    // ceiling each of these was a user-visible "temporarily unavailable"
+    // for a request the Worker completed successfully; under the new one
+    // they resolve.
+    it.each([
+      [15_500, "1.10x the observed max"],
+      [18_000, "1.28x the observed max"],
+      [22_000, "1.56x the observed max"],
+    ])("ENG-06f: a %ims chat call (%s) would have timed out at the old 15s ceiling and now resolves", async (latencyMs) => {
+      vi.useFakeTimers();
+      try {
+        // Proves the "would have failed" half against the OLD constant
+        // rather than asserting it in a comment.
+        const underOldCeiling = withTimeout(
+          new Promise<string>((resolve) => { setTimeout(() => resolve("worker reply"), latencyMs); }),
+          15_000,
+          "Chat request timed out.",
+        );
+        const oldAssertion = expect(underOldCeiling).rejects.toMatchObject({ code: "TIMEOUT" });
+        await vi.advanceTimersByTimeAsync(15_000);
+        await oldAssertion;
+
+        const underNewCeiling = withTimeout(
+          new Promise<string>((resolve) => { setTimeout(() => resolve("worker reply"), latencyMs); }),
+          CHAT_REQUEST_TIMEOUT_MS,
+          "Chat request timed out.",
+        );
+        await vi.advanceTimersByTimeAsync(latencyMs);
+        await expect(underNewCeiling).resolves.toBe("worker reply");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // The ceiling still has to BE a ceiling -- widening it must not turn
+    // the bounded wait back into the indefinite spinner GH-06 removed.
+    it("ENG-06f: a genuinely stuck call still rejects with the TIMEOUT shape at the new ceiling", async () => {
+      vi.useFakeTimers();
+      try {
+        const never = new Promise<string>(() => undefined);
+        const guarded = withTimeout(never, CHAT_REQUEST_TIMEOUT_MS, "Chat request timed out.");
+        const assertion = expect(guarded).rejects.toMatchObject({ code: "TIMEOUT" });
+        await vi.advanceTimersByTimeAsync(CHAT_REQUEST_TIMEOUT_MS);
+        await assertion;
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // Pins the derivation itself: the ceiling must clear the worst
+    // latency actually measured by at least the factor the reasoning lane
+    // already runs with (20 000 / 12 297 = 1.63x). Fails if someone later
+    // trims the constant back toward the observed range.
+    it("ENG-06f: the ceiling clears ENG-06e's worst observed chat latency by at least the reasoning lane's own 1.6x factor", () => {
+      const worstObservedChatMs = 14_071;
+      expect(CHAT_REQUEST_TIMEOUT_MS / worstObservedChatMs).toBeGreaterThanOrEqual(1.6);
     });
 
     it("buildChatTimeoutFailureMessages carries the turn's own responseLanguage onto the assistant message, for every supported language", () => {
