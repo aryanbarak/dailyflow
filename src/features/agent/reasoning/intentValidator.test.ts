@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { resolveDisambiguationCandidates, validateAgentIntentProposal } from "./intentValidator";
+import {
+  ENGINEERING_TASK_NOT_PROPOSED_REASON_MARKER,
+  ENGINEERING_TASK_NOT_PROPOSED_REASONS,
+  engineeringTaskTriggerPhraseFor,
+  resolveDisambiguationCandidates,
+  validateAgentIntentProposal,
+} from "./intentValidator";
 import type { AgentReasoningSafeContext } from "./reasoningTypes";
 import type { SupportedAiResponseLanguage } from "@/features/ai/responseLanguage";
 
@@ -1120,6 +1126,242 @@ describe("Task 45c, ADR-0017 (import_bank_statement is UI-only, never chat-propo
       const result = validateWithContext(hedgedProposal(userMessage), userMessage, context, "de");
 
       expect(result.proposal.type).not.toBe("propose_engineering_task");
+    });
+  });
+
+  // ENG-06g. Root cause, reproduced against this validator before the fix:
+  // requestLooksUnsupported() matches bare generic verbs (add/create/update
+  // in English, اضافه کن/بساز in Persian), which any "add a line to
+  // README.md in <repo>" request satisfies by definition. That made the
+  // outcome depend entirely on whether the model's own type happened to
+  // land inside CONFIRMED_WRITE_INTENT_TYPES -- for a byte-identical
+  // message, propose_engineering_task produced an approval card while
+  // ask_clarification / inspect_github_repositories / unsupported all
+  // produced "Flow AI doesn't support this". Since ENG-04 shipped the
+  // capability, that sentence is false.
+  //
+  // ENG-06g-fix RULING 1 then replaced the single "shaped target" guard
+  // with a real membership check against the user's connected
+  // repositories, split three ways. RULING 2 replaced the confirmation
+  // QUESTION with a statement plus a workaround that works today, because
+  // the question promised a follow-up the system cannot honour (no
+  // cross-turn state; that is ENG-06h).
+  describe("ENG-06g: a hedged engineering-task response never denies the capability", () => {
+    // Natural phrasing on purpose: contains a generic write verb and NOT
+    // the literal trigger phrase requestLooksLikeEngineeringTask wants.
+    // Widening that gate is the arms race this fix deliberately avoids.
+    const FA_MESSAGE = "در مخزن smartflow یک خط به فایل README.md اضافه کن";
+    const EN_MESSAGE = "add a line to README.md in the smartflow repo";
+    const CONNECTED_REPO = "aryanbarak/smartflow";
+
+    const shapedTarget = {
+      repo: CONNECTED_REPO,
+      engineeringInstruction: "Add a line to README.md describing the reasoning lane.",
+      engineeringTaskClass: "fix",
+    };
+
+    // Real connected inventory -- the thing the guard now checks against.
+    const withInventory = (names: string[]): AgentReasoningSafeContext => ({
+      ...context,
+      githubRepositoryInventory: { status: "known", names },
+    });
+    const unknownInventory: AgentReasoningSafeContext = {
+      ...context,
+      githubRepositoryInventory: { status: "unknown" },
+    };
+
+    const responseWithType = (type: string, userMessage: string, language: "en" | "fa" | "de") => ({
+      id: "intent-eng-06g",
+      type,
+      confidence: "high",
+      userMessage,
+      requestedDomain: "github",
+      target: shapedTarget,
+      requiresTool: true,
+      requiresApproval: true,
+      reasons: ["Model output."],
+      language,
+      generatedAt: now.toISOString(),
+      schemaVersion: 1,
+    });
+
+    const HEDGES = ["ask_clarification", "inspect_github_repositories", "unsupported"] as const;
+
+    // The primary variant is unchanged -- the fix must not disturb the
+    // path that already worked.
+    it.each([
+      ["fa", FA_MESSAGE],
+      ["en", EN_MESSAGE],
+    ])("still proposes the engineering task when the model returns propose_engineering_task (%s)", (language, userMessage) => {
+      const result = validateWithContext(
+        responseWithType("propose_engineering_task", userMessage, language as "en" | "fa"),
+        userMessage,
+        withInventory([CONNECTED_REPO]),
+        language as SupportedAiResponseLanguage,
+      );
+
+      expect(result.proposal.type).toBe("propose_engineering_task");
+      expect(result.proposal.reasons).not.toContain(ENGINEERING_TASK_NOT_PROPOSED_REASON_MARKER);
+    });
+
+    // ---- (a) repo IS in the user's connected inventory ----
+    it.each(HEDGES)("(a) connected repo + hedged %s -> the statement path, never the capability denial", (type) => {
+      const result = validateWithContext(
+        responseWithType(type, EN_MESSAGE, "en"),
+        EN_MESSAGE,
+        withInventory([CONNECTED_REPO, "someone/other"]),
+        "en",
+      );
+
+      expect(result.proposal.type).toBe("ask_clarification");
+      expect(result.proposal.reasons).toContain(ENGINEERING_TASK_NOT_PROPOSED_REASON_MARKER);
+      expect(result.proposal.reasons).toContain(ENGINEERING_TASK_NOT_PROPOSED_REASONS.lowConfidence);
+      expect(result.proposal.reasons).not.toContain("Unsupported action was rejected.");
+      // RULING 2: a statement, not a question -- nothing may imply that
+      // answering "yes" will work, because it will not.
+      expect(result.proposal.clarificationQuestion).not.toContain("?");
+    });
+
+    // ---- (b) repo is well-formed but NOT the user's ----
+    it.each(HEDGES)("(b) unconnected repo + hedged %s -> its own message, not (a)'s and not a denial", (type) => {
+      const result = validateWithContext(
+        responseWithType(type, EN_MESSAGE, "en"),
+        EN_MESSAGE,
+        withInventory(["someone/entirely-different"]),
+        "en",
+      );
+
+      expect(result.proposal.type).toBe("ask_clarification");
+      expect(result.proposal.reasons).toContain(ENGINEERING_TASK_NOT_PROPOSED_REASONS.repoNotConnected);
+      expect(result.proposal.reasons).not.toContain(ENGINEERING_TASK_NOT_PROPOSED_REASONS.lowConfidence);
+      // Content, not just "a message appeared".
+      expect(result.proposal.clarificationQuestion).toContain("not one of the GitHub repositories connected");
+      // Must NOT echo the model's raw repo string back as if it were real.
+      expect(result.proposal.clarificationQuestion).not.toContain(CONNECTED_REPO);
+      // Must NOT hand out (a)'s workaround -- re-sending with the trigger
+      // phrase would open a card against a repository the user does not
+      // have. Asserted on the ADVICE sentence, not on the phrase itself:
+      // this message legitimately contains the words "engineering task" as
+      // ordinary prose ("cannot prepare an engineering task for it").
+      expect(result.proposal.clarificationQuestion).not.toContain("Send the same request again");
+      expect(result.proposal.clarificationQuestion).not.toContain("I will open the card directly");
+    });
+
+    // ---- (c) inventory could not be read ----
+    it.each(HEDGES)("(c) unknown inventory + hedged %s -> a read failure, explicitly not a capability denial", (type) => {
+      const result = validateWithContext(
+        responseWithType(type, EN_MESSAGE, "en"),
+        EN_MESSAGE,
+        unknownInventory,
+        "en",
+      );
+
+      expect(result.proposal.type).toBe("ask_clarification");
+      expect(result.proposal.reasons).toContain(ENGINEERING_TASK_NOT_PROPOSED_REASONS.inventoryUnknown);
+      // Asserts on CONTENT: names the real reason (could not read the list)
+      // and reuses INC-01's own retry sentence.
+      expect(result.proposal.clarificationQuestion).toContain("could not read your connected GitHub repositories");
+      expect(result.proposal.clarificationQuestion).toContain("Please try again in a moment.");
+      // Never reads as "Flow AI can't do this".
+      expect(result.proposal.clarificationQuestion).not.toContain("cannot prepare an engineering task");
+      expect(result.proposal.reasons).not.toContain("Unsupported action was rejected.");
+    });
+
+    // A missing inventory field is the same fact as an explicit "unknown"
+    // -- and must never be read as "the user has no repositories", which
+    // would wrongly route to (b).
+    it.each(HEDGES)("(c) an ABSENT inventory field is treated as unknown, not as an empty repo list (%s)", (type) => {
+      const result = validateWithContext(
+        responseWithType(type, EN_MESSAGE, "en"),
+        EN_MESSAGE,
+        context,
+        "en",
+      );
+
+      expect(result.proposal.reasons).toContain(ENGINEERING_TASK_NOT_PROPOSED_REASONS.inventoryUnknown);
+      expect(result.proposal.reasons).not.toContain(ENGINEERING_TASK_NOT_PROPOSED_REASONS.repoNotConnected);
+    });
+
+    // ---- RULING 2: the workaround must actually work ----
+    // Re-runs the REAL gate rather than string-matching the regex source,
+    // so this fails the moment the advice and the gate drift apart.
+    it.each([
+      ["en", EN_MESSAGE],
+      ["de", "füge in README.md eine Zeile hinzu"],
+      ["fa", FA_MESSAGE],
+    ])("the phrase (a) tells the user to add really does open the card, in %s", (language, baseMessage) => {
+      const phrase = engineeringTaskTriggerPhraseFor(language as SupportedAiResponseLanguage);
+      const withPhrase = `${baseMessage} (${phrase})`;
+
+      // Same hedge that produced (a) -- but now carrying the advised phrase.
+      const result = validateWithContext(
+        responseWithType("ask_clarification", withPhrase, language as "en" | "fa" | "de"),
+        withPhrase,
+        withInventory([CONNECTED_REPO]),
+        language as SupportedAiResponseLanguage,
+      );
+
+      expect(result.proposal.type).toBe("propose_engineering_task");
+      expect(result.proposal.toolId).toBe("engineering.task.propose");
+    });
+
+    it("(a)'s message quotes the same phrase in each language", () => {
+      for (const language of ["en", "de", "fa"] as const) {
+        const result = validateWithContext(
+          responseWithType("ask_clarification", EN_MESSAGE, language),
+          EN_MESSAGE,
+          withInventory([CONNECTED_REPO]),
+          language,
+        );
+        expect(result.proposal.clarificationQuestion).toContain(engineeringTaskTriggerPhraseFor(language));
+      }
+    });
+
+    // ---- ENG-04's safety bar, across ALL THREE outcomes ----
+    it.each([
+      ["(a) connected", withInventory([CONNECTED_REPO])],
+      ["(b) unconnected", withInventory(["someone/else"])],
+      ["(c) unknown", unknownInventory],
+    ])("never promotes a hedge to an executable proposal -- %s", (_label, safeContext) => {
+      for (const type of HEDGES) {
+        const result = validateWithContext(responseWithType(type, EN_MESSAGE, "en"), EN_MESSAGE, safeContext, "en");
+
+        expect(result.proposal.type).not.toBe("propose_engineering_task");
+        expect(result.proposal.requiresTool).toBe(false);
+        expect(result.proposal.requiresApproval).toBe(false);
+        expect(result.proposal.toolId).toBeUndefined();
+      }
+    });
+
+    // The regression guard the fix is most likely to break: a genuinely
+    // unsupported request must still be told so. Same generic write verb,
+    // no engineering-task-shaped target at all.
+    it.each([
+      ["no target at all", undefined],
+      ["a target with neither repo nor instruction", { title: "buy milk" }],
+      ["a repo with no instruction", { repo: CONNECTED_REPO }],
+      ["an instruction with no repo", { engineeringInstruction: "Add a line to README.md." }],
+    ])("still reports a genuinely unsupported request as unsupported when the target has %s", (_label, target) => {
+      const userMessage = "send a postcard to my accountant and pay the invoice";
+      const raw = {
+        id: "intent-unsupported",
+        type: "unsupported",
+        confidence: "high",
+        userMessage,
+        target,
+        requiresTool: false,
+        requiresApproval: false,
+        reasons: ["Model output."],
+        language: "en",
+        generatedAt: now.toISOString(),
+        schemaVersion: 1,
+      };
+
+      const result = validateWithContext(raw, userMessage, withInventory([CONNECTED_REPO]), "en");
+
+      expect(result.proposal.type).toBe("unsupported");
+      expect(result.proposal.reasons).toContain("Unsupported action was rejected.");
+      expect(result.proposal.reasons).not.toContain(ENGINEERING_TASK_NOT_PROPOSED_REASON_MARKER);
     });
   });
 });
