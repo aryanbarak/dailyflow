@@ -12,7 +12,31 @@ import type {
 // treats ANY rejection from this caller as a provider-unavailable outcome
 // (INC-01), so making this fetch reject on timeout -- instead of never
 // settling -- is sufficient; no new honest-failure plumbing is needed here.
-const REASONING_FETCH_TIMEOUT_MS = 10_000;
+//
+// ENG-06: this ceiling was 10_000 -- SHORTER than the plain-chat fetch's
+// own CHAT_REQUEST_TIMEOUT_MS (15_000, ChatPage.tsx), even though the two
+// run concurrently in the same Promise.all and this one is consistently
+// the HEAVIER call: it asks the provider for structured generation
+// against a schema that ENG-04 widened with the engineering-task fields
+// (intentValidator.ts's engineeringInstruction alone is bounded at 4000
+// chars), while /chat asks for free text. The inversion had a real
+// user-visible cost: on a detailed engineering-task request, the
+// reasoning lane hit its 10s ceiling first, the orchestrator's catch
+// turned that into providerUnavailable, and the user got the honest chat
+// reply with NO approval card -- the proposal they asked for silently
+// never appeared. Raised to 20_000 so the heavier lane is never the first
+// to give up: >= chat's 15s, plus a 5s margin proportional to the extra
+// structured-generation work.
+//
+// The exact number is a reasoned default, NOT a measured p95. There is no
+// latency telemetry in this repo to derive one from:
+// provider_failure_events (20260823000000) stores failure metadata only
+// -- {capability, provider_id, http_status, occurred_at, request_id}, no
+// duration column -- and records only failures, never successful-call
+// timings; reasoning-endpoint.ts's `durationMs=` line is an unaggregated
+// console log of Worker-side handler time, not the client round trip.
+// Revisit this constant if that telemetry ever gains a duration column.
+const REASONING_FETCH_TIMEOUT_MS = 20_000;
 
 export type AgentReasoningParseResult =
   | { ok: true; value: unknown }
