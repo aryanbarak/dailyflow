@@ -43,6 +43,20 @@ jobs:
         working-directory: agent/worker
         run: npm ci
 
+      # ENG-04-fix: this same step was added to ci.yml only (see its
+      # equivalent comment) -- this workflow runs its own separate `npm
+      # test` on its own job/runner, so it needs the identical git identity
+      # or agent/companion's real-git integration tests (taskRunner.test.js,
+      # poller.test.js) fail here too with "Author identity unknown", even
+      # though ci.yml already passed on the same commit. This is the same
+      # drift pattern HOTFIX-01 already hit once for the typecheck step
+      # above -- worth deduplicating these two workflows' shared setup if
+      # it recurs a third time.
+      - name: Configure git identity for companion test fixtures
+        run: |
+          git config --global user.email "ci@smartflow.local"
+          git config --global user.name "CI Runner"
+
       - name: Typecheck
         run: npm run typecheck
 
