@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { PROVIDER_UNAVAILABLE_REASON_MARKER, reasonAboutUserMessage } from "./reasoningOrchestrator";
+import { MODEL_RESPONSE_INCOMPLETE_REASON_MARKER, PROVIDER_UNAVAILABLE_REASON_MARKER, reasonAboutUserMessage } from "./reasoningOrchestrator";
 import { buildReasoningPrompt } from "./reasoningPrompt";
 import type { AgentLlmReasoningCaller, AgentReasoningSafeContext } from "./reasoningTypes";
 
@@ -295,6 +295,156 @@ describe("reasoningOrchestrator", () => {
       expect(result.proposal.type).not.toBe("ask_clarification");
       expect(result.proposal.clarificationQuestion).toBe(
         "The AI assistant is temporarily unavailable. Please try again in a moment.",
+      );
+    });
+
+  // ENG-06d: a THIRD outcome, confirmed live in ENG-06c -- the provider
+  // answered (so not INC-01 above) but gemini-3.6-flash spent the output
+  // budget thinking and the structured proposal was cut off mid-JSON
+  // (finishReason MAX_TOKENS, 243 chars). rawText is "" here for the same
+  // reason it is "" for a provider failure, so without its own
+  // short-circuit this truncation would be fed to the malformed-output
+  // rescue and become a fabricated ask_clarification -- the exact INC-01
+  // bug arriving by a new route.
+  describe("ENG-06d: truncated model response vs. malformed model output", () => {
+    it("reports an honest truncation outcome -- never ask_clarification -- when callLlmReasoning reports responseIncomplete", async () => {
+      const callLlmReasoning = vi.fn(async () => ({ rawText: "", responseIncomplete: true as const }));
+      const result = await reasonAboutUserMessage({
+        userMessage: "Run an engineering task on aryanbarak/smartflow to widen the reasoning ceiling",
+        safeContext,
+        configuredResponseLanguage: "auto",
+        interfaceLanguage: "en",
+        now,
+      }, { callLlmReasoning });
+
+      expect(result.proposal.type).not.toBe("ask_clarification");
+      expect(result.proposal.type).toBe("unsupported");
+      expect(result.proposal.requiresTool).toBe(false);
+      expect(result.proposal.requiresApproval).toBe(false);
+      expect(result.proposal.clarificationQuestion).toBe(
+        "The AI's answer was cut off before the proposal was complete. Please try again, or shorten the request.",
+      );
+      // Proves the rescue path was never invoked -- this is the assertion
+      // that would have caught ENG-06c's symptom.
+      expect(result.proposal.reasons).not.toContain("LLM output could not be parsed safely.");
+      expect(result.proposal.reasons).toContain(MODEL_RESPONSE_INCOMPLETE_REASON_MARKER);
+    });
+
+    it("does NOT reuse the provider-unavailable marker or wording -- the provider answered, it just got cut off", async () => {
+      const callLlmReasoning = vi.fn(async () => ({ rawText: "", responseIncomplete: true as const }));
+      const result = await reasonAboutUserMessage({
+        userMessage: "Run an engineering task on aryanbarak/smartflow",
+        safeContext,
+        configuredResponseLanguage: "auto",
+        interfaceLanguage: "en",
+        now,
+      }, { callLlmReasoning });
+
+      expect(result.proposal.reasons).not.toContain(PROVIDER_UNAVAILABLE_REASON_MARKER);
+      expect(result.proposal.clarificationQuestion).not.toBe(
+        "The AI assistant is temporarily unavailable. Please try again in a moment.",
+      );
+    });
+
+    it("surfaces the truncation message in the caller's own language (DE/FA)", async () => {
+      const callLlmReasoning = vi.fn(async () => ({ rawText: "", responseIncomplete: true as const }));
+
+      const de = await reasonAboutUserMessage({
+        userMessage: "Führe eine Entwicklungsaufgabe aus",
+        safeContext,
+        configuredResponseLanguage: "de",
+        interfaceLanguage: "de",
+        now,
+      }, { callLlmReasoning });
+      const fa = await reasonAboutUserMessage({
+        userMessage: "یک تسک مهندسی اجرا کن",
+        safeContext,
+        configuredResponseLanguage: "fa",
+        interfaceLanguage: "fa",
+        now,
+      }, { callLlmReasoning });
+
+      expect(de.proposal.clarificationQuestion).toBe(
+        "Die Antwort der KI wurde abgeschnitten, bevor der Vorschlag fertig war. Bitte versuche es erneut oder formuliere die Anfrage kürzer.",
+      );
+      expect(fa.proposal.clarificationQuestion).toBe(
+        "پاسخ هوش مصنوعی پیش از تکمیل پیشنهاد قطع شد. لطفاً دوباره تلاش کنید یا درخواست را کوتاه‌تر بنویسید.",
+      );
+    });
+  });
+  });
+
+  // ENG-06d: a THIRD outcome, confirmed live in ENG-06c -- the provider
+  // answered (so not INC-01 above) but gemini-3.6-flash spent the output
+  // budget thinking and the structured proposal was cut off mid-JSON
+  // (finishReason MAX_TOKENS, 243 chars). rawText is "" here for the same
+  // reason it is "" for a provider failure, so without its own
+  // short-circuit this truncation would be fed to the malformed-output
+  // rescue and become a fabricated ask_clarification -- the exact INC-01
+  // bug arriving by a new route.
+  describe("ENG-06d: truncated model response vs. malformed model output", () => {
+    it("reports an honest truncation outcome -- never ask_clarification -- when callLlmReasoning reports responseIncomplete", async () => {
+      const callLlmReasoning = vi.fn(async () => ({ rawText: "", responseIncomplete: true as const }));
+      const result = await reasonAboutUserMessage({
+        userMessage: "Run an engineering task on aryanbarak/smartflow to widen the reasoning ceiling",
+        safeContext,
+        configuredResponseLanguage: "auto",
+        interfaceLanguage: "en",
+        now,
+      }, { callLlmReasoning });
+
+      expect(result.proposal.type).not.toBe("ask_clarification");
+      expect(result.proposal.type).toBe("unsupported");
+      expect(result.proposal.requiresTool).toBe(false);
+      expect(result.proposal.requiresApproval).toBe(false);
+      expect(result.proposal.clarificationQuestion).toBe(
+        "The AI's answer was cut off before the proposal was complete. Please try again, or shorten the request.",
+      );
+      // Proves the rescue path was never invoked -- this is the assertion
+      // that would have caught ENG-06c's symptom.
+      expect(result.proposal.reasons).not.toContain("LLM output could not be parsed safely.");
+      expect(result.proposal.reasons).toContain(MODEL_RESPONSE_INCOMPLETE_REASON_MARKER);
+    });
+
+    it("does NOT reuse the provider-unavailable marker or wording -- the provider answered, it just got cut off", async () => {
+      const callLlmReasoning = vi.fn(async () => ({ rawText: "", responseIncomplete: true as const }));
+      const result = await reasonAboutUserMessage({
+        userMessage: "Run an engineering task on aryanbarak/smartflow",
+        safeContext,
+        configuredResponseLanguage: "auto",
+        interfaceLanguage: "en",
+        now,
+      }, { callLlmReasoning });
+
+      expect(result.proposal.reasons).not.toContain(PROVIDER_UNAVAILABLE_REASON_MARKER);
+      expect(result.proposal.clarificationQuestion).not.toBe(
+        "The AI assistant is temporarily unavailable. Please try again in a moment.",
+      );
+    });
+
+    it("surfaces the truncation message in the caller's own language (DE/FA)", async () => {
+      const callLlmReasoning = vi.fn(async () => ({ rawText: "", responseIncomplete: true as const }));
+
+      const de = await reasonAboutUserMessage({
+        userMessage: "Führe eine Entwicklungsaufgabe aus",
+        safeContext,
+        configuredResponseLanguage: "de",
+        interfaceLanguage: "de",
+        now,
+      }, { callLlmReasoning });
+      const fa = await reasonAboutUserMessage({
+        userMessage: "یک تسک مهندسی اجرا کن",
+        safeContext,
+        configuredResponseLanguage: "fa",
+        interfaceLanguage: "fa",
+        now,
+      }, { callLlmReasoning });
+
+      expect(de.proposal.clarificationQuestion).toBe(
+        "Die Antwort der KI wurde abgeschnitten, bevor der Vorschlag fertig war. Bitte versuche es erneut oder formuliere die Anfrage kürzer.",
+      );
+      expect(fa.proposal.clarificationQuestion).toBe(
+        "پاسخ هوش مصنوعی پیش از تکمیل پیشنهاد قطع شد. لطفاً دوباره تلاش کنید یا درخواست را کوتاه‌تر بنویسید.",
       );
     });
   });

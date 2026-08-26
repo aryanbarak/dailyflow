@@ -538,7 +538,18 @@ function requestLooksLikeGithubIssueUpdate(message: string) {
 function requestLooksLikeEngineeringTask(message: string) {
   return (
     /\b(engineering task|run claude code|have claude code|coding agent task|run an? (coding|code) task)\b/i.test(message) ||
-    /(تسک مهندسی|وظیفه مهندسی)/i.test(message)
+    /(تسک مهندسی|وظیفه مهندسی)/i.test(message) ||
+    // ENG-06d: German was missing entirely -- this app ships de/fa
+    // alongside en, and every OTHER write-intent gate in this file already
+    // covers German, so a German engineering-task request silently lost
+    // its propose_engineering_task type to read-intent normalization and
+    // produced no approval card at all. Held to the same deliberately
+    // narrow standard as the en/fa patterns above: unambiguous
+    // engineering-task phrases only, never a bare "bau"/"repariere" verb
+    // that would collide with everyday chat. "Engineering-Task" also
+    // matches the unhyphenated and spaced compounds German writers vary
+    // between.
+    /(\bengineering[-\s]?task\b|\bcoding[-\s]?agent[-\s]?task\b|\bclaude code (ausführen|laufen lassen|starten)\b|\bentwicklungsaufgabe\b|\bprogrammieraufgabe\b)/i.test(message)
   );
 }
 

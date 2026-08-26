@@ -613,7 +613,16 @@ async function callGeminiOnce(
     system: buildReasoningSystemInstruction(input.responseLanguage),
     turns: [{ role: 'user', content: input.reasoningPrompt }],
     schema: buildReasoningResponseSchema(),
-    maxOutputTokens: 2048,
+    // ENG-06d: 2048 -> 8192, matching index.ts's REASONING_MAX_OUTPUT_TOKENS.
+    // This local QA harness calls the SAME model with the SAME schema as the
+    // deployed reasoning path, so it has the identical thinking-token
+    // exhaustion problem; leaving it at 2048 would make local QA truncate on
+    // exactly the detailed engineering-task prompts the deployed path now
+    // handles, i.e. the harness would misreport a fixed bug as still broken.
+    // (The two are separate literals rather than a shared import because this
+    // module is the local-only boundary and deliberately does not import from
+    // index.ts -- see this file's own header.)
+    maxOutputTokens: 8192,
     temperature: 0,
   })
 

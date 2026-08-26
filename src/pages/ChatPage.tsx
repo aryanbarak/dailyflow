@@ -57,6 +57,7 @@ import {
   getToolById,
   isAutoExecutableReadOnlyToolId,
   PROVIDER_UNAVAILABLE_REASON_MARKER,
+  MODEL_RESPONSE_INCOMPLETE_REASON_MARKER,
   reasonAboutUserMessage,
   resolveAgentReasoningTransport,
   resolveToolForStep,
@@ -1173,6 +1174,24 @@ export function resolveChatTurnOutcome(input: ChatTurnOverlayInput, t: Translate
     ? (overlayResult!.proposal.clarificationQuestion ?? null)
     : null
 
+  // ENG-06d: the truncation sibling of isProviderUnavailableOverlay above.
+  // modelResponseIncompleteProposal also reuses type 'unsupported', so
+  // without this check it would hit the same two wrong fates that comment
+  // describes -- the generic "I can't do that" capability text inside the
+  // narrow explicit-request gate, and silent suppression outside it. Like
+  // the provider-unavailable check (and unlike the capability note) it is
+  // unconditional: a truncated proposal is worth telling the user about
+  // however they phrased their message, since the phrasing is not what
+  // went wrong.
+  const isModelResponseIncompleteOverlay =
+    !serverTerminalWrite &&
+    overlayResult !== null &&
+    overlayResult.proposal.type === 'unsupported' &&
+    overlayResult.proposal.reasons.includes(MODEL_RESPONSE_INCOMPLETE_REASON_MARKER)
+  const modelResponseIncompleteTrailingNote = isModelResponseIncompleteOverlay
+    ? (overlayResult!.proposal.clarificationQuestion ?? null)
+    : null
+
   const isExplicitUnsupportedActionRequest =
     !serverTerminalWrite &&
     !input.serverWritePolicyMode &&
@@ -1180,10 +1199,15 @@ export function resolveChatTurnOutcome(input: ChatTurnOverlayInput, t: Translate
     overlayResult !== null &&
     overlayResult.proposal.type === 'unsupported' &&
     !overlayResult.proposal.reasons.includes(PROVIDER_UNAVAILABLE_REASON_MARKER) &&
+    // ENG-06d: same exclusion as the line above, for the same reason -- a
+    // truncated proposal must never be reported as "I can't do that",
+    // which would tell the user their request is unsupported when the
+    // model was in fact mid-way through supporting it.
+    !overlayResult.proposal.reasons.includes(MODEL_RESPONSE_INCOMPLETE_REASON_MARKER) &&
     looksLikeExplicitActionRequest(input.message)
   const capabilityTrailingNote = isExplicitUnsupportedActionRequest ? UNSUPPORTED_CAPABILITY_TEXT[input.responseLanguage] : null
 
-  const trailingNote = ambiguousTrailingNote ?? providerUnavailableTrailingNote ?? capabilityTrailingNote ?? clarificationTrailingNote
+  const trailingNote = ambiguousTrailingNote ?? providerUnavailableTrailingNote ?? modelResponseIncompleteTrailingNote ?? capabilityTrailingNote ?? clarificationTrailingNote
 
   return {
     content: trailingNote ? `${input.reply}\n\n${trailingNote}` : input.reply,

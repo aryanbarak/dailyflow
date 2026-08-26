@@ -244,7 +244,11 @@ describe('POST /agent/reason', () => {
     // the CALL SITE passes the real, unmodified schema builder output.
     const req = capturedRequest as StructuredGenerationRequest | null
     expect(req?.schema).toEqual(buildReasoningResponseSchema())
-    expect(req?.maxOutputTokens).toBe(2048)
+    // ENG-06d: 2048 -> 8192, matching index.ts's REASONING_MAX_OUTPUT_TOKENS.
+    // Same model, same schema, same thinking-token exhaustion -- see this
+    // call site's own comment for why the local harness must not lag the
+    // deployed path here.
+    expect(req?.maxOutputTokens).toBe(8192)
     expect(req?.temperature).toBe(0)
   })
 

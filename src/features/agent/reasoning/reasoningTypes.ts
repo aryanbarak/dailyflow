@@ -175,6 +175,16 @@ export interface AgentLlmReasoningResponse {
   // distinct outcome instead of running the malformed-output rescue on an
   // empty string that was never actually model output.
   providerUnavailable?: boolean;
+  // ENG-06d: set when the worker reported MODEL_RESPONSE_INCOMPLETE --
+  // the model answered but its structured proposal was truncated
+  // (finishReason MAX_TOKENS), so rawText is "" here for a THIRD distinct
+  // reason. Separate from providerUnavailable above because the provider
+  // was reachable and did respond; separate from a plain rawText:"" fall
+  // through because that one means "the model produced something we
+  // couldn't use" and is legitimately routed to the malformed-output
+  // rescue, whereas a truncation must not be rescued into a fabricated
+  // ask_clarification (ENG-06c).
+  responseIncomplete?: boolean;
 }
 
 export type AgentLlmReasoningCaller = (

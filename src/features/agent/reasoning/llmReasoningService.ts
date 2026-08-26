@@ -121,6 +121,21 @@ export function createLlmReasoningCaller(
           return { rawText: "", providerUnavailable: true };
         }
       }
+      // ENG-06d: the worker's typed MODEL_RESPONSE_INCOMPLETE (index.ts's
+      // reasoning branch) -- the model DID answer but was cut off
+      // mid-JSON. Deliberately NOT folded into providerUnavailable above:
+      // the provider was fine, and telling the user "the AI is
+      // unavailable" when it answered would be exactly the kind of
+      // inaccurate-but-convenient message INC-01 exists to prevent. Also
+      // not left to fall through to rawText:"" below, because that feeds
+      // the malformed-output rescue and manufactures an ask_clarification
+      // out of a truncation (ENG-06c's confirmed symptom).
+      if (response.status === 502) {
+        const errorBody = await response.json().catch(() => null) as { code?: unknown } | null;
+        if (errorBody?.code === "MODEL_RESPONSE_INCOMPLETE") {
+          return { rawText: "", responseIncomplete: true };
+        }
+      }
       return { rawText: "" };
     }
 

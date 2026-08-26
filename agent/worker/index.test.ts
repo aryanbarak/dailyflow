@@ -367,7 +367,11 @@ describe('handleChat mode routing', () => {
     // here any more: the adapter always sets it unconditionally,
     // GeminiStructuredGenerationProvider.test.ts's own coverage now.
     expect(call.temperature).toBe(0)
-    expect(call.maxOutputTokens).toBe(2048)
+    // ENG-06d: 2048 -> 8192 (REASONING_MAX_OUTPUT_TOKENS). Thinking tokens
+    // are charged against this budget on gemini-3.6-flash, and 2048 was
+    // observed exhausting itself on thinking alone (finishReason
+    // MAX_TOKENS, 243 chars of JSON) -- see index.ts's own comment.
+    expect(call.maxOutputTokens).toBe(8192)
     const schema = call.schema as NeutralObjectSchema
     const typeEnum = (schema.properties.type as NeutralStringSchema).enum
     expect(typeEnum).toEqual([
@@ -525,6 +529,79 @@ describe('handleChat mode routing', () => {
     expect(response.status).toBe(503)
     expect(body.code).toBe('PROVIDER_UNAVAILABLE')
     expect(body.reply).toBeUndefined()
+  })
+
+  // ENG-06d: confirmed live via wrangler tail (ENG-06c, 2026-08-26T19:26:29Z)
+  // -- the reasoning call returned finishReason MAX_TOKENS with 243 chars of
+  // truncated JSON and HTTP 200. The worker forwarded that truncation as if
+  // it were a whole proposal, the client's parseLlmIntentJson then failed on
+  // it, and the malformed-output rescue turned it into an ask_clarification
+  // the model never asked for -- no approval card, no trace of why. This is
+  // the worker half of the fix: a cut-off response gets its own typed 502,
+  // distinguishable from a 200 proposal, from the 503 above (the provider
+  // was reachable and DID answer here), and from the generic 500.
+  it('ENG-06d: mode "reasoning" reports a MAX_TOKENS truncation as a typed 502 MODEL_RESPONSE_INCOMPLETE, never a 200 carrying the truncated JSON', async () => {
+    installFetchMock()
+    // Truncated mid-object exactly as a MAX_TOKENS cut-off produces: no
+    // closing brace, so it is unparseable downstream.
+    const truncated = '{"type":"propose_engineering_task","confidence":"high","target":{"repo":"aryanbarak/smartflow","engineeringInstruction":"Widen the'
+    currentProviders = stubProviders({
+      structured: new StubStructuredGenerationProvider(() => ({
+        rawText: truncated,
+        finishReason: 'length',
+        rawFinishReason: 'MAX_TOKENS',
+        usage: { promptTokens: 1200, thinkingTokens: 8100, responseTokens: 40 },
+      })),
+    })
+    const ctx = fakeExecutionContext()
+    const env = testEnv()
+
+    const response = await worker.fetch(
+      chatRequest({ message: 'Reasoning prompt text', mode: 'reasoning', responseLanguage: 'en' }),
+      env,
+      ctx,
+    )
+    const body = await response.json() as { error?: string; code?: string; reply?: string }
+
+    expect(response.status).toBe(502)
+    expect(body.code).toBe('MODEL_RESPONSE_INCOMPLETE')
+    // The truncated JSON must never reach the client -- forwarding it is
+    // what manufactured the fabricated clarification.
+    expect(body.reply).toBeUndefined()
+    expect(JSON.stringify(body)).not.toContain('propose_engineering_task')
+    // And it must NOT borrow the provider-unavailable wording/code: the
+    // provider answered fine here.
+    expect(body.code).not.toBe('PROVIDER_UNAVAILABLE')
+  })
+
+  // ENG-06d: the other half -- a normal STOP response is completely
+  // unaffected by the new check. Guards against the guard itself becoming
+  // an outage (e.g. testing rawFinishReason, which is 'STOP' uppercase from
+  // Gemini, instead of the neutral finishReason enum).
+  it('ENG-06d: a normal STOP reasoning response still returns 200 with the proposal, unaffected by the truncation check', async () => {
+    installFetchMock()
+    const proposal = '{"type":"inspect_tasks","confidence":"high"}'
+    currentProviders = stubProviders({
+      structured: new StubStructuredGenerationProvider(() => ({
+        rawText: proposal,
+        finishReason: 'stop',
+        rawFinishReason: 'STOP',
+        usage: { promptTokens: 1200, thinkingTokens: 300, responseTokens: 60 },
+      })),
+    })
+    const ctx = fakeExecutionContext()
+    const env = testEnv()
+
+    const response = await worker.fetch(
+      chatRequest({ message: 'Reasoning prompt text', mode: 'reasoning', responseLanguage: 'en' }),
+      env,
+      ctx,
+    )
+    const body = await response.json() as { reply?: string; code?: string }
+
+    expect(response.status).toBe(200)
+    expect(body.code).toBeUndefined()
+    expect(JSON.parse(body.reply ?? '{}')).toMatchObject({ type: 'inspect_tasks' })
   })
 
   // Second symptom from the same incident: a follow-up plain-chat turn
