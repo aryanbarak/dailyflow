@@ -44,7 +44,8 @@ export type ProposalOutcomeRiskLevel = "none" | "low" | "medium" | "high";
 // github write proposals (write_github_issue_comment/write_github_issue_update)
 // have no shared-registry entry -- these three field names mirror
 // reasoning-endpoint.ts's own TARGET_FIELDS github addition exactly.
-const GITHUB_TARGET_FIELD_NAMES: readonly string[] = ["repo", "issueNumber", "commentBody", "updateTitle", "updateBody", "updateLabels"];
+// ENG-04: engineeringInstruction/engineeringTaskClass added (repo is shared).
+const GITHUB_TARGET_FIELD_NAMES: readonly string[] = ["repo", "issueNumber", "commentBody", "updateTitle", "updateBody", "updateLabels", "engineeringInstruction", "engineeringTaskClass"];
 
 function domainTargetFieldNames(domain: ProposalOutcomeDomain): readonly string[] {
   if (domain === "github") return GITHUB_TARGET_FIELD_NAMES;

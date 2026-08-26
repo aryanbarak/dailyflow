@@ -102,6 +102,7 @@ describe("toolRegistry", () => {
       "github.issues.update",
       "github.files.read",
       "github.files.update",
+      "engineering.task.propose",
       "github.pulls.list",
       "github.workflow_runs.list",
       "tasks.create",

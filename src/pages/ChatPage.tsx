@@ -81,6 +81,8 @@ import { createGitHubPullRequestsClient } from '@/features/integrations/github/g
 import { createGitHubWorkflowRunsClient } from '@/features/integrations/github/githubWorkflowRunsClient'
 import { createGitHubIssuesCommentClient } from '@/features/integrations/github/githubIssuesCommentClient'
 import { createGitHubIssuesUpdateClient } from '@/features/integrations/github/githubIssuesUpdateClient'
+import { createEngineeringTaskClient } from '@/features/integrations/engineering/engineeringTaskClient'
+import { pollEngineeringTaskUntilDone, formatEngineeringTaskResultMessage } from '@/features/agent/engineeringTaskStatusPoller'
 import { createGitHubRepositoryInventoryClient } from '@/features/integrations/github/githubRepositoryInventoryClient'
 import { useWorkspace } from '@/features/workspace'
 import type {
@@ -267,6 +269,7 @@ const WRITE_PROPOSAL_TYPES = new Set<AgentReasoningResult['proposal']['type']>([
   ...writeIntentRegistry.map((entry) => entry.intentType),
   'write_github_issue_comment',
   'write_github_issue_update',
+  'propose_engineering_task',
 ])
 
 const CONVERSATIONAL_FILLER_ATOMS = [
@@ -639,6 +642,7 @@ function isSupportedActionableProposalType(type: AgentReasoningResult['proposal'
     case 'create_finance_transaction':
     case 'write_github_issue_comment':
     case 'write_github_issue_update':
+    case 'propose_engineering_task':
       return true
     case 'ask_clarification':
     case 'unsupported':
@@ -705,6 +709,8 @@ function intentTitleKey(type: AgentReasoningResult['proposal']['type']): Transla
       return 'agent_intent_title_write_github_issue_comment'
     case 'write_github_issue_update':
       return 'agent_intent_title_write_github_issue_update'
+    case 'propose_engineering_task':
+      return 'agent_intent_title_propose_engineering_task'
     case 'ask_clarification':
       return 'agent_intent_title_clarification'
     default:
@@ -752,7 +758,8 @@ function stepForReasoning(result: AgentReasoningResult, t: Translate): Workspace
     proposal.type === 'inspect_github_epics' ||
     proposal.type === 'inspect_github_pull_requests' ||
     proposal.type === 'inspect_github_workflow_runs' ||
-    isGithubIssueWrite
+    isGithubIssueWrite ||
+    proposal.type === 'propose_engineering_task'
       ? 'github'
       : proposal.type === 'inspect_workspace'
       ? 'workspace'
@@ -771,7 +778,9 @@ function stepForReasoning(result: AgentReasoningResult, t: Translate): Workspace
           ? 'create'
           : proposal.type === 'write_github_issue_update'
             ? 'update'
-            : readIntentAction[proposal.type] ?? 'inspect'
+            : proposal.type === 'propose_engineering_task'
+              ? 'create'
+              : readIntentAction[proposal.type] ?? 'inspect'
   const githubIssueTargetId = isGithubIssueWrite && proposal.target?.repo && proposal.target?.issueNumber
     ? `${proposal.target.repo}#${proposal.target.issueNumber}`
     : undefined
@@ -799,7 +808,7 @@ function stepForReasoning(result: AgentReasoningResult, t: Translate): Workspace
     ? proposal.target?.taskId
     : writeEntry?.targetIdField
       ? proposal.target?.[writeEntry.targetIdField]
-      : writeEntry?.action === 'create'
+      : writeEntry?.action === 'create' || proposal.type === 'propose_engineering_task'
         ? stepId
         : githubIssueTargetId
 
@@ -815,7 +824,9 @@ function stepForReasoning(result: AgentReasoningResult, t: Translate): Workspace
             ? t('agent_intent_comment_description', { targetId: githubIssueTargetId ?? '' })
             : proposal.type === 'write_github_issue_update'
               ? t('agent_intent_update_description', { targetId: githubIssueTargetId ?? '' })
-              : t('agent_intent_read_description', { toolId: proposal.toolId }),
+              : proposal.type === 'propose_engineering_task'
+                ? t('agent_intent_propose_engineering_task_description', { repo: proposal.target?.repo ?? '' })
+                : t('agent_intent_read_description', { toolId: proposal.toolId }),
     domain: domain as WorkspacePlanStep['domain'],
     estimatedMinutes: 5,
     status: 'proposed',
@@ -2499,6 +2510,14 @@ export default function ChatPage() {
             return session?.access_token
           },
         }),
+        // ENG-04.
+        engineeringTaskClient: createEngineeringTaskClient({
+          workerBaseUrl: workerUrl,
+          getAccessToken: async () => {
+            const { data: { session } } = await supabase.auth.getSession()
+            return session?.access_token
+          },
+        }),
       },
       currentTime,
     })
@@ -2537,6 +2556,37 @@ export default function ChatPage() {
       ),
       current.result.responseLanguage,
     )
+
+    // ENG-04, Part 1 item 4 / Part 2 item 6: engineering.task.propose's
+    // "success" above only means the task was SUBMITTED (see
+    // safeSummaryFor's own comment in writeRuntime.ts) -- it is
+    // fundamentally asynchronous, unlike every other write tool here.
+    // This follow-up polls the Worker and appends a SECOND, later message
+    // with the honest, verified outcome once the companion reports back
+    // (or an honest "still waiting"/"appears stuck" message if it never
+    // does -- Part 1 item 5). Fire-and-forget: never blocks or delays the
+    // synchronous submission message above.
+    if (toolId === 'engineering.task.propose' && writeResult.success && writeResult.resultData) {
+      const submitted = writeResult.resultData as { id?: string }
+      if (submitted.id) {
+        void pollEngineeringTaskUntilDone(
+          {
+            workerBaseUrl: workerUrl,
+            getAccessToken: async () => {
+              const { data: { session } } = await supabase.auth.getSession()
+              return session?.access_token
+            },
+          },
+          submitted.id,
+        )
+          .then((status) => {
+            appendAssistantResult(formatEngineeringTaskResultMessage(status), current.result.responseLanguage)
+          })
+          .catch((error: unknown) => {
+            console.error('[ChatPage] engineering task status polling failed (non-fatal):', error)
+          })
+      }
+    }
   }, [appendAssistantResult, reasoningProposal, reportCurrentProposalOutcome, tasks, workerUrl, workspace])
 
   const handleRunWriteProposal = useCallback(async () => {

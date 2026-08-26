@@ -50,6 +50,7 @@ export const supportedIntentTypes: AgentIntentType[] = [
   ...writeIntentRegistry.map((entry) => entry.intentType),
   "write_github_issue_comment",
   "write_github_issue_update",
+  "propose_engineering_task",
   "ask_clarification",
   "unsupported",
 ];
@@ -68,6 +69,7 @@ const CONFIRMED_WRITE_INTENT_TYPES = new Set<AgentIntentType>([
   ...writeIntentRegistry.map((entry) => entry.intentType),
   "write_github_issue_comment",
   "write_github_issue_update",
+  "propose_engineering_task",
 ]);
 
 const supportedDomains: AgentIntentDomain[] = [
@@ -105,6 +107,7 @@ const intentToolMap = {
   ...WRITE_INTENT_TOOL_ENTRIES,
   write_github_issue_comment: "github.issues.comment",
   write_github_issue_update: "github.issues.update",
+  propose_engineering_task: "engineering.task.propose",
 } as const;
 
 type KnownToolId = typeof intentToolMap[keyof typeof intentToolMap];
@@ -127,6 +130,7 @@ const domainByIntent: Partial<Record<AgentIntentType, AgentIntentDomain>> = {
   ...WRITE_INTENT_DOMAIN_ENTRIES,
   write_github_issue_comment: "github",
   write_github_issue_update: "github",
+  propose_engineering_task: "github",
 };
 
 function textFor(language: SupportedAiResponseLanguage, key: "clarify" | "unsupported" | "low") {
@@ -295,6 +299,11 @@ function normalizeTarget(value: unknown) {
     // POST /finance/import-batch/preview call; no chat message could
     // legitimately supply one.
     batchId: safeString(value.batchId) || undefined,
+    // ENG-04: repo above is reused. Never fuzzy-matched -- must be
+    // explicit and well-formed or the proposal falls back to
+    // ask_clarification (see findEngineeringTaskTarget below).
+    engineeringInstruction: safeBoundedText(value.engineeringInstruction, 4000),
+    engineeringTaskClass: safeString(value.engineeringTaskClass) || undefined,
   };
 }
 
@@ -382,6 +391,18 @@ function findGithubIssueUpdateTarget(target: ReturnType<typeof normalizeTarget>)
     return { status: "missing" as const };
   }
   if (!target.updateTitle && !target.updateBody && !target.updateLabels) {
+    return { status: "missing" as const };
+  }
+  return { status: "matched" as const };
+}
+
+// ENG-04: same "explicit and well-formed or missing" shape as
+// findGithubIssueUpdateTarget above -- an engineering task is a HIGH-risk,
+// unattended action (it runs Claude Code end to end with no mid-execution
+// pause), so it requires unambiguous target fields, never a best-effort
+// guess.
+function findEngineeringTaskTarget(target: ReturnType<typeof normalizeTarget>) {
+  if (!target?.repo || !target.engineeringInstruction || !target.engineeringTaskClass) {
     return { status: "missing" as const };
   }
   return { status: "matched" as const };
@@ -510,6 +531,17 @@ function requestLooksLikeGithubIssueUpdate(message: string) {
   );
 }
 
+// ENG-04: deliberately narrow -- a false positive here means SmartFlow
+// proposes an unattended, real-repo, real-money coding-agent run from an
+// offhand remark. Requires an unambiguous engineering-task phrase, not a
+// generic "fix"/"build"/"add" verb that would collide with everyday chat.
+function requestLooksLikeEngineeringTask(message: string) {
+  return (
+    /\b(engineering task|run claude code|have claude code|coding agent task|run an? (coding|code) task)\b/i.test(message) ||
+    /(تسک مهندسی|وظیفه مهندسی)/i.test(message)
+  );
+}
+
 function requestReferencesSelectedTask(message: string) {
   if (
     /\bausgew[a\u00e4]hlte[nr]?\s+aufgabe\b/i.test(message) ||
@@ -608,7 +640,7 @@ const GITHUB_WORKFLOW_RUNS_EVIDENCE_PATTERNS = [
 // domain uniformly: add a tool's evidence patterns here and it's covered,
 // no new disambiguation function needed. A message matching more than one
 // tool in the same domain is genuinely ambiguous, not a signal to guess.
-type ReadToolIntentType = Exclude<AgentIntentType, "complete_task" | "create_task" | "update_task" | "create_calendar_event" | "update_calendar_event" | "write_github_issue_comment" | "write_github_issue_update" | "ask_clarification" | "unsupported">;
+type ReadToolIntentType = Exclude<AgentIntentType, "complete_task" | "create_task" | "update_task" | "create_calendar_event" | "update_calendar_event" | "write_github_issue_comment" | "write_github_issue_update" | "propose_engineering_task" | "ask_clarification" | "unsupported">;
 
 const TOOL_EVIDENCE_PATTERNS: Partial<Record<ReadToolIntentType, RegExp[]>> = {
   inspect_github_repositories: GITHUB_REPOSITORIES_EVIDENCE_PATTERNS,
@@ -812,7 +844,8 @@ export function validateAgentIntentProposal(input: {
   const calendarCreateRequested = requestLooksLikeCalendarCreate(input.userMessage);
   const calendarUpdateRequested = requestLooksLikeCalendarUpdate(input.userMessage);
   const financeCreateRequested = requestLooksLikeFinanceCreate(input.userMessage);
-  const writeRequestCount = [commentRequested, issueUpdateRequested, taskCreateRequested, taskUpdateRequested, completionRequested, calendarCreateRequested, calendarUpdateRequested, financeCreateRequested]
+  const engineeringTaskRequested = requestLooksLikeEngineeringTask(input.userMessage);
+  const writeRequestCount = [commentRequested, issueUpdateRequested, taskCreateRequested, taskUpdateRequested, completionRequested, calendarCreateRequested, calendarUpdateRequested, financeCreateRequested, engineeringTaskRequested]
     .filter(Boolean).length;
   const conflictingWriteRequest = writeRequestCount > 1;
   const mixedReadWriteRequest = requestLooksMixed(input.userMessage, "inspect_tasks");
@@ -860,6 +893,11 @@ export function validateAgentIntentProposal(input: {
         !mixedReadWriteRequest &&
         (normalizationSourceType === "ask_clarification" || normalizationSourceType === "inspect_github_issues" || normalizationSourceType === "write_github_issue_update")
         ? "write_github_issue_update"
+        : engineeringTaskRequested &&
+          !conflictingWriteRequest &&
+          !mixedReadWriteRequest &&
+          (normalizationSourceType === "ask_clarification" || normalizationSourceType === "propose_engineering_task")
+          ? "propose_engineering_task"
         : normalizeReadIntentFromEvidence(normalizationSourceType, domainEvidence, input.userMessage);
   // Task 22 post-step: a time-of-day forces calendar routing even without
   // an explicit calendar noun (tasks have no time-of-day field) -- applied
@@ -1222,6 +1260,15 @@ export function validateAgentIntentProposal(input: {
       now,
       question: textFor(input.language, "clarify"),
       reason: "Exact repo, issue number, and at least one of title, body, or labels are required before approval.",
+    });
+  }
+  if (type === "propose_engineering_task" && findEngineeringTaskTarget(target).status !== "matched") {
+    return createSafeProposal("ask_clarification", {
+      userMessage: input.userMessage,
+      language: input.language,
+      now,
+      question: textFor(input.language, "clarify"),
+      reason: "Exact repo, instruction, and a task class are required before approval.",
     });
   }
 

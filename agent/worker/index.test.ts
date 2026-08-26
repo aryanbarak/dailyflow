@@ -401,6 +401,8 @@ describe('handleChat mode routing', () => {
       // ui-only registry intent" test below for the direct proof.
       'write_github_issue_comment',
       'write_github_issue_update',
+      // ENG-04.
+      'propose_engineering_task',
       'ask_clarification',
       'unsupported',
     ])

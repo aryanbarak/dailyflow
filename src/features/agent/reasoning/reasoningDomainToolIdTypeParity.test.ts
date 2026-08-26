@@ -66,6 +66,11 @@ type _DomainNoMissingMembers = ExpectTrue<Extends<PreChangeAgentIntentDomain, Ag
 // "before ANY change ever," since new registry entries are expected to
 // widen it over time; what this test still guards against is an
 // UNINTENDED widening or narrowing slipping through unnoticed.
+// ENG-04: widened by one further deliberate member, "engineering.task.propose"
+// (see src/features/agent/tools/githubTools.ts and docs/architecture/notes/
+// eng-04-companion-chat-approval-wiring-v1.md) -- same "pinned, deliberately
+// updated on a real change" discipline the finance.import_bank_statement
+// comment above already established for this exact file.
 type PreChangeToolId =
   | "tasks.list"
   | "calendar.list_today"
@@ -84,7 +89,8 @@ type PreChangeToolId =
   | "finance.create_transaction"
   | "finance.import_bank_statement"
   | "github.issues.comment"
-  | "github.issues.update";
+  | "github.issues.update"
+  | "engineering.task.propose";
 type DerivedToolId = Exclude<AgentReasoningValidationResult["toolId"], undefined>;
 type _ToolIdNoNewMembers = ExpectTrue<Extends<DerivedToolId, PreChangeToolId>>;
 type _ToolIdNoMissingMembers = ExpectTrue<Extends<PreChangeToolId, DerivedToolId>>;
