@@ -45,6 +45,7 @@ import { useChatDisplayPreferences } from '@/features/chat/chatDisplayPreference
 import { shouldAutoScrollOnNewContent } from '@/features/chat/chatScrollDecision'
 import { shouldAutoRunReadOnlyOverlay } from '@/features/chat/autoReadOverlayGate'
 import { isChatEmptyState } from '@/features/chat/emptyStateVisibility'
+import { UNAVAILABLE_CAUSE, logUnavailableCause } from '@/features/chat/unavailableCause'
 import { timeAgo } from '@/features/chat/timeAgo'
 import { useAppearance } from '@/features/settings/appearanceStore'
 import {
@@ -1170,6 +1171,17 @@ export function resolveChatTurnOutcome(input: ChatTurnOverlayInput, t: Translate
     overlayResult !== null &&
     overlayResult.proposal.type === 'unsupported' &&
     overlayResult.proposal.reasons.includes(PROVIDER_UNAVAILABLE_REASON_MARKER)
+  // ENG-06f: see the chat-lane tag in handleSend -- same purpose, other
+  // lane. Logged here rather than at the orchestrator's own short-circuit
+  // because this is the point where the outcome actually reaches the
+  // user; an overlay result that gets suppressed upstream never produced
+  // a user-visible "unavailable" at all and should not be counted as one.
+  if (isProviderUnavailableOverlay) {
+    logUnavailableCause(UNAVAILABLE_CAUSE.OVERLAY_PROVIDER_UNAVAILABLE, {
+      intentSignal: input.intentSignal,
+      responseLanguage: input.responseLanguage,
+    })
+  }
   const providerUnavailableTrailingNote = isProviderUnavailableOverlay
     ? (overlayResult!.proposal.clarificationQuestion ?? null)
     : null
@@ -1188,6 +1200,15 @@ export function resolveChatTurnOutcome(input: ChatTurnOverlayInput, t: Translate
     overlayResult !== null &&
     overlayResult.proposal.type === 'unsupported' &&
     overlayResult.proposal.reasons.includes(MODEL_RESPONSE_INCOMPLETE_REASON_MARKER)
+  // ENG-06f: ENG-06d's truncation outcome, tagged from the same place so
+  // one grep enumerates every "user asked for a proposal and did not get
+  // one" outcome, not just the unavailable-shaped subset.
+  if (isModelResponseIncompleteOverlay) {
+    logUnavailableCause(UNAVAILABLE_CAUSE.OVERLAY_MODEL_RESPONSE_INCOMPLETE, {
+      intentSignal: input.intentSignal,
+      responseLanguage: input.responseLanguage,
+    })
+  }
   const modelResponseIncompleteTrailingNote = isModelResponseIncompleteOverlay
     ? (overlayResult!.proposal.clarificationQuestion ?? null)
     : null
@@ -1301,7 +1322,41 @@ export function resolveAutoReadTurnContent(input: AutoReadTurnInput): string {
 // sufficient to identify "the primary /chat reply timed out" specifically,
 // without also matching an ordinary network/HTTP failure from the same
 // call, which keeps the pre-existing setSendError + restore-draft path.
-export const CHAT_REQUEST_TIMEOUT_MS = 15_000
+//
+// ENG-06f: 15_000 -> 25_000, derived from measurement (ENG-06e,
+// 2026-08-26T21:50Z) rather than chosen as a round number.
+//
+// Observed plain-chat wall times on three consecutive real turns:
+// 14 071 / 13 649 / 11 458 ms. The worst sat at 94% of the old 15 000 ms
+// ceiling -- so an ordinary turn was one slow second away from being
+// reported to the user as a failure. That is the SAME inversion ENG-06
+// fixed on the reasoning lane, relocated: the lane doing the work no
+// longer had room to finish it.
+//
+// The number is anchored to the reasoning lane's own proven-good margin.
+// REASONING_FETCH_TIMEOUT_MS is 20 000 ms against an observed max of
+// 12 297 ms -- a 1.63x factor, 7 703 ms of absolute headroom. Applying
+// each of those to chat's observed max of 14 071 ms gives 22 879 ms
+// (same ratio) and 21 774 ms (same absolute headroom). 25 000 clears
+// both, at 1.78x observed max.
+//
+// The extra margin over the two derivations is itself measured, not
+// padding: the SAME lane returned 5 001 ms in the ENG-06c capture
+// (19:26Z) and 14 071 ms in ENG-06e (21:50Z) -- a 2.8x swing on
+// comparable traffic about 2.5 hours apart. With three chat samples in
+// hand, a ceiling fitted tightly to one session's max would be
+// under-provisioned against variance that size.
+//
+// Note this puts chat (25s) ABOVE reasoning (20s), which nominally
+// reverses ENG-06's ordering rule. That rule rested on "reasoning is
+// consistently the heavier call" -- a premise measurement has since
+// falsified: reasoning is the FASTER lane (12 297 ms max vs chat's
+// 14 071 ms). The invariant that actually holds is per-lane: each
+// ceiling should clear its OWN observed max by ~1.6x or better, which
+// both now do. If reasoning latency ever grows, its 20 000 ms deserves
+// the same re-derivation -- deliberately not touched here (ENG-06f
+// scope), but flagged.
+export const CHAT_REQUEST_TIMEOUT_MS = 25_000
 
 export function isChatRequestTimeoutError(error: unknown): boolean {
   return Boolean(
@@ -2007,6 +2062,12 @@ export default function ChatPage() {
     })
     const responseLanguageInstruction = getAiResponseLanguageInstruction(responseLanguage)
 
+    // ENG-06f: turn start, used only for the CHAT_LANE_TIMEOUT diagnostic
+    // below -- it reports how long the browser actually waited before
+    // giving up, which is what tells a near-miss (re-derive the ceiling)
+    // apart from a genuinely stuck request (fix the latency).
+    const sendStartedAt = Date.now()
+
     if (!overrideText) setDraft('')
     setSending(true)
     setSendError(null)
@@ -2246,6 +2307,17 @@ export default function ChatPage() {
       // since the abandoned Worker request itself may never persist
       // anything for this turn.
       if (isChatRequestTimeoutError(err) && sessionId) {
+        // ENG-06f: the chat lane is one of three producers of the same
+        // user-facing "temporarily unavailable" sentence. This stamps
+        // WHICH one, so the next occurrence does not have to be
+        // re-diagnosed from the string (ENG-06 -> ENG-06c -> ENG-06e).
+        // elapsedMs vs the ceiling is the number that actually matters
+        // here: it says whether this was a near-miss worth re-deriving
+        // the ceiling from, or a genuinely stuck request.
+        logUnavailableCause(UNAVAILABLE_CAUSE.CHAT_LANE_TIMEOUT, {
+          ceilingMs: CHAT_REQUEST_TIMEOUT_MS,
+          elapsedMs: Date.now() - sendStartedAt,
+        })
         const failureMessages = buildChatTimeoutFailureMessages(text, responseLanguage, t)
         setMessages(prev => [...prev, failureMessages.user, failureMessages.assistant])
         if (user?.id) {

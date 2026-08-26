@@ -1067,7 +1067,15 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
       // responded badly," instead of collapsing both into the same
       // rawText:"" that used to feed the ask_clarification rescue.
       if (err instanceof ProviderUnavailableError) {
-        console.error('[Chat] Reasoning mode provider error:', err)
+        // ENG-06f: stable cause tag. This is one of five producers of the
+        // same user-facing "temporarily unavailable" sentence (the other
+        // four: this file's plain-chat branch below, and three in the
+        // client -- see src/features/chat/unavailableCause.ts for the full
+        // list and why the shared sentence is kept). The literal is
+        // duplicated from that module rather than imported, because
+        // agent/worker is a separate deployable that never imports from
+        // src/; unavailableCause.test.ts asserts the two stay identical.
+        console.error(`[UnavailableCause] cause=WORKER_PROVIDER_UNAVAILABLE_REASONING httpStatus=${err.status ?? 'none'}`, err)
         return json({ error: 'The AI provider is temporarily unavailable.', code: 'PROVIDER_UNAVAILABLE' }, 503, origin)
       }
       // ENG-06d: a THIRD outcome, kept distinct from both of its
@@ -1297,7 +1305,12 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
         return json({ reply }, 200, origin)
       }
       if (!(err instanceof ProviderUnavailableError)) throw err
-      console.error('[Chat] provider error:', err)
+      // ENG-06f: see the reasoning branch's tag above. This producer is
+      // the easiest of the five to mistake for the others, because it
+      // returns a normal 200 carrying the honest sentence as the reply --
+      // so in a tail with no status code to go on, only this tag
+      // identifies it.
+      console.error(`[UnavailableCause] cause=WORKER_PROVIDER_UNAVAILABLE_CHAT httpStatus=${err.status ?? 'none'}`, err)
       const reply = PROVIDER_UNAVAILABLE_CHAT_REPLY[language]
       await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'user', content: message })
       await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: reply })
