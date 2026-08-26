@@ -9,6 +9,7 @@ import {
   AGENT_INTENT_SCHEMA_VERSION,
   type AgentIntentProposal,
   type AgentLlmReasoningCaller,
+  type AgentLlmReasoningResponse,
   type AgentReasoningInput,
   type AgentReasoningResult,
   type AgentReasoningValidationResult,
@@ -78,6 +79,14 @@ function fallbackRawProposal(
 // `code: 'PROVIDER_UNAVAILABLE'` (agent/worker/index.ts).
 export const PROVIDER_UNAVAILABLE_REASON_MARKER = "PROVIDER_UNAVAILABLE";
 
+// ENG-06d: the same stable, grep-able marker convention as
+// PROVIDER_UNAVAILABLE_REASON_MARKER above, for the third outcome --
+// the model answered but was cut off mid-proposal. A separate marker (not
+// a reuse of the one above) because the two are different facts about the
+// world and get different user-facing wording: "the AI couldn't be
+// reached" vs "the AI's answer didn't finish".
+export const MODEL_RESPONSE_INCOMPLETE_REASON_MARKER = "MODEL_RESPONSE_INCOMPLETE";
+
 // INC-01: distinct from fallbackRawProposal above -- that one is the
 // rescue for a model response that came back and couldn't be parsed (the
 // model DID answer, just badly). This one is for when the model never got
@@ -121,6 +130,47 @@ function providerUnavailableProposal(
   };
 }
 
+// ENG-06d: the truncation sibling of providerUnavailableProposal above.
+// Same structural choices for the same reasons -- type "unsupported" (so
+// it renders as a silent, non-actionable overlay everywhere ChatPage.tsx
+// switches on the type, without adding a union member), a stable marker in
+// reasons[0] so logs and resolveChatTurnOutcome can tell it apart, and an
+// honest clarificationQuestion carrying the user-facing text.
+//
+// The wording deliberately does NOT say "unavailable": the AI was
+// available and did answer. It names what actually happened and gives the
+// user the one lever that helps (retry, or a shorter request) -- a
+// detailed engineering-task instruction is exactly the input most likely
+// to exhaust the model's output budget, so "shorten it" is real advice
+// here, not filler.
+function modelResponseIncompleteProposal(
+  userMessage: string,
+  language: SupportedAiResponseLanguage,
+  now: Date,
+): AgentIntentProposal {
+  return {
+    id: `intent:model-response-incomplete:${now.toISOString()}`,
+    type: "unsupported",
+    confidence: "medium",
+    userMessage,
+    requiresTool: false,
+    requiresApproval: false,
+    clarificationQuestion:
+      language === "fa"
+        ? "پاسخ هوش مصنوعی پیش از تکمیل پیشنهاد قطع شد. لطفاً دوباره تلاش کنید یا درخواست را کوتاه‌تر بنویسید."
+        : language === "de"
+          ? "Die Antwort der KI wurde abgeschnitten, bevor der Vorschlag fertig war. Bitte versuche es erneut oder formuliere die Anfrage kürzer."
+          : "The AI's answer was cut off before the proposal was complete. Please try again, or shorten the request.",
+    reasons: [
+      MODEL_RESPONSE_INCOMPLETE_REASON_MARKER,
+      "The model responded but its structured proposal was truncated (finishReason was not 'stop') -- this is not a clarification the assistant chose to ask.",
+    ],
+    language,
+    generatedAt: now.toISOString(),
+    schemaVersion: AGENT_INTENT_SCHEMA_VERSION,
+  };
+}
+
 export async function reasonAboutUserMessage(
   input: AgentReasoningInput,
   dependencies: ReasonAboutUserMessageDependencies,
@@ -145,7 +195,13 @@ export async function reasonAboutUserMessage(
     prompt,
     responseLanguage,
     sessionId: input.sessionId,
-  }).catch(() => ({ rawText: "", providerUnavailable: true as const }));
+    // ENG-06d: annotated as the full response type rather than inferred.
+    // Without it the catch's object literal narrows the awaited union to
+    // `{rawText, providerUnavailable}` and every OTHER optional flag on
+    // AgentLlmReasoningResponse -- responseIncomplete today, whatever the
+    // next honest-failure signal is tomorrow -- becomes a type error at
+    // its own read site rather than simply being absent here.
+  }).catch((): AgentLlmReasoningResponse => ({ rawText: "", providerUnavailable: true }));
 
   // INC-01: short-circuits BEFORE parseLlmIntentJson/fallbackRawProposal --
   // rawText is "" here same as a genuine malformed-output case, but this
@@ -160,6 +216,23 @@ export async function reasonAboutUserMessage(
       {
         proposal: providerUnavailableProposal(input.userMessage, responseLanguage, now),
         validationReasons: ["The AI provider was unavailable -- reported directly, never passed through the malformed-output rescue."],
+      },
+      responseLanguage,
+    );
+  }
+
+  // ENG-06d: same short-circuit discipline as the INC-01 branch above, for
+  // the same reason. rawText is "" here too, but a truncated proposal is
+  // NOT malformed model output to be rescued -- running it through
+  // fallbackRawProposal would produce an ask_clarification the model never
+  // asked for, which is the fabricated-clarification bug in a new costume
+  // (confirmed live in ENG-06c: finishReason MAX_TOKENS, 243 chars, no
+  // approval card, no trace of why).
+  if (llmResponse.responseIncomplete) {
+    return toAgentReasoningResult(
+      {
+        proposal: modelResponseIncompleteProposal(input.userMessage, responseLanguage, now),
+        validationReasons: ["The model's response was truncated -- reported directly, never passed through the malformed-output rescue."],
       },
       responseLanguage,
     );

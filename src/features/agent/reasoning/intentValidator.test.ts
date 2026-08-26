@@ -1051,4 +1051,75 @@ describe("Task 45c, ADR-0017 (import_bank_statement is UI-only, never chat-propo
     );
     expect(result.proposal.type).toBe("create_finance_transaction");
   });
+
+  // ENG-06d: requestLooksLikeEngineeringTask matched English and Persian
+  // but not German. Scope of the gap, established by these tests rather
+  // than assumed: propose_engineering_task is in
+  // CONFIRMED_WRITE_INTENT_TYPES, so a type the MODEL already returned
+  // survives normalization in any language. What the gate actually
+  // controls is the PROMOTION path -- rescuing an ask_clarification into
+  // propose_engineering_task when the user's own message unambiguously
+  // asks for one. German users lost that rescue entirely: the model
+  // hedging on a German request produced a clarification question instead
+  // of an approval card, where the identical English or Persian request
+  // produced the card.
+  describe("ENG-06d: German engineering-task phrasing promotes a hedged clarification", () => {
+    // Type is ask_clarification -- the model hedged. Only the phrase gate
+    // can promote this to propose_engineering_task, so this exercises the
+    // German patterns directly and fails without them.
+    const hedgedProposal = (userMessage: string) => ({
+      id: "intent-eng",
+      type: "ask_clarification",
+      confidence: "medium",
+      userMessage,
+      requestedDomain: "github",
+      target: {
+        repo: "aryanbarak/smartflow",
+        engineeringInstruction: "Erhöhe das Zeitlimit für die Reasoning-Anfrage.",
+        engineeringTaskClass: "fix",
+      },
+      requiresTool: false,
+      requiresApproval: false,
+      clarificationQuestion: "Was genau meinst du?",
+      reasons: ["Das Modell war unsicher."],
+      language: "de",
+      generatedAt: now.toISOString(),
+      schemaVersion: 1,
+    });
+
+    it.each([
+      ["Führe bitte eine Entwicklungsaufgabe auf aryanbarak/smartflow aus."],
+      ["Bitte eine Programmieraufgabe auf aryanbarak/smartflow starten."],
+      ["Bitte Claude Code ausführen auf aryanbarak/smartflow."],
+      ["Starte einen Engineering-Task auf aryanbarak/smartflow."],
+    ])("promotes a hedged clarification for German phrasing: %s", (userMessage) => {
+      const result = validateWithContext(hedgedProposal(userMessage), userMessage, context, "de");
+
+      expect(result.proposal.type).toBe("propose_engineering_task");
+      expect(result.proposal.toolId).toBe("engineering.task.propose");
+    });
+
+    // Parity check: the identical hedge in English already promoted before
+    // this fix -- pins that German now behaves the same, rather than
+    // asserting German works in isolation.
+    it("matches the pre-existing English behaviour for the same hedge", () => {
+      const userMessage = "Please run an engineering task on aryanbarak/smartflow.";
+      const result = validateWithContext(hedgedProposal(userMessage), userMessage, context, "en");
+
+      expect(result.proposal.type).toBe("propose_engineering_task");
+    });
+
+    // The gate stays deliberately narrow (ENG-04: a false positive here
+    // proposes an unattended, real-repo, real-money coding-agent run) --
+    // an everyday German verb must NOT promote a hedge into one.
+    it.each([
+      ["Kannst du das bitte reparieren?"],
+      ["Bitte baue mir eine Übersicht."],
+      ["Kannst du diese Aufgabe erledigen?"],
+    ])("does not promote on everyday German phrasing: %s", (userMessage) => {
+      const result = validateWithContext(hedgedProposal(userMessage), userMessage, context, "de");
+
+      expect(result.proposal.type).not.toBe("propose_engineering_task");
+    });
+  });
 });

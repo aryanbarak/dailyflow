@@ -285,6 +285,48 @@ describe("llmReasoningService", () => {
     }
   });
 
+  // ENG-06d: the worker's typed MODEL_RESPONSE_INCOMPLETE 502 (index.ts's
+  // reasoning branch) must surface as its OWN flag. Two things this
+  // guards, both of which would recreate a bug: folding it into
+  // providerUnavailable would tell the user the AI was unreachable when it
+  // answered, and letting it fall through to the bare rawText:"" below
+  // would feed the malformed-output rescue and manufacture an
+  // ask_clarification out of a truncation (ENG-06c's confirmed symptom).
+  it("ENG-06d: maps a 502 MODEL_RESPONSE_INCOMPLETE to responseIncomplete, not providerUnavailable", async () => {
+    const fetcher = vi.fn(async () => new Response(
+      JSON.stringify({ error: 'The AI model response was cut off before a complete proposal.', code: "MODEL_RESPONSE_INCOMPLETE" }),
+      { status: 502, headers: { "Content-Type": "application/json" } },
+    ));
+    const caller = createLlmReasoningCaller({
+      endpoint: "https://example.test/chat",
+      accessToken: "token",
+      fetcher: fetcher as unknown as typeof fetch,
+    });
+
+    const result = await caller({ prompt: "Return JSON", responseLanguage: "en", sessionId: "session-1" });
+
+    expect(result).toEqual({ rawText: "", responseIncomplete: true });
+    expect(result.providerUnavailable).toBeUndefined();
+  });
+
+  // A 502 that is NOT the typed truncation code keeps the pre-existing
+  // rawText:"" behaviour -- the new branch must not swallow every 502.
+  it("ENG-06d: a 502 without the typed code still falls through to the existing rawText:\"\" path", async () => {
+    const fetcher = vi.fn(async () => new Response(
+      JSON.stringify({ error: "Bad gateway" }),
+      { status: 502, headers: { "Content-Type": "application/json" } },
+    ));
+    const caller = createLlmReasoningCaller({
+      endpoint: "https://example.test/chat",
+      accessToken: "token",
+      fetcher: fetcher as unknown as typeof fetch,
+    });
+
+    await expect(
+      caller({ prompt: "Return JSON", responseLanguage: "en", sessionId: "session-1" }),
+    ).resolves.toEqual({ rawText: "" });
+  });
+
   it("returns empty raw text when no endpoint is configured", async () => {
     await expect(
       createLlmReasoningCaller({})({

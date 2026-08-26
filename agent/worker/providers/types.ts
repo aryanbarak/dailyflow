@@ -101,6 +101,16 @@ export interface StructuredGenerationResult {
   usage?: {
     promptTokens?: number;
     responseTokens?: number;
+    // ENG-06d: Gemini's `usageMetadata.thoughtsTokenCount`. On a thinking
+    // model (gemini-3.6-flash, MIG-01b) thinking tokens are charged
+    // against maxOutputTokens but appear in NEITHER of the two fields
+    // above -- so a response truncated by thinking looks, from
+    // promptTokens/responseTokens alone, like a small successful answer.
+    // That is exactly how ENG-06c's MAX_TOKENS truncation stayed
+    // invisible in logs and had to be inferred from text length. Optional
+    // and provider-populated, same additive shape as the two fields above
+    // and as `rawFinishReason` below; absent on non-thinking models.
+    thinkingTokens?: number;
   };
   // `rawFinishReason` (Amendments, 2026-08-23): discovered migrating real
   // call sites in S2 Phase C -- context-derivation-endpoint.ts and

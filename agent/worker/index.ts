@@ -1070,6 +1070,20 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
         console.error('[Chat] Reasoning mode provider error:', err)
         return json({ error: 'The AI provider is temporarily unavailable.', code: 'PROVIDER_UNAVAILABLE' }, 503, origin)
       }
+      // ENG-06d: a THIRD outcome, kept distinct from both of its
+      // neighbours. The provider was reachable and answered (so not the
+      // 503 above -- that wording is reserved for a real provider
+      // failure), but the answer was truncated mid-JSON, so there is no
+      // proposal to hand back. 502 (upstream returned something
+      // unusable) matches what /agent/reason already returns for its own
+      // unusable-response case (reasoning-endpoint.ts's
+      // MODEL_RESPONSE_INVALID 502); the code is separate from that one
+      // because this is specifically "cut off", which is actionable
+      // (retry/shorten) in a way a generally invalid response is not.
+      if (err instanceof ModelResponseIncompleteError) {
+        console.error('[Chat] Reasoning mode incomplete response:', err)
+        return json({ error: 'The AI model response was cut off before a complete proposal.', code: 'MODEL_RESPONSE_INCOMPLETE' }, 502, origin)
+      }
       console.error('[Chat] Reasoning mode error:', err)
       return json({ error: 'Failed to generate reasoning proposal' }, 500, origin)
     }
@@ -1429,6 +1443,31 @@ async function callGeminiChat(
   return result.text.trim()
 }
 
+// ENG-06d: the reasoning call's output budget, named because two things
+// have to be reasoned about together -- the model's thinking tokens AND a
+// whole structured proposal (up to a 4000-char engineeringInstruction,
+// ENG-04) share this one ceiling. 8192 is the same figure MIG-01a's own
+// probe used as its "much larger maxOutputTokens" length probe
+// (scripts/gemini-36-probe.ts P8), i.e. the value this repo already
+// treated as generous headroom for gemini-3.6-flash thinking; 4x the
+// previous 2048, against an observed truncation that left only 243 chars.
+const REASONING_MAX_OUTPUT_TOKENS = 8192
+
+// ENG-06d: "the model answered, but its answer was cut off" -- distinct
+// from ProviderUnavailableError (the provider never answered at all,
+// INC-01) and from ProviderRequestError (our request was malformed). Kept
+// here rather than in provider-errors.ts on purpose: ADR-0018 Decision 3
+// puts the "is this response usable?" judgment with the CALLER, not the
+// adapter -- the adapter reports finishReason faithfully and takes no
+// view on it, exactly as it already does for the empty-text case
+// immediately above this one.
+class ModelResponseIncompleteError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ModelResponseIncompleteError'
+  }
+}
+
 // =============================================
 // Gemini reasoning-mode call (/chat with mode="reasoning")
 //
@@ -1454,13 +1493,66 @@ async function callGeminiReasoning(
     system: buildReasoningSystemInstruction(responseLanguage),
     turns: [{ role: 'user', content: reasoningPrompt }],
     schema: buildReasoningResponseSchema(),
-    maxOutputTokens: 2048,
+    // ENG-06d: 2048 -> REASONING_MAX_OUTPUT_TOKENS. Captured live
+    // (ENG-06c, 2026-08-26T19:26:29Z): this call returned
+    // finishReason=MAX_TOKENS with only 243 chars of text after 14 493 ms
+    // -- gemini-3.6-flash spent essentially the whole 2048-token budget
+    // thinking and truncated the JSON mid-object, which then failed
+    // parseLlmIntentJson on the client and silently degraded to
+    // ask_clarification (no approval card).
+    //
+    // Deliberately NOT fixed with thinkingConfig:{thinkingBudget:0}: that
+    // is the OPPOSITE of the MIG-01b precedent. gemini-3.6-flash returns
+    // 400 INVALID_ARGUMENT for thinkingConfig (geminiModel.ts,
+    // scripts/gemini-36-probe.ts P3/P7), which is precisely why MIG-01b
+    // REMOVED it from every call site and why two regression tests assert
+    // this codebase never sends it. Sending it here would turn an
+    // intermittent truncation into a hard 400 on every reasoning call.
+    // More budget is the only lever this model actually accepts -- the
+    // same lever MIG-01b already pulled everywhere else (256/512/1024 ->
+    // 2048); this call site simply needs more of it than the others
+    // because it emits a whole structured proposal, not a sentence.
+    maxOutputTokens: REASONING_MAX_OUTPUT_TOKENS,
     temperature: 0,
   })
 
-  console.log('[Chat] reasoning mode finishReason:', result.rawFinishReason ?? result.finishReason, 'text length:', result.rawText.length)
+  // ENG-06d: usage is logged, not just length -- thinking tokens are
+  // charged against maxOutputTokens but appear in neither promptTokens nor
+  // responseTokens, so "243 chars" alone could not distinguish "the model
+  // answered briefly" from "the model burned the budget thinking and got
+  // cut off". That ambiguity is what made ENG-06c's root cause a
+  // three-round inference instead of one log line.
+  console.log(
+    '[Chat] reasoning mode finishReason:', result.rawFinishReason ?? result.finishReason,
+    'text length:', result.rawText.length,
+    'promptTokens:', result.usage?.promptTokens ?? 'n/a',
+    'thinkingTokens:', result.usage?.thinkingTokens ?? 'n/a',
+    'responseTokens:', result.usage?.responseTokens ?? 'n/a',
+    'maxOutputTokens:', REASONING_MAX_OUTPUT_TOKENS,
+  )
 
   if (!result.rawText) throw new Error(`No content from Gemini reasoning (finishReason: ${result.rawFinishReason ?? result.finishReason})`)
+  // ENG-06d: the check reasoning-endpoint.ts:620 already had locally and
+  // this deployed path did not. A non-stop finish means the JSON is cut
+  // off mid-object; forwarding it lets the client's own parse failure
+  // manufacture an ask_clarification out of a truncated proposal -- the
+  // exact "fabricated clarification" failure mode INC-01 was raised to
+  // eliminate, arriving here by a different route.
+  //
+  // Raised as a DISTINCT typed error rather than retried. A retry would
+  // not fit: the measured worst case for one reasoning call is 14 493 ms
+  // (ENG-06c) and the client aborts the whole request at
+  // REASONING_FETCH_TIMEOUT_MS = 20 000 ms (PR #177), so a second call
+  // would routinely blow that ceiling and surface as the very
+  // "temporarily unavailable" message this fix is meant to stop
+  // manufacturing -- trading a truncated proposal for a fake outage.
+  // The budget increase above addresses the cause; this check makes the
+  // residual case honest instead of silent.
+  if (result.finishReason !== 'stop') {
+    throw new ModelResponseIncompleteError(
+      `Gemini reasoning response was cut off (finishReason: ${result.rawFinishReason ?? result.finishReason}, textLength: ${result.rawText.length})`,
+    )
+  }
   return result.rawText.trim()
 }
 

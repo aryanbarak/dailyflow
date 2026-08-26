@@ -115,7 +115,10 @@ export class GeminiStructuredGenerationProvider implements StructuredGenerationP
 
     const data = await res.json() as {
       candidates?: Array<{ finishReason?: unknown; content?: { parts?: Array<{ text?: unknown }> } }>
-      usageMetadata?: { promptTokenCount?: unknown; candidatesTokenCount?: unknown }
+      // ENG-06d: thoughtsTokenCount is what a thinking model spends out of
+      // maxOutputTokens before it emits any visible text -- see the
+      // `thinkingTokens` field's own comment in providers/types.ts.
+      usageMetadata?: { promptTokenCount?: unknown; candidatesTokenCount?: unknown; thoughtsTokenCount?: unknown }
     }
     const candidate = data?.candidates?.[0]
     const rawText = typeof candidate?.content?.parts?.[0]?.text === 'string' ? candidate.content.parts[0].text : ''
@@ -126,7 +129,10 @@ export class GeminiStructuredGenerationProvider implements StructuredGenerationP
     // comment. Only included when Gemini actually sent usageMetadata.
     const promptTokens = typeof data?.usageMetadata?.promptTokenCount === 'number' ? data.usageMetadata.promptTokenCount : undefined
     const responseTokens = typeof data?.usageMetadata?.candidatesTokenCount === 'number' ? data.usageMetadata.candidatesTokenCount : undefined
-    const usage = promptTokens !== undefined || responseTokens !== undefined ? { promptTokens, responseTokens } : undefined
+    const thinkingTokens = typeof data?.usageMetadata?.thoughtsTokenCount === 'number' ? data.usageMetadata.thoughtsTokenCount : undefined
+    const usage = promptTokens !== undefined || responseTokens !== undefined || thinkingTokens !== undefined
+      ? { promptTokens, responseTokens, ...(thinkingTokens !== undefined ? { thinkingTokens } : {}) }
+      : undefined
     // ADR-0018 S2 amendment (2026-08-23): the untranslated provider value,
     // for the 2 call sites that persist it verbatim (existing tests assert
     // on the literal string) -- see StructuredGenerationResult's own
