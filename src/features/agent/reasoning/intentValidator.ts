@@ -256,6 +256,13 @@ function classifyEngineeringTaskShape(
   // repositories" -- see AgentReasoningGitHubInventory's own comment on
   // why collapsing those two is a different, wrong claim.
   if (!inventory || inventory.status === "unknown") return { kind: "inventoryUnknown" };
+  // KNOWN LIMITATION: this inventory is cache-backed, so a repository the
+  // user connected moments ago may not be in it yet -- a legitimate request
+  // against it then routes to (b), "not one of your connected
+  // repositories", which is wrong. It self-corrects on the next inventory
+  // refresh, and is left as-is deliberately: a retry or cache-bust here
+  // would trade a wrong-but-transient message for extra failure modes on a
+  // path that must stay fail-closed.
   return inventory.names.includes(target.repo)
     ? { kind: "lowConfidence" }
     : { kind: "repoNotConnected" };
