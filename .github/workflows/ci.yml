@@ -39,6 +39,16 @@ jobs:
         working-directory: agent/worker
         run: npm ci
 
+      # ENG-04: agent/companion's real-git integration tests (taskRunner.test.js,
+      # poller.test.js) run actual `git commit` against isolated local fixture
+      # repos. A fresh runner has no global git identity, so those commits fail
+      # with "Author identity unknown" -- this is CI-environment setup, not a
+      # companion source/test change.
+      - name: Configure git identity for companion test fixtures
+        run: |
+          git config --global user.email "ci@smartflow.local"
+          git config --global user.name "CI Runner"
+
       - name: Typecheck
         run: npm run typecheck
 
