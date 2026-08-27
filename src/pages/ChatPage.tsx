@@ -1384,7 +1384,7 @@ export function resolveAutoReadTurnContent(input: AutoReadTurnInput): string {
 // the same re-derivation -- deliberately not touched here (ENG-06f
 // scope), but flagged.
 //
-// ENG-06h: that flag came due immediately. Raising this constant past
+// ENG-06j: that flag came due immediately. Raising this constant past
 // REASONING_FETCH_TIMEOUT_MS (then 20_000) inverted the ordering the
 // original ENG-06 fix existed to establish, and the inversion is not
 // cosmetic: the overlay lane RESOLVES on timeout with a claim that the AI
@@ -2323,7 +2323,7 @@ export default function ChatPage() {
       // outcome rationale. handleSend's job is only to gather the resolved
       // inputs and apply the decision.
       //
-      // ENG-06h: that function was described here as "pure" until ENG-06f
+      // ENG-06j: that function was described here as "pure" until ENG-06f
       // added two logUnavailableCause() calls inside it, which write to the
       // console. Its RETURN VALUE is still a function of its inputs alone,
       // which is what the independent tests rely on -- but it is no longer

@@ -14,7 +14,7 @@ import {
 // timeout, ENG-06c blamed a provider outage and was wrong, ENG-06e
 // measured it as the chat-lane ceiling). These tests pin the diagnostic
 // that makes the next occurrence self-identifying.
-// ENG-06h: resolved from THIS FILE's location, not process.cwd(). The
+// ENG-06j: resolved from THIS FILE's location, not process.cwd(). The
 // working directory is a property of how the runner was invoked, not of
 // where the source lives -- so a cwd-based path passes under `npm test` at
 // the repo root and breaks under any runner started elsewhere (an IDE

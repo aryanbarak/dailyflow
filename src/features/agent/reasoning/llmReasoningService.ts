@@ -13,7 +13,7 @@ import type {
 // (INC-01), so making this fetch reject on timeout -- instead of never
 // settling -- is sufficient; no new honest-failure plumbing is needed here.
 //
-// ENG-06 / ENG-06f / ENG-06h. This ceiling MUST stay strictly greater than
+// ENG-06 / ENG-06f / ENG-06j. This ceiling MUST stay strictly greater than
 // ChatPage.tsx's CHAT_REQUEST_TIMEOUT_MS. That invariant is pinned by
 // src/features/chat/laneTimeoutOrdering.test.ts -- edit either constant and
 // that test tells you which way it broke.
@@ -32,7 +32,7 @@ import type {
 //        (ENG-06f)       on the premise that reasoning is actually the
 //                         faster lane. That re-inverted the ordering and
 //                         reopened the window in a worse form (below).
-//   30_000 (ENG-06h)   -- ordering restored, on a premise that does not
+//   30_000 (ENG-06j)   -- ordering restored, on a premise that does not
 //                         depend on which lane is faster.
 //
 // Both speed premises were wrong, in opposite directions, because each read
