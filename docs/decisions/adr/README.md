@@ -27,6 +27,7 @@ and must not be reused.
 - [ADR-0016: Proposal Outcome Ledger](ADR-0016-proposal-outcome-ledger.md) - Proposed
 - [ADR-0017: Deterministic Bank-Statement Import with Batch Write Governance](ADR-0017-deterministic-bank-import-governance.md) - Proposed
 - [ADR-0018: Capability-Oriented AI Provider Abstraction](ADR-0018-capability-oriented-ai-provider-abstraction.md) - Accepted
+- [ADR-0019: Flow-Write Permissions Keyed on Write-Intent Identity](ADR-0019-permission-key-on-write-intent.md) - Proposed
 
 ## ADR vs Decision Log
 
