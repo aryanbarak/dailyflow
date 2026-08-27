@@ -604,6 +604,92 @@ describe('handleChat mode routing', () => {
     expect(JSON.parse(body.reply ?? '{}')).toMatchObject({ type: 'inspect_tasks' })
   })
 
+  // ENG-06i: the deployed reasoning log now carries outcome=<type>, the same
+  // field reasoning-endpoint.ts has always logged locally. Without it,
+  // classification variance on the live path was only visible as a payload
+  // length -- ENG-06e had to infer which of three byte-identical requests
+  // got which classification from 538/385/496 chars.
+  describe('ENG-06i: outcome= on the deployed reasoning log', () => {
+    function reasoningLines(log: ReturnType<typeof vi.spyOn>): string[] {
+      return log.mock.calls
+        .map((call) => String(call[0]))
+        .filter((line) => line.includes('mode=reasoning'))
+    }
+
+    async function runReasoning(rawText: string) {
+      installFetchMock()
+      currentProviders = stubProviders({
+        structured: new StubStructuredGenerationProvider(() => ({
+          rawText,
+          finishReason: 'stop',
+          rawFinishReason: 'STOP',
+          usage: { promptTokens: 1200, thinkingTokens: 300, responseTokens: 60 },
+        })),
+      })
+      const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+      try {
+        const response = await worker.fetch(
+          chatRequest({ message: 'Reasoning prompt text', mode: 'reasoning', responseLanguage: 'en' }),
+          testEnv(),
+          fakeExecutionContext(),
+        )
+        return { response, lines: reasoningLines(log), body: await response.json() as { reply?: string } }
+      } finally {
+        log.mockRestore()
+      }
+    }
+
+    // The field itself, alongside the length it supplements rather than
+    // replaces -- both are wanted: a 538-char ask_clarification and a
+    // 538-char propose_engineering_task are the distinction being drawn.
+    it('logs the proposal type next to the existing length', async () => {
+      const rawText = '{"type":"propose_engineering_task","confidence":"high"}'
+      const { response, lines } = await runReasoning(rawText)
+
+      expect(response.status).toBe(200)
+      expect(lines).toHaveLength(1)
+      expect(lines[0]).toContain('outcome=propose_engineering_task')
+      expect(lines[0]).toContain(`reply=${rawText.length} chars`)
+    })
+
+    // Same field NAME as reasoning-endpoint.ts's [LocalReasoning] line, so
+    // one `outcome=` grep spans both endpoints. Pinned against the real
+    // source, because the whole value of mirroring is lost silently if
+    // either side is renamed.
+    it('uses the same field name as the local endpoint, read from its source', async () => {
+      // Resolved from THIS FILE, not process.cwd(): the working directory is
+      // a property of how the runner was invoked, not of where the source
+      // lives, so a cwd-based path passes under `npm test` at the repo root
+      // and ENOENTs under any runner started elsewhere. __dirname matches
+      // FIXTURE_DIR's existing pattern further down this file.
+      const localSource = readFileSync(path.join(__dirname, 'reasoning-endpoint.ts'), 'utf8')
+
+      expect(localSource).toContain('outcome=${String(proposal.type)}')
+
+      const { lines } = await runReasoning('{"type":"inspect_tasks","confidence":"high"}')
+      expect(lines[0]).toContain('outcome=')
+    })
+
+    // The two ways the read can come up empty. Both must be a log VALUE:
+    // this runs on a request already returning 200, so a throw here would
+    // convert a delivered proposal into a 500 -- an observability field
+    // causing the outage it was added to explain.
+    it.each([
+      ['unparseable', 'not json at all'],
+      ['unparseable', '{"type":"inspect_tasks"'],
+      ['absent', '{"confidence":"high"}'],
+      ['absent', '{"type":42}'],
+    ])('records %s rather than throwing, and still returns the reply', async (expected, rawText) => {
+      const { response, lines, body } = await runReasoning(rawText)
+
+      expect(response.status).toBe(200)
+      expect(lines[0]).toContain(`outcome=${expected}`)
+      // No behaviour change: the client still receives exactly what the
+      // model produced, parseable or not. Parsing is the client's job.
+      expect(body.reply).toBe(rawText)
+    })
+  })
+
   // Second symptom from the same incident: a follow-up plain-chat turn
   // (Gemini still down) used to fall through to the generic, content-less
   // "Something went wrong on my end" catch-all -- honest that SOMETHING

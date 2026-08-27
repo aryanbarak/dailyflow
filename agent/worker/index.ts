@@ -1055,7 +1055,7 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
   if (mode === 'reasoning') {
     try {
       const reply = await callGeminiReasoning(message, responseLanguage, env)
-      console.log(`[Chat] userId=${userId} sessionId=${sessionId} mode=reasoning reply=${reply.length} chars`)
+      console.log(`[Chat] userId=${userId} sessionId=${sessionId} mode=reasoning outcome=${reasoningOutcomeForLog(reply)} reply=${reply.length} chars`)
       return json({ reply }, 200, origin)
     } catch (err) {
       // INC-01: a provider failure (429/5xx/network) is a distinct outcome
@@ -1482,6 +1482,40 @@ class ModelResponseIncompleteError extends Error {
 }
 
 // =============================================
+// ENG-06i: the LOCAL reasoning endpoint has logged `outcome=<type>` since it
+// shipped (reasoning-endpoint.ts's [LocalReasoning] line); the DEPLOYED one
+// logged only a character count. That gap is why classification variance on
+// the live path had to be inferred rather than read: the ENG-06e tail
+// captured three byte-identical requests answering with 538/385/496-char
+// proposals, and telling which classifications those were meant reasoning
+// backwards from payload size. This closes that gap with one field, named
+// identically so a single `outcome=` grep spans both endpoints.
+//
+// Read for the log line only, never trusted and never acted on. Two
+// deliberate properties:
+//
+//  1. This is the MODEL'S CLAIMED type, sampled BEFORE the client's
+//     deterministic validator runs -- unlike the local endpoint's field,
+//     which is post-normalizeProposal. The validator reclassifies routinely
+//     (ENG-06g sends a hedged type carrying an engineering-task-shaped
+//     target to ask_clarification), so `outcome=unsupported` here means "the
+//     model said unsupported", NOT "the user was told it is unsupported".
+//     Reading it as the latter is exactly the inference error this line
+//     exists to remove, so it is written down rather than left implicit.
+//
+//  2. A parse failure is a log VALUE, not an error. This runs on a request
+//     that has already succeeded and is about to return 200, and the client
+//     owns parsing the proposal. Nothing here may change what the caller
+//     gets -- including by throwing.
+function reasoningOutcomeForLog(reply: string): string {
+  try {
+    const parsed = JSON.parse(reply) as { type?: unknown } | null
+    return typeof parsed?.type === 'string' ? parsed.type : 'absent'
+  } catch {
+    return 'unparseable'
+  }
+}
+
 // Gemini reasoning-mode call (/chat with mode="reasoning")
 //
 // Schema-enforced like /agent/reason's callGeminiOnce, so the model cannot
