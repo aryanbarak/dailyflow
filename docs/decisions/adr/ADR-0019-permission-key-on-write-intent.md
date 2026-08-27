@@ -1,8 +1,12 @@
 # ADR-0019: Flow-Write Permissions Keyed on Write-Intent Identity
 
-- **Status:** Proposed. Draft approved in shape by the Product Owner on
-  2026-08-27; stays Proposed until the migration and the code changes in
-  Consequences ship.
+- **Status:** Proposed. Under review. Moves to **Accepted on PO approval,
+  before implementation begins** - not after it ships. ADR-0001: *"Implementation
+  must not start before the relevant ADR is Accepted."* Implementation progress is
+  tracked in the GitHub issues under References, never in this line.
+  (An earlier revision said this ADR "stays Proposed until the migration and the
+  code changes ship," which inverted ADR-0001 - it would have had implementation
+  proceed under an unaccepted decision. Corrected here rather than silently.)
 - **Date:** 2026-08-27
 - **Decision Makers:** Product Owner (Aryan Barakzai) - decision; Claude Code - drafting.
 - **Supersedes:** None. Amends the permission-key shape introduced by
@@ -90,6 +94,37 @@ permission must not break or silently reset.
 No new field is added to the registry. `intentType` already exists, is
 already unique, and is already the value every other permission-adjacent
 derivation uses.
+
+#### RULE: `intentType` values are permanent
+
+The argument above is only half an argument until this is stated. `toolId` is
+rejected because the executing mechanism may change; that reasoning holds only
+if `intentType` may **not**. So, as a rule and not a note:
+
+> **`intentType` values are permanent. Renaming one is a migration, not a
+> refactor.**
+
+Once this ADR ships, permission rows bind to a code identifier. Renaming an
+`intentType` without migrating `flow_write_permissions` **silently orphans every
+user row for that capability**: the row still exists, nothing matches it,
+`resolveServerFlowWriteMode` finds no row and falls through to
+`defaultFlowWriteMode`. The user's explicit `off` becomes the code default with
+**no error, no log line, and no visible change in Settings** - which will render
+the default as though nothing were set. That is the OBS-01 failure mode
+(GitHub #189) reproduced in the permission model: an absence silently presented
+as a choice.
+
+**Where the rule lives:** `shared/writeIntentRegistry.ts`'s file header, next to
+the existing note explaining why the registry exists (the "~10 places" /
+task 22-fix passage). That header is what a developer reads before adding or
+changing an entry, and it is already the place where this registry's
+non-obvious invariants are recorded. A rule stated only in an ADR is a rule
+nobody reads at the moment it matters.
+
+This is a genuine new constraint, not a restatement. Before this ADR,
+`intentType` was an internal identifier that a rename would have carried
+through every derivation by type-checking alone. After it, the identifier has a
+persisted counterpart the compiler cannot see.
 
 ### 3. `propose_engineering_task` becomes a registry entry
 
@@ -216,6 +251,40 @@ under `finance.create` - closing the visible symptom and settling the
 governance question by default. This is precisely the failure mode
 described in Context.
 
+### E. `capability` as the identifier
+
+`WriteIntentDescriptor` also carries `capability: 'create' | 'update' | 'schedule'`
+(`shared/writeIntentRegistry.ts:69, 195`), which the Decision 2 evaluation did not
+consider. It should have been named there, so it is recorded here.
+
+`capability` is a **verb category shared across entries**, mirroring the
+corresponding `AgentToolDefinition`'s own `capability` field in `taskTools.ts` /
+`calendarTools.ts`. It is not an identity, and it is **not unique**:
+
+| intentType | capability |
+|---|---|
+| `create_task` | `create` |
+| `update_task` | `update` |
+| `create_calendar_event` | `schedule` |
+| `update_calendar_event` | `update` |
+| `create_finance_transaction` | `create` |
+| `import_bank_statement` | `create` |
+
+Three distinct values across six entries. `create` covers three of them.
+
+**Rejected, and it is the worst of the candidates**, not merely an inferior one:
+`capability` is strictly **coarser than the `(domain, action)` key this ADR
+replaces**. Keying on it would collapse `create_task`,
+`create_finance_transaction` and `import_bank_statement` into a single row -
+merging tasks with finance, which the current key at least keeps apart. It would
+make finding (2) worse and leave finding (1) unaddressed.
+
+Its asymmetry is also documented as deliberate: `create_calendar_event` uses
+`schedule` rather than `create` because the pre-existing tool definition did, and
+the registry preserves that as "asymmetry ... preserved data, not something this
+refactor normalizes." A field whose values are intentionally inconsistent for
+historical reasons is not a key candidate.
+
 ### D. Do nothing; rely on approval cards
 
 **Rejected by Decision 7 on code evidence.** Cards gate the enqueue, not
@@ -242,6 +311,74 @@ route is key-agnostic and survives the re-key untouched.
 Recorded rather than removed: the reasoning still applies to any *other*
 proposal to write rows before this migration ships. The constraint is
 satisfied, not withdrawn.
+
+### Negative consequences
+
+This decision has costs. They are accepted, not absent.
+
+#### N1. Permission rows are now coupled to code identifiers
+
+Before this ADR, `flow_write_permissions` keyed on `(domain, action)` - two
+values that describe the *shape* of an action in terms a product person would
+recognise, and that no refactor is likely to rename. After it, rows key on
+`intent_type`, a TypeScript identifier from a source file.
+
+This trades a loose coupling for a tight one. A stored row now depends on a code
+symbol staying stable, and **the compiler cannot see the dependency** - nothing
+type-checks a database row against a union member.
+
+**Mitigated, not eliminated,** by the permanence rule in Decision 2:
+`intentType` values are permanent, renaming one is a migration, and the rule
+lives in the registry header where it will be read. The mitigation is a
+convention backed by a comment, which is weaker than a compiler. That is the
+residual risk, and it is the price of a key that names what is authorised.
+
+Worth noting the alternative did not avoid this - it relocated it.
+`(domain, action)` are also code-derived, from the same registry entries. The
+coupling was always there; this ADR makes it explicit and names the identifier
+that carries it.
+
+#### N2. Row count grows from four pairs to one per capability, and keeps growing
+
+Today `WIRED_FLOW_WRITE_CAPABILITIES` yields five distinct `(domain, action)`
+pairs from six entries (`finance.create` twice - finding 2). After this ADR it
+yields **one row per registry entry: six, then seven with
+`propose_engineering_task`**, and one more for every capability ever added.
+
+Consequences:
+
+- **Settings must group by `domain` for display.** A flat list of seven controls
+  is already a worse UI than four, and it degrades with every new capability. The
+  domain is still on every registry entry, so grouping is a rendering concern
+  with no schema implication.
+- The Settings row count now tracks the registry rather than a hand-curated set,
+  so **adding a capability changes the UI automatically** - intended (it is the
+  whole point of finding 1) but it means a registry addition is a user-visible
+  change and should be reviewed as one.
+
+> **RULE: grouping by domain is presentation only. `domain` must never be
+> reintroduced into the key, the primary key, the query, or the upsert
+> conflict target.**
+
+Stated as a rule because the pull toward it is real and will look like a
+simplification: a future reader sees Settings grouped by domain, sees `domain` on
+every row, and "tidies up" by keying on it again. That reintroduces finding (2)
+exactly - `create_finance_transaction` and `import_bank_statement` collapse -
+and re-creates the defect this ADR exists to remove. The grouping is a `GROUP BY`
+in a component, never a column in a constraint.
+
+#### N3. Two sources of truth during rollout
+
+Between the migration landing and the Worker deploy, the deployed Worker still
+queries `domain=eq&action=eq` against a table that no longer has those columns.
+`resolveServerFlowWriteMode` catches a failed fetch and returns `'ask'`
+(`flow-write-policy.ts:299-303`), so the window **fails safe** - every write
+degrades to confirmation rather than executing unasked.
+
+Accepted rather than engineered around: the failure mode is a temporary extra
+confirmation prompt on a table that is empty anyway, and the alternative
+(a compatibility shim reading both shapes) is more code than the risk warrants.
+Deploy the Worker promptly after the migration; do not leave the window open.
 
 ### Known hazard 1: the duplicated default
 
@@ -314,7 +451,7 @@ Zero rows to migrate. Code: six files, roughly nine sites.
 
 | file | sites |
 |---|---|
-| `supabase/migrations/` | new migration: PK, check constraint, `updated_at` trigger, 3 RLS policies |
+| `supabase/migrations/` | new migration - **drop and recreate**, see below |
 | `agent/worker/flow-write-policy.ts` | `defaultFlowWriteMode:290`, `resolveServerFlowWriteMode:297` incl. the `domain=eq&action=eq` query, finance clamp `:317` |
 | `src/features/agent/flowWritePermissions.ts` | `WIRED_FLOW_WRITE_CAPABILITIES:25`, `defaultFlowWritePermissionMode:29`, `resolveFlowWritePermissionMode:38`, `listBrowserFlowWritePermissions:47`, `upsert:69` incl. `onConflict` |
 | `src/pages/SettingsPage.tsx` | render key `:678`, state reducer `:455-457`, upsert call `:459` |
@@ -324,6 +461,53 @@ Zero rows to migrate. Code: six files, roughly nine sites.
 Both runtimes import the registry, so this is a Worker change **and** a
 frontend change: `npx wrangler deploy` is required after
 `provider-contract-smoke`.
+
+#### The migration is a DROP-AND-RECREATE, not an ALTER
+
+The earlier scope line ("PK, check constraint, `updated_at` trigger, 3 RLS
+policies") described a rebuild without saying so. Stated explicitly, because the
+two carry different Tier-1 risk:
+
+**Chosen: drop and recreate.** The re-key drops the primary key, drops the
+`flow_write_permissions_domain_action_nonempty` check, removes two columns
+(`domain`, `action`), adds one (`intent_type`) and adds a new PK and check - an
+ALTER path of roughly seven statements that leaves the final shape spread across
+two migration files. On an empty table, a rebuild produces one authoritative
+definition in one place, which is easier to review and to reason about later.
+
+Facts that make it safe:
+
+- **Nothing references the table.** No foreign key points at
+  `flow_write_permissions` from any migration; the only other mentions are
+  comments in `20260815000000` and `20260817000000`. A `drop table` cascades into
+  nothing.
+- **All three RLS policies use only `auth.uid() = user_id`** - none reference
+  `domain` or `action` - so they are recreated verbatim, not redesigned.
+- The `set_flow_write_permissions_updated_at()` function is `create or replace`
+  and independent of the table; only the trigger needs recreating.
+
+**Required guard.** `drop table` is destructive and its safety rests entirely on
+the table being empty - a fact verified on 2026-08-27, not a property enforced by
+anything. If a user sets a permission between that verification and the
+migration being applied, a rebuild destroys that row **silently**, whereas an
+ALTER would fail loudly on the `not null` constraint for the unbackfillable
+`intent_type`.
+
+So the migration **must open with a pre-flight assertion that the table is
+empty** and abort otherwise:
+
+```sql
+do $$
+begin
+  if exists (select 1 from public.flow_write_permissions) then
+    raise exception 'flow_write_permissions is not empty - ADR-0019 assumed zero rows; migrate explicitly instead';
+  end if;
+end $$;
+```
+
+Without that guard, drop-and-recreate is the riskier of the two options. With
+it, it is the safer one: the destructive path cannot run on data, and an expired
+premise stops the migration instead of quietly consuming a user's choice.
 
 ### What this resolves and what it does not
 
