@@ -218,6 +218,47 @@ ADR supplies the second for the first time. It does **not** close #194:
 a permission key governs whether a proposal auto-executes into a pending
 row, not what the companion does once that row exists.
 
+### 8. The migration MUST assert the table is empty before dropping it
+
+Stated here, in Decisions, and not only in Consequences, because Decisions are
+normative in this format: an implementer reads them as binding, and a guard that
+lives only in a rationale section can be dropped as ceremony when someone
+actually writes the SQL.
+
+**Requirement.** The re-key migration is a drop-and-recreate (see Consequences).
+It **must** open with a pre-flight assertion that `flow_write_permissions`
+contains no rows, and abort if it does. A migration that drops the table without
+that assertion does not implement this ADR.
+
+```sql
+do $$
+begin
+  if exists (select 1 from public.flow_write_permissions) then
+    raise exception 'flow_write_permissions is not empty - ADR-0019 assumed zero rows; migrate explicitly instead';
+  end if;
+end $$;
+```
+
+**Why this is a decision and not a precaution.** The entire safety case for
+drop-and-recreate rests on the table being empty - a fact *verified on
+2026-08-27*, not a property anything enforces. **Emptiness verified on a date is
+not emptiness enforced at apply time.**
+
+That gap is the same defect family this ADR's surrounding work has been
+documenting: **a premise that was true once, relied on afterwards as a standing
+guarantee.** INC-02 (GitHub #188) is a turn reported as failed while its write
+succeeded - a client-side timeout treated as authority over server state it no
+longer had. OBS-01 (GitHub #189) is an absent `user_settings` row becoming an
+affirmative `'en'` - a default presented as a stated preference. Here it would be
+a verification date presented as an invariant, and the cost is the sharpest of
+the three: **silent destruction of a user's explicit permission choice**, with no
+error and nothing to notice afterwards.
+
+The guard converts the premise into a checked precondition. If the premise has
+expired, the migration stops instead of consuming the row - which is the same
+principle as the fail-safe already present in `resolveServerFlowWriteMode`, where
+an unreachable permissions table degrades to `'ask'` rather than to execution.
+
 ## Alternatives Considered
 
 ### A. Engineering tasks as a new `domain`
@@ -486,7 +527,8 @@ Facts that make it safe:
 - The `set_flow_write_permissions_updated_at()` function is `create or replace`
   and independent of the table; only the trigger needs recreating.
 
-**Required guard.** `drop table` is destructive and its safety rests entirely on
+**Required guard - see Decision 8, which states this as a requirement of the
+migration rather than a recommendation.** `drop table` is destructive and its safety rests entirely on
 the table being empty - a fact verified on 2026-08-27, not a property enforced by
 anything. If a user sets a permission between that verification and the
 migration being applied, a rebuild destroys that row **silently**, whereas an
