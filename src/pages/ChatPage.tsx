@@ -1383,6 +1383,33 @@ export function resolveAutoReadTurnContent(input: AutoReadTurnInput): string {
 // both now do. If reasoning latency ever grows, its 20 000 ms deserves
 // the same re-derivation -- deliberately not touched here (ENG-06f
 // scope), but flagged.
+//
+// ENG-06h: that flag came due immediately. Raising this constant past
+// REASONING_FETCH_TIMEOUT_MS (then 20_000) inverted the ordering the
+// original ENG-06 fix existed to establish, and the inversion is not
+// cosmetic: the overlay lane RESOLVES on timeout with a claim that the AI
+// provider is unavailable, while this lane REJECTS and tears the turn down
+// honestly. With this ceiling higher, the overlay gave up first and its
+// claim rode along on a chat reply that then arrived successfully -- a true
+// answer with a false "temporarily unavailable" note under it.
+//
+// Fixed by raising REASONING_FETCH_TIMEOUT_MS to 30_000 rather than by
+// lowering this one: see that constant's comment for why relative lane
+// speed cannot decide the ordering (the two lanes' observed maxima are
+// within 3%) and why the rule is instead "the lane that makes claims must
+// never be the first to give up". The relationship is pinned by
+// src/features/chat/laneTimeoutOrdering.test.ts, which fails if either
+// constant is edited in a way that re-inverts it.
+//
+// ACCEPTED COST of this constant's own 15_000 -> 25_000 change, recorded
+// here because it was never written down: on a genuinely dead request the
+// user now waits 25 s instead of 15 s before seeing any failure at all --
+// 10 s longer staring at a spinner with no signal. That is a real
+// regression on the true-failure path, accepted deliberately: the
+// alternative was continuing to report ordinary 14 071 ms turns (94% of the
+// old ceiling) as failures, and a false failure on a working turn is worse
+// than a slow true one on a broken turn. Revisit if latency work ever
+// brings the observed max down enough to lower this.
 export const CHAT_REQUEST_TIMEOUT_MS = 25_000
 
 export function isChatRequestTimeoutError(error: unknown): boolean {
@@ -2291,10 +2318,20 @@ export default function ChatPage() {
       }
 
       // Task 11: the actual combining decision (for everything that isn't
-      // an auto-executed read) lives in resolveChatTurnOutcome (a pure,
+      // an auto-executed read) lives in resolveChatTurnOutcome (an
       // independently-tested function) -- see its own comment for the
       // outcome rationale. handleSend's job is only to gather the resolved
       // inputs and apply the decision.
+      //
+      // ENG-06h: that function was described here as "pure" until ENG-06f
+      // added two logUnavailableCause() calls inside it, which write to the
+      // console. Its RETURN VALUE is still a function of its inputs alone,
+      // which is what the independent tests rely on -- but it is no longer
+      // side-effect free, and the distinction matters at exactly one point:
+      // this call site must stay the only one, and must stay out of render.
+      // Calling it during render would emit a diagnostic line per render
+      // pass, silently inflating the very counts those lines exist to make
+      // countable.
       const outcome = autoReadContent !== null
         ? { content: autoReadContent, reasoningStates: null }
         : resolveChatTurnOutcome({ intentSignal, message: text, responseLanguage, reply, overlayResult, serverWritePolicyMode: writePolicy?.mode, serverWriteExecution: writeExecution }, t)

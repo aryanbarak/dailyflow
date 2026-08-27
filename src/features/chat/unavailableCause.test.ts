@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import {
   UNAVAILABLE_CAUSE,
@@ -14,6 +14,15 @@ import {
 // timeout, ENG-06c blamed a provider outage and was wrong, ENG-06e
 // measured it as the chat-lane ceiling). These tests pin the diagnostic
 // that makes the next occurrence self-identifying.
+// ENG-06h: resolved from THIS FILE's location, not process.cwd(). The
+// working directory is a property of how the runner was invoked, not of
+// where the source lives -- so a cwd-based path passes under `npm test` at
+// the repo root and breaks under any runner started elsewhere (an IDE
+// per-file run, a workspace-root invocation). import.meta.url does not move.
+function readWorkerSource(): string {
+  return readFileSync(fileURLToPath(new URL("../../../agent/worker/index.ts", import.meta.url)), "utf8");
+}
+
 describe("unavailableCause", () => {
   it("emits one greppable line carrying the cause code", () => {
     const line = formatUnavailableCause(UNAVAILABLE_CAUSE.CHAT_LANE_TIMEOUT);
@@ -68,10 +77,7 @@ describe("unavailableCause", () => {
   // would quietly stop matching the Worker half. This reads the Worker
   // source and pins the literals instead of trusting the convention.
   it("keeps the Worker's duplicated literals identical to this module's codes", () => {
-    const workerSource = readFileSync(
-      path.join(process.cwd(), "agent", "worker", "index.ts"),
-      "utf8",
-    );
+    const workerSource = readWorkerSource();
 
     expect(workerSource).toContain(
       `${UNAVAILABLE_CAUSE_LOG_PREFIX} cause=${UNAVAILABLE_CAUSE.WORKER_PROVIDER_UNAVAILABLE_REASONING}`,
@@ -85,10 +91,7 @@ describe("unavailableCause", () => {
   // one to miss: it returns a normal 200 carrying the honest sentence as
   // the reply, so without its tag a tail shows no error status at all.
   it("tags both Worker producers, including the one that returns 200", () => {
-    const workerSource = readFileSync(
-      path.join(process.cwd(), "agent", "worker", "index.ts"),
-      "utf8",
-    );
+    const workerSource = readWorkerSource();
     const tagged = workerSource.match(/\[UnavailableCause\] cause=/g) ?? [];
 
     expect(tagged.length).toBe(2);

@@ -13,30 +13,88 @@ import type {
 // (INC-01), so making this fetch reject on timeout -- instead of never
 // settling -- is sufficient; no new honest-failure plumbing is needed here.
 //
-// ENG-06: this ceiling was 10_000 -- SHORTER than the plain-chat fetch's
-// own CHAT_REQUEST_TIMEOUT_MS (15_000, ChatPage.tsx), even though the two
-// run concurrently in the same Promise.all and this one is consistently
-// the HEAVIER call: it asks the provider for structured generation
-// against a schema that ENG-04 widened with the engineering-task fields
-// (intentValidator.ts's engineeringInstruction alone is bounded at 4000
-// chars), while /chat asks for free text. The inversion had a real
-// user-visible cost: on a detailed engineering-task request, the
-// reasoning lane hit its 10s ceiling first, the orchestrator's catch
-// turned that into providerUnavailable, and the user got the honest chat
-// reply with NO approval card -- the proposal they asked for silently
-// never appeared. Raised to 20_000 so the heavier lane is never the first
-// to give up: >= chat's 15s, plus a 5s margin proportional to the extra
-// structured-generation work.
+// ENG-06 / ENG-06f / ENG-06h. This ceiling MUST stay strictly greater than
+// ChatPage.tsx's CHAT_REQUEST_TIMEOUT_MS. That invariant is pinned by
+// src/features/chat/laneTimeoutOrdering.test.ts -- edit either constant and
+// that test tells you which way it broke.
 //
-// The exact number is a reasoned default, NOT a measured p95. There is no
-// latency telemetry in this repo to derive one from:
-// provider_failure_events (20260823000000) stores failure metadata only
-// -- {capability, provider_id, http_status, occurred_at, request_id}, no
+// History, because the rule has now been derived twice from two different
+// premises and only the second one holds:
+//
+//   10_000 (original)  -- BELOW chat's 15_000. The reasoning lane hit its
+//                         ceiling first on a detailed engineering-task
+//                         request, the orchestrator's catch turned that
+//                         into providerUnavailable, and the user got an
+//                         honest chat reply with NO approval card.
+//   20_000 (ENG-06)    -- restored the ordering, justified by "this is
+//                         consistently the HEAVIER call".
+//   25_000 chat        -- ENG-06f raised the OTHER constant past this one
+//        (ENG-06f)       on the premise that reasoning is actually the
+//                         faster lane. That re-inverted the ordering and
+//                         reopened the window in a worse form (below).
+//   30_000 (ENG-06h)   -- ordering restored, on a premise that does not
+//                         depend on which lane is faster.
+//
+// Both speed premises were wrong, in opposite directions, because each read
+// half the record. Full measured maxima: this lane 14 493 ms (ENG-06c,
+// 19:26Z), the chat lane 14 071 ms (ENG-06e, 21:50Z) -- within 3% of each
+// other. ENG-06f's "reasoning is faster (12 297 ms)" used only the ENG-06e
+// half and missed the ENG-06c capture that agent/worker/index.ts's own
+// truncation comment already cites as the worst case. Neither lane is
+// reliably heavier, so relative speed cannot support an ordering rule at
+// all.
+//
+// What DOES support it is that the two lanes fail asymmetrically. Both run
+// under one Promise.all in handleSend, but:
+//
+//   - the chat lane REJECTS on timeout, so Promise.all rejects, handleSend's
+//     catch fires, and the user is told the request timed out. That is a
+//     statement about US giving up, and it is true.
+//   - this lane CATCHES its own timeout and RESOLVES with a
+//     providerUnavailable proposal (reasoningOrchestrator.ts), which becomes
+//     a trailing note claiming the AI provider is unavailable. That is a
+//     statement about the PROVIDER -- and it gets attached to whatever the
+//     chat lane returns afterwards.
+//
+// So whichever ceiling is LOWER decides which of those two things happens.
+// With this lane lower, it manufactures a claim about the provider while the
+// chat lane is still in flight; the chat lane then succeeds, and the user
+// reads a real answer with "the AI is temporarily unavailable" stapled
+// underneath it. Same defect class as ENG-06g: the system asserting
+// something untrue about its own state.
+//
+// Hence the rule, in the form that survives future latency changes: the lane
+// that makes CLAIMS must never be the first to give up. Direction chosen
+// deliberately over the alternative (lowering chat back under this ceiling),
+// which cannot work while chat keeps a defensible margin -- chat's observed
+// max of 14 071 ms needs >= 22 514 ms to hold the project's 1.6x per-lane
+// factor, which is already above this constant's old 20_000.
+//
+// 30_000 is 2.07x this lane's own observed max of 14 493 ms (comfortably
+// past that same 1.6x bar) and leaves 5 000 ms of ordering margin over
+// chat's 25_000 -- enough that the invariant does not depend on the two
+// lanes being started in the same synchronous block, which today they are
+// but need not stay.
+//
+// ACCEPTED COST, stated because it is real: this lane resolving rather than
+// rejecting means Promise.all waits for it even when the chat lane already
+// finished. So on a turn where chat returns quickly and this lane hangs, the
+// worst-case wait rises from 25 s to 30 s. That is the price of the
+// ordering, and it is the right trade -- five seconds of extra spinner on a
+// hung overlay is cheaper than telling a user their working AI is down. The
+// structural fix that would avoid both costs is to stop making the user wait
+// on a lane whose only remaining output is a failure note; that is a
+// redesign of the Promise.all, not a constant.
+//
+// The exact number is still a reasoned default, NOT a measured p95. There is
+// no latency telemetry in this repo to derive one from:
+// provider_failure_events (20260823000000) stores failure metadata only --
+// {capability, provider_id, http_status, occurred_at, request_id}, no
 // duration column -- and records only failures, never successful-call
 // timings; reasoning-endpoint.ts's `durationMs=` line is an unaggregated
 // console log of Worker-side handler time, not the client round trip.
-// Revisit this constant if that telemetry ever gains a duration column.
-const REASONING_FETCH_TIMEOUT_MS = 20_000;
+// Revisit if that telemetry ever gains a duration column.
+export const REASONING_FETCH_TIMEOUT_MS = 30_000;
 
 export type AgentReasoningParseResult =
   | { ok: true; value: unknown }

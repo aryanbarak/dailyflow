@@ -47,7 +47,7 @@ export const UNAVAILABLE_CAUSE = {
   CHAT_LANE_TIMEOUT: 'CHAT_LANE_TIMEOUT',
   // Client, overlay lane: reasoningOrchestrator reported providerUnavailable
   // -- either the Worker's typed 503 relayed through llmReasoningService,
-  // or the reasoning fetch itself rejecting (network, or its own 20s
+  // or the reasoning fetch itself rejecting (network, or its own 30s
   // ceiling). Still coarser than the two below; narrowing it further is
   // possible but needs a flag threaded through the caller, which this
   // change deliberately does not do.

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  REASONING_FETCH_TIMEOUT_MS,
   createLlmReasoningCaller,
   parseLlmIntentJson,
 } from "./llmReasoningService";
@@ -134,10 +135,12 @@ describe("llmReasoningService", () => {
 
       const resultPromise = caller({ prompt: "Return JSON", responseLanguage: "en", sessionId: "session-1" });
       const assertion = expect(resultPromise).rejects.toMatchObject({ code: "TIMEOUT" });
-      // ENG-06: advance to the CURRENT ceiling (20_000, was 10_000). The
-      // behaviour this test guards -- rejects rather than hangs -- is
-      // unchanged; only the deadline moved.
-      await vi.advanceTimersByTimeAsync(20_000);
+      // ENG-06 / ENG-06h: driven off the exported constant, not a literal.
+      // This deadline has moved three times (10_000 -> 20_000 -> 30_000) and
+      // a hardcoded copy silently under-advances on the next move, turning
+      // "the ceiling changed" into "this test fails for no visible reason".
+      // The behaviour guarded -- rejects rather than hangs -- is unchanged.
+      await vi.advanceTimersByTimeAsync(REASONING_FETCH_TIMEOUT_MS);
       await assertion;
     } finally {
       vi.useRealTimers();
@@ -145,8 +148,11 @@ describe("llmReasoningService", () => {
   });
 
   // ENG-06 regression: the reasoning ceiling used to be 10_000 -- SHORTER
-  // than the plain-chat lane's CHAT_REQUEST_TIMEOUT_MS (15_000,
-  // ChatPage.tsx) despite being the heavier, structured-generation call.
+  // than the plain-chat lane's CHAT_REQUEST_TIMEOUT_MS (15_000 at the time;
+  // 25_000 today) despite being believed the heavier call. ENG-06h has since
+  // replaced that "heavier lane" reasoning with an ordering invariant that
+  // does not depend on relative speed, pinned by laneTimeoutOrdering.test.ts
+  // -- see REASONING_FETCH_TIMEOUT_MS's own comment.
   // A detailed engineering-task proposal that took ~12-14s therefore hit
   // the reasoning ceiling first and the user got the honest chat reply
   // with no approval card at all. This proves a 13s call now RESOLVES
