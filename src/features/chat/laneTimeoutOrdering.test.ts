@@ -14,7 +14,7 @@ import { withTimeout } from "@/features/agent";
 import { REASONING_FETCH_TIMEOUT_MS } from "@/features/agent/reasoning/llmReasoningService";
 import { CHAT_REQUEST_TIMEOUT_MS, isChatRequestTimeoutError } from "@/pages/ChatPage";
 
-// ENG-06h. handleSend runs two lanes under one Promise.all, and they fail
+// ENG-06j. handleSend runs two lanes under one Promise.all, and they fail
 // ASYMMETRICALLY:
 //
 //   chat lane     -> withTimeout REJECTS -> Promise.all rejects -> the turn
@@ -35,7 +35,7 @@ import { CHAT_REQUEST_TIMEOUT_MS, isChatRequestTimeoutError } from "@/pages/Chat
 // constants that live in different files, with nothing between them
 // asserting a relationship. The arithmetic assertions are the cheap half;
 // the behavioural one below is the point.
-describe("ENG-06h: chat/overlay lane timeout ordering", () => {
+describe("ENG-06j: chat/overlay lane timeout ordering", () => {
   // Measured maxima, both from live wrangler tail captures. Kept here as
   // the shared basis for both ceilings, since the per-lane margin checks
   // below are what stop the ordering being "restored" by crushing the chat
