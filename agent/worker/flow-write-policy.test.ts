@@ -168,9 +168,19 @@ describe('flow write policy and deterministic dates', () => {
     expect(assembleTaskWriteIntent('\u0628\u0644\u06cc \u0628\u0633\u0627\u0632', history, NOW, TZ)).toBeNull()
   })
 
-  it('defaults reversible task create/update to auto and unknown actions to ask', () => {
-    expect(defaultFlowWriteMode('tasks', 'create')).toBe('auto')
-    expect(defaultFlowWriteMode('tasks', 'update')).toBe('auto')
+  // INC-02 (GitHub #188): reversible task create/update defaulted to 'auto'
+  // from ADR-0012 until 2026-08-27. It is now clamped to 'ask' -- see
+  // defaultFlowWriteMode's own comment for why, and for the exit condition
+  // (ENG-07 / GitHub #185, BOTH the abort plumbing and the recovery
+  // surface). This test is the one that flips back when the clamp retires;
+  // it is deliberately worded so that flipping it requires knowing that.
+  //
+  // The delete and unknown-action expectations are UNCHANGED and were never
+  // 'auto' -- kept here so the clamp cannot be mistaken for having widened
+  // 'ask' to cases that already had it.
+  it('INC-02: clamps reversible task create/update to ask (was auto); delete and unknown stay ask', () => {
+    expect(defaultFlowWriteMode('tasks', 'create')).toBe('ask')
+    expect(defaultFlowWriteMode('tasks', 'update')).toBe('ask')
     expect(defaultFlowWriteMode('tasks', 'delete')).toBe('ask')
     expect(defaultFlowWriteMode('unknown', 'create')).toBe('ask')
   })
