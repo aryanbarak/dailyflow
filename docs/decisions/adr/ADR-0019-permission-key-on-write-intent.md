@@ -1,12 +1,14 @@
 # ADR-0019: Flow-Write Permissions Keyed on Write-Intent Identity
 
-- **Status:** Proposed. Under review. Moves to **Accepted on PO approval,
-  before implementation begins** - not after it ships. ADR-0001: *"Implementation
-  must not start before the relevant ADR is Accepted."* Implementation progress is
-  tracked in the GitHub issues under References, never in this line.
-  (An earlier revision said this ADR "stays Proposed until the migration and the
-  code changes ship," which inverted ADR-0001 - it would have had implementation
-  proceed under an unaccepted decision. Corrected here rather than silently.)
+- **Status:** **Accepted** - Product Owner decision, 2026-08-27. This is current
+  architecture; implementation must follow it (ADR-0001). Implementation progress
+  is tracked in the GitHub issues under References, never in this line.
+  (Proposed 2026-08-27, accepted the same day after PO review of the full draft.
+  An earlier revision of this line said the ADR "stays Proposed until the
+  migration and the code changes ship," which inverted ADR-0001 - *"Implementation
+  must not start before the relevant ADR is Accepted"* - and would have had
+  implementation proceed under an unaccepted decision. Corrected before
+  acceptance, and recorded here rather than silently fixed.)
 - **Date:** 2026-08-27
 - **Decision Makers:** Product Owner (Aryan Barakzai) - decision; Claude Code - drafting.
 - **Supersedes:** None. Amends the permission-key shape introduced by
