@@ -657,7 +657,12 @@ describe('handleChat mode routing', () => {
     // source, because the whole value of mirroring is lost silently if
     // either side is renamed.
     it('uses the same field name as the local endpoint, read from its source', async () => {
-      const localSource = readFileSync(path.join(process.cwd(), 'agent', 'worker', 'reasoning-endpoint.ts'), 'utf8')
+      // Resolved from THIS FILE, not process.cwd(): the working directory is
+      // a property of how the runner was invoked, not of where the source
+      // lives, so a cwd-based path passes under `npm test` at the repo root
+      // and ENOENTs under any runner started elsewhere. __dirname matches
+      // FIXTURE_DIR's existing pattern further down this file.
+      const localSource = readFileSync(path.join(__dirname, 'reasoning-endpoint.ts'), 'utf8')
 
       expect(localSource).toContain('outcome=${String(proposal.type)}')
 
