@@ -102,6 +102,10 @@ interface WorkersAIChatCompletionResponse {
     message?: { content?: string | null }
     finish_reason?: string
   }>
+  // Chat V2 Slice 1: the Chat Completions shape's usage block, parsed only
+  // for the diagnostics-only TextGenerationResult fields (see that
+  // interface's own comment). All optional and read defensively.
+  usage?: { prompt_tokens?: unknown; completion_tokens?: unknown }
 }
 
 function mapRole(role: ChatMessage['role']): 'user' | 'assistant' {
@@ -198,6 +202,23 @@ export class WorkersAITextGenerationProvider implements TextGenerationProvider {
     const text = typeof choice?.message?.content === 'string' ? choice.message.content : ''
     const finishReason = mapFinishReason(choice?.finish_reason)
 
-    return { text, finishReason }
+    // Chat V2 Slice 1: diagnostics-only additive fields (see
+    // TextGenerationResult's own comment). Parsed defensively, absent when
+    // the binding's response carries nothing usable.
+    const usage = data?.usage
+      ? {
+          ...(typeof data.usage.prompt_tokens === 'number' ? { promptTokens: data.usage.prompt_tokens } : {}),
+          ...(typeof data.usage.completion_tokens === 'number' ? { responseTokens: data.usage.completion_tokens } : {}),
+        }
+      : undefined
+
+    return {
+      text,
+      finishReason,
+      providerId: this.id,
+      model: DEFAULT_WORKERS_AI_TEXT_MODEL,
+      ...(usage && Object.keys(usage).length > 0 ? { usage } : {}),
+      ...(typeof choice?.finish_reason === 'string' ? { rawFinishReason: choice.finish_reason } : {}),
+    }
   }
 }

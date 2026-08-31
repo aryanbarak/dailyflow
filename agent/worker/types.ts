@@ -131,4 +131,12 @@ export interface AgentBriefing {
 export interface ChatOptions {
   maxOutputTokens?: number
   temperature?: number
+  // Chat V2 Slice 1: 'fast' = an ordinary conversational turn. The client
+  // DECLARES its route, but the server stays authoritative: handleChat
+  // demotes the declaration to 'legacy' whenever its own deterministic
+  // write detection engaged for the turn (see effectiveChatLane there).
+  // The lane affects ONLY text-provider preference (Gemini primary for
+  // 'fast') and the telemetry line -- never write policy, approval, or
+  // persistence.
+  lane?: 'fast' | 'legacy'
 }

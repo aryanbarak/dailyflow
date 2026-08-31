@@ -47,6 +47,9 @@ import { shouldAutoRunReadOnlyOverlay } from '@/features/chat/autoReadOverlayGat
 import { isChatEmptyState } from '@/features/chat/emptyStateVisibility'
 import { UNAVAILABLE_CAUSE, logUnavailableCause } from '@/features/chat/unavailableCause'
 import { timeAgo } from '@/features/chat/timeAgo'
+// Chat V2 Slice 1: deterministic FAST-vs-LEGACY routing -- see that
+// module's own header for the rule and the downgrade-only safety invariant.
+import { classifyChatV2Route, resolveChatV2IntentSignal, shouldStartReasoningOverlay } from '@/features/chat/chatV2Routing'
 import { useAppearance } from '@/features/settings/appearanceStore'
 import {
   createLlmReasoningCaller,
@@ -2143,7 +2146,15 @@ export default function ChatPage() {
       const { data: { session } } = await supabase.auth.getSession()
       if (session === null) throw new Error('No session')
 
-      const intentSignal = classifyMessageIntentSignal(text)
+      // Chat V2 Slice 1: base classification is unchanged; the router can
+      // only DOWNGRADE an 'explicit' base signal to 'conversational' for a
+      // message with zero action evidence and a positive conversational
+      // shape (see chatV2Routing.ts). 'legacy'-routed messages keep today's
+      // behavior byte-for-byte, including the reasoning overlay below.
+      const baseIntentSignal = classifyMessageIntentSignal(text)
+      const chatV2RoutingDeps = { looksLikeExplicitActionRequest }
+      const chatV2Route = classifyChatV2Route(text, baseIntentSignal, chatV2RoutingDeps)
+      const intentSignal = resolveChatV2IntentSignal(text, baseIntentSignal, chatV2RoutingDeps)
 
       // Task 11 fix (conversation-first inversion): the DEFAULT LANE.
       // Every inbound message calls the plain /chat conversational
@@ -2180,6 +2191,12 @@ export default function ChatPage() {
               // Task 19: turn-scoped -- only ever the document attached to
               // THIS specific turn, never a stale reference from an earlier one.
               documentId: sentDocument?.id ?? null,
+              // Chat V2 Slice 1: the route DECLARATION. The Worker stays
+              // authoritative -- it demotes 'fast' to 'legacy' whenever its
+              // own deterministic write detection engages, and the lane
+              // only ever affects text-provider preference + telemetry
+              // there, never policy.
+              lane: chatV2Route,
             }),
           }),
           CHAT_REQUEST_TIMEOUT_MS,
@@ -2198,7 +2215,13 @@ export default function ChatPage() {
       // degrades to the conversation lane silently (logged here, not
       // surfaced to the user).
       let overlayPromise: Promise<AgentReasoningResult | null> = Promise.resolve(null)
-      if (intentSignal === 'explicit') {
+      // Chat V2 Slice 1: the gate is the extracted, pinned
+      // shouldStartReasoningOverlay (still `intentSignal === 'explicit'`).
+      // A FAST-routed message can never satisfy it (its signal was
+      // downgraded above), so the fast path never starts -- and therefore
+      // never waits on -- the reasoning lane; Promise.all below then
+      // resolves on the conversation lane alone.
+      if (shouldStartReasoningOverlay(intentSignal)) {
         // TEMP diagnostic, remove once the stale-closure fix (adding
         // githubRepositoryInventory to handleSend's useCallback deps) is
         // confirmed live: proves what this specific reasoning call actually

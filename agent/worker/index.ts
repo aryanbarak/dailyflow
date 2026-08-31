@@ -42,6 +42,10 @@ import {
 } from './flow-write-policy'
 import { ProviderRequestError, ProviderUnavailableError } from './provider-errors'
 import { createProviders } from './providers/createProviders'
+// Chat V2 Slice 1: structured text-lane diagnostics (correlation id,
+// provider, model, elapsed ms, tokens, fallbackUsed) -- see that module's
+// own security contract (no message contents, ever).
+import { formatChatTextTelemetryLine, resolveExpectedPrimaryProviderId, resolveFallbackUsed } from './chat-text-telemetry'
 // ADR-0018 S1b follow-up: /chat's own AttachmentsUnsupportedError handler
 // (handleChat's mode:'chat' catch, below) needs the class to check against
 // -- this is a structural last resort, since callGeminiChat now pins to
@@ -1008,6 +1012,7 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
   let documentId: string | null
   let timeZone: string
   let undoIdFromBody: string | null
+  let requestedLane: 'fast' | 'legacy'
   try {
     const body = await request.json() as {
       message?: unknown
@@ -1017,6 +1022,7 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
       documentId?: unknown
       timeZone?: unknown
       undoId?: unknown
+      lane?: unknown
     }
     const parsed = typeof body.message === 'string' ? body.message.trim() : ''
     if (parsed === '') {
@@ -1038,6 +1044,12 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
     documentId = typeof body.documentId === 'string' && body.documentId.trim() !== '' ? body.documentId.trim() : null
     timeZone = typeof body.timeZone === 'string' && body.timeZone.trim() !== '' ? body.timeZone.trim() : 'UTC'
     undoIdFromBody = typeof body.undoId === 'string' && /^undo:[0-9a-f-]{36}$/i.test(body.undoId.trim()) ? body.undoId.trim() : null
+    // Chat V2 Slice 1: the client's route declaration for this turn.
+    // 'legacy' for anything but the exact literal 'fast' (fail-closed) --
+    // and even 'fast' is only a PREFERENCE: it is demoted below whenever
+    // this handler's own deterministic write detection engages, so the
+    // client can never route a write-shaped turn around server policy.
+    requestedLane = body.lane === 'fast' ? 'fast' : 'legacy'
     try {
       new Intl.DateTimeFormat('en-US', { timeZone }).format(new Date())
     } catch {
@@ -1285,9 +1297,18 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
     // was exactly this generic message standing in for a knowable,
     // specific cause. Caught here, before the outer catch, so this one
     // specific cause gets a specific, honest reply instead.
+    // Chat V2 Slice 1: the server-authoritative lane decision. The client's
+    // 'fast' declaration survives only when this handler's own deterministic
+    // write detection found nothing for the turn (pendingWritePolicy unset;
+    // every other write outcome already returned above). The lane changes
+    // ONLY the text-provider preference (Gemini primary) and the telemetry
+    // line inside callGeminiChat -- policy, approval, history, and
+    // persistence are identical on both lanes.
+    const effectiveChatLane: 'fast' | 'legacy' = requestedLane === 'fast' && !pendingWritePolicy ? 'fast' : 'legacy'
+
     let rawReply: string
     try {
-      rawReply = await callGeminiChat(system, fullHistory, env, {}, attachmentImage)
+      rawReply = await callGeminiChat(system, fullHistory, env, { lane: effectiveChatLane }, attachmentImage)
     } catch (err) {
       // ADR-0018 S1b follow-up: structural last resort -- callGeminiChat
       // pins to Gemini whenever attachmentImage is set, so this branch
@@ -1426,8 +1447,15 @@ async function callGeminiChat(
   // budget).
   const maxOutputTokens = options.maxOutputTokens ?? 2048
   const temperature = options.temperature ?? 0.7
+  // Chat V2 Slice 1: 'legacy' when the caller says nothing, so every
+  // pre-existing call shape keeps today's provider selection byte-for-byte.
+  const lane = options.lane ?? 'legacy'
 
-  console.log('[Chat] sending', history.length, 'turns to Gemini')
+  // Chat V2 Slice 1 (ENG-06f fix): this line used to hardcode "to Gemini",
+  // which was wrong whenever AI_TEXT_PROVIDER selected Workers AI -- the
+  // provider that actually answered is now reported by the telemetry line
+  // below instead of asserted up front.
+  console.log(`[Chat] sending ${history.length} turns to text provider (lane=${lane})`)
 
   // MIG-01b: thinkingConfig removed -- see callGemini's own comment.
   // ADR-0018 S1b follow-up: an image attachment must WORK regardless of
@@ -1437,7 +1465,18 @@ async function callGeminiChat(
   // WorkersAITextGenerationProvider's generic attachments-unsupported
   // rejection for a request that structurally cannot succeed on that
   // provider.
-  const result = await createProviders(env, fetch, imageAttachment ? { pinTextProvider: 'gemini' } : {}).text.generateText({
+  // Chat V2 Slice 1: the fast conversational lane prefers Gemini as PRIMARY
+  // (createProviders' preferTextProvider -- keeps the AI_TEXT_FALLBACK
+  // chain, unlike the attachment pin, which stays first and unchanged).
+  const providerOptions = imageAttachment
+    ? { pinTextProvider: 'gemini' as const }
+    : lane === 'fast'
+      ? { preferTextProvider: 'gemini' as const }
+      : {}
+
+  const requestId = crypto.randomUUID()
+  const textCallStartedAt = Date.now()
+  const result = await createProviders(env, fetch, providerOptions).text.generateText({
     system,
     turns: history,
     maxOutputTokens,
@@ -1450,9 +1489,30 @@ async function callGeminiChat(
       : {}),
   })
 
-  console.log('[Chat] finishReason:', result.finishReason, 'text length:', result.text.length)
+  // Chat V2 Slice 1: the structured text-lane diagnostics ENG-06f asked for
+  // (provider, model, elapsed ms, tokens, fallbackUsed) -- one line, no
+  // message contents, no secrets (see chat-text-telemetry.ts's contract).
+  // Replaces the old finishReason/text-length line, whose surrounding logs
+  // wrongly asserted "Gemini" regardless of which provider actually ran.
+  console.log(formatChatTextTelemetryLine({
+    requestId,
+    lane,
+    providerId: result.providerId,
+    model: result.model,
+    elapsedMs: Date.now() - textCallStartedAt,
+    finishReason: result.finishReason,
+    promptTokens: result.usage?.promptTokens,
+    responseTokens: result.usage?.responseTokens,
+    fallbackUsed: resolveFallbackUsed(
+      result.providerId,
+      resolveExpectedPrimaryProviderId(env, {
+        pinnedToGemini: Boolean(imageAttachment),
+        preferGemini: lane === 'fast',
+      }),
+    ),
+  }))
 
-  if (!result.text) throw new Error(`No content from Gemini chat (finishReason: ${result.finishReason})`)
+  if (!result.text) throw new Error(`No content from text provider ${result.providerId ?? 'unknown'} (finishReason: ${result.finishReason})`)
   return result.text.trim()
 }
 

@@ -193,6 +193,44 @@ describe('GeminiTextGenerationProvider', () => {
     })
   })
 
+  // Chat V2 Slice 1: diagnostics-only additive result fields (see
+  // TextGenerationResult's own comment) -- providerId/model always stamped,
+  // usage/rawFinishReason only when the response carries them.
+  describe('diagnostics fields (Chat V2 Slice 1)', () => {
+    it('stamps providerId and the resolved model on every result', async () => {
+      const fetcher = vi.fn(async () => geminiResponse({ finishReason: 'STOP', content: { parts: [{ text: 'ok' }] } }))
+      const provider = new GeminiTextGenerationProvider(ENV, fetcher)
+
+      const result = await provider.generateText({ turns: [{ role: 'user', content: 'hi' }] })
+      expect(result.providerId).toBe('gemini')
+      expect(result.model).toBe('gemini-2.5-flash')
+      expect(result.rawFinishReason).toBe('STOP')
+    })
+
+    it('parses usageMetadata into usage when present', async () => {
+      const fetcher = vi.fn(async () => new Response(
+        JSON.stringify({
+          candidates: [{ finishReason: 'STOP', content: { parts: [{ text: 'ok' }] } }],
+          usageMetadata: { promptTokenCount: 812, candidatesTokenCount: 96, thoughtsTokenCount: 40 },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ))
+      const provider = new GeminiTextGenerationProvider(ENV, fetcher)
+
+      const result = await provider.generateText({ turns: [{ role: 'user', content: 'hi' }] })
+      expect(result.usage).toEqual({ promptTokens: 812, responseTokens: 96, thinkingTokens: 40 })
+    })
+
+    it('omits usage (and non-string rawFinishReason) when the response carries nothing usable', async () => {
+      const fetcher = vi.fn(async () => geminiResponse({ finishReason: 42, content: { parts: [{ text: 'ok' }] } }))
+      const provider = new GeminiTextGenerationProvider(ENV, fetcher)
+
+      const result = await provider.generateText({ turns: [{ role: 'user', content: 'hi' }] })
+      expect(result.usage).toBeUndefined()
+      expect(result.rawFinishReason).toBeUndefined()
+    })
+  })
+
   describe('finishReason mapping (neutral enum)', () => {
     it.each([
       ['STOP', 'stop'],

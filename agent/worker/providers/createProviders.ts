@@ -61,6 +61,19 @@ export interface CreateProvidersOptions {
   // reachable for these call sites: an attachment cannot be retried
   // against a text-only secondary either.
   pinTextProvider?: 'gemini'
+  // Chat V2 Slice 1: per-request PRIMARY selection that -- unlike
+  // pinTextProvider above -- keeps the AI_TEXT_FALLBACK wrapper intact.
+  // The fast conversational chat lane passes { preferTextProvider: 'gemini' }
+  // to make Gemini the primary for THAT request regardless of the
+  // deployment's AI_TEXT_PROVIDER default, while a deployment with
+  // AI_TEXT_FALLBACK 'on' still gets the one-attempt degrade to the other
+  // provider (Workers AI becomes the secondary). No other endpoint passes
+  // this, so briefings/suggestions/documents keep their existing selection
+  // unchanged. 'gemini' is the only accepted value for the same reason
+  // pinTextProvider only accepts 'gemini' -- there is no current caller
+  // that wants the inverse, and widening the type without one would be
+  // speculative surface.
+  preferTextProvider?: 'gemini'
 }
 
 export function createProviders(
@@ -87,7 +100,10 @@ function buildTextProvider(
     return new GeminiTextGenerationProvider(env, fetcher)
   }
 
-  const wantsWorkersAI = env.AI_TEXT_PROVIDER === 'workers-ai'
+  // Chat V2 Slice 1: preferTextProvider overrides which provider is PRIMARY
+  // for this request while leaving the AI_TEXT_FALLBACK chain semantics
+  // below untouched (the other provider simply becomes the secondary).
+  const wantsWorkersAI = options.preferTextProvider === 'gemini' ? false : env.AI_TEXT_PROVIDER === 'workers-ai'
   const gemini = () => new GeminiTextGenerationProvider(env, fetcher)
   const workersAI = () => new WorkersAITextGenerationProvider(env as WorkersAIProviderEnv, fetcher)
 

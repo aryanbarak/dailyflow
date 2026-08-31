@@ -182,11 +182,34 @@ export class GeminiTextGenerationProvider implements TextGenerationProvider {
 
     const data = await res.json() as {
       candidates?: Array<{ finishReason?: unknown; content?: { parts?: Array<{ text?: unknown }> } }>
+      // Chat V2 Slice 1: same usageMetadata block the structured adapter
+      // already parses (ENG-06d) -- previously discarded on the text path,
+      // which is exactly why ENG-06f had no token diagnostics to work with.
+      usageMetadata?: { promptTokenCount?: unknown; candidatesTokenCount?: unknown; thoughtsTokenCount?: unknown }
     }
     const candidate = data?.candidates?.[0]
     const text = typeof candidate?.content?.parts?.[0]?.text === 'string' ? candidate.content.parts[0].text : ''
     const finishReason = mapFinishReason(candidate?.finishReason)
 
-    return { text, finishReason }
+    // Chat V2 Slice 1: diagnostics-only additive fields (see
+    // TextGenerationResult's own comment). Parsed defensively, absent when
+    // the response carries nothing usable.
+    const usageMetadata = data?.usageMetadata
+    const usage = usageMetadata
+      ? {
+          ...(typeof usageMetadata.promptTokenCount === 'number' ? { promptTokens: usageMetadata.promptTokenCount } : {}),
+          ...(typeof usageMetadata.candidatesTokenCount === 'number' ? { responseTokens: usageMetadata.candidatesTokenCount } : {}),
+          ...(typeof usageMetadata.thoughtsTokenCount === 'number' ? { thinkingTokens: usageMetadata.thoughtsTokenCount } : {}),
+        }
+      : undefined
+
+    return {
+      text,
+      finishReason,
+      providerId: this.id,
+      model: resolveGeminiModel(this.env),
+      ...(usage && Object.keys(usage).length > 0 ? { usage } : {}),
+      ...(typeof candidate?.finishReason === 'string' ? { rawFinishReason: candidate.finishReason } : {}),
+    }
   }
 }

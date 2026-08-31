@@ -57,6 +57,28 @@ export interface TextGenerationRequest {
 export interface TextGenerationResult {
   text: string;
   finishReason: 'stop' | 'length' | 'other';
+  // Chat V2 Slice 1 (2026-08-31): diagnostics-only additive fields, the
+  // same additive-amendment precedent as StructuredGenerationResult's own
+  // `usage`/`rawFinishReason` below (Amendments, 2026-08-23). Motivation:
+  // ENG-06f found the text lane had no provider/model/token diagnostics at
+  // all, and the one log line it did have named the wrong provider. Each
+  // concrete adapter populates these about ITSELF, so a result that came
+  // through FallbackTextGenerationProvider automatically identifies which
+  // provider actually answered (the wrapper passes results through
+  // untouched and still invents nothing). All optional: `finishReason`
+  // stays the only field control-flow decisions are made on; these are
+  // strictly for telemetry (see chat-text-telemetry.ts) and must never be
+  // rendered into a user-facing reply.
+  providerId?: string;
+  model?: string;
+  usage?: {
+    promptTokens?: number;
+    responseTokens?: number;
+    // Same semantics as StructuredGenerationResult.usage.thinkingTokens
+    // (ENG-06d): absent on non-thinking models.
+    thinkingTokens?: number;
+  };
+  rawFinishReason?: string;
 }
 
 // ADR-0018 Decision 3, narrowed in S2: `schema` carries the neutral
