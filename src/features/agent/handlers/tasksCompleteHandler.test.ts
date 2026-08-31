@@ -87,15 +87,13 @@ describe("tasksCompleteHandler", () => {
     expect(taskServiceMock.completeTask).not.toHaveBeenCalled();
   });
 
-  it("completes a task, verifies persisted state, and emits safe output only", async () => {
-    taskServiceMock.getTaskForUser
-      .mockResolvedValueOnce(task())
-      .mockResolvedValueOnce(task({ completed: true, completedAt }));
-    taskServiceMock.completeTask.mockResolvedValueOnce(task({ completed: true, completedAt }));
+  it("completes a task via agentToolExecutionClient, verifies output shape, and emits safe output only", async () => {
+    taskServiceMock.getTaskForUser.mockResolvedValueOnce(task());
+    const requestAndExecute = vi.fn().mockResolvedValueOnce({ status: "succeeded", reply: "done", completedAt });
 
     const input = { userId: " user-1 ", taskId: " task-1 " };
     const sourceInput = { ...input };
-    const result = await tasksCompleteHandler.execute(input, {});
+    const result = await tasksCompleteHandler.execute(input, { agentToolExecutionClient: { requestAndExecute } });
 
     expect(input).toEqual(sourceInput);
     expect(result.status).toBe("success");
@@ -128,7 +126,20 @@ describe("tasksCompleteHandler", () => {
       previousCompleted: false,
       previousCompletedAt: null,
     });
-    expect(taskServiceMock.completeTask).toHaveBeenCalledTimes(1);
+    expect(taskServiceMock.completeTask).not.toHaveBeenCalled();
+  });
+
+  describe("BLOCKER A: no agentToolExecutionClient => fail closed, never a direct write", () => {
+    it("returns a bounded failure and performs no tasksService.completeTask mutation", async () => {
+      taskServiceMock.getTaskForUser.mockResolvedValueOnce(task());
+
+      const result = await tasksCompleteHandler.execute({ userId: "user-1", taskId: "task-1" }, {});
+
+      expect(result.status).toBe("failed");
+      expect(result.success).toBe(false);
+      expect(result.error?.code).toBe("AGENT_EXECUTION_CLIENT_UNAVAILABLE");
+      expect(taskServiceMock.completeTask).not.toHaveBeenCalled();
+    });
   });
 
   it("treats an already-completed exact task as a verified no-op", async () => {
@@ -151,22 +162,23 @@ describe("tasksCompleteHandler", () => {
     expect(taskServiceMock.completeTask).not.toHaveBeenCalled();
   });
 
-  it("returns verification_failed when readback does not prove the mutation", async () => {
-    taskServiceMock.getTaskForUser
-      .mockResolvedValueOnce(task())
-      .mockResolvedValueOnce(task({ completed: false, completedAt: null }));
-    taskServiceMock.completeTask.mockResolvedValueOnce(task({ completed: true, completedAt }));
+  it("returns verification_failed when a succeeded outcome is missing completedAt -- never fabricates it", async () => {
+    taskServiceMock.getTaskForUser.mockResolvedValueOnce(task());
+    const requestAndExecute = vi.fn().mockResolvedValueOnce({ status: "succeeded", reply: "done" });
 
-    const result = await tasksCompleteHandler.execute({ userId: "user-1", taskId: "task-1" }, {});
+    const result = await tasksCompleteHandler.execute(
+      { userId: "user-1", taskId: "task-1" },
+      { agentToolExecutionClient: { requestAndExecute } },
+    );
 
     expect(result.status).toBe("verification_failed");
     expect(result.success).toBe(false);
-    expect(result.error?.code).toBe("VERIFICATION_FAILED");
     expect(result.auditMetadata).toMatchObject({
       taskId: "task-1",
       verified: false,
       redacted: true,
     });
+    expect(taskServiceMock.completeTask).not.toHaveBeenCalled();
   });
 
   it("fails closed when an already-completed record lacks verifiable completion metadata", async () => {
@@ -205,5 +217,66 @@ describe("tasksCompleteHandler", () => {
     expect(result.status).toBe("failed");
     expect(result.error?.code).toBe("TASK_NOT_FOUND");
     expect(taskServiceMock.completeTask).not.toHaveBeenCalled();
+  });
+
+  // Chat V2 Slice 2A: when an agentToolExecutionClient is present in
+  // context, the actual completion write routes through it instead of
+  // tasksService.completeTask -- the already-completed check just above
+  // (a plain read) is unaffected and stays on tasksService either way.
+  describe("Chat V2 Slice 2A: server-owned execution routing", () => {
+    it("routes the completion write through agentToolExecutionClient instead of tasksService.completeTask", async () => {
+      taskServiceMock.getTaskForUser.mockResolvedValueOnce(task());
+      const requestAndExecute = vi.fn().mockResolvedValueOnce({ status: "succeeded", reply: "done", completedAt });
+
+      const result = await tasksCompleteHandler.execute(
+        { userId: "user-1", taskId: "task-1" },
+        { agentToolExecutionClient: { requestAndExecute } },
+      );
+
+      expect(requestAndExecute).toHaveBeenCalledWith(expect.objectContaining({ toolId: "tasks.complete", targetId: "task-1" }));
+      expect(taskServiceMock.completeTask).not.toHaveBeenCalled();
+      expect(result.status).toBe("success");
+      expect(result.data).toMatchObject({ taskId: "task-1", completed: true, completedAt, alreadyCompleted: false, verified: true });
+    });
+
+    it("a failed Worker execution is reported as a failure, never silently treated as success", async () => {
+      taskServiceMock.getTaskForUser.mockResolvedValueOnce(task());
+      const requestAndExecute = vi.fn().mockResolvedValueOnce({ status: "failed", reply: "not found", errorCode: "TARGET_NOT_FOUND" });
+
+      const result = await tasksCompleteHandler.execute(
+        { userId: "user-1", taskId: "task-1" },
+        { agentToolExecutionClient: { requestAndExecute } },
+      );
+
+      expect(result.status).toBe("failed");
+      expect(result.error?.code).toBe("TARGET_NOT_FOUND");
+      expect(taskServiceMock.completeTask).not.toHaveBeenCalled();
+    });
+
+    it("a thrown client error (e.g. server-side denial) is normalized, not left to propagate raw", async () => {
+      taskServiceMock.getTaskForUser.mockResolvedValueOnce(task());
+      const requestAndExecute = vi.fn().mockRejectedValueOnce({ code: "POLICY_DENIED", message: "Denied." });
+
+      const result = await tasksCompleteHandler.execute(
+        { userId: "user-1", taskId: "task-1" },
+        { agentToolExecutionClient: { requestAndExecute } },
+      );
+
+      expect(result.status).toBe("failed");
+      expect(result.error?.code).toBe("POLICY_DENIED");
+    });
+
+    it("the already-completed no-op path never calls the Worker at all -- it is a read, not a write", async () => {
+      taskServiceMock.getTaskForUser.mockResolvedValueOnce(task({ completed: true, completedAt }));
+      const requestAndExecute = vi.fn();
+
+      const result = await tasksCompleteHandler.execute(
+        { userId: "user-1", taskId: "task-1" },
+        { agentToolExecutionClient: { requestAndExecute } },
+      );
+
+      expect(result.status).toBe("success");
+      expect(requestAndExecute).not.toHaveBeenCalled();
+    });
   });
 });

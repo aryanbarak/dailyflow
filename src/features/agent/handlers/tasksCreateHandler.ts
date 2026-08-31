@@ -1,7 +1,7 @@
-import { tasksService } from "@/features/tasks/tasksService";
 import type {
   AgentWriteToolExecutionResult,
   AgentWriteToolHandler,
+  ExecutionContext,
   ExecutionError,
   ExecutionInputValidationResult,
 } from "../executionTypes";
@@ -60,27 +60,47 @@ export const tasksCreateHandler: AgentWriteToolHandler<TasksCreateHandlerOutput>
   validateInput(input: unknown, _schema: readonly AgentToolSchemaField[]) {
     return validateTasksCreateInput(input);
   },
-  async execute(input: Record<string, unknown>) {
+  // Chat V2 Slice 2A / BLOCKER A CORRECTION: routes exclusively through the
+  // Worker's server-owned execution lifecycle
+  // (agent/worker/agent-tool-execution.ts) -- browser-authored execution
+  // status is not authoritative, so this handler no longer has any direct
+  // Supabase write path of its own to fall back to. When no
+  // agentToolExecutionClient is present in context, that is a bounded
+  // failure, not a silent alternate write: an older caller or an
+  // unconfigured test harness must be treated the same as "the Worker is
+  // unreachable," never as "fall back to writing from the browser." Ordinary
+  // (non-Agent) Tasks UI still uses tasksService directly -- this change
+  // only removes tasksService as a fallback INSIDE this Agent handler.
+  async execute(input: Record<string, unknown>, context: ExecutionContext = {}) {
     const validation = validateTasksCreateInput(input);
     if (!validation.valid) return failure("invalid_input", "INVALID_INPUT", "tasks.create input failed validation.");
-    const userId = String(input.userId).trim();
+    if (!context.agentToolExecutionClient) {
+      return failure("failed", "AGENT_EXECUTION_CLIENT_UNAVAILABLE", "Server-owned execution is unavailable.");
+    }
     const title = String(input.title).trim();
     const notes = typeof input.notes === "string" ? input.notes : undefined;
     const dueDate = typeof input.dueDate === "string" ? input.dueDate : null;
+
     try {
-      const created = await tasksService.createTask(userId, { title, notes, dueDate });
-      const readback = await tasksService.getTaskForUser(userId, created.id);
-      const verified = readback.id === created.id && readback.title === created.title && readback.completed === false;
-      if (!verified) return failure("verification_failed", "VERIFICATION_FAILED", "Created task could not be verified.", created.id);
+      const outcome = await context.agentToolExecutionClient.requestAndExecute({
+        toolId: "tasks.create",
+        arguments: { title, notes, dueDate },
+        requestId: crypto.randomUUID(),
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      });
+      if (outcome.status !== "succeeded" || !outcome.targetId) {
+        return failure("failed", outcome.errorCode ?? "TASK_CREATE_FAILED", outcome.reply || "Unable to create task.");
+      }
       return {
         status: "success",
         success: true,
-        data: Object.freeze({ taskId: created.id, title: created.title, dueDate: created.dueDate ?? null, verified: true }),
-        auditMetadata: { taskId: created.id, verified: true, resultShape: "object", redacted: true },
-        compensation: { taskId: created.id, previousCompleted: false, previousCompletedAt: null },
+        data: Object.freeze({ taskId: outcome.targetId, title, dueDate, verified: true }),
+        auditMetadata: { taskId: outcome.targetId, verified: true, resultShape: "object", redacted: true },
+        compensation: { taskId: outcome.targetId, previousCompleted: false, previousCompletedAt: null },
       };
-    } catch {
-      return failure("failed", "TASK_CREATE_FAILED", "Unable to create task.");
+    } catch (caught) {
+      const error = caught as Partial<ExecutionError>;
+      return failure("failed", typeof error.code === "string" ? error.code : "TASK_CREATE_FAILED", typeof error.message === "string" ? error.message : "Unable to create task.");
     }
   },
 };

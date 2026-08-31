@@ -167,6 +167,41 @@ export interface GitHubIssueCommentClient {
   createComment(input: GitHubIssueCommentInput): Promise<GitHubIssueCommentResult>;
 }
 
+// Chat V2 Slice 2A -- see agent/worker/agent-tool-execution.ts's own header
+// comment for the full request -> approve -> execute lifecycle this client
+// drives. requestAndExecute performs BOTH Worker calls (POST
+// /agent/execution/request, then POST /agent/execution/approve) as one
+// awaited round trip from the handler's point of view -- by the time a
+// write handler's execute() runs, the user has already approved in the UI
+// (or the write resolved to policy mode 'auto', which the Worker itself
+// completes in the request call alone), so there is exactly one moment in
+// the existing write path where this needs to be called, matching this
+// slice's own "change the post-approval write path only as much as
+// necessary" scope.
+export interface AgentToolExecutionInput {
+  toolId: 'tasks.create' | 'tasks.update' | 'tasks.complete' | 'calendar.create_event' | 'calendar.update_event';
+  targetId?: string;
+  arguments: Record<string, unknown>;
+  requestId: string;
+  sessionId?: string;
+  chatMessageId?: string;
+  timeZone: string;
+  language?: 'en' | 'de' | 'fa';
+}
+
+export interface AgentToolExecutionResult {
+  status: 'succeeded' | 'failed';
+  reply: string;
+  undoId?: string;
+  errorCode?: string;
+  targetId?: string;
+  completedAt?: string;
+}
+
+export interface AgentToolExecutionClient {
+  requestAndExecute(input: AgentToolExecutionInput): Promise<AgentToolExecutionResult>;
+}
+
 export interface GitHubIssueUpdateInput {
   repo: string;
   issueNumber: number;
@@ -272,6 +307,7 @@ export interface ExecutionContext {
   githubIssueUpdateClient?: GitHubIssueUpdateClient;
   githubFileUpdateClient?: GitHubFileUpdateClient;
   engineeringTaskClient?: EngineeringTaskClient;
+  agentToolExecutionClient?: AgentToolExecutionClient;
 }
 
 export interface ExecutionRequest {

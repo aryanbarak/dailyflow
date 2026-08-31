@@ -1,7 +1,7 @@
-import { tasksService } from "@/features/tasks/tasksService";
 import type {
   AgentWriteToolExecutionResult,
   AgentWriteToolHandler,
+  ExecutionContext,
   ExecutionError,
   ExecutionInputValidationResult,
 } from "../executionTypes";
@@ -64,35 +64,41 @@ export const tasksUpdateHandler: AgentWriteToolHandler<TasksUpdateHandlerOutput>
   validateInput(input: unknown, _schema: readonly AgentToolSchemaField[]) {
     return validateTasksUpdateInput(input);
   },
-  async execute(input: Record<string, unknown>) {
+  // Chat V2 Slice 2A / BLOCKER A CORRECTION: see tasksCreateHandler.ts's own
+  // comment on this same change -- no direct-write fallback remains.
+  async execute(input: Record<string, unknown>, context: ExecutionContext = {}) {
     const validation = validateTasksUpdateInput(input);
     if (!validation.valid) return failure("invalid_input", "INVALID_INPUT", "tasks.update input failed validation.");
-    const userId = String(input.userId).trim();
     const taskId = String(input.taskId).trim();
+    if (!context.agentToolExecutionClient) {
+      return failure("failed", "AGENT_EXECUTION_CLIENT_UNAVAILABLE", "Server-owned execution is unavailable.", taskId);
+    }
+    const updates = {
+      ...(typeof input.title === "string" ? { title: input.title } : {}),
+      ...(typeof input.notes === "string" ? { notes: input.notes } : {}),
+      ...(input.dueDate !== undefined ? { dueDate: typeof input.dueDate === "string" ? input.dueDate : null } : {}),
+    };
+
     try {
-      const before = await tasksService.getTaskForUser(userId, taskId);
-      const updates = {
-        ...(typeof input.title === "string" ? { title: input.title } : {}),
-        ...(typeof input.notes === "string" ? { notes: input.notes } : {}),
-        ...(input.dueDate !== undefined ? { dueDate: typeof input.dueDate === "string" ? input.dueDate : null } : {}),
-      };
-      const updated = await tasksService.updateTask(userId, taskId, updates);
-      const readback = await tasksService.getTaskForUser(userId, taskId);
-      const verified = readback.id === updated.id && readback.updatedAt === updated.updatedAt;
-      if (!verified) return failure("verification_failed", "VERIFICATION_FAILED", "Updated task could not be verified.", taskId);
+      const outcome = await context.agentToolExecutionClient.requestAndExecute({
+        toolId: "tasks.update",
+        targetId: taskId,
+        arguments: updates,
+        requestId: crypto.randomUUID(),
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      });
+      if (outcome.status !== "succeeded") {
+        return failure("failed", outcome.errorCode ?? "TASK_UPDATE_FAILED", outcome.reply || "Unable to update task.", taskId);
+      }
       return {
         status: "success",
         success: true,
-        data: Object.freeze({ taskId, title: updated.title, dueDate: updated.dueDate ?? null, verified: true }),
+        data: Object.freeze({ taskId, title: (updates.title as string | undefined) ?? "", dueDate: (updates as { dueDate?: string | null }).dueDate ?? null, verified: true }),
         auditMetadata: { taskId, verified: true, resultShape: "object", redacted: true },
-        compensation: {
-          taskId,
-          previousCompleted: before.completed,
-          previousCompletedAt: before.completedAt ?? null,
-        },
       };
-    } catch {
-      return failure("failed", "TASK_UPDATE_FAILED", "Unable to update task.", taskId);
+    } catch (caught) {
+      const error = caught as Partial<ExecutionError>;
+      return failure("failed", typeof error.code === "string" ? error.code : "TASK_UPDATE_FAILED", typeof error.message === "string" ? error.message : "Unable to update task.", taskId);
     }
   },
 };

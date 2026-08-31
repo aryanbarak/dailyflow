@@ -88,6 +88,7 @@ import { createGitHubWorkflowRunsClient } from '@/features/integrations/github/g
 import { createGitHubIssuesCommentClient } from '@/features/integrations/github/githubIssuesCommentClient'
 import { createGitHubIssuesUpdateClient } from '@/features/integrations/github/githubIssuesUpdateClient'
 import { createEngineeringTaskClient } from '@/features/integrations/engineering/engineeringTaskClient'
+import { createAgentToolExecutionClient } from '@/features/agent/agentToolExecutionClient'
 import { pollEngineeringTaskUntilDone, formatEngineeringTaskResultMessage } from '@/features/agent/engineeringTaskStatusPoller'
 import { createGitHubRepositoryInventoryClient } from '@/features/integrations/github/githubRepositoryInventoryClient'
 import { useWorkspace } from '@/features/workspace'
@@ -2695,6 +2696,18 @@ export default function ChatPage() {
         }),
         // ENG-04.
         engineeringTaskClient: createEngineeringTaskClient({
+          workerBaseUrl: workerUrl,
+          getAccessToken: async () => {
+            const { data: { session } } = await supabase.auth.getSession()
+            return session?.access_token
+          },
+        }),
+        // Chat V2 Slice 2A: tasks.create/update/complete and
+        // calendar.create_event/update_event now execute through the
+        // Worker's server-owned execution lifecycle instead of writing
+        // directly to Supabase from here -- see
+        // agent/worker/agent-tool-execution.ts's own header comment.
+        agentToolExecutionClient: createAgentToolExecutionClient({
           workerBaseUrl: workerUrl,
           getAccessToken: async () => {
             const { data: { session } } = await supabase.auth.getSession()

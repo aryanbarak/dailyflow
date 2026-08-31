@@ -22,6 +22,14 @@ export interface ParsedTaskWriteIntent {
   // from pattern-derived subject extraction. resolveCreateTaskTitle below
   // must never overwrite an explicit correction with a model guess.
   titleSource?: 'correction'
+  // Chat V2 Slice 2A: an already-resolved task id, from a caller that
+  // already knows exactly which row it means (agent-tool-execution.ts's
+  // approval-driven update path) -- distinct from taskReference's
+  // fuzzy-match-by-title resolution, which exists for the OLDER, still-live
+  // server-side NL flow (a chat message naming a task by description, never
+  // an id). When present, executeAutoTaskWrite's update branch below uses
+  // this directly and does not consult taskReference at all.
+  targetId?: string
 }
 
 // Task 22: PO decision -- tasks have no time-of-day column, so any write
@@ -42,6 +50,10 @@ export interface ParsedCalendarWriteIntent {
   endTime?: string
   dateClarificationNeeded?: boolean
   titleSource?: 'correction'
+  // Chat V2 Slice 2A: same purpose as ParsedTaskWriteIntent.targetId above
+  // -- an already-resolved event id, used directly instead of
+  // eventReference's fuzzy-match-by-title resolution.
+  targetId?: string
 }
 
 export interface RecentChatTurn {
@@ -157,7 +169,11 @@ const _typesMatch: IsExactly<UndoEntry['kind'], typeof UNDO_KIND_VALUES[number]>
 
 export const FLOW_WRITE_UNDO_WINDOW_MS = 10 * 60 * 1000
 
-function esc(value: string) {
+// Chat V2 Slice 2A: exported (unchanged otherwise) so
+// agent/worker/agent-tool-execution.ts can reuse the exact same
+// service-role REST helpers this file already uses for every other write,
+// rather than defining a second copy.
+export function esc(value: string) {
   return encodeURIComponent(value)
 }
 
@@ -167,7 +183,7 @@ function esc(value: string) {
 // exactly what executeBatchFinanceImport below relies on for its
 // all-or-nothing insert. Every existing call site still passes a single
 // object and is unaffected.
-async function supabaseWriteReturning<T>(env: Env, method: 'POST' | 'PATCH' | 'DELETE', path: string, body?: Record<string, unknown> | Record<string, unknown>[]): Promise<T> {
+export async function supabaseWriteReturning<T>(env: Env, method: 'POST' | 'PATCH' | 'DELETE', path: string, body?: Record<string, unknown> | Record<string, unknown>[]): Promise<T> {
   const res = await fetch(`${env.SUPABASE_URL}/rest/v1/${path}`, {
     method,
     headers: {
@@ -183,7 +199,7 @@ async function supabaseWriteReturning<T>(env: Env, method: 'POST' | 'PATCH' | 'D
   return res.json()
 }
 
-async function supabaseWriteNoContent(env: Env, method: 'POST' | 'PATCH' | 'DELETE', path: string, body?: Record<string, unknown> | Record<string, unknown>[]): Promise<void> {
+export async function supabaseWriteNoContent(env: Env, method: 'POST' | 'PATCH' | 'DELETE', path: string, body?: Record<string, unknown> | Record<string, unknown>[]): Promise<void> {
   const res = await fetch(`${env.SUPABASE_URL}/rest/v1/${path}`, {
     method,
     headers: {
@@ -239,6 +255,26 @@ async function persistUndoRecord(env: Env, entry: UndoEntry, undoId: string) {
     payload,
     expires_at: entry.expiresAt,
   })
+}
+
+// Chat V2 Slice 2A, section F: an optional, best-effort, additive
+// correlation from a successful undo record back to the agent_tool_executions
+// row that produced it. Never changes flow_write_undo_records' own undo
+// semantics (kind/task_id/payload/expires_at/consumed_at all untouched) --
+// this is purely a nullable pointer for a future tool-card UI to join
+// through, not a new lifecycle field on this table. Best-effort: a failure
+// here must never affect the write or the undo record itself, which have
+// already succeeded by the time this runs -- mirrors this file's existing
+// fail-safe posture for secondary writes (e.g. provider failure-event
+// persistence).
+export async function correlateUndoRecordWithExecution(env: Env, undoId: string, executionId: string): Promise<void> {
+  try {
+    await supabaseWriteNoContent(env, 'PATCH', `flow_write_undo_records?id=eq.${esc(undoUuid(undoId))}`, {
+      execution_id: executionId,
+    })
+  } catch {
+    // Best-effort only -- see this function's own comment.
+  }
 }
 
 interface UndoRecordRow {
@@ -1472,7 +1508,7 @@ export async function executeAutoTaskWrite(input: {
   intent: ParsedTaskWriteIntent
   now: Date
   timeZone: string
-}): Promise<{ status: 'executed'; reply: string; undoId: string; undoExpiresAt: string } | { status: 'clarify'; reply: string } | { status: 'failed'; reply: string } | { status: 'not_found' }> {
+}): Promise<{ status: 'executed'; reply: string; undoId: string; undoExpiresAt: string; id: string } | { status: 'clarify'; reply: string } | { status: 'failed'; reply: string } | { status: 'not_found' }> {
   const { env, userId, intent, language, now, timeZone } = input
   if (intent.dateClarificationNeeded) return { status: 'clarify', reply: 'Which exact due date should I use?' }
   if (intent.kind === 'create_task') {
@@ -1494,14 +1530,27 @@ export async function executeAutoTaskWrite(input: {
       if (alarm?.id) await supabaseWriteNoContent(env, 'DELETE', `alarms?id=eq.${esc(alarm.id)}&user_id=eq.${esc(userId)}`)
     })
     if (undoFailure) return undoFailure
-    return { status: 'executed', reply: confirmation(language, 'create_task', task.title, task.due_date, intent.timeOfDay), undoId, undoExpiresAt: expiresAt }
+    return { status: 'executed', reply: confirmation(language, 'create_task', task.title, task.due_date, intent.timeOfDay), undoId, undoExpiresAt: expiresAt, id: task.id }
   }
 
-  const tasks = await supabaseGet<TaskRow[]>(env, `tasks?user_id=eq.${esc(userId)}&completed=eq.false&select=id,user_id,title,notes,due_date,completed,created_at,updated_at`)
-  const ref = intent.taskReference?.toLowerCase()
-  const matches = ref ? tasks.filter(task => task.title.toLowerCase().includes(ref) || ref.includes(task.title.toLowerCase())) : []
-  if (matches.length !== 1) return { status: matches.length > 1 ? 'clarify' : 'not_found', reply: 'Which exact task should I update?' }
-  const before = matches[0]
+  // Chat V2 Slice 2A: a caller that already knows the exact row (the
+  // approval-driven path in agent-tool-execution.ts) supplies targetId
+  // directly, skipping fuzzy title-reference matching entirely -- that
+  // matching exists for the OLDER server-side NL flow (a message naming a
+  // task by description, never an id) and stays completely unchanged for
+  // every existing caller, none of which ever sets targetId.
+  let before: TaskRow | undefined
+  if (intent.targetId) {
+    const rows = await supabaseGet<TaskRow[]>(env, `tasks?id=eq.${esc(intent.targetId)}&user_id=eq.${esc(userId)}&select=id,user_id,title,notes,due_date,completed,created_at,updated_at&limit=1`)
+    before = rows[0]
+    if (!before) return { status: 'not_found' }
+  } else {
+    const tasks = await supabaseGet<TaskRow[]>(env, `tasks?user_id=eq.${esc(userId)}&completed=eq.false&select=id,user_id,title,notes,due_date,completed,created_at,updated_at`)
+    const ref = intent.taskReference?.toLowerCase()
+    const matches = ref ? tasks.filter(task => task.title.toLowerCase().includes(ref) || ref.includes(task.title.toLowerCase())) : []
+    if (matches.length !== 1) return { status: matches.length > 1 ? 'clarify' : 'not_found', reply: 'Which exact task should I update?' }
+    before = matches[0]
+  }
   const rows = await supabaseWriteReturning<TaskRow[]>(env, 'PATCH', `tasks?id=eq.${esc(before.id)}&user_id=eq.${esc(userId)}&select=id,user_id,title,notes,due_date,completed,created_at,updated_at`, {
     due_date: intent.dueDate === undefined ? before.due_date : intent.dueDate,
   })
@@ -1519,7 +1568,7 @@ export async function executeAutoTaskWrite(input: {
     },
   )
   if (undoFailure) return undoFailure
-  return { status: 'executed', reply: confirmation(language, 'update_task', updated.title, updated.due_date, intent.timeOfDay), undoId, undoExpiresAt: expiresAt }
+  return { status: 'executed', reply: confirmation(language, 'update_task', updated.title, updated.due_date, intent.timeOfDay), undoId, undoExpiresAt: expiresAt, id: updated.id }
 }
 
 function confirmationForCalendar(
@@ -1583,7 +1632,7 @@ export async function executeAutoCalendarWrite(input: {
   intent: ParsedCalendarWriteIntent
   now: Date
   timeZone: string
-}): Promise<{ status: 'executed'; reply: string; undoId: string; undoExpiresAt: string } | { status: 'clarify'; reply: string } | { status: 'failed'; reply: string } | { status: 'not_found' }> {
+}): Promise<{ status: 'executed'; reply: string; undoId: string; undoExpiresAt: string; id: string } | { status: 'clarify'; reply: string } | { status: 'failed'; reply: string } | { status: 'not_found' }> {
   const { env, userId, intent, language, now, timeZone } = input
   if (intent.dateClarificationNeeded) return { status: 'clarify', reply: 'Which exact date should I use?' }
   if (intent.kind === 'create_calendar_event') {
@@ -1622,14 +1671,23 @@ export async function executeAutoCalendarWrite(input: {
     // deterministic parser resolved this request with before building the
     // confirmation line.
     const localWhen = utcInstantToZonedDateAndTime(`${event.date}T${event.start_time ?? '00:00'}:00.000Z`, timeZone)
-    return { status: 'executed', reply: confirmationForCalendar(language, 'create_calendar_event', event.title, localWhen.date, localWhen.time), undoId, undoExpiresAt: expiresAt }
+    return { status: 'executed', reply: confirmationForCalendar(language, 'create_calendar_event', event.title, localWhen.date, localWhen.time), undoId, undoExpiresAt: expiresAt, id: event.id }
   }
 
-  const events = await supabaseGet<CalendarEventRow[]>(env, `calendar_events?user_id=eq.${esc(userId)}&select=${CALENDAR_EVENT_SELECT}`)
-  const ref = intent.eventReference?.toLowerCase()
-  const matches = ref ? events.filter(event => event.title.toLowerCase().includes(ref) || ref.includes(event.title.toLowerCase())) : []
-  if (matches.length !== 1) return { status: matches.length > 1 ? 'clarify' : 'not_found', reply: 'Which exact event should I update?' }
-  const before = matches[0]
+  // Chat V2 Slice 2A: same targetId escape hatch as executeAutoTaskWrite's
+  // update branch above -- see its comment.
+  let before: CalendarEventRow | undefined
+  if (intent.targetId) {
+    const rows = await supabaseGet<CalendarEventRow[]>(env, `calendar_events?id=eq.${esc(intent.targetId)}&user_id=eq.${esc(userId)}&select=${CALENDAR_EVENT_SELECT}&limit=1`)
+    before = rows[0]
+    if (!before) return { status: 'not_found' }
+  } else {
+    const events = await supabaseGet<CalendarEventRow[]>(env, `calendar_events?user_id=eq.${esc(userId)}&select=${CALENDAR_EVENT_SELECT}`)
+    const ref = intent.eventReference?.toLowerCase()
+    const matches = ref ? events.filter(event => event.title.toLowerCase().includes(ref) || ref.includes(event.title.toLowerCase())) : []
+    if (matches.length !== 1) return { status: matches.length > 1 ? 'clarify' : 'not_found', reply: 'Which exact event should I update?' }
+    before = matches[0]
+  }
   const patch: Record<string, unknown> = {}
   if (intent.startDate !== undefined && intent.startDate !== null) patch.date = intent.startDate
   if (intent.startTime) {
@@ -1664,7 +1722,7 @@ export async function executeAutoCalendarWrite(input: {
   if (undoFailure) return undoFailure
   // Task 22-fix3: same conversion as the create branch above -- see its comment.
   const localWhen = utcInstantToZonedDateAndTime(`${updated.date}T${updated.start_time ?? '00:00'}:00.000Z`, timeZone)
-  return { status: 'executed', reply: confirmationForCalendar(language, 'update_calendar_event', updated.title, localWhen.date, localWhen.time), undoId, undoExpiresAt: expiresAt }
+  return { status: 'executed', reply: confirmationForCalendar(language, 'update_calendar_event', updated.title, localWhen.date, localWhen.time), undoId, undoExpiresAt: expiresAt, id: updated.id }
 }
 
 /**
