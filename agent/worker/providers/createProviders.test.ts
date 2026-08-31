@@ -108,6 +108,12 @@ describe('createProviders', () => {
       expect(providers.text).not.toBeInstanceOf(FallbackTextGenerationProvider)
     })
 
+    it('pinTextProvider bypasses preferTextProvider considerations too -- still the plain Gemini adapter', () => {
+      const providers = createProviders({ ...ENV, AI, AI_TEXT_PROVIDER: 'workers-ai', AI_TEXT_FALLBACK: 'on' }, fetch, { pinTextProvider: 'gemini', preferTextProvider: 'gemini' })
+      expect(providers.text).toBeInstanceOf(GeminiTextGenerationProvider)
+      expect(providers.text).not.toBeInstanceOf(FallbackTextGenerationProvider)
+    })
+
     it('.structured and .embedding stay the plain Gemini adapters, never wrapped, when AI_TEXT_FALLBACK is "on"', () => {
       const providers = createProviders({ ...ENV, AI, AI_TEXT_FALLBACK: 'on' })
       expect(providers.structured).toBeInstanceOf(GeminiStructuredGenerationProvider)
@@ -119,6 +125,36 @@ describe('createProviders', () => {
       // touches the fallback wrapper" guard.
       expect(providers.structured).not.toBeInstanceOf(FallbackTextGenerationProvider)
       expect(providers.embedding).not.toBeInstanceOf(FallbackTextGenerationProvider)
+    })
+  })
+
+  // Chat V2 Slice 1: preferTextProvider makes Gemini the PRIMARY for one
+  // request while -- unlike pinTextProvider -- keeping the AI_TEXT_FALLBACK
+  // chain semantics intact (the other provider becomes the secondary).
+  describe('preferTextProvider (Chat V2 Slice 1)', () => {
+    const AI: WorkersAIBinding = { run: vi.fn() }
+
+    it('{ preferTextProvider: "gemini" } overrides AI_TEXT_PROVIDER: "workers-ai" -- .text is Gemini (no fallback flag)', () => {
+      const providers = createProviders({ ...ENV, AI_TEXT_PROVIDER: 'workers-ai', AI }, fetch, { preferTextProvider: 'gemini' })
+      expect(providers.text).toBeInstanceOf(GeminiTextGenerationProvider)
+      expect(providers.text.id).toBe('gemini')
+    })
+
+    it('keeps the fallback chain when AI_TEXT_FALLBACK is "on" -- primary Gemini, secondary Workers AI', () => {
+      const providers = createProviders({ ...ENV, AI_TEXT_PROVIDER: 'workers-ai', AI, AI_TEXT_FALLBACK: 'on' }, fetch, { preferTextProvider: 'gemini' })
+      expect(providers.text).toBeInstanceOf(FallbackTextGenerationProvider)
+      expect(providers.text.id).toBe('fallback(gemini->workers-ai)')
+    })
+
+    it('is a no-op when AI_TEXT_PROVIDER already selects Gemini', () => {
+      const providers = createProviders({ ...ENV, AI }, fetch, { preferTextProvider: 'gemini' })
+      expect(providers.text).toBeInstanceOf(GeminiTextGenerationProvider)
+    })
+
+    it('.structured and .embedding are unaffected', () => {
+      const providers = createProviders({ ...ENV, AI_TEXT_PROVIDER: 'workers-ai', AI }, fetch, { preferTextProvider: 'gemini' })
+      expect(providers.structured).toBeInstanceOf(GeminiStructuredGenerationProvider)
+      expect(providers.embedding).toBeInstanceOf(GeminiEmbeddingProvider)
     })
   })
 })

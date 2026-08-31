@@ -26,8 +26,12 @@
 // handles a propagated ProviderUnavailableError correctly -- this wrapper
 // adds no new error type and no new user-facing message. No "answered by
 // backup model" annotation is added anywhere (S1c task instruction) --
-// TextGenerationResult carries no such field, and this wrapper does not
-// invent one.
+// this wrapper passes each result through untouched and invents nothing.
+// (Chat V2 Slice 1: the concrete adapters now stamp diagnostics-only
+// providerId/model fields onto their OWN results, so a passed-through
+// result identifies which provider actually answered -- telemetry-only,
+// never rendered into a reply; the S1c no-user-facing-annotation rule
+// stands.)
 import { ProviderUnavailableError } from '../provider-errors'
 import { recordFallbackSuccess, type ProviderFailureEnv } from './failureEvents'
 import type { TextGenerationProvider, TextGenerationRequest, TextGenerationResult } from './types'

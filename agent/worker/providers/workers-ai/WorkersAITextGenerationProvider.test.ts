@@ -108,6 +108,31 @@ describe('WorkersAITextGenerationProvider', () => {
     })
   })
 
+  // Chat V2 Slice 1: diagnostics-only additive result fields (see
+  // TextGenerationResult's own comment).
+  describe('diagnostics fields (Chat V2 Slice 1)', () => {
+    it('stamps providerId and the model on every result', async () => {
+      const provider = new WorkersAITextGenerationProvider(makeEnv(vi.fn(async () => chatCompletion('ok', 'stop'))))
+      const result = await provider.generateText({ turns: [{ role: 'user', content: 'hi' }] })
+      expect(result.providerId).toBe('workers-ai')
+      expect(result.model).toBe(DEFAULT_WORKERS_AI_TEXT_MODEL)
+      expect(result.rawFinishReason).toBe('stop')
+    })
+
+    it('parses the Chat Completions usage block when present, omits it when absent', async () => {
+      const withUsage = new WorkersAITextGenerationProvider(makeEnv(vi.fn(async () => ({
+        choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 300, completion_tokens: 55 },
+      }))))
+      const result = await withUsage.generateText({ turns: [{ role: 'user', content: 'hi' }] })
+      expect(result.usage).toEqual({ promptTokens: 300, responseTokens: 55 })
+
+      const withoutUsage = new WorkersAITextGenerationProvider(makeEnv(vi.fn(async () => chatCompletion('ok', 'stop'))))
+      const bare = await withoutUsage.generateText({ turns: [{ role: 'user', content: 'hi' }] })
+      expect(bare.usage).toBeUndefined()
+    })
+  })
+
   describe('finishReason mapping (neutral enum)', () => {
     it.each([
       ['stop', 'stop'],

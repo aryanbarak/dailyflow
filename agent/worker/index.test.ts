@@ -1690,6 +1690,83 @@ describe('ADR-0012 server-side task write policy', () => {
   })
 })
 
+// Chat V2 Slice 1: the server-authoritative demotion. handleChat's own
+// effectiveChatLane line (`requestedLane === 'fast' && !pendingWritePolicy`)
+// is the single most safety-relevant new line in Slice 1 -- it is what
+// stops a client-declared "fast" preference from ever reaching Gemini's
+// provider-preference option for a turn the server's OWN deterministic
+// write detection has already recognized as write-shaped. This exercises
+// the real handleChat/worker.fetch path end to end (chatRequest + the
+// existing fetch/provider mocks), not a standalone assertion on the
+// expression -- reusing the same 'ask'-mode fixture and message the
+// pre-existing "resolved ask returns the server policy..." test above uses,
+// so a regression here would also break that test's own invariants.
+describe('Chat V2 Slice 1: requested lane never bypasses server write policy', () => {
+  it('lane: "fast" on a write-shaped ask-mode request stays LEGACY -- write detection still runs, approval is still required, and Gemini-fast preference is never granted', async () => {
+    const log = installFetchMock([], null, 'Write action requires explicit approval.', 'ask')
+    createProvidersCalls = []
+    const response = await worker.fetch(chatRequest({
+      message: 'Create task "Review invoices" for tomorrow',
+      timeZone: 'Europe/Berlin',
+      lane: 'fast',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { reply?: string; writePolicy?: { mode?: string } }
+
+    // Proof 1: server write detection ran and produced the SAME 'ask'
+    // outcome as the pre-existing (no-lane) test above -- a client
+    // preference did not skip it.
+    expect(response.status).toBe(200)
+    expect(body.writePolicy?.mode).toBe('ask')
+    expect(body.reply).toBe('Write action requires explicit approval.')
+
+    // Proof 2: effective behavior remains the existing write-policy path --
+    // no task was created merely because the client asked for the fast lane.
+    expect(log.taskWrites.length).toBe(0)
+
+    // Proof 3: exactly one text-generation call happened (the plain chat
+    // reply -- title-extraction never runs in the 'ask' branch, matching
+    // the pre-existing test's own count), and it did NOT request Gemini as
+    // primary. If effectiveChatLane had wrongly stayed 'fast', this call's
+    // createProviders options would carry { preferTextProvider: 'gemini' }.
+    expect(log.geminiCalls.length).toBe(1)
+    const chatProvidersCall = createProvidersCalls.at(-1)
+    expect((chatProvidersCall?.options as { preferTextProvider?: string } | undefined)?.preferTextProvider).toBeUndefined()
+  })
+
+  it('an unrecognized lane value fails closed to legacy -- no Gemini-fast preference is requested even for an ordinary message with no write intent', async () => {
+    const log = installFetchMock()
+    createProvidersCalls = []
+    const response = await worker.fetch(chatRequest({
+      message: 'What is the capital of France?',
+      lane: 'anything-else',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { reply?: string; writePolicy?: unknown }
+
+    expect(response.status).toBe(200)
+    expect(body.writePolicy).toBeUndefined()
+    expect(log.geminiCalls.length).toBe(1)
+    const chatProvidersCall = createProvidersCalls.at(-1)
+    expect((chatProvidersCall?.options as { preferTextProvider?: string } | undefined)?.preferTextProvider).toBeUndefined()
+  })
+
+  // Positive control: proves the assertions above actually distinguish
+  // fast from legacy (i.e. they are not vacuously true because
+  // preferTextProvider is never wired up at all) -- a genuinely FAST,
+  // non-write-shaped turn DOES request the Gemini preference.
+  it('control: lane "fast" on an ordinary, non-write-shaped message DOES request the Gemini-fast preference', async () => {
+    installFetchMock()
+    createProvidersCalls = []
+    const response = await worker.fetch(chatRequest({
+      message: 'What is the capital of France?',
+      lane: 'fast',
+    }), testEnv(), fakeExecutionContext())
+
+    expect(response.status).toBe(200)
+    const chatProvidersCall = createProvidersCalls.at(-1)
+    expect((chatProvidersCall?.options as { preferTextProvider?: string } | undefined)?.preferTextProvider).toBe('gemini')
+  })
+})
+
 describe('task 22: calendar write policy + routing', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
