@@ -3,6 +3,7 @@ import {
   ENGINEERING_TASK_NOT_PROPOSED_REASON_MARKER,
   ENGINEERING_TASK_NOT_PROPOSED_REASONS,
   TASK_TIME_CLARIFICATION_REASON_MARKER,
+  TASK_TO_CALENDAR_CONVERSION_REASON_MARKER,
   engineeringTaskTriggerPhraseFor,
   resolveDisambiguationCandidates,
   validateAgentIntentProposal,
@@ -615,6 +616,149 @@ describe("intentValidator", () => {
       expect(result.proposal.type).toBe("create_calendar_event");
       expect(result.proposal.target?.eventTitle).toBe("Call the dentist");
       expect(result.proposal.target?.start).toBe("2026-07-16T15:00:00.000Z");
+    });
+
+    // Slice 2B.1 correction (Blocker 1): the FIRST version of this
+    // correction derived explicitTaskTimeAmbiguity from baseType, which
+    // only became "create_task"/"update_task" when the model's own raw
+    // type was already one of a few specific compatible starting values
+    // -- a model that answered with a DIFFERENT supported type for the
+    // exact same explicit-task-worded + timed message bypassed the LOCKED
+    // DOMAIN RULE entirely. This describe block proves the rule now holds
+    // regardless of what the model proposed -- exactly the adversarial
+    // matrix the correction task specified.
+    describe("Blocker 1 correction: the LOCKED DOMAIN RULE cannot be bypassed by ANY model-proposed type", () => {
+      const wrongButSupportedOrMalformedTypes = [
+        "create_task",
+        "create_calendar_event",
+        "inspect_calendar",
+        "inspect_tasks",
+        "ask_clarification",
+        "unsupported",
+        "totally_made_up_type",
+      ];
+
+      it.each(wrongButSupportedOrMalformedTypes)(
+        "an explicit CREATE-worded task request + time forces TASK_TIME_CLARIFICATION regardless of the model's raw type: %s",
+        (rawType) => {
+          const result = validate(
+            proposal({ type: rawType, target: { title: "Call the dentist", eventTitle: "Call the dentist" } }),
+            "Create a task for tomorrow at 3pm to call the dentist",
+          );
+          expect(result.proposal.type).toBe("ask_clarification");
+          expect(result.proposal.reasons).toContain(TASK_TIME_CLARIFICATION_REASON_MARKER);
+          expect(result.proposal.requiresApproval).toBe(false);
+        },
+      );
+
+      it("also holds with NO type field at all (fully malformed model output)", () => {
+        const result = validate(
+          { target: { title: "Call the dentist" } },
+          "Create a task for tomorrow at 3pm to call the dentist",
+        );
+        expect(result.proposal.type).toBe("ask_clarification");
+        expect(result.proposal.reasons).toContain(TASK_TIME_CLARIFICATION_REASON_MARKER);
+      });
+
+      it.each(["update_task", "update_calendar_event", "inspect_calendar", "unsupported", "garbage"])(
+        "an explicit UPDATE-worded task request + time forces TASK_TIME_CLARIFICATION regardless of the model's raw type: %s",
+        (rawType) => {
+          const result = validateWithContext(
+            proposal({ type: rawType, target: { taskReference: "Tax" } }),
+            "Update the Tax task for tomorrow at 3pm",
+            { tasks: [{ id: "task-1", title: "Tax", completed: false }], events: [], learningProgress: null },
+          );
+          expect(result.proposal.type).toBe("ask_clarification");
+          expect(result.proposal.reasons).toContain(TASK_TIME_CLARIFICATION_REASON_MARKER);
+        },
+      );
+
+      it("a genuinely mixed task+calendar noun message still falls through to ordinary ambiguity handling, never this branch, regardless of the model's raw type", () => {
+        const result = validate(
+          proposal({ type: "create_calendar_event", target: { title: "x" } }),
+          "Create a task for the meeting tomorrow at 3pm",
+        );
+        expect(result.proposal.reasons).not.toContain(TASK_TIME_CLARIFICATION_REASON_MARKER);
+      });
+    });
+
+    // Slice 2B.1 correction (Blocker 2): SmartFlow has no safe "convert
+    // this Task into a Calendar Event" primitive. An originally
+    // UPDATE-worded task request must preserve its own create/update
+    // semantics through the bounded follow-up, and picking Calendar for
+    // an update must fail closed (a SECOND, explicit question) rather
+    // than silently becoming update_calendar_event with the task's own
+    // identity bridged into the event lookup.
+    describe("Blocker 2 correction: create vs update semantics survive the task-time continuation, and Task-to-Event conversion fails closed", () => {
+      const updateContext: AgentReasoningSafeContext = {
+        tasks: [{ id: "task-1", title: "Tax report", completed: false }],
+        events: [],
+        learningProgress: null,
+      };
+
+      it("resolvedTaskTimeAmbiguityAs: 'task_without_time' for an ORIGINALLY UPDATE-worded request resolves to update_task, preserving the exact resolved task identity, never create_task", () => {
+        const result = validateAgentIntentProposal({
+          rawProposal: { type: "create_task", target: { taskReference: "Tax report" } },
+          userMessage: "Update the Tax report task for tomorrow at 3pm",
+          safeContext: updateContext,
+          language: "en",
+          now,
+          timeZone: "UTC",
+          resolvedTaskTimeAmbiguityAs: "task_without_time",
+        });
+        expect(result.proposal.type).toBe("update_task");
+        expect(result.proposal.target?.taskId).toBe("task-1");
+      });
+
+      it("resolvedTaskTimeAmbiguityAs: 'calendar_with_time' for an ORIGINALLY UPDATE-worded request does NOT resolve directly -- it asks a SECOND, fail-closed question, never producing update_calendar_event or any executable intent", () => {
+        const result = validateAgentIntentProposal({
+          rawProposal: { type: "create_task", target: { taskReference: "Tax report" } },
+          userMessage: "Update the Tax report task for tomorrow at 3pm",
+          safeContext: updateContext,
+          language: "en",
+          now,
+          timeZone: "UTC",
+          resolvedTaskTimeAmbiguityAs: "calendar_with_time",
+        });
+        expect(result.proposal.type).toBe("ask_clarification");
+        expect(result.proposal.type).not.toBe("update_calendar_event");
+        expect(result.proposal.reasons).toContain(TASK_TO_CALENDAR_CONVERSION_REASON_MARKER);
+        expect(result.proposal.requiresApproval).toBe(false);
+        expect(result.proposal.clarificationQuestion).toBeTruthy();
+      });
+
+      it("resolvedTaskTimeAmbiguityAs: 'calendar_with_time' for an ORIGINALLY CREATE-worded request still resolves DIRECTLY to create_calendar_event -- the fail-closed second question is UPDATE-only (regression check)", () => {
+        const result = validateAgentIntentProposal({
+          rawProposal: { type: "create_task", target: { title: "Call the dentist" } },
+          userMessage: "Create a task for tomorrow at 3pm to call the dentist",
+          safeContext: context,
+          language: "en",
+          now,
+          timeZone: "UTC",
+          resolvedTaskTimeAmbiguityAs: "calendar_with_time",
+        });
+        expect(result.proposal.type).toBe("create_calendar_event");
+      });
+
+      it("resolvedTaskTimeAmbiguityAs: 'calendar_conversion_confirmed' resolves to a BRAND NEW create_calendar_event, with the original task's identity stripped -- never bridged into eventReference/eventId", () => {
+        const result = validateAgentIntentProposal({
+          rawProposal: { type: "create_task", target: { title: "Tax report", taskReference: "Tax report", taskId: "task-1", taskTitleHint: "Tax report" } },
+          userMessage: "Update the Tax report task for tomorrow at 3pm",
+          safeContext: updateContext,
+          language: "en",
+          now,
+          timeZone: "UTC",
+          resolvedTaskTimeAmbiguityAs: "calendar_conversion_confirmed",
+        });
+        expect(result.proposal.type).toBe("create_calendar_event");
+        expect(result.proposal.target?.eventTitle).toBe("Tax report");
+        expect(result.proposal.target?.taskId).toBeUndefined();
+        expect(result.proposal.target?.taskReference).toBeUndefined();
+        expect(result.proposal.target?.eventReference).toBeUndefined();
+        // The original task is never looked up/matched/mutated by this
+        // path -- findTaskTarget is never even reached for this type.
+        expect(result.proposal.target?.start).toBe("2026-07-16T15:00:00.000Z");
+      });
     });
 
     // Slice 2B.1: client/server parity -- see

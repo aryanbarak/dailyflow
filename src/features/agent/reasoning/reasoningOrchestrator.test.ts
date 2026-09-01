@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { MODEL_RESPONSE_INCOMPLETE_REASON_MARKER, PROVIDER_UNAVAILABLE_REASON_MARKER, reasonAboutUserMessage, resolveTaskCalendarClarificationFollowUp } from "./reasoningOrchestrator";
+import { TASK_TO_CALENDAR_CONVERSION_REASON_MARKER } from "./intentValidator";
 import { buildReasoningPrompt } from "./reasoningPrompt";
 import type { AgentLlmReasoningCaller, AgentReasoningSafeContext } from "./reasoningTypes";
 
@@ -692,5 +693,63 @@ describe("resolveTaskCalendarClarificationFollowUp (Slice 2B.1 bounded continuat
     expect(result.proposal.type).toBe("create_calendar_event");
     expect(result.proposal.target?.eventTitle).toBe("به احمد زنگ بزنم");
     expect(result.proposal.target?.start).toBe("2026-07-16T10:00:00.000Z");
+  });
+});
+
+// Slice 2B.1 correction (Blocker 2): resolveTaskCalendarClarificationFollowUp
+// always hardcodes `rawProposal.type: "create_task"` internally (a
+// placeholder -- see its own header comment) but must still preserve the
+// ORIGINAL request's real create/update semantics end to end, because
+// validateAgentIntentProposal re-derives the operation purely from
+// EXPLICIT MESSAGE EVIDENCE on `originalUserMessage` (never from that
+// placeholder). Exercised at THIS layer (not only intentValidator.test.ts
+// directly) so a regression in how the orchestrator wires the call through
+// is caught here too.
+describe("resolveTaskCalendarClarificationFollowUp: create vs update semantics (Slice 2B.1 Blocker 2)", () => {
+  it("an ORIGINALLY UPDATE-worded request's 'task_without_time' answer resolves to update_task (never create_task), preserving the resolved task's identity", () => {
+    const result = resolveTaskCalendarClarificationFollowUp({
+      originalUserMessage: "Update the Tax report task for tomorrow at 3pm",
+      resolvedAs: "task_without_time",
+      capturedTarget: { taskReference: "Tax report" },
+      safeContext,
+      language: "en",
+      now,
+      timeZone: "UTC",
+    });
+    expect(result.proposal.type).toBe("update_task");
+    expect(result.proposal.target?.taskId).toBe("task-1");
+  });
+
+  it("an ORIGINALLY UPDATE-worded request's 'calendar_with_time' answer does NOT resolve directly -- it comes back as the SECOND, fail-closed question, never update_calendar_event, never an executable proposal", () => {
+    const result = resolveTaskCalendarClarificationFollowUp({
+      originalUserMessage: "Update the Tax report task for tomorrow at 3pm",
+      resolvedAs: "calendar_with_time",
+      capturedTarget: { taskReference: "Tax report" },
+      safeContext,
+      language: "en",
+      now,
+      timeZone: "UTC",
+    });
+    expect(result.proposal.type).toBe("ask_clarification");
+    expect(result.proposal.type).not.toBe("update_calendar_event");
+    expect(result.proposal.reasons).toContain(TASK_TO_CALENDAR_CONVERSION_REASON_MARKER);
+    expect(result.proposal.requiresApproval).toBe(false);
+  });
+
+  it("a THIRD call with 'calendar_conversion_confirmed' finally produces create_calendar_event, with no task identity bridged into the event", () => {
+    const result = resolveTaskCalendarClarificationFollowUp({
+      originalUserMessage: "Update the Tax report task for tomorrow at 3pm",
+      resolvedAs: "calendar_conversion_confirmed",
+      capturedTarget: { title: "Tax report", taskReference: "Tax report", taskId: "task-1" },
+      safeContext,
+      language: "en",
+      now,
+      timeZone: "UTC",
+    });
+    expect(result.proposal.type).toBe("create_calendar_event");
+    expect(result.proposal.target?.eventTitle).toBe("Tax report");
+    expect(result.proposal.target?.taskId).toBeUndefined();
+    expect(result.proposal.target?.taskReference).toBeUndefined();
+    expect(result.proposal.target?.eventReference).toBeUndefined();
   });
 });

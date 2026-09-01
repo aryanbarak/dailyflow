@@ -1184,7 +1184,16 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
           : "Tasks don't support a specific time yet. Should I create it as a Task without a time, or as a Calendar Event at that time?"
       await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'user', content: message })
       await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: reply })
-      return json({ reply }, 200, origin)
+      // Slice 2B.1 correction (Blocker 4): a minimal, non-sensitive,
+      // structured marker -- lets the client (ChatPage.tsx) arm its
+      // bounded task/calendar continuation from THIS deterministic
+      // Worker-side detection, not only from the separate LLM reasoning
+      // overlay, so the continuation still works when the overlay's own
+      // provider call fails or never runs at all. Carries no target
+      // fields (title/notes are the reasoning overlay's own concern,
+      // when it is available) -- just the fact that this turn was a
+      // task-time domain clarification.
+      return json({ reply, clarification: { kind: 'task_time' } }, 200, origin)
     }
 
     // 'none' on THIS message doesn't rule out a continuation (an

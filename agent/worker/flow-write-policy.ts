@@ -914,7 +914,17 @@ function isExplicitTaskWriteTrigger(message: string): boolean {
   const create = /\b(create|add|set up|erstelle|hinzuf[üu]gen)\b.{0,50}\b(task|todo|aufgabe)\b/i.test(message) ||
     /(?:یک|ک|یه)?\s*(?:تسک|وظیفه|کار).{0,50}(?:بساز|ایجاد کن|اضافه کن)/i.test(message) ||
     /(?:یک|ک|یه)?\s*(?:task|todo).{0,50}(?:بساز|ایجاد کن|اضافه کن)/i.test(message)
-  const update = /\b(update|edit|change|reschedule|aktualisiere|bearbeite|verschiebe)\b.{0,60}\b(task|todo|aufgabe)\b/i.test(message)
+  // Blocker 2/parity correction: the FA alternative was missing entirely
+  // for UPDATE (only CREATE had one, above) -- an FA update-worded task
+  // request naming a time-of-day fell through past this predicate
+  // (isExplicitTaskWriteTrigger returned false) straight into
+  // resolvesToCalendarDomain's OWN generic "no explicit noun" fallback,
+  // silently resolving to calendar -- the exact bug the LOCKED DOMAIN
+  // RULE exists to prevent, just for one specific language/operation
+  // pair. Mirrors src/features/agent/reasoning/intentValidator.ts's own
+  // requestLooksLikeTaskUpdate FA pattern.
+  const update = /\b(update|edit|change|reschedule|aktualisiere|bearbeite|verschiebe)\b.{0,60}\b(task|todo|aufgabe)\b/i.test(message) ||
+    /(?:تسک|وظیفه|کار).{0,60}(?:به‌روزرسانی کن|ویرایش کن|تغییر بده)/i.test(message)
   return create || update
 }
 
@@ -1036,10 +1046,18 @@ export function parseTaskWriteIntent(message: string, now: Date, timeZone: strin
     /(?:ÛŒÚ©|ÙŠÙ‡|ÛŒÙ‡)?\s*(?:ØªØ³Ú©|ÙˆØ¸ÛŒÙÙ‡|Ú©Ø§Ø±).{0,50}(?:Ø¨Ø³Ø§Ø²|Ø§ÛŒØ¬Ø§Ø¯ Ú©Ù†|Ø§Ø¶Ø§ÙÙ‡ Ú©Ù†)/i.test(message)
   const cleanPersianCreate = /(?:\u06cc\u06a9|\u06a9|\u06cc\u0647)?\s*(?:\u062a\u0633\u06a9|\u0648\u0638\u06cc\u0641\u0647|\u06a9\u0627\u0631).{0,50}(?:\u0628\u0633\u0627\u0632|\u0627\u06cc\u062c\u0627\u062f\s+\u06a9\u0646|\u0627\u0636\u0627\u0641\u0647\s+\u06a9\u0646)/i.test(message)
   const cleanMixedPersianCreate = /(?:\u06cc\u06a9|\u06a9|\u06cc\u0647)?\s*(?:task|todo).{0,50}(?:\u0628\u0633\u0627\u0632|\u0627\u06cc\u062c\u0627\u062f\s+\u06a9\u0646|\u0627\u0636\u0627\u0641\u0647\s+\u06a9\u0646)/i.test(message)
+  // Slice 2B.1 correction (Blocker 2/parity coverage): parseTaskWriteIntent had NO
+  // Persian UPDATE recognition at all (only cleanPersianCreate/cleanMixedPersianCreate
+  // above cover FA create; the corrupted create/update variables further up this
+  // function are pre-existing, out-of-scope mojibake) -- an FA update-worded task
+  // message returned null here entirely, never even reaching
+  // isExplicitTaskWriteTrigger own (now-fixed) FA update check. Freshly written,
+  // clean escapes mirroring cleanPersianCreate own style.
+  const cleanPersianUpdate = /(?:\u06cc\u06a9|\u06a9|\u06cc\u0647)?\s*(?:\u062a\u0633\u06a9|\u0648\u0638\u06cc\u0641\u0647|\u06a9\u0627\u0631).{0,60}(?:\u0628\u0647\u200c\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06cc\s+\u06a9\u0646|\u0648\u06cc\u0631\u0627\u06cc\u0634\s+\u06a9\u0646|\u062a\u063a\u06cc\u06cc\u0631\s+\u0628\u062f\u0647)/i.test(message)
   const update = /\b(update|edit|change|reschedule|aktualisiere|bearbeite|verschiebe)\b.{0,60}\b(task|todo|aufgabe)\b/i.test(message)
-  const implicitCreate = !create && !cleanPersianCreate && !cleanMixedPersianCreate && !update &&
+  const implicitCreate = !create && !cleanPersianCreate && !cleanMixedPersianCreate && !update && !cleanPersianUpdate &&
     isImplicitScheduleStatement(message) && hasResolvedDateOrTimeSignal(message, now, timeZone)
-  if (!create && !cleanPersianCreate && !cleanMixedPersianCreate && !update && !implicitCreate) return null
+  if (!create && !cleanPersianCreate && !cleanMixedPersianCreate && !update && !cleanPersianUpdate && !implicitCreate) return null
 
   const date = parseDeterministicDueDate(message, now, timeZone)
   const timeOfDay = parseDeterministicTimeOfDay(message)

@@ -1,5 +1,7 @@
 
 
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { renderToString } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
@@ -16,6 +18,7 @@ import {
   buildChatTimeoutFailureMessages,
   CHAT_REQUEST_TIMEOUT_MS,
   ChatBubble,
+  classifyCalendarConversionConfirmation,
   classifyMessageIntentSignal,
   classifyTaskCalendarFollowUp,
   getAmbiguousOfferHint,
@@ -35,7 +38,7 @@ import {
   shouldUseReasoningForMessage,
 } from "./ChatPage";
 import { shouldAutoRunReadOnlyOverlay } from "@/features/chat/autoReadOverlayGate";
-import { ENGINEERING_TASK_NOT_PROPOSED_REASON_MARKER, TASK_TIME_CLARIFICATION_REASON_MARKER, getStrongReadDomainEvidence, getToolById, isAutoExecutableReadOnlyToolId, PROVIDER_UNAVAILABLE_REASON_MARKER, withTimeout } from "@/features/agent";
+import { ENGINEERING_TASK_NOT_PROPOSED_REASON_MARKER, TASK_TIME_CLARIFICATION_REASON_MARKER, TASK_TO_CALENDAR_CONVERSION_REASON_MARKER, getStrongReadDomainEvidence, getToolById, isAutoExecutableReadOnlyToolId, PROVIDER_UNAVAILABLE_REASON_MARKER, withTimeout } from "@/features/agent";
 import type {
   AgentReasoningResult,
   ReadOnlyRuntimeResult,
@@ -903,6 +906,84 @@ describe("ChatPage LLM reasoning UX boundary", () => {
       expect(classifyTaskCalendarFollowUp("10am")).toBeNull();
       expect(classifyTaskCalendarFollowUp("yes")).toBeNull();
       expect(classifyTaskCalendarFollowUp("بله")).toBeNull();
+    });
+  });
+
+  // Slice 2B.1 correction (Blocker 2): the SECOND, fail-closed question --
+  // "should I leave the task unchanged and create a new event instead?" --
+  // only ever reached for an originally UPDATE-worded task request that
+  // picked Calendar. Same narrow, never-infer-from-silence discipline as
+  // classifyTaskCalendarFollowUp above.
+  describe("classifyCalendarConversionConfirmation (Slice 2B.1 Blocker 2 second question)", () => {
+    it("recognizes an explicit affirmative in EN/DE/FA", () => {
+      expect(classifyCalendarConversionConfirmation("yes")).toBe(true);
+      expect(classifyCalendarConversionConfirmation("Yes, go ahead")).toBe(true);
+      expect(classifyCalendarConversionConfirmation("ja")).toBe(true);
+      expect(classifyCalendarConversionConfirmation("بله")).toBe(true);
+    });
+
+    it("recognizes an explicit decline in EN/DE/FA", () => {
+      expect(classifyCalendarConversionConfirmation("no")).toBe(false);
+      expect(classifyCalendarConversionConfirmation("nein")).toBe(false);
+      expect(classifyCalendarConversionConfirmation("نه")).toBe(false);
+    });
+
+    it("never infers consent from silence -- unrelated text matches neither branch", () => {
+      expect(classifyCalendarConversionConfirmation("what time is it")).toBeNull();
+      expect(classifyCalendarConversionConfirmation("call Ahmad")).toBeNull();
+    });
+  });
+
+  // Slice 2B.1 corrections (Blockers 2/3/4) -- ChatPage.tsx's own
+  // handleSend is an unexported closure with heavy AppLayout/context
+  // dependencies that this codebase deliberately does not full-DOM-mount
+  // in tests (see ChatPagePwaScroll.test.tsx's own header comment on the
+  // same constraint, for the same file). Verified the same way that file
+  // verifies equally hard-to-integration-test properties: directly
+  // against the real shipped source, so a regression in the ACTUAL
+  // send-path wiring (not just the pure resolver functions already
+  // covered above and in reasoningOrchestrator.test.ts) fails this test.
+  describe("Slice 2B.1 corrections: the actual follow-up send path (source-verified -- see file header comment)", () => {
+    const chatPageSource = readFileSync(path.join(path.resolve(process.cwd(), "src"), "pages", "ChatPage.tsx"), "utf-8");
+
+    it("Blocker 4: arms the pending continuation from the WORKER's own structured `clarification` marker, not from the reasoning overlay alone", () => {
+      expect(chatPageSource).toMatch(/if \(clarification\?\.kind === 'task_time'\) \{/);
+      // The overlay result may only ENRICH the captured target -- it must
+      // never be the SOLE condition that arms the ref (that was the old,
+      // corrected bug: an overlay-only marker with no server confirmation
+      // could arm continuation on its own).
+      const armingBlock = chatPageSource.slice(
+        chatPageSource.indexOf("if (clarification?.kind === 'task_time') {"),
+        chatPageSource.indexOf("if (clarification?.kind === 'task_time') {") + 700,
+      );
+      expect(armingBlock).toMatch(/overlayResult\?\.proposal\.reasons\.includes\(TASK_TIME_CLARIFICATION_REASON_MARKER\)\s*\n\s*\? overlayResult\.proposal\.target\s*\n\s*: undefined/);
+    });
+
+    it("Blocker 3: the shortcut path persists both sides of the follow-up turn via the same RLS-scoped agent_chat_messages insert the timeout-fallback path already uses, not local state alone", () => {
+      const helperStart = chatPageSource.indexOf("const persistShortcutTurn = async");
+      expect(helperStart).toBeGreaterThan(-1);
+      const helperBody = chatPageSource.slice(helperStart, helperStart + 1200);
+      expect(helperBody).toMatch(/supabase\.from\('agent_chat_messages'\)\.insert\(\[/);
+      expect(helperBody).toMatch(/role: 'user', content: text/);
+      expect(helperBody).toMatch(/role: 'assistant', content: assistantContent/);
+      // Turn-scoped attachment cleanup and session-metadata refresh must
+      // survive the shortcut path exactly like the ordinary send path.
+      expect(helperBody).toMatch(/setAttachedFile\(null\)/);
+      expect(helperBody).toMatch(/setAttachedDocument\(null\)/);
+      expect(helperBody).toMatch(/void refreshSessions\(\)/);
+      // Both the 'domain_choice' and 'conversion_confirmation' resolution
+      // branches must actually call the durable helper (not just build a
+      // local message and return early, the original bug).
+      expect(chatPageSource).toMatch(/await persistShortcutTurn\(proposalMessage\(result\), result\.responseLanguage\)/);
+      expect(chatPageSource).toMatch(/await persistShortcutTurn\(declinedText, pendingClarification\.language\)/);
+    });
+
+    it("Blocker 2: an originally update-worded task request that picks Calendar re-arms the SAME bounded ref for the second, fail-closed question instead of resolving directly", () => {
+      const shortcutStart = chatPageSource.indexOf("if (pendingClarification?.stage === 'domain_choice' && domainChoiceResolution) {");
+      expect(shortcutStart).toBeGreaterThan(-1);
+      const shortcutBody = chatPageSource.slice(shortcutStart, chatPageSource.indexOf("return\n      }", shortcutStart));
+      expect(shortcutBody).toMatch(/result\.proposal\.reasons\.includes\(TASK_TO_CALENDAR_CONVERSION_REASON_MARKER\)/);
+      expect(shortcutBody).toMatch(/stage: 'conversion_confirmation'/);
     });
   });
 

@@ -60,4 +60,17 @@ export const taskCalendarDomainParityCases: readonly TaskCalendarDomainParityCas
   { label: "DE explicit calendar noun (Termin) + time -> calendar", message: "Erstelle einen Termin fuer morgen um 15 Uhr", expected: "calendar" },
   { label: "FA acceptance case G: explicit calendar noun (with تقویم mentioned too) + time -> calendar", message: "فردا ساعت ۱۰ در تقویم جلسه با احمد بساز", expected: "calendar" },
   { label: "mixed task+calendar nouns -> ambiguous (two different domain nouns)", message: "Create a task for the meeting tomorrow", expected: "ambiguous" },
+  // Slice 2B.1 correction (Blocker 2/parity coverage): CREATE and UPDATE
+  // are two independently-matched operations on each side
+  // (requestLooksLikeTaskCreate/Update client-side, the `create`/`update`
+  // variables inside isExplicitTaskWriteTrigger Worker-side) -- every case
+  // above this point exercised CREATE only, which left UPDATE's own parity
+  // completely unverified. FA update support did not exist on the Worker
+  // side until this same correction added it (see
+  // isExplicitTaskWriteTrigger's own comment in flow-write-policy.ts) --
+  // it is included here specifically so a regression cannot silently
+  // resurface.
+  { label: "EN explicit task UPDATE + time -> task_time_ambiguous, never calendar", message: "Update my task for tomorrow at 3pm", expected: "task_time_ambiguous" },
+  { label: "DE explicit task UPDATE + time -> task_time_ambiguous, never calendar", message: "Aktualisiere meine Aufgabe fuer morgen um 15 Uhr", expected: "task_time_ambiguous" },
+  { label: "FA explicit task UPDATE + time -> task_time_ambiguous, never calendar", message: "تسک من را برای فردا ویرایش کن، ساعت ۱۰", expected: "task_time_ambiguous" },
 ];

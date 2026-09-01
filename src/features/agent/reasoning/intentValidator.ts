@@ -182,6 +182,27 @@ function taskTimeClarificationMessage(language: SupportedAiResponseLanguage): st
   return copy[language];
 }
 
+// Slice 2B.1 correction (Blocker 2): SmartFlow has no safe "convert this
+// Task into a Calendar Event" primitive -- an UPDATE-worded task request
+// (target names an EXISTING task via taskId/taskReference) that picks
+// "Calendar" at the first TASK_TIME_CLARIFICATION question must not be
+// silently resolved into update_calendar_event, which would bridge the
+// task's own identity into an event lookup and either fail to match
+// anything or, worse, match and mutate an unrelated existing event. This
+// is the SECOND, distinct question that fires only in that specific case
+// -- fail closed rather than guess. Same marker convention as
+// TASK_TIME_CLARIFICATION_REASON_MARKER above.
+export const TASK_TO_CALENDAR_CONVERSION_REASON_MARKER = "TASK_TO_CALENDAR_CONVERSION_CONFIRMATION";
+
+function taskToCalendarConversionMessage(language: SupportedAiResponseLanguage): string {
+  const copy = {
+    en: "You selected Calendar. Should I leave the existing task unchanged and create a new calendar event at that time instead?",
+    de: "Du hast Kalender gewählt. Soll ich die vorhandene Aufgabe unverändert lassen und stattdessen einen neuen Kalendertermin zu dieser Uhrzeit anlegen?",
+    fa: "شما تقویم را انتخاب کردید. آیا تسک موجود را بدون تغییر رها کنم و در عوض یک رویداد تقویم جدید در همان ساعت بسازم؟",
+  } as const;
+  return copy[language];
+}
+
 // ENG-06g-fix RULING 1: three distinct outcomes, each with its own reason
 // code so a log line says which one fired.
 export const ENGINEERING_TASK_NOT_PROPOSED_REASONS = {
@@ -970,7 +991,17 @@ export function validateAgentIntentProposal(input: {
   // clarification and this call is re-resolving that same original
   // message now that the user explicitly picked a side. Never inferred
   // from silence; every other caller omits this.
-  resolvedTaskTimeAmbiguityAs?: "task_without_time" | "calendar_with_time";
+  //
+  // Blocker 2 correction: "calendar_with_time" resolves DIRECTLY only when
+  // the original request was a CREATE. When it was an UPDATE, there is no
+  // safe task-to-event conversion, so that answer instead produces a
+  // SECOND clarification (TASK_TO_CALENDAR_CONVERSION_REASON_MARKER) --
+  // "calendar_conversion_confirmed" is set only by a THIRD call, resolving
+  // THAT second question, and is the only value that can ever produce a
+  // create_calendar_event for an originally-UPDATE-worded request (the
+  // original task's identity is stripped from the target first -- see
+  // stripTaskIdentityForConversion below).
+  resolvedTaskTimeAmbiguityAs?: "task_without_time" | "calendar_with_time" | "calendar_conversion_confirmed";
 }): AgentReasoningValidationResult {
   const now = input.now ?? new Date();
   // Task 22-fix (C1): was hardcoded to "Europe/Berlin" regardless of the
@@ -1116,58 +1147,100 @@ export function validateAgentIntentProposal(input: {
           (normalizationSourceType === "ask_clarification" || normalizationSourceType === "propose_engineering_task")
           ? "propose_engineering_task"
         : normalizeReadIntentFromEvidence(normalizationSourceType, domainEvidence, input.userMessage);
-  // Slice 2B.1 post-step, CORRECTED -- LOCKED DOMAIN RULE: explicit domain
-  // noun wins before temporal inference. baseType is only ever
-  // "create_task"/"update_task" when requestLooksLikeTaskCreate/Update
-  // matched an EXPLICIT task word ("task"/"تسک"/"Aufgabe"), so a
-  // time-of-day alongside it is never silently swapped into calendar
-  // anymore (the OLD "Task 22 post-step" behavior this replaces) -- it is
-  // an ambiguity to ASK about, unless ChatPage.tsx's bounded single-turn
-  // continuation already supplied the user's own explicit answer via
-  // resolvedTaskTimeAmbiguityAs. Applied AFTER the main resolution above,
-  // same as the step it replaces, so it can never manufacture a false
-  // conflict against the task branch it is about to override, and never
-  // touches any other type (ambiguous, clarification, GitHub writes,
-  // reads all pass through unchanged).
-  const explicitTaskTimeAmbiguity = messageHasTime && (baseType === "create_task" || baseType === "update_task");
-  const type = !explicitTaskTimeAmbiguity
-    ? baseType
-    : input.resolvedTaskTimeAmbiguityAs === "task_without_time"
-      ? baseType
-      : input.resolvedTaskTimeAmbiguityAs === "calendar_with_time"
-        ? (baseType === "create_task" ? "create_calendar_event" : "update_calendar_event")
-        : "ask_clarification";
-  const normalizedByEvidence = type !== initialType;
-  // Slice 2B.1: checked before EVERY other gate below (including the
-  // "!initialTypeSupported" and generic "looks unsupported" checks right
-  // after this) -- this is a specific, nameable, deterministically
-  // classified ambiguity, never dependent on whatever the model's own raw
-  // type happened to be (normalizationSourceType already allowed
-  // "ask_clarification" as a compatible starting point for the
-  // taskCreateRequested/taskUpdateRequested branches above, so baseType
-  // can land on "create_task"/"update_task" even when the model's own
-  // type was garbage or unsupported). Without this ordering, an
-  // unsupported/malformed model type OR requestLooksUnsupported's generic
-  // create/add-verb blocklist (a message like "create a task for tomorrow
-  // at 3pm" independently matches it) would intercept first and report a
-  // false capability denial instead of this honest question. Also
-  // distinct from the generic ask_clarification handler further below
-  // (which would use the wrong question text -- the model's own unrelated
-  // clarificationQuestion, or the generic fallback -- and a generic,
-  // non-distinguishing reason) and captures the model's own target
-  // (title/notes) so ChatPage.tsx's bounded, single-turn continuation can
-  // resume without re-deriving it.
-  if (explicitTaskTimeAmbiguity && !input.resolvedTaskTimeAmbiguityAs) {
-    return createSafeProposal("ask_clarification", {
-      userMessage: input.userMessage,
-      language: input.language,
-      now,
-      question: taskTimeClarificationMessage(input.language),
-      reasonMarker: TASK_TIME_CLARIFICATION_REASON_MARKER,
-      reason: "Explicit task request named a time-of-day, which tasks do not support -- clarification required before any execution intent.",
-      target: normalizeTarget(input.rawProposal.target),
-    });
+  // Slice 2B.1 post-step, CORRECTED AGAIN (Blocker 1) -- LOCKED DOMAIN
+  // RULE: explicit domain noun wins before temporal inference, and this
+  // must hold regardless of what the MODEL proposed. The first correction
+  // derived explicitTaskTimeAmbiguity from baseType, which only becomes
+  // "create_task"/"update_task" when normalizationSourceType (== the
+  // model's own initialType, when supported) already started as one of a
+  // few specific compatible values (ask_clarification/inspect_tasks/
+  // create_task, or the update equivalents) -- a model that answered with
+  // a DIFFERENT supported type for the exact same explicit-task-worded +
+  // timed message (create_calendar_event, inspect_calendar, or anything
+  // else in CONFIRMED_WRITE_INTENT_TYPES) left baseType carrying THAT
+  // type straight through, so explicitTaskTimeAmbiguity never fired and
+  // the LOCKED DOMAIN RULE was bypassed whenever the model disagreed with
+  // the deterministic evidence. explicitTaskOperation below is computed
+  // ONLY from taskCreateRequested/taskUpdateRequested (regex evidence
+  // over the raw user message, already computed above) and
+  // conflictingWriteRequest (so a message also naming a calendar noun --
+  // "create a task for the meeting tomorrow" -- still falls through to
+  // the ordinary conflicting/ambiguous handling below, not this branch) --
+  // it never reads baseType, normalizationSourceType, or initialType, so
+  // no value the model could return (a wrong-but-supported type, an
+  // unsupported/malformed type, or literally anything) can suppress it.
+  const explicitTaskOperation: "create_task" | "update_task" | null = conflictingWriteRequest
+    ? null
+    : taskCreateRequested
+      ? "create_task"
+      : taskUpdateRequested
+        ? "update_task"
+        : null;
+  const explicitTaskTimeAmbiguity = messageHasTime && explicitTaskOperation !== null;
+  // Blocker 2: only ever true for a "calendar_with_time" answer to an
+  // originally update_task request, resolved via the SECOND
+  // (TASK_TO_CALENDAR_CONVERSION_REASON_MARKER) question below -- strips
+  // the original task's identity from the target before it can be bridged
+  // into anything event-shaped, so "no task identity bridged into event
+  // identity" holds even though the eventReference-from-taskReference
+  // bridge (further below, unchanged from Task 22) still runs afterward.
+  const stripTaskIdentityForConversion = input.resolvedTaskTimeAmbiguityAs === "calendar_conversion_confirmed";
+  let type: AgentIntentType = baseType;
+  if (explicitTaskTimeAmbiguity && explicitTaskOperation) {
+    if (input.resolvedTaskTimeAmbiguityAs === "task_without_time") {
+      type = explicitTaskOperation;
+    } else if (input.resolvedTaskTimeAmbiguityAs === "calendar_conversion_confirmed") {
+      type = "create_calendar_event";
+    } else if (input.resolvedTaskTimeAmbiguityAs === "calendar_with_time") {
+      if (explicitTaskOperation === "create_task") {
+        type = "create_calendar_event";
+      } else {
+        // Blocker 2: fail closed. update_task's target identifies an
+        // EXISTING task (taskId/taskReference) -- silently reinterpreting
+        // "this task" as "this calendar event" via
+        // update_calendar_event's eventReference/eventId lookup would
+        // either match nothing or, worse, match and mutate an unrelated
+        // real event. Nothing here is executable yet; the original task
+        // is never mutated by this branch.
+        return createSafeProposal("ask_clarification", {
+          userMessage: input.userMessage,
+          language: input.language,
+          now,
+          question: taskToCalendarConversionMessage(input.language),
+          reasonMarker: TASK_TO_CALENDAR_CONVERSION_REASON_MARKER,
+          reason: "User chose Calendar for an UPDATE-worded task request -- there is no safe Task-to-Event conversion primitive, so a second explicit confirmation is required before any event is created, and the original task is never mutated.",
+          target: normalizeTarget(input.rawProposal.target),
+        });
+      }
+    } else {
+      // Slice 2B.1: checked before EVERY other gate below (including the
+      // "!initialTypeSupported" and generic "looks unsupported" checks
+      // right after this) -- this is a specific, nameable,
+      // deterministically classified ambiguity, never dependent on
+      // whatever the model's own raw type happened to be. Without this
+      // ordering, an unsupported/malformed model type OR
+      // requestLooksUnsupported's generic create/add-verb blocklist (a
+      // message like "create a task for tomorrow at 3pm" independently
+      // matches it) would intercept first and report a false capability
+      // denial instead of this honest question. Also distinct from the
+      // generic ask_clarification handler further below (which would use
+      // the wrong question text -- the model's own unrelated
+      // clarificationQuestion, or the generic fallback -- and a generic,
+      // non-distinguishing reason) and captures the model's own target
+      // (title/notes) so ChatPage.tsx's bounded, single-turn continuation
+      // can resume without re-deriving it.
+      return createSafeProposal("ask_clarification", {
+        userMessage: input.userMessage,
+        language: input.language,
+        now,
+        question: taskTimeClarificationMessage(input.language),
+        reasonMarker: TASK_TIME_CLARIFICATION_REASON_MARKER,
+        reason: "Explicit task request named a time-of-day, which tasks do not support -- clarification required before any execution intent.",
+        target: normalizeTarget(input.rawProposal.target),
+      });
+    }
   }
+  const normalizedByEvidence = type !== initialType;
   if (!initialTypeSupported && type === "ask_clarification") {
     return createSafeProposal("unsupported", {
       userMessage: input.userMessage,
@@ -1327,6 +1400,16 @@ export function validateAgentIntentProposal(input: {
   // proposing a task. Bridge that naming gap here rather than silently
   // failing calendar's own "eventTitle is required" check on a proposal
   // that DID name a subject, just under the task-shaped field name.
+  // Blocker 2: applied BEFORE the eventTitle/eventReference bridge below
+  // so the original task's identity (taskId/taskReference/taskTitleHint)
+  // can never be bridged into the new event's identity -- this path only
+  // ever produces a NEW create_calendar_event (never an update), and the
+  // task it originated from is left completely untouched.
+  if (stripTaskIdentityForConversion && target) {
+    target.taskId = undefined;
+    target.taskReference = undefined;
+    target.taskTitleHint = undefined;
+  }
   if ((type === "create_calendar_event" || type === "update_calendar_event") && target) {
     if (!target.eventTitle && target.title) target.eventTitle = target.title;
     if (!target.eventReference && target.taskReference) target.eventReference = target.taskReference;

@@ -49,25 +49,42 @@ export interface ReasonAboutUserMessageDependencies {
 // Slice 2B.1: resolves the bounded, single-turn "task without a
 // supported time, or calendar at that time?" continuation -- see
 // intentValidator.ts's TASK_TIME_CLARIFICATION_REASON_MARKER and
-// ChatPage.tsx's own single-turn pending-clarification ref for the full
-// contract (ChatPage arms it only when the immediately preceding overlay
-// result carried that marker, and consumes it on the very next user turn
-// only -- never inferred from silence, never applied to any other turn).
+// ChatPage.tsx's own pending-clarification ref for the full contract
+// (ChatPage arms it only from the WORKER's own server-confirmed
+// clarification marker, and consumes each stage on the very next user
+// turn only -- never inferred from silence, never applied to any other
+// turn).
 //
 // Deliberately skips the LLM round-trip entirely: the domain is already
 // known (the user just chose it), so the only thing left to do is re-run
 // the SAME deterministic field extraction (date/time; title/notes come
 // from `capturedTarget`, the model's own guess from the turn that asked
-// the question) validateAgentIntentProposal already applies to any
-// create_task/create_calendar_event proposal. This is a narrow, single-
-// purpose function, not a general re-reasoning entry point -- it always
-// resolves the ORIGINAL triggering message (never the follow-up reply
-// text itself), and always as a create (see ChatPage.tsx's own comment on
-// why the update_task/update_calendar_event siblings are out of this
-// continuation's scope).
+// the question, when available) validateAgentIntentProposal already
+// applies to any create_task/update_task/create_calendar_event proposal.
+// This is a narrow, single-purpose function, not a general re-reasoning
+// entry point -- it always resolves the ORIGINAL triggering message
+// (never the follow-up reply text itself).
+//
+// Blocker 2 correction: `rawProposal.type` below is a placeholder only --
+// validateAgentIntentProposal's own explicit-task-time-ambiguity branch
+// never reads it for this decision. Which operation (create vs update)
+// the ambiguity resolves to is re-derived, EVERY call, purely from
+// EXPLICIT MESSAGE EVIDENCE on `originalUserMessage` itself (the same
+// taskCreateRequested/taskUpdateRequested regex check the very first
+// turn used) -- so an originally update_task request stays update_task
+// on a "task_without_time" answer (preserving the exact resolved task
+// identity captured in `capturedTarget`), and a "calendar_with_time"
+// answer to that SAME update_task request never resolves directly here
+// at all: it comes back as a SECOND clarification
+// (TASK_TO_CALENDAR_CONVERSION_REASON_MARKER on the returned proposal's
+// reasons), which only resolves to create_calendar_event once THIS
+// function is called a third time with resolvedAs:
+// "calendar_conversion_confirmed" -- and even then only as a brand-new
+// event, never bridging the original task's identity (see
+// intentValidator.ts's stripTaskIdentityForConversion).
 export function resolveTaskCalendarClarificationFollowUp(input: {
   originalUserMessage: string;
-  resolvedAs: "task_without_time" | "calendar_with_time";
+  resolvedAs: "task_without_time" | "calendar_with_time" | "calendar_conversion_confirmed";
   capturedTarget: AgentIntentTarget | undefined;
   safeContext: AgentReasoningSafeContext;
   language: SupportedAiResponseLanguage;
