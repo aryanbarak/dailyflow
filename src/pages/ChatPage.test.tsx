@@ -532,8 +532,11 @@ describe("ChatPage LLM reasoning UX boundary", () => {
       expect(states[1].result).toBe(candidateB);
       // Each is built via the exact same proposalToState path a lone
       // proposal uses -- proven by comparing against calling it directly.
-      expect(states[0]).toEqual(proposalToState(candidateA, t));
-      expect(states[1]).toEqual(proposalToState(candidateB, t));
+      // The candidateIndex argument (0/1) must match proposalsToStates' own
+      // per-candidate index -- see proposalToState's own comment on why
+      // (each disambiguation candidate needs its own distinct requestId).
+      expect(states[0]).toEqual(proposalToState(candidateA, t, 0));
+      expect(states[1]).toEqual(proposalToState(candidateB, t, 1));
     } finally {
       vi.useRealTimers();
     }
@@ -549,6 +552,7 @@ describe("ChatPage LLM reasoning UX boundary", () => {
           resolution: resolution("tasks.list"),
           approval: null,
           runStatus: "idle",
+          requestId: "req-test-1",
         }}
         onRunReadOnly={onRunReadOnly}
         onReviewApproval={vi.fn()}
@@ -585,6 +589,7 @@ describe("ChatPage LLM reasoning UX boundary", () => {
           resolution: resolution("tasks.complete"),
           approval: approval("pending"),
           runStatus: "approval_required",
+          requestId: "req-test-2",
         }}
         onRunReadOnly={vi.fn()}
         onReviewApproval={vi.fn()}
@@ -600,6 +605,7 @@ describe("ChatPage LLM reasoning UX boundary", () => {
           resolution: resolution("tasks.complete"),
           approval: approval("approved"),
           runStatus: "approved",
+          requestId: "req-test-3",
         }}
         onRunReadOnly={vi.fn()}
         onReviewApproval={vi.fn()}
@@ -878,6 +884,7 @@ describe("ChatPage LLM reasoning UX boundary", () => {
           resolution: resolution("tasks.list"),
           approval: null,
           runStatus: "idle",
+          requestId: "req-test-4",
         }}
         onRunReadOnly={vi.fn()}
         onReviewApproval={vi.fn()}

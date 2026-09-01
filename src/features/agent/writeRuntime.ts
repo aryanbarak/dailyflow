@@ -22,6 +22,7 @@ import { getWriteHandlerByToolId } from "./writeHandlers";
 import { processReadOnlyReflection } from "./reflectionIntegration";
 import type { ExecutionAuditRecord, ExecutionAuditStatus } from "./executionAuditTypes";
 import type {
+  AgentToolExecutionInput,
   AgentWriteToolExecutionResult,
   AgentWriteToolHandler,
   ExecutionContext,
@@ -934,6 +935,11 @@ export async function runWriteTool(
   const handlerResult = await executeWithTimeout(handler, handlerInput, {
     ...request.executionContext,
     currentTime: request.executionContext?.currentTime ?? startedAt,
+    // BLOCKER 2 CORRECTION: the stable, application-level attempt id --
+    // never a handler-local crypto.randomUUID() -- see ExecutionContext's
+    // own comment on requestId in executionTypes.ts.
+    requestId: request.requestId,
+    pendingAgentExecutionId: request.approval?.serverExecutionId,
   });
   const completedAt = timestamp(deps.now());
   const executionStatus: ExecutionStatus = handlerResult.timedOut
@@ -1027,4 +1033,99 @@ export async function runWriteTool(
         }
       : {}),
   };
+}
+
+const AGENT_EXECUTION_TOOL_IDS: ReadonlySet<string> = new Set([
+  "tasks.create",
+  "tasks.update",
+  "tasks.complete",
+  "calendar.create_event",
+  "calendar.update_event",
+]);
+
+function isAgentExecutionToolId(toolId: string): toolId is AgentToolExecutionInput["toolId"] {
+  return AGENT_EXECUTION_TOOL_IDS.has(toolId);
+}
+
+// The Worker's `arguments` shape is handlerInput minus the actor/target
+// identity fields, which travel as their own dedicated request fields --
+// userId is never sent to the Worker at all (it is resolved from the
+// caller's own JWT); taskId/eventId is sent as targetId, not folded into
+// arguments. Reusing handlerInput here (rather than re-deriving fields from
+// request.target independently) means there is exactly ONE place that
+// decides what a write's arguments are -- buildHandlerInput -- shared by
+// both this pre-approval request and runWriteTool's own post-approval
+// handler-input construction, never two that could silently diverge.
+function workerArgumentsFromHandlerInput(handlerInput: Record<string, unknown>): Record<string, unknown> {
+  const { userId: _userId, taskId: _taskId, eventId: _eventId, ...rest } = handlerInput;
+  return rest;
+}
+
+export interface RequestWriteExecutionResult {
+  // 'not_applicable': this tool is not one of the Worker-execution-backed
+  // tools (github.*, engineering.task.propose, ...) -- not an error, just
+  // nothing for this function to do; the caller's normal (non-Worker)
+  // approval flow proceeds unaffected.
+  // 'blocked': could not even reach the Worker (unresolved tool, invalid
+  // target, no authenticated actor, no agentToolExecutionClient present in
+  // context, or the Worker itself rejected the request) -- see errorCode.
+  // 'requested': the Worker call went through -- executionId/serverStatus
+  // describe what it durably recorded.
+  status: "not_applicable" | "blocked" | "requested";
+  executionId?: string;
+  serverStatus?: "approval_pending" | "succeeded" | "failed" | "uncertain";
+  errorCode?: string;
+}
+
+// Chat V2 Slice 2A, BLOCKER 1 CORRECTION -- see
+// agentToolExecutionClient.ts's own comment on why the durable
+// approval_pending row must exist BEFORE the user approves, not only as a
+// side effect of approving. Call this as soon as a write proposal is
+// normalized (as soon as its WorkspaceStepApproval enters 'pending'), well
+// before the user has acted on it -- see ChatPage.tsx's own wiring for
+// exactly when this fires. Deliberately does NOT call
+// validateApprovalBoundary (there is no approval yet) or touch
+// completedRequestIds (that dedup belongs to the actual write, made later
+// by runWriteTool with the SAME request.requestId) -- this function only
+// ever creates or reuses a durable execution record; it never itself
+// authorizes anything.
+export async function requestWriteExecution(
+  request: WriteRuntimeRequest,
+  dependencies: Partial<WriteRuntimeDependencies> = {},
+): Promise<RequestWriteExecutionResult> {
+  const deps = { ...defaultDependencies, ...dependencies };
+  if (!request.requestId?.trim()) return { status: "blocked", errorCode: "MISSING_REQUEST_ID" };
+
+  const resolved = validateResolvedTool(request, deps);
+  if (resolved.status || !resolved.tool || !resolved.toolId) return { status: "blocked", errorCode: "UNRESOLVED_TOOL" };
+  if (!isAgentExecutionToolId(resolved.toolId)) return { status: "not_applicable" };
+  if (!writeTargetIsValid(request, resolved.toolId)) return { status: "blocked", errorCode: "INVALID_TARGET" };
+
+  const client = request.executionContext?.agentToolExecutionClient;
+  if (!client) return { status: "blocked", errorCode: "AGENT_EXECUTION_CLIENT_UNAVAILABLE" };
+
+  let trustedActorId: string | undefined;
+  try {
+    trustedActorId = (await deps.authorityContext.getAuthenticatedActor())?.id.trim();
+  } catch {
+    trustedActorId = undefined;
+  }
+  if (!trustedActorId) return { status: "blocked", errorCode: "AUTH_REQUIRED" };
+
+  const handlerInput = buildHandlerInput(resolved.toolId, trustedActorId, request);
+  const targetId = (handlerInput.taskId ?? handlerInput.eventId) as string | undefined;
+
+  try {
+    const result = await client.requestExecution({
+      toolId: resolved.toolId,
+      targetId,
+      arguments: workerArgumentsFromHandlerInput(handlerInput),
+      requestId: request.requestId,
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    });
+    return { status: "requested", executionId: result.executionId, serverStatus: result.status, errorCode: result.errorCode };
+  } catch (caught) {
+    const error = caught as Partial<ExecutionError>;
+    return { status: "blocked", errorCode: typeof error.code === "string" ? error.code : "AGENT_EXECUTION_REQUEST_FAILED" };
+  }
 }

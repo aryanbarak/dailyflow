@@ -1508,7 +1508,19 @@ export async function executeAutoTaskWrite(input: {
   intent: ParsedTaskWriteIntent
   now: Date
   timeZone: string
-}): Promise<{ status: 'executed'; reply: string; undoId: string; undoExpiresAt: string; id: string } | { status: 'clarify'; reply: string } | { status: 'failed'; reply: string } | { status: 'not_found' }> {
+}): Promise<
+  // BLOCKER 3 CORRECTION: title/notes/dueDate carry the row's ACTUAL,
+  // just-persisted values (from the write's own `select=` representation,
+  // not an echo of the request) -- present for every 'executed' result, not
+  // only update, so a caller never has to special-case create vs update to
+  // build a truthful result. See agent-tool-execution.ts's own consumption
+  // of this for why: a handler must never claim a field was applied merely
+  // because it was requested.
+  | { status: 'executed'; reply: string; undoId: string; undoExpiresAt: string; id: string; title: string; notes: string | null; dueDate: string | null }
+  | { status: 'clarify'; reply: string }
+  | { status: 'failed'; reply: string }
+  | { status: 'not_found' }
+> {
   const { env, userId, intent, language, now, timeZone } = input
   if (intent.dateClarificationNeeded) return { status: 'clarify', reply: 'Which exact due date should I use?' }
   if (intent.kind === 'create_task') {
@@ -1530,7 +1542,7 @@ export async function executeAutoTaskWrite(input: {
       if (alarm?.id) await supabaseWriteNoContent(env, 'DELETE', `alarms?id=eq.${esc(alarm.id)}&user_id=eq.${esc(userId)}`)
     })
     if (undoFailure) return undoFailure
-    return { status: 'executed', reply: confirmation(language, 'create_task', task.title, task.due_date, intent.timeOfDay), undoId, undoExpiresAt: expiresAt, id: task.id }
+    return { status: 'executed', reply: confirmation(language, 'create_task', task.title, task.due_date, intent.timeOfDay), undoId, undoExpiresAt: expiresAt, id: task.id, title: task.title, notes: task.notes, dueDate: task.due_date }
   }
 
   // Chat V2 Slice 2A: a caller that already knows the exact row (the
@@ -1551,7 +1563,18 @@ export async function executeAutoTaskWrite(input: {
     if (matches.length !== 1) return { status: matches.length > 1 ? 'clarify' : 'not_found', reply: 'Which exact task should I update?' }
     before = matches[0]
   }
+  // BLOCKER 3 CORRECTION: the original PATCH body here only ever sent
+  // due_date, silently ignoring intent.title/intent.notes -- a real,
+  // pre-existing bug in this update path (undetected in production because
+  // the OLDER server-side NL flow this function was originally written for
+  // never produced a title/notes change on an update intent; Chat V2 Slice
+  // 2A's approval-driven update path, which DOES let a user edit
+  // title/notes, inherited the gap unchanged). title/notes are now included
+  // whenever the intent actually specifies them; due_date keeps its exact
+  // original semantics (preserved when not specified).
   const rows = await supabaseWriteReturning<TaskRow[]>(env, 'PATCH', `tasks?id=eq.${esc(before.id)}&user_id=eq.${esc(userId)}&select=id,user_id,title,notes,due_date,completed,created_at,updated_at`, {
+    ...(intent.title !== undefined ? { title: intent.title } : {}),
+    ...(intent.notes !== undefined ? { notes: intent.notes } : {}),
     due_date: intent.dueDate === undefined ? before.due_date : intent.dueDate,
   })
   const updated = rows[0]
@@ -1563,12 +1586,19 @@ export async function executeAutoTaskWrite(input: {
     { kind: 'update_task', userId, taskId: before.id, previous: { title: before.title, notes: before.notes, due_date: before.due_date, completed: before.completed }, expiresAt },
     undoId,
     language,
+    // BLOCKER 3 CORRECTION: this compensating rollback (used only when
+    // PERSISTING the undo record itself fails -- see persistUndoOrRollback)
+    // used to restore only due_date, silently leaving a just-applied
+    // title/notes change in place with no undo record to reverse it later.
+    // Restores the full snapshot now, matching undoAutoWrite's own
+    // (unaffected, already-correct) full-field restore for the ordinary
+    // user-initiated Undo path below.
     async () => {
-      await supabaseWriteNoContent(env, 'PATCH', `tasks?id=eq.${esc(before.id)}&user_id=eq.${esc(userId)}`, { due_date: before.due_date })
+      await supabaseWriteNoContent(env, 'PATCH', `tasks?id=eq.${esc(before.id)}&user_id=eq.${esc(userId)}`, { title: before.title, notes: before.notes, due_date: before.due_date })
     },
   )
   if (undoFailure) return undoFailure
-  return { status: 'executed', reply: confirmation(language, 'update_task', updated.title, updated.due_date, intent.timeOfDay), undoId, undoExpiresAt: expiresAt, id: updated.id }
+  return { status: 'executed', reply: confirmation(language, 'update_task', updated.title, updated.due_date, intent.timeOfDay), undoId, undoExpiresAt: expiresAt, id: updated.id, title: updated.title, notes: updated.notes, dueDate: updated.due_date }
 }
 
 function confirmationForCalendar(
@@ -1632,7 +1662,17 @@ export async function executeAutoCalendarWrite(input: {
   intent: ParsedCalendarWriteIntent
   now: Date
   timeZone: string
-}): Promise<{ status: 'executed'; reply: string; undoId: string; undoExpiresAt: string; id: string } | { status: 'clarify'; reply: string } | { status: 'failed'; reply: string } | { status: 'not_found' }> {
+}): Promise<
+  // BLOCKER 3 CORRECTION: title/notes/dateTimeStart/dateTimeEnd carry the
+  // row's ACTUAL, just-persisted values (converted back to UTC ISO instants
+  // via the same timeZone the request itself resolved with, matching the
+  // external argument shape), not an echo of the request -- see
+  // executeAutoTaskWrite's own comment on this same correction.
+  | { status: 'executed'; reply: string; undoId: string; undoExpiresAt: string; id: string; title: string; notes: string | null; dateTimeStart: string; dateTimeEnd: string }
+  | { status: 'clarify'; reply: string }
+  | { status: 'failed'; reply: string }
+  | { status: 'not_found' }
+> {
   const { env, userId, intent, language, now, timeZone } = input
   if (intent.dateClarificationNeeded) return { status: 'clarify', reply: 'Which exact date should I use?' }
   if (intent.kind === 'create_calendar_event') {
@@ -1671,7 +1711,23 @@ export async function executeAutoCalendarWrite(input: {
     // deterministic parser resolved this request with before building the
     // confirmation line.
     const localWhen = utcInstantToZonedDateAndTime(`${event.date}T${event.start_time ?? '00:00'}:00.000Z`, timeZone)
-    return { status: 'executed', reply: confirmationForCalendar(language, 'create_calendar_event', event.title, localWhen.date, localWhen.time), undoId, undoExpiresAt: expiresAt, id: event.id }
+    return {
+      status: 'executed',
+      reply: confirmationForCalendar(language, 'create_calendar_event', event.title, localWhen.date, localWhen.time),
+      undoId,
+      undoExpiresAt: expiresAt,
+      id: event.id,
+      title: event.title,
+      notes: event.description,
+      // date/start_time/end_time are stored as a NAIVE SLICE of a UTC
+      // instant (see this function's own header comment) -- NOT local wall
+      // clock values -- so reconstructing the UTC ISO instant here is a
+      // literal string join, not a zonedDateTimeToUtcIso conversion (that
+      // would incorrectly treat them as local-timeZone values a second
+      // time).
+      dateTimeStart: `${event.date}T${event.start_time ?? '00:00'}:00.000Z`,
+      dateTimeEnd: `${event.date}T${event.end_time ?? event.start_time ?? '00:00'}:00.000Z`,
+    }
   }
 
   // Chat V2 Slice 2A: same targetId escape hatch as executeAutoTaskWrite's
@@ -1688,14 +1744,27 @@ export async function executeAutoCalendarWrite(input: {
     if (matches.length !== 1) return { status: matches.length > 1 ? 'clarify' : 'not_found', reply: 'Which exact event should I update?' }
     before = matches[0]
   }
+  // BLOCKER 3 CORRECTION: this patch body used to ignore intent.title and
+  // intent.notes entirely (a real, pre-existing bug -- see
+  // executeAutoTaskWrite's own comment on the identical class of bug in its
+  // update branch), and could only ever change end_time together WITH
+  // start_time, never independently (an "update just the end time" request
+  // silently did nothing). title/notes(description) are now applied
+  // whenever specified; end_time is now computed on its own, so it applies
+  // whether or not start_time also changed.
   const patch: Record<string, unknown> = {}
+  if (intent.title !== undefined) patch.title = intent.title
+  if (intent.notes !== undefined) patch.description = intent.notes
   if (intent.startDate !== undefined && intent.startDate !== null) patch.date = intent.startDate
   if (intent.startTime) {
     const dateForTime = intent.startDate ?? before.date
     const startUtcIso = zonedDateTimeToUtcIso(dateForTime, intent.startTime, timeZone)
     patch.date = startUtcIso.slice(0, 10)
     patch.start_time = startUtcIso.slice(11, 16)
-    if (intent.endTime) patch.end_time = zonedDateTimeToUtcIso(dateForTime, intent.endTime, timeZone).slice(11, 16)
+  }
+  if (intent.endTime) {
+    const dateForEndTime = intent.startDate ?? before.date
+    patch.end_time = zonedDateTimeToUtcIso(dateForEndTime, intent.endTime, timeZone).slice(11, 16)
   }
   const rows = await supabaseWriteReturning<CalendarEventRow[]>(env, 'PATCH', `calendar_events?id=eq.${esc(before.id)}&user_id=eq.${esc(userId)}&select=${CALENDAR_EVENT_SELECT}`, patch)
   const updated = rows[0]
@@ -1722,7 +1791,17 @@ export async function executeAutoCalendarWrite(input: {
   if (undoFailure) return undoFailure
   // Task 22-fix3: same conversion as the create branch above -- see its comment.
   const localWhen = utcInstantToZonedDateAndTime(`${updated.date}T${updated.start_time ?? '00:00'}:00.000Z`, timeZone)
-  return { status: 'executed', reply: confirmationForCalendar(language, 'update_calendar_event', updated.title, localWhen.date, localWhen.time), undoId, undoExpiresAt: expiresAt, id: updated.id }
+  return {
+    status: 'executed',
+    reply: confirmationForCalendar(language, 'update_calendar_event', updated.title, localWhen.date, localWhen.time),
+    undoId,
+    undoExpiresAt: expiresAt,
+    id: updated.id,
+    title: updated.title,
+    notes: updated.description,
+    dateTimeStart: `${updated.date}T${updated.start_time ?? '00:00'}:00.000Z`,
+    dateTimeEnd: `${updated.date}T${updated.end_time ?? updated.start_time ?? '00:00'}:00.000Z`,
+  }
 }
 
 /**

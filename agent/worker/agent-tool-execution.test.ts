@@ -84,9 +84,17 @@ class FakeExecutionsTable {
     return row ? [row] : []
   }
 
+  // BLOCKER 4 test support: statuses this table pretends it cannot durably
+  // record -- conditionalUpdate still MATCHES the row (proving the
+  // transition would otherwise have been valid) but returns no rows anyway,
+  // simulating "the write to agent_tool_executions itself failed" after the
+  // domain executor's own result was already known.
+  blockTransitionTo = new Set<string>()
+
   conditionalUpdate(id: string, expectedStatus: string, patch: Partial<Row>): Row[] {
     const row = this.rows.find((r) => r.id === id && r.status === expectedStatus)
     if (!row) return []
+    if (patch.status && this.blockTransitionTo.has(patch.status)) return []
     Object.assign(row, patch)
     return [row]
   }
@@ -104,9 +112,14 @@ interface Call { method: string; url: string; body?: unknown }
 function buildFetchMock(options: {
   table: FakeExecutionsTable
   policyMode?: 'auto' | 'ask' | 'off' | 'none-stored'
-  taskRow?: { id: string; title: string; due_date: string | null }
-  eventRow?: { id: string; title: string; date: string; start_time: string | null; end_time: string | null }
+  taskRow?: { id: string; title: string; notes?: string | null; due_date: string | null }
+  eventRow?: { id: string; title: string; date: string; start_time: string | null; end_time: string | null; description?: string | null }
   failDomainWrite?: boolean
+  // BLOCKER 3 test support: throw instead of ever returning a Response for
+  // a domain write -- simulates the domain executor itself throwing (e.g.
+  // a network failure mid-write), the exact scenario BLOCKER 4's exception
+  // boundary exists for.
+  throwOnDomainWrite?: boolean
 }) {
   const calls: Call[] = []
   const fetchMock = (async (url: string, init?: RequestInit) => {
@@ -167,24 +180,50 @@ function buildFetchMock(options: {
 
     if (u.pathname.startsWith('/rest/v1/tasks')) {
       if (method === 'POST' || method === 'PATCH') {
+        if (options.throwOnDomainWrite) throw new Error('simulated network failure mid domain-write')
         if (options.failDomainWrite) return new Response(JSON.stringify([]), { status: 200 })
-        const row = options.taskRow ?? { id: 'task-1', title: 'Untitled', due_date: null }
+        const base = options.taskRow ?? { id: 'task-1', title: 'Untitled', notes: null, due_date: null }
+        // BLOCKER 3 test support: merges the PATCH body onto the base row,
+        // same as a real PATCH ... RETURNING would -- so a test can assert
+        // both the exact wire-level payload (via `calls`) AND the
+        // authoritative round-tripped response the handler actually
+        // consumes, rather than a canned response that ignores the request.
+        const patch = method === 'PATCH' ? (JSON.parse(bodyText ?? '{}') as Record<string, unknown>) : {}
         return new Response(
-          JSON.stringify([{ id: row.id, user_id: USER_ID, title: row.title, notes: null, due_date: row.due_date, completed: method === 'PATCH' && u.search.includes('completed'), completed_at: null, created_at: '2026-08-31T10:00:00.000Z', updated_at: '2026-08-31T10:00:00.000Z' }]),
+          JSON.stringify([{
+            id: base.id, user_id: USER_ID,
+            title: typeof patch.title === 'string' ? patch.title : base.title,
+            notes: patch.notes !== undefined ? patch.notes : (base.notes ?? null),
+            due_date: patch.due_date !== undefined ? patch.due_date : base.due_date,
+            completed: method === 'PATCH' && u.search.includes('completed'),
+            completed_at: null, created_at: '2026-08-31T10:00:00.000Z', updated_at: '2026-08-31T10:00:00.000Z',
+          }]),
           { status: 200 },
         )
       }
       if (method === 'GET') {
         const row = options.taskRow ?? { id: 'task-1', title: 'Untitled', due_date: null }
-        return new Response(JSON.stringify([{ id: row.id, user_id: USER_ID, title: row.title, notes: null, due_date: row.due_date, completed: false, created_at: '2026-08-31T10:00:00.000Z', updated_at: '2026-08-31T10:00:00.000Z' }]), { status: 200 })
+        return new Response(JSON.stringify([{ id: row.id, user_id: USER_ID, title: row.title, notes: row.notes ?? null, due_date: row.due_date, completed: false, created_at: '2026-08-31T10:00:00.000Z', updated_at: '2026-08-31T10:00:00.000Z' }]), { status: 200 })
       }
     }
 
     if (u.pathname.startsWith('/rest/v1/calendar_events')) {
-      const row = options.eventRow ?? { id: 'event-1', title: 'Untitled', date: '2026-09-01', start_time: '10:00', end_time: '11:00' }
+      if (options.throwOnDomainWrite && (method === 'POST' || method === 'PATCH')) throw new Error('simulated network failure mid domain-write')
       if (options.failDomainWrite && (method === 'POST' || method === 'PATCH')) return new Response(JSON.stringify([]), { status: 200 })
+      const base = options.eventRow ?? { id: 'event-1', title: 'Untitled', date: '2026-09-01', start_time: '10:00', end_time: '11:00', description: null }
+      // BLOCKER 3 test support: same PATCH-body-merge as tasks above.
+      const patch = method === 'PATCH' ? (JSON.parse(bodyText ?? '{}') as Record<string, unknown>) : {}
       return new Response(
-        JSON.stringify([{ id: row.id, user_id: USER_ID, title: row.title, date: row.date, start_time: row.start_time, end_time: row.end_time, location: null, description: null, color: null, type: null, all_day: false, created_at: '2026-08-31T10:00:00.000Z', updated_at: '2026-08-31T10:00:00.000Z' }]),
+        JSON.stringify([{
+          id: base.id, user_id: USER_ID,
+          title: typeof patch.title === 'string' ? patch.title : base.title,
+          date: typeof patch.date === 'string' ? patch.date : base.date,
+          start_time: typeof patch.start_time === 'string' ? patch.start_time : base.start_time,
+          end_time: typeof patch.end_time === 'string' ? patch.end_time : base.end_time,
+          location: null,
+          description: patch.description !== undefined ? patch.description : (base.description ?? null),
+          color: null, type: null, all_day: false, created_at: '2026-08-31T10:00:00.000Z', updated_at: '2026-08-31T10:00:00.000Z',
+        }]),
         { status: 200 },
       )
     }
@@ -584,5 +623,237 @@ describe('Chat V2 Slice 2A -- server-owned tool execution lifecycle', () => {
     expect(insertedEvent?.body?.date).toBe('2026-09-01')
     expect(insertedEvent?.body?.start_time).toBe('08:30')
     expect(insertedEvent?.body?.end_time).toBe('09:00')
+  })
+
+  // BLOCKER 3: real Worker-level tests inspecting the ACTUAL PATCH payload
+  // (via `calls`) and the authoritative round-tripped response -- not a
+  // mock that merely says {status:"succeeded"}. Each of these would have
+  // failed against the pre-correction code: tasks.update's PATCH body only
+  // ever sent due_date (title/notes were silently dropped); calendar's
+  // patch only ever sent date/start_time/end_time TOGETHER, dropping
+  // title/notes entirely and refusing to apply end_time without an
+  // accompanying start_time.
+  describe('BLOCKER 3: tasks.update and calendar.update_event apply every supported field, preserve the rest', () => {
+    async function requestAndApprove(fetchMock: typeof fetch, requestBody: Record<string, unknown>) {
+      const requestResponse = await withFetch(fetchMock, () => handleAgentToolExecutionRequest(authRequest('/agent/execution/request', requestBody), mockEnv()))
+      const { executionId } = await requestResponse.json() as { executionId: string }
+      const approveResponse = await withFetch(fetchMock, () => handleAgentToolExecutionApprove(authRequest('/agent/execution/approve', { executionId }), mockEnv()))
+      return { approveResponse, body: await approveResponse.json() as Record<string, unknown> }
+    }
+
+    it('tasks.update title only -- patches title, leaves notes/due_date untouched in the request payload', async () => {
+      const table = new FakeExecutionsTable()
+      const { fetchMock, calls } = buildFetchMock({ table, policyMode: 'ask', taskRow: { id: 'task-1', title: 'Old title', notes: 'Old notes', due_date: '2026-09-01' } })
+      const { approveResponse, body } = await requestAndApprove(fetchMock, {
+        toolId: 'tasks.update', targetId: 'task-1', arguments: { title: 'New title' }, requestId: 'req-title', timeZone: 'Europe/Berlin',
+      })
+      expect(approveResponse.status).toBe(200)
+      const patchCall = calls.find((c) => c.method === 'PATCH' && c.url.includes('/rest/v1/tasks'))
+      expect((patchCall?.body as Record<string, unknown>).title).toBe('New title')
+      expect(patchCall?.body).not.toHaveProperty('notes')
+      expect(body).toMatchObject({ status: 'succeeded', title: 'New title', notes: 'Old notes', dueDate: '2026-09-01' })
+    })
+
+    it('tasks.update notes only -- patches notes, leaves title/due_date untouched in the request payload', async () => {
+      const table = new FakeExecutionsTable()
+      const { fetchMock, calls } = buildFetchMock({ table, policyMode: 'ask', taskRow: { id: 'task-1', title: 'Kept title', notes: 'Old notes', due_date: '2026-09-01' } })
+      const { body } = await requestAndApprove(fetchMock, {
+        toolId: 'tasks.update', targetId: 'task-1', arguments: { notes: 'New notes' }, requestId: 'req-notes', timeZone: 'Europe/Berlin',
+      })
+      const patchCall = calls.find((c) => c.method === 'PATCH' && c.url.includes('/rest/v1/tasks'))
+      expect((patchCall?.body as Record<string, unknown>).notes).toBe('New notes');
+      expect(patchCall?.body).not.toHaveProperty('title')
+      expect(body).toMatchObject({ status: 'succeeded', title: 'Kept title', notes: 'New notes', dueDate: '2026-09-01' })
+    })
+
+    it('tasks.update dueDate only -- patches due_date, leaves title/notes untouched in the request payload', async () => {
+      const table = new FakeExecutionsTable()
+      const { fetchMock, calls } = buildFetchMock({ table, policyMode: 'ask', taskRow: { id: 'task-1', title: 'Kept title', notes: 'Kept notes', due_date: '2026-09-01' } })
+      const { body } = await requestAndApprove(fetchMock, {
+        toolId: 'tasks.update', targetId: 'task-1', arguments: { dueDate: '2026-10-01' }, requestId: 'req-due', timeZone: 'Europe/Berlin',
+      })
+      const patchCall = calls.find((c) => c.method === 'PATCH' && c.url.includes('/rest/v1/tasks'))
+      expect((patchCall?.body as Record<string, unknown>).due_date).toBe('2026-10-01')
+      expect(patchCall?.body).not.toHaveProperty('title')
+      expect(patchCall?.body).not.toHaveProperty('notes')
+      expect(body).toMatchObject({ status: 'succeeded', title: 'Kept title', notes: 'Kept notes', dueDate: '2026-10-01' })
+    })
+
+    it('tasks.update combined fields -- applies title, notes, AND dueDate together in one request', async () => {
+      const table = new FakeExecutionsTable()
+      const { fetchMock, calls } = buildFetchMock({ table, policyMode: 'ask', taskRow: { id: 'task-1', title: 'Old', notes: 'Old notes', due_date: '2026-09-01' } })
+      const { body } = await requestAndApprove(fetchMock, {
+        toolId: 'tasks.update', targetId: 'task-1', arguments: { title: 'New', notes: 'New notes', dueDate: '2026-10-01' }, requestId: 'req-combined', timeZone: 'Europe/Berlin',
+      })
+      const patchCall = calls.find((c) => c.method === 'PATCH' && c.url.includes('/rest/v1/tasks'))
+      expect(patchCall?.body).toMatchObject({ title: 'New', notes: 'New notes', due_date: '2026-10-01' })
+      expect(body).toMatchObject({ status: 'succeeded', title: 'New', notes: 'New notes', dueDate: '2026-10-01' })
+    })
+
+    it('calendar.update_event title only -- patches title, leaves date/start_time/end_time/description untouched', async () => {
+      const table = new FakeExecutionsTable()
+      const { fetchMock, calls } = buildFetchMock({ table, policyMode: 'ask', eventRow: { id: 'event-1', title: 'Old title', date: '2026-09-01', start_time: '08:30', end_time: '09:00', description: 'Old notes' } })
+      const { body } = await requestAndApprove(fetchMock, {
+        toolId: 'calendar.update_event', targetId: 'event-1', arguments: { title: 'New title' }, requestId: 'req-cal-title', timeZone: 'Europe/Berlin',
+      })
+      const patchCall = calls.find((c) => c.method === 'PATCH' && c.url.includes('/rest/v1/calendar_events'))
+      expect((patchCall?.body as Record<string, unknown>).title).toBe('New title')
+      expect(patchCall?.body).not.toHaveProperty('date')
+      expect(patchCall?.body).not.toHaveProperty('start_time')
+      expect(patchCall?.body).not.toHaveProperty('end_time')
+      expect(body).toMatchObject({ status: 'succeeded', title: 'New title', notes: 'Old notes' })
+    })
+
+    it('calendar.update_event notes only -- patches description, leaves everything else untouched', async () => {
+      const table = new FakeExecutionsTable()
+      const { fetchMock, calls } = buildFetchMock({ table, policyMode: 'ask', eventRow: { id: 'event-1', title: 'Kept title', date: '2026-09-01', start_time: '08:30', end_time: '09:00', description: 'Old notes' } })
+      const { body } = await requestAndApprove(fetchMock, {
+        toolId: 'calendar.update_event', targetId: 'event-1', arguments: { notes: 'New notes' }, requestId: 'req-cal-notes', timeZone: 'Europe/Berlin',
+      })
+      const patchCall = calls.find((c) => c.method === 'PATCH' && c.url.includes('/rest/v1/calendar_events'))
+      expect((patchCall?.body as Record<string, unknown>).description).toBe('New notes')
+      expect(patchCall?.body).not.toHaveProperty('title')
+      expect(patchCall?.body).not.toHaveProperty('date')
+      expect(body).toMatchObject({ status: 'succeeded', title: 'Kept title', notes: 'New notes' })
+    })
+
+    it('calendar.update_event start only -- patches date/start_time, leaves end_time/title/description untouched', async () => {
+      const table = new FakeExecutionsTable()
+      const { fetchMock, calls } = buildFetchMock({ table, policyMode: 'ask', eventRow: { id: 'event-1', title: 'Kept title', date: '2026-09-01', start_time: '08:30', end_time: '09:00', description: 'Kept notes' } })
+      const { body } = await requestAndApprove(fetchMock, {
+        toolId: 'calendar.update_event', targetId: 'event-1', arguments: { dateTimeStart: '2026-09-02T10:00:00.000Z' }, requestId: 'req-cal-start', timeZone: 'UTC',
+      })
+      const patchCall = calls.find((c) => c.method === 'PATCH' && c.url.includes('/rest/v1/calendar_events'))
+      expect((patchCall?.body as Record<string, unknown>).date).toBe('2026-09-02')
+      expect((patchCall?.body as Record<string, unknown>).start_time).toBe('10:00')
+      expect(patchCall?.body).not.toHaveProperty('end_time')
+      expect(body).toMatchObject({ status: 'succeeded', title: 'Kept title', notes: 'Kept notes' })
+    })
+
+    it('calendar.update_event end only -- patches end_time alone, independently of start_time (previously impossible)', async () => {
+      const table = new FakeExecutionsTable()
+      const { fetchMock, calls } = buildFetchMock({ table, policyMode: 'ask', eventRow: { id: 'event-1', title: 'Kept title', date: '2026-09-01', start_time: '08:30', end_time: '09:00', description: 'Kept notes' } })
+      const { body } = await requestAndApprove(fetchMock, {
+        toolId: 'calendar.update_event', targetId: 'event-1', arguments: { dateTimeEnd: '2026-09-01T09:45:00.000Z' }, requestId: 'req-cal-end', timeZone: 'UTC',
+      })
+      const patchCall = calls.find((c) => c.method === 'PATCH' && c.url.includes('/rest/v1/calendar_events'))
+      expect((patchCall?.body as Record<string, unknown>).end_time).toBe('09:45')
+      expect(patchCall?.body).not.toHaveProperty('start_time')
+      expect(patchCall?.body).not.toHaveProperty('title')
+      expect(body).toMatchObject({ status: 'succeeded', title: 'Kept title', notes: 'Kept notes' })
+      expect(body.dateTimeEnd).toBe('2026-09-01T09:45:00.000Z')
+    })
+
+    it('calendar.update_event combined fields -- applies title, notes, start, AND end together in one request', async () => {
+      const table = new FakeExecutionsTable()
+      const { fetchMock, calls } = buildFetchMock({ table, policyMode: 'ask', eventRow: { id: 'event-1', title: 'Old', date: '2026-09-01', start_time: '08:30', end_time: '09:00', description: 'Old notes' } })
+      const { body } = await requestAndApprove(fetchMock, {
+        toolId: 'calendar.update_event',
+        targetId: 'event-1',
+        arguments: { title: 'New', notes: 'New notes', dateTimeStart: '2026-09-03T14:00:00.000Z', dateTimeEnd: '2026-09-03T15:30:00.000Z' },
+        requestId: 'req-cal-combined',
+        timeZone: 'UTC',
+      })
+      const patchCall = calls.find((c) => c.method === 'PATCH' && c.url.includes('/rest/v1/calendar_events'))
+      expect(patchCall?.body).toMatchObject({ title: 'New', description: 'New notes', date: '2026-09-03', start_time: '14:00', end_time: '15:30' })
+      expect(body).toMatchObject({ status: 'succeeded', title: 'New', notes: 'New notes' })
+    })
+  })
+
+  // BLOCKER 4: honest execution exception/uncertain-state handling. There
+  // is no in-between here -- a caller either gets a genuinely PROVEN
+  // succeeded/failed outcome, or an honest 'uncertain' one; never a
+  // fabricated success/failure after the durable executing claim.
+  describe('BLOCKER 4: honest execution exception state (uncertain)', () => {
+    it('1. the domain executor throwing after the executing claim resolves to uncertain, never a fabricated succeeded/failed', async () => {
+      const table = new FakeExecutionsTable()
+      table.insert({
+        user_id: USER_ID, domain: 'tasks', action: 'update', tool_id: 'tasks.update',
+        request_id: 'req-throw', intent_id: 'intent:throw', canonical_hash: 'throw', normalized_arguments: { title: 'New' }, target_id: 'task-1',
+        status: 'approved', approval_requested_at: new Date().toISOString(), approved_at: new Date().toISOString(),
+      })
+      const { fetchMock } = buildFetchMock({ table, policyMode: 'ask', throwOnDomainWrite: true })
+      const response = await withFetch(fetchMock, () => handleAgentToolExecutionApprove(authRequest('/agent/execution/approve', { executionId: table.rows[0].id }), mockEnv()))
+      expect(response.status).toBe(200)
+      const body = await response.json() as { status: string; errorCode: string }
+      expect(body.status).toBe('uncertain')
+      expect(body.errorCode).toBe('EXECUTION_OUTCOME_UNKNOWN')
+    })
+
+    it('2. simulated network ambiguity: the domain write succeeds but the durable succeeded transition cannot be recorded -- resolves to uncertain, never a fabricated succeeded', async () => {
+      const table = new FakeExecutionsTable()
+      table.blockTransitionTo.add('succeeded')
+      table.insert({
+        user_id: USER_ID, domain: 'tasks', action: 'create', tool_id: 'tasks.create',
+        request_id: 'req-ambiguous', intent_id: 'intent:ambiguous', canonical_hash: 'ambiguous', normalized_arguments: { title: 'Call Ahmad' },
+        status: 'approved', approval_requested_at: new Date().toISOString(), approved_at: new Date().toISOString(),
+      })
+      const { fetchMock } = buildFetchMock({ table, policyMode: 'ask' })
+      const response = await withFetch(fetchMock, () => handleAgentToolExecutionApprove(authRequest('/agent/execution/approve', { executionId: table.rows[0].id }), mockEnv()))
+      expect(response.status).toBe(200)
+      const body = await response.json() as { status: string }
+      expect(body.status).toBe('uncertain')
+      // The row itself is still 'executing' -- the blocked transition never
+      // applied -- proving test 3's "never silently uncontrolled" the other
+      // way: the row's OWN state is honest about what could be recorded,
+      // even though the caller already received 'uncertain'.
+      expect(table.rows[0].status).toBe('executing')
+    })
+
+    it('3. a domain-executor throw still leaves the row in a well-defined terminal state, never silently stuck in executing forever', async () => {
+      const table = new FakeExecutionsTable()
+      table.insert({
+        user_id: USER_ID, domain: 'tasks', action: 'update', tool_id: 'tasks.update',
+        request_id: 'req-stuck', intent_id: 'intent:stuck', canonical_hash: 'stuck', normalized_arguments: { title: 'New' }, target_id: 'task-1',
+        status: 'approved', approval_requested_at: new Date().toISOString(), approved_at: new Date().toISOString(),
+      })
+      const { fetchMock } = buildFetchMock({ table, policyMode: 'ask', throwOnDomainWrite: true })
+      await withFetch(fetchMock, () => handleAgentToolExecutionApprove(authRequest('/agent/execution/approve', { executionId: table.rows[0].id }), mockEnv()))
+      expect(table.rows[0].status).toBe('uncertain')
+      expect(table.rows[0].error_code).toBe('EXECUTION_OUTCOME_UNKNOWN')
+    })
+
+    it('4. no automatic retry after a thrown domain execution -- the module never re-attempts the write itself', async () => {
+      const table = new FakeExecutionsTable()
+      table.insert({
+        user_id: USER_ID, domain: 'tasks', action: 'update', tool_id: 'tasks.update',
+        request_id: 'req-no-retry', intent_id: 'intent:no-retry', canonical_hash: 'no-retry', normalized_arguments: { title: 'New' }, target_id: 'task-1',
+        status: 'approved', approval_requested_at: new Date().toISOString(), approved_at: new Date().toISOString(),
+      })
+      const { fetchMock, calls } = buildFetchMock({ table, policyMode: 'ask', throwOnDomainWrite: true })
+      await withFetch(fetchMock, () => handleAgentToolExecutionApprove(authRequest('/agent/execution/approve', { executionId: table.rows[0].id }), mockEnv()))
+      const taskWriteAttempts = calls.filter((c) => c.method === 'PATCH' && c.url.includes('/rest/v1/tasks'))
+      expect(taskWriteAttempts).toHaveLength(1)
+    })
+
+    it('5. an uncertain execution cannot be blindly re-approved -- a later approve call on the same row is rejected as a duplicate, never re-executed', async () => {
+      const table = new FakeExecutionsTable()
+      table.insert({
+        user_id: USER_ID, domain: 'tasks', action: 'update', tool_id: 'tasks.update',
+        request_id: 'req-reapprove', intent_id: 'intent:reapprove', canonical_hash: 'reapprove', normalized_arguments: { title: 'New' }, target_id: 'task-1',
+        status: 'uncertain', approval_requested_at: new Date().toISOString(), approved_at: new Date().toISOString(),
+      })
+      const { fetchMock, calls } = buildFetchMock({ table, policyMode: 'ask' })
+      const response = await withFetch(fetchMock, () => handleAgentToolExecutionApprove(authRequest('/agent/execution/approve', { executionId: table.rows[0].id }), mockEnv()))
+      expect(response.status).toBe(409)
+      expect((await response.json() as { error: string }).error).toBe('DUPLICATE_EXECUTION')
+      expect(calls.some((c) => c.method === 'PATCH' && c.url.includes('/rest/v1/tasks'))).toBe(false)
+    })
+
+    it('6. a succeeded response is never returned unless the durable succeeded transition was actually recorded', async () => {
+      const table = new FakeExecutionsTable()
+      table.blockTransitionTo.add('succeeded')
+      table.insert({
+        user_id: USER_ID, domain: 'calendar', action: 'create', tool_id: 'calendar.create_event',
+        request_id: 'req-durable-check', intent_id: 'intent:durable-check', canonical_hash: 'durable-check',
+        normalized_arguments: { title: 'Standup', dateTimeStart: '2026-09-01T08:30:00.000Z', dateTimeEnd: '2026-09-01T09:00:00.000Z' },
+        time_zone: 'UTC', status: 'approved', approval_requested_at: new Date().toISOString(), approved_at: new Date().toISOString(),
+      })
+      const { fetchMock } = buildFetchMock({ table, policyMode: 'ask' })
+      const response = await withFetch(fetchMock, () => handleAgentToolExecutionApprove(authRequest('/agent/execution/approve', { executionId: table.rows[0].id }), mockEnv()))
+      const body = await response.json() as { status: string }
+      expect(body.status).not.toBe('succeeded')
+      expect(body.status).toBe('uncertain')
+    })
   })
 })

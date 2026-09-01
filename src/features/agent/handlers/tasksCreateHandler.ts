@@ -64,30 +64,31 @@ export const tasksCreateHandler: AgentWriteToolHandler<TasksCreateHandlerOutput>
   // Worker's server-owned execution lifecycle
   // (agent/worker/agent-tool-execution.ts) -- browser-authored execution
   // status is not authoritative, so this handler no longer has any direct
-  // Supabase write path of its own to fall back to. When no
-  // agentToolExecutionClient is present in context, that is a bounded
-  // failure, not a silent alternate write: an older caller or an
-  // unconfigured test harness must be treated the same as "the Worker is
-  // unreachable," never as "fall back to writing from the browser." Ordinary
-  // (non-Agent) Tasks UI still uses tasksService directly -- this change
-  // only removes tasksService as a fallback INSIDE this Agent handler.
+  // Supabase write path of its own to fall back to. Ordinary (non-Agent)
+  // Tasks UI still uses tasksService directly -- this change only removes
+  // tasksService as a fallback INSIDE this Agent handler.
+  //
+  // BLOCKER 1 CORRECTION: the request that durably creates the
+  // approval_pending row now happens BEFORE the user approves (see
+  // writeRuntime.ts's requestWriteExecution and ChatPage.tsx's own wiring),
+  // never inside this execute() call. By the time this runs,
+  // context.pendingAgentExecutionId already names that exact row --
+  // approveExecution() below sends nothing but that id, never args again.
+  // Missing agentToolExecutionClient OR pendingAgentExecutionId is a bounded
+  // failure (an older caller, an unconfigured test harness, or a pre-request
+  // that never completed) -- never a fallback to requesting-and-approving
+  // in one call here, which would reintroduce exactly what Blocker 1 forbids.
   async execute(input: Record<string, unknown>, context: ExecutionContext = {}) {
     const validation = validateTasksCreateInput(input);
     if (!validation.valid) return failure("invalid_input", "INVALID_INPUT", "tasks.create input failed validation.");
-    if (!context.agentToolExecutionClient) {
-      return failure("failed", "AGENT_EXECUTION_CLIENT_UNAVAILABLE", "Server-owned execution is unavailable.");
+    if (!context.agentToolExecutionClient || !context.pendingAgentExecutionId) {
+      return failure("failed", "AGENT_EXECUTION_NOT_REQUESTED", "Server-owned execution was not requested before approval.");
     }
     const title = String(input.title).trim();
-    const notes = typeof input.notes === "string" ? input.notes : undefined;
     const dueDate = typeof input.dueDate === "string" ? input.dueDate : null;
 
     try {
-      const outcome = await context.agentToolExecutionClient.requestAndExecute({
-        toolId: "tasks.create",
-        arguments: { title, notes, dueDate },
-        requestId: crypto.randomUUID(),
-        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      });
+      const outcome = await context.agentToolExecutionClient.approveExecution(context.pendingAgentExecutionId);
       if (outcome.status !== "succeeded" || !outcome.targetId) {
         return failure("failed", outcome.errorCode ?? "TASK_CREATE_FAILED", outcome.reply || "Unable to create task.");
       }

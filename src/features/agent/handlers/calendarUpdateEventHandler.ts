@@ -67,35 +67,34 @@ export const calendarUpdateEventHandler: AgentWriteToolHandler<CalendarUpdateEve
   },
   // Chat V2 Slice 2A / BLOCKER A CORRECTION: see tasksCreateHandler.ts's own
   // comment on this same change -- no direct-write fallback remains.
+  //
+  // BLOCKER 1 CORRECTION: the request that durably creates the row now
+  // happens BEFORE approval; context.pendingAgentExecutionId already names
+  // it here -- approveExecution() sends nothing else.
+  //
+  // BLOCKER 3 CORRECTION: this used to build `data` (and claim
+  // `verified: true`) from the LOCALLY ECHOED `updates` object -- the
+  // fields the request ASKED to change, never proof they were actually
+  // applied. Now built from the Worker's own authoritative response
+  // (outcome.title/notes/dateTimeStart/dateTimeEnd), which reflects the
+  // row's real, just-persisted state.
   async execute(input: Record<string, unknown>, context: ExecutionContext = {}) {
     const validation = validateCalendarUpdateInput(input);
     if (!validation.valid) return failure("invalid_input", "INVALID_INPUT", "calendar.update_event input failed validation.");
     const eventId = String(input.eventId).trim();
-    if (!context.agentToolExecutionClient) {
-      return failure("failed", "AGENT_EXECUTION_CLIENT_UNAVAILABLE", "Server-owned execution is unavailable.", eventId);
+    if (!context.agentToolExecutionClient || !context.pendingAgentExecutionId) {
+      return failure("failed", "AGENT_EXECUTION_NOT_REQUESTED", "Server-owned execution was not requested before approval.", eventId);
     }
-    const updates = {
-      ...(typeof input.title === "string" ? { title: input.title } : {}),
-      ...(typeof input.dateTimeStart === "string" ? { dateTimeStart: input.dateTimeStart } : {}),
-      ...(typeof input.dateTimeEnd === "string" ? { dateTimeEnd: input.dateTimeEnd } : {}),
-      ...(typeof input.notes === "string" ? { notes: input.notes } : {}),
-    };
 
     try {
-      const outcome = await context.agentToolExecutionClient.requestAndExecute({
-        toolId: "calendar.update_event",
-        targetId: eventId,
-        arguments: updates,
-        requestId: crypto.randomUUID(),
-        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      });
-      if (outcome.status !== "succeeded") {
+      const outcome = await context.agentToolExecutionClient.approveExecution(context.pendingAgentExecutionId);
+      if (outcome.status !== "succeeded" || !outcome.title || !outcome.dateTimeStart) {
         return failure("failed", outcome.errorCode ?? "CALENDAR_EVENT_UPDATE_FAILED", outcome.reply || "Unable to update calendar event.", eventId);
       }
       return {
         status: "success",
         success: true,
-        data: Object.freeze({ eventId, title: (updates.title as string | undefined) ?? "", dateTimeStart: (updates as { dateTimeStart?: string }).dateTimeStart ?? "", verified: true }),
+        data: Object.freeze({ eventId, title: outcome.title, dateTimeStart: outcome.dateTimeStart, verified: true }),
         auditMetadata: { taskId: eventId, verified: true, resultShape: "object", redacted: true },
       };
     } catch (caught) {

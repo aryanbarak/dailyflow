@@ -68,6 +68,7 @@ import {
   resolveToolForStep,
   runReadOnlyTool,
   runWriteTool,
+  requestWriteExecution,
   approveWorkspaceStep,
   withTimeout,
   type AgentReasoningResult,
@@ -243,6 +244,16 @@ interface ReasoningProposalState {
   runStatus: ReasoningRunStatus
   readOnlyResult?: ReadOnlyRuntimeResult
   writeResult?: WriteRuntimeResult
+  // Chat V2 Slice 2A, BLOCKER 1/2 CORRECTION: generated ONCE, here, when the
+  // proposal is first normalized -- never regenerated later. This is the
+  // SAME id writeRuntime.ts's requestWriteExecution uses for its
+  // pre-approval Worker request AND runWriteTool later uses for the actual
+  // approved write, so both calls are provably the same logical attempt
+  // (see writeRuntime.ts's own comments on why a handler-local
+  // crypto.randomUUID() would defeat the Worker's own idempotency
+  // guarantee). Read-only proposals carry one too, unused, for shape
+  // simplicity -- harmless, since nothing reads it for a read.
+  requestId: string
 }
 
 // Task 40: WorkspacePlanStep['domain'] is broader (habits/documents/
@@ -1016,7 +1027,17 @@ function approvalForReasoningStep(
   return null
 }
 
-export function proposalToState(result: AgentReasoningResult, t: Translate): ReasoningProposalState {
+// candidateIndex: distinguishes multiple disambiguation candidates that
+// share the same underlying proposal.id (proposalsToStates below) so each
+// gets its own stable requestId -- see ReasoningProposalState.requestId's
+// own comment on why this must be deterministic (never crypto.randomUUID(),
+// which would break byte-identical-output tests like proposalsToStates'
+// own "built the same way a standalone proposal would be" check below) AND
+// collision-free across candidates (a shared requestId across two
+// DIFFERENT proposed actions would make the second candidate's pre-approval
+// Worker request fail closed as a request-id substitution attempt -- see
+// this slice's own BLOCKER 2 correction).
+export function proposalToState(result: AgentReasoningResult, t: Translate, candidateIndex = 0): ReasoningProposalState {
   const step = stepForReasoning(result, t)
   const isWriteProposal = WRITE_PROPOSAL_TYPES.has(result.proposal.type)
   const resolution = step
@@ -1033,6 +1054,7 @@ export function proposalToState(result: AgentReasoningResult, t: Translate): Rea
     resolution,
     approval,
     runStatus: result.proposal.requiresApproval ? 'approval_required' : 'idle',
+    requestId: `agent-exec:${result.proposal.id}:${candidateIndex}`,
   }
 }
 
@@ -1045,7 +1067,7 @@ export function proposalToState(result: AgentReasoningResult, t: Translate): Rea
 export function proposalsToStates(result: AgentReasoningResult, t: Translate): ReasoningProposalState[] {
   const candidates = result.disambiguationCandidates
   if (candidates && candidates.length >= 2) {
-    return candidates.map(candidate => proposalToState(candidate, t))
+    return candidates.map((candidate, index) => proposalToState(candidate, t, index))
   }
   return [proposalToState(result, t)]
 }
@@ -1940,6 +1962,57 @@ export default function ChatPage() {
     }
   }, [user?.id, workerUrl])
 
+  // Chat V2 Slice 2A, BLOCKER 1 CORRECTION: as soon as a write proposal for
+  // one of the Worker-execution-backed tools (tasks.create/update/complete,
+  // calendar.create_event/update_event) becomes pending, durably record it
+  // on the Worker BEFORE the user approves anything -- see
+  // writeRuntime.ts's own requestWriteExecution and this slice's report for
+  // why the durable row must exist before, not only as a side effect of,
+  // the user's approval action. Every OTHER write tool (github.*,
+  // engineering.task.propose, tasks.complete's own separate
+  // ExecutionIntent ceremony) is untouched -- requestWriteExecution itself
+  // no-ops (`not_applicable`) for anything outside that tool set.
+  // Fire-and-forget per proposal, deduplicated by requestId (the SAME
+  // stable id proposalToState already generated) so a re-render never
+  // re-issues the same request twice; the resulting executionId is merged
+  // onto that exact proposal's approval so runWriteTool's later
+  // approveExecution() call has something to reference.
+  const agentExecutionRequestedRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    if (!reasoningProposal || !user?.id) return
+    for (const proposal of reasoningProposal) {
+      if (!proposal.step || !proposal.resolution?.resolved || !proposal.approval) continue
+      if (proposal.approval.status !== 'pending') continue
+      if (proposal.approval.serverExecutionId) continue
+      if (agentExecutionRequestedRef.current.has(proposal.requestId)) continue
+      agentExecutionRequestedRef.current.add(proposal.requestId)
+
+      const { requestId, step: proposalStep, resolution: proposalResolution } = proposal
+      void requestWriteExecution({
+        requestId,
+        step: proposalStep,
+        toolResolution: proposalResolution,
+        target: proposal.result.proposal.target,
+        executionContext: {
+          agentToolExecutionClient: createAgentToolExecutionClient({
+            workerBaseUrl: workerUrl,
+            getAccessToken: async () => {
+              const { data: { session } } = await supabase.auth.getSession()
+              return session?.access_token
+            },
+          }),
+        },
+      }).then((outcome) => {
+        if (outcome.status !== 'requested' || !outcome.executionId) return
+        setReasoningProposal(prev => prev
+          ? prev.map(p => p.requestId === requestId && p.approval
+            ? { ...p, approval: { ...p.approval, serverExecutionId: outcome.executionId } }
+            : p)
+          : prev)
+      })
+    }
+  }, [reasoningProposal, user?.id, workerUrl])
+
   const loadSessionMessages = useCallback(async (sessionId: string) => {
     if (!user?.id) return
     setLoading(true)
@@ -2669,7 +2742,12 @@ export default function ChatPage() {
       ? prev.map((p, i) => i === 0 ? { ...p, runStatus: 'running' } : p)
       : prev)
     const currentTime = new Date()
-    const requestId = `reasoning:write:${toolId}:${current.step.id}:${currentTime.getTime()}`
+    // BLOCKER 2 CORRECTION: current.requestId is the SAME stable id
+    // (generated once, in proposalToState) that requestWriteExecution's own
+    // pre-approval effect below already used for this exact proposal --
+    // never freshly minted here. See ReasoningProposalState.requestId's own
+    // comment.
+    const requestId = current.requestId
     const writeResult = await runWriteTool({
       requestId,
       step: current.step,

@@ -127,6 +127,11 @@ function cloneApproval(
     approvalScope,
     ...(source.previewText ? { previewText: source.previewText } : {}),
     ...(source.codeProposalBinding ? { codeProposalBinding: source.codeProposalBinding } : {}),
+    // Chat V2 Slice 2A, Blocker 1 correction: must survive the
+    // pending->approved/rejected clone unchanged -- it identifies an
+    // already-existing durable Worker row, not something this decision
+    // produces. See WorkspaceStepApproval's own comment on this field.
+    ...(source.serverExecutionId ? { serverExecutionId: source.serverExecutionId } : {}),
   });
 }
 

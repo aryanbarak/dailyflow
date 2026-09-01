@@ -8,112 +8,148 @@ const BASE_INPUT = {
   timeZone: "Europe/Berlin",
 };
 
-describe("agent tool execution client (Chat V2 Slice 2A)", () => {
-  it("calls request then approve, in that order, with the exact expected shapes", async () => {
-    const calls: Array<{ url: string; init?: RequestInit }> = [];
-    const fetcher = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
-      calls.push({ url: String(url), init });
-      if (String(url).endsWith("/agent/execution/request")) {
+describe("agent tool execution client (Chat V2 Slice 2A, Blocker 1 correction: split request/approve)", () => {
+  describe("requestExecution", () => {
+    it("calls only /agent/execution/request, with the exact expected body shape", async () => {
+      const calls: Array<{ url: string; init?: RequestInit }> = [];
+      const fetcher = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+        calls.push({ url: String(url), init });
         return new Response(JSON.stringify({ executionId: "exec-1", status: "approval_pending" }), { status: 200 });
-      }
-      return new Response(JSON.stringify({ status: "succeeded", reply: "Task created.", undoId: "undo:1" }), { status: 200 });
-    });
-    const client = createAgentToolExecutionClient({
-      workerBaseUrl: "http://127.0.0.1:8787",
-      getAccessToken: async () => "session-token",
-      fetcher: fetcher as unknown as typeof fetch,
+      });
+      const client = createAgentToolExecutionClient({
+        workerBaseUrl: "http://127.0.0.1:8787",
+        getAccessToken: async () => "session-token",
+        fetcher: fetcher as unknown as typeof fetch,
+      });
+
+      const result = await client.requestExecution(BASE_INPUT);
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0].url).toBe("http://127.0.0.1:8787/agent/execution/request");
+      expect(new Headers(calls[0].init?.headers).get("Authorization")).toBe("Bearer session-token");
+      expect(JSON.parse(calls[0].init?.body as string)).toMatchObject({
+        toolId: "tasks.create",
+        arguments: { title: "Call Ahmad", dueDate: "2026-09-01" },
+        requestId: "req-1",
+        timeZone: "Europe/Berlin",
+      });
+      expect(result).toEqual({ status: "approval_pending", executionId: "exec-1" });
     });
 
-    const result = await client.requestAndExecute(BASE_INPUT);
-
-    expect(calls).toHaveLength(2);
-    expect(calls[0].url).toBe("http://127.0.0.1:8787/agent/execution/request");
-    expect(calls[1].url).toBe("http://127.0.0.1:8787/agent/execution/approve");
-    expect(new Headers(calls[0].init?.headers).get("Authorization")).toBe("Bearer session-token");
-    expect(JSON.parse(calls[0].init?.body as string)).toMatchObject({
-      toolId: "tasks.create",
-      arguments: { title: "Call Ahmad", dueDate: "2026-09-01" },
-      requestId: "req-1",
-      timeZone: "Europe/Berlin",
+    it("returns a terminal status directly, with no approve call, when server policy independently resolved auto", async () => {
+      const fetcher = vi.fn(async () => new Response(JSON.stringify({ status: "succeeded", reply: "Task created." }), { status: 200 }));
+      const client = createAgentToolExecutionClient({
+        workerBaseUrl: "https://worker.example.com",
+        getAccessToken: async () => "session",
+        fetcher: fetcher as unknown as typeof fetch,
+      });
+      const result = await client.requestExecution(BASE_INPUT);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({ status: "succeeded", reply: "Task created." });
     });
-    // The approve call carries ONLY the executionId -- never arguments,
-    // never toolId -- mirroring the Worker's own refusal to re-accept them
-    // (agent-tool-execution.ts's own header comment).
-    expect(JSON.parse(calls[1].init?.body as string)).toEqual({ executionId: "exec-1" });
-    expect(result).toEqual({ status: "succeeded", reply: "Task created.", undoId: "undo:1", errorCode: undefined, targetId: undefined });
+
+    it("requires authentication before calling the worker at all", async () => {
+      const fetcher = vi.fn();
+      const client = createAgentToolExecutionClient({
+        workerBaseUrl: "https://worker.example.com",
+        getAccessToken: async () => undefined,
+        fetcher: fetcher as unknown as typeof fetch,
+      });
+      await expect(client.requestExecution(BASE_INPUT)).rejects.toMatchObject({ code: "AUTH_REQUIRED" });
+      expect(fetcher).not.toHaveBeenCalled();
+    });
+
+    it("surfaces the Worker's specific error code from a rejected request", async () => {
+      const fetcher = vi.fn(async () => new Response(JSON.stringify({ error: "POLICY_DENIED" }), { status: 403 }));
+      const client = createAgentToolExecutionClient({
+        workerBaseUrl: "https://worker.example.com",
+        getAccessToken: async () => "session",
+        fetcher: fetcher as unknown as typeof fetch,
+      });
+      await expect(client.requestExecution(BASE_INPUT)).rejects.toMatchObject({ code: "POLICY_DENIED" });
+    });
+
+    it("a network failure is reported as a distinct, non-retryable unavailability error, not thrown raw", async () => {
+      const client = createAgentToolExecutionClient({
+        workerBaseUrl: "https://worker.example.com",
+        getAccessToken: async () => "session",
+        fetcher: async () => { throw new Error("network down") },
+      });
+      await expect(client.requestExecution(BASE_INPUT)).rejects.toMatchObject({ code: "AGENT_EXECUTION_REQUEST_UNAVAILABLE", retryable: false });
+    });
   });
 
-  it("stops after the request call when the Worker already executed it (policy mode auto)", async () => {
-    const fetcher = vi.fn(async () => new Response(JSON.stringify({ status: "succeeded", reply: "Task created." }), { status: 200 }));
-    const client = createAgentToolExecutionClient({
-      workerBaseUrl: "https://worker.example.com",
-      getAccessToken: async () => "session",
-      fetcher: fetcher as unknown as typeof fetch,
-    });
-    const result = await client.requestAndExecute(BASE_INPUT);
-    expect(fetcher).toHaveBeenCalledTimes(1);
-    expect(result.status).toBe("succeeded");
-  });
+  describe("approveExecution", () => {
+    it("calls only /agent/execution/approve, with the body carrying ONLY the executionId -- never arguments, never toolId", async () => {
+      const calls: Array<{ url: string; init?: RequestInit }> = [];
+      const fetcher = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+        calls.push({ url: String(url), init });
+        return new Response(JSON.stringify({ status: "succeeded", reply: "Task created.", undoId: "undo:1" }), { status: 200 });
+      });
+      const client = createAgentToolExecutionClient({
+        workerBaseUrl: "http://127.0.0.1:8787",
+        getAccessToken: async () => "session-token",
+        fetcher: fetcher as unknown as typeof fetch,
+      });
 
-  it("requires authentication before calling the worker at all", async () => {
-    const fetcher = vi.fn();
-    const client = createAgentToolExecutionClient({
-      workerBaseUrl: "https://worker.example.com",
-      getAccessToken: async () => undefined,
-      fetcher: fetcher as unknown as typeof fetch,
-    });
-    await expect(client.requestAndExecute(BASE_INPUT)).rejects.toMatchObject({ code: "AUTH_REQUIRED" });
-    expect(fetcher).not.toHaveBeenCalled();
-  });
+      const result = await client.approveExecution("exec-1");
 
-  it("surfaces the Worker's specific error code from the request call, never calling approve", async () => {
-    const fetcher = vi.fn(async () => new Response(JSON.stringify({ error: "POLICY_DENIED" }), { status: 403 }));
-    const client = createAgentToolExecutionClient({
-      workerBaseUrl: "https://worker.example.com",
-      getAccessToken: async () => "session",
-      fetcher: fetcher as unknown as typeof fetch,
+      expect(calls).toHaveLength(1);
+      expect(calls[0].url).toBe("http://127.0.0.1:8787/agent/execution/approve");
+      expect(JSON.parse(calls[0].init?.body as string)).toEqual({ executionId: "exec-1" });
+      expect(result).toEqual({ status: "succeeded", reply: "Task created.", undoId: "undo:1", errorCode: undefined, targetId: undefined });
     });
-    await expect(client.requestAndExecute(BASE_INPUT)).rejects.toMatchObject({ code: "POLICY_DENIED" });
-    expect(fetcher).toHaveBeenCalledTimes(1);
-  });
 
-  it("surfaces the Worker's specific error code from the approve call (e.g. a fail-closed denial)", async () => {
-    const fetcher = vi.fn(async (url: RequestInfo | URL) => {
-      if (String(url).endsWith("/agent/execution/request")) {
-        return new Response(JSON.stringify({ executionId: "exec-1", status: "approval_pending" }), { status: 200 });
-      }
-      return new Response(JSON.stringify({ error: "ACTOR_MISMATCH" }), { status: 403 });
+    it("a failed (not succeeded) outcome is returned, not thrown -- 'failed' is a valid, informative result, not a client error", async () => {
+      const fetcher = vi.fn(async () => new Response(JSON.stringify({ status: "failed", reply: "Could not verify.", errorCode: "TARGET_NOT_FOUND" }), { status: 200 }));
+      const client = createAgentToolExecutionClient({
+        workerBaseUrl: "https://worker.example.com",
+        getAccessToken: async () => "session",
+        fetcher: fetcher as unknown as typeof fetch,
+      });
+      const result = await client.approveExecution("exec-1");
+      expect(result).toMatchObject({ status: "failed", errorCode: "TARGET_NOT_FOUND" });
     });
-    const client = createAgentToolExecutionClient({
-      workerBaseUrl: "https://worker.example.com",
-      getAccessToken: async () => "session",
-      fetcher: fetcher as unknown as typeof fetch,
-    });
-    await expect(client.requestAndExecute(BASE_INPUT)).rejects.toMatchObject({ code: "ACTOR_MISMATCH" });
-  });
 
-  it("a network failure on either call is reported as a distinct, non-retryable unavailability error, not thrown raw", async () => {
-    const client = createAgentToolExecutionClient({
-      workerBaseUrl: "https://worker.example.com",
-      getAccessToken: async () => "session",
-      fetcher: async () => { throw new Error("network down") },
+    it("an 'uncertain' outcome is returned as-is, never coerced into succeeded or failed", async () => {
+      const fetcher = vi.fn(async () => new Response(JSON.stringify({ status: "uncertain", reply: "We could not confirm this completed.", errorCode: "EXECUTION_OUTCOME_UNKNOWN" }), { status: 200 }));
+      const client = createAgentToolExecutionClient({
+        workerBaseUrl: "https://worker.example.com",
+        getAccessToken: async () => "session",
+        fetcher: fetcher as unknown as typeof fetch,
+      });
+      const result = await client.approveExecution("exec-1");
+      expect(result).toMatchObject({ status: "uncertain", errorCode: "EXECUTION_OUTCOME_UNKNOWN" });
     });
-    await expect(client.requestAndExecute(BASE_INPUT)).rejects.toMatchObject({ code: "AGENT_EXECUTION_REQUEST_UNAVAILABLE", retryable: false });
-  });
 
-  it("a failed (not succeeded) outcome from approve is returned, not thrown -- 'failed' is a valid, informative result, not a client error", async () => {
-    const fetcher = vi.fn(async (url: RequestInfo | URL) => {
-      if (String(url).endsWith("/agent/execution/request")) {
-        return new Response(JSON.stringify({ executionId: "exec-1", status: "approval_pending" }), { status: 200 });
-      }
-      return new Response(JSON.stringify({ status: "failed", reply: "Could not verify.", errorCode: "TARGET_NOT_FOUND" }), { status: 200 });
+    it("requires authentication before calling the worker at all", async () => {
+      const fetcher = vi.fn();
+      const client = createAgentToolExecutionClient({
+        workerBaseUrl: "https://worker.example.com",
+        getAccessToken: async () => undefined,
+        fetcher: fetcher as unknown as typeof fetch,
+      });
+      await expect(client.approveExecution("exec-1")).rejects.toMatchObject({ code: "AUTH_REQUIRED" });
+      expect(fetcher).not.toHaveBeenCalled();
     });
-    const client = createAgentToolExecutionClient({
-      workerBaseUrl: "https://worker.example.com",
-      getAccessToken: async () => "session",
-      fetcher: fetcher as unknown as typeof fetch,
+
+    it("surfaces the Worker's specific error code from a rejected approve (e.g. a fail-closed denial)", async () => {
+      const fetcher = vi.fn(async () => new Response(JSON.stringify({ error: "ACTOR_MISMATCH" }), { status: 403 }));
+      const client = createAgentToolExecutionClient({
+        workerBaseUrl: "https://worker.example.com",
+        getAccessToken: async () => "session",
+        fetcher: fetcher as unknown as typeof fetch,
+      });
+      await expect(client.approveExecution("exec-1")).rejects.toMatchObject({ code: "ACTOR_MISMATCH" });
     });
-    const result = await client.requestAndExecute(BASE_INPUT);
-    expect(result).toMatchObject({ status: "failed", errorCode: "TARGET_NOT_FOUND" });
+
+    it("a network failure is reported as a distinct, non-retryable unavailability error, not thrown raw", async () => {
+      const client = createAgentToolExecutionClient({
+        workerBaseUrl: "https://worker.example.com",
+        getAccessToken: async () => "session",
+        fetcher: async () => { throw new Error("network down") },
+      });
+      await expect(client.approveExecution("exec-1")).rejects.toMatchObject({ code: "AGENT_EXECUTION_APPROVE_UNAVAILABLE", retryable: false });
+    });
   });
 });

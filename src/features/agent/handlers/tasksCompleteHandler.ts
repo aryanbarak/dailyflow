@@ -156,22 +156,19 @@ export const tasksCompleteHandler: AgentWriteToolHandler<TasksCompleteHandlerOut
         };
       }
 
-      if (!context.agentToolExecutionClient) {
+      // BLOCKER 1 CORRECTION: the request that durably creates the row now
+      // happens BEFORE approval; context.pendingAgentExecutionId already
+      // names it here -- approveExecution() sends nothing else.
+      if (!context.agentToolExecutionClient || !context.pendingAgentExecutionId) {
         return {
-          ...failure("failed", "AGENT_EXECUTION_CLIENT_UNAVAILABLE", "Server-owned execution is unavailable.", taskId),
+          ...failure("failed", "AGENT_EXECUTION_NOT_REQUESTED", "Server-owned execution was not requested before approval.", taskId),
           compensation: { taskId, previousCompleted: before.completed, previousCompletedAt: before.completedAt ?? null },
         };
       }
 
-      let outcome: Awaited<ReturnType<typeof context.agentToolExecutionClient.requestAndExecute>>;
+      let outcome: Awaited<ReturnType<typeof context.agentToolExecutionClient.approveExecution>>;
       try {
-        outcome = await context.agentToolExecutionClient.requestAndExecute({
-          toolId: "tasks.complete",
-          targetId: taskId,
-          arguments: {},
-          requestId: crypto.randomUUID(),
-          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        });
+        outcome = await context.agentToolExecutionClient.approveExecution(context.pendingAgentExecutionId);
       } catch (caught) {
         const error = caught as Partial<ExecutionError>;
         return {

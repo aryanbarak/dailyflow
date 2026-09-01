@@ -44,3 +44,47 @@ describe("ChatPage: agentToolExecutionClient wiring (Chat V2 Slice 2A, Blocker A
     expect(clientBody).toMatch(/return session\?\.access_token/);
   });
 });
+
+// BLOCKER 1 CORRECTION: the durable approval_pending row must exist BEFORE
+// the user approves anything -- see agentToolExecutionClient.ts's own
+// header comment and writeRuntime.ts's requestWriteExecution. This proves
+// ChatPage.tsx actually fires that pre-approval request (not just that the
+// post-approval client wiring above exists) and binds the result back onto
+// the exact proposal it came from.
+describe("ChatPage: pre-approval requestWriteExecution wiring (Chat V2 Slice 2A, Blocker 1 correction)", () => {
+  it("imports requestWriteExecution from the agent feature barrel", () => {
+    expect(pageSource).toMatch(/\brequestWriteExecution\b/);
+  });
+
+  it("calls requestWriteExecution from inside a useEffect that watches reasoningProposal, not from the approval click handler", () => {
+    const effectStart = pageSource.indexOf("const agentExecutionRequestedRef = useRef");
+    expect(effectStart).toBeGreaterThan(-1);
+    const effectEnd = pageSource.indexOf("}, [reasoningProposal, user?.id, workerUrl])", effectStart);
+    expect(effectEnd).toBeGreaterThan(effectStart);
+    const effectBody = pageSource.slice(effectStart, effectEnd);
+
+    expect(effectBody).toMatch(/void requestWriteExecution\(\{/);
+    // Only proposals actually pending (not yet approved) and not already
+    // requested are eligible -- the effect must be idempotent per proposal.
+    expect(effectBody).toMatch(/proposal\.approval\.status !== 'pending'/);
+    expect(effectBody).toMatch(/proposal\.approval\.serverExecutionId/);
+    expect(effectBody).toMatch(/agentExecutionRequestedRef\.current\.has\(proposal\.requestId\)/);
+    // The resulting executionId is merged back onto the SAME proposal's
+    // approval (by requestId), which is what runWriteTool later reads
+    // (request.approval.serverExecutionId) to call approveExecution --
+    // never re-sending arguments at approval time.
+    expect(effectBody).toMatch(/serverExecutionId: outcome\.executionId/);
+  });
+
+  it("runWriteProposalWithApproval reuses the proposal's own stable requestId, never a freshly generated one", () => {
+    const fnStart = pageSource.indexOf("const runWriteProposalWithApproval = useCallback");
+    expect(fnStart).toBeGreaterThan(-1);
+    const fnEnd = pageSource.indexOf("const requestId = current.requestId", fnStart);
+    expect(fnEnd).toBeGreaterThan(fnStart);
+    // The old per-click `reasoning:write:${toolId}:${step.id}:${Date.now()}`
+    // construction must be gone from this function -- BLOCKER 2 requires
+    // reusing WriteRuntimeRequest's own stable id, not minting a new one.
+    const fnBodyBeforeRequestId = pageSource.slice(fnStart, fnEnd);
+    expect(fnBodyBeforeRequestId).not.toMatch(/reasoning:write:\$\{toolId\}/);
+  });
+});

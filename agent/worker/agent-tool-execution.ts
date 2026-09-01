@@ -20,9 +20,14 @@
 // alongside them, rather than leaving tasks.complete on a parallel path.
 //
 // LIFECYCLE (agent_tool_executions.status):
-//   approval_pending -> approved -> executing -> succeeded | failed
+//   approval_pending -> approved -> executing -> succeeded | failed | uncertain
 //                     -> denied (policy off / expired at approval time)
 //                     -> expired (approval window elapsed)
+// 'uncertain' (BLOCKER 4 CORRECTION): reached only from 'executing', when
+// the domain executor threw after the durable claim, or the durable
+// succeeded/failed transition itself could not be recorded -- never
+// fabricated as succeeded or failed. Terminal, same as succeeded/failed:
+// decision 9 still means this row is never re-approved or re-executed.
 // Every transition below is a CONDITIONAL PostgREST PATCH
 // (`...&status=eq.<expected>`), which Postgres executes as a single
 // UPDATE ... WHERE ... RETURNING statement -- exactly one concurrent
@@ -78,6 +83,16 @@ export type ExecutionLifecycleStatus =
   | 'denied'
   | 'expired'
   | 'revoked'
+  // BLOCKER 4 CORRECTION: the durable claim (approved -> executing)
+  // succeeded, but the outcome could not be proven succeeded or failed --
+  // the domain executor threw after the claim, or the durable
+  // succeeded/failed transition itself could not be recorded. Never
+  // fabricated as either -- see approveAndExecute's own comment. Terminal:
+  // decision 9 (one approval authorizes exactly one immutable action) still
+  // applies -- an 'uncertain' row is never re-approved or re-executed by
+  // this module. Reconciling it (proving what actually happened and
+  // resolving the row) is future work, deliberately not built here.
+  | 'uncertain'
 
 // decision 10: an approval_pending row this stale is treated as expired
 // rather than silently honored -- matches this codebase's existing
@@ -249,6 +264,19 @@ interface ExecutionOutcome {
   targetType?: string
   targetId?: string
   completedAt?: string
+  // BLOCKER 3 CORRECTION: the ACTUAL, authoritative persisted field values
+  // for a successful create/update -- populated from flow-write-policy.ts's
+  // own just-returned row representation, never echoed from the request.
+  // A handler must build its result data (and its `verified` claim) from
+  // these, never from the arguments it originally sent -- a field being
+  // requested is not proof it was applied. Absent for tasks.complete
+  // (nothing to report beyond completedAt) and for every non-'executed'
+  // status.
+  title?: string
+  notes?: string | null
+  dueDate?: string | null
+  dateTimeStart?: string
+  dateTimeEnd?: string
 }
 
 function buildTaskIntent(toolId: SupportedExecutionToolId, args: Record<string, unknown>, targetId: string | null): ParsedTaskWriteIntent {
@@ -325,7 +353,12 @@ async function executeByToolId(env: Env, userId: string, row: AgentToolExecution
   if (row.tool_id === 'tasks.create' || row.tool_id === 'tasks.update') {
     const intent = buildTaskIntent(row.tool_id, row.normalized_arguments, row.target_id)
     const result = await executeAutoTaskWrite({ env, userId, language, intent, now, timeZone })
-    if (result.status === 'executed') return { status: 'executed', reply: result.reply, undoId: result.undoId, targetType: 'task', targetId: result.id }
+    if (result.status === 'executed') {
+      return {
+        status: 'executed', reply: result.reply, undoId: result.undoId, targetType: 'task', targetId: result.id,
+        title: result.title, notes: result.notes, dueDate: result.dueDate,
+      }
+    }
     // 'not_found' (only reachable via the targetId lookup this slice added)
     // carries no reply of its own -- see flow-write-policy.ts's own comment
     // on why that variant has always been reply-less.
@@ -335,7 +368,12 @@ async function executeByToolId(env: Env, userId: string, row: AgentToolExecution
   if (row.tool_id === 'calendar.create_event' || row.tool_id === 'calendar.update_event') {
     const intent = buildCalendarIntent(row.tool_id, row.normalized_arguments, row.target_id, timeZone)
     const result = await executeAutoCalendarWrite({ env, userId, language, intent, now, timeZone })
-    if (result.status === 'executed') return { status: 'executed', reply: result.reply, undoId: result.undoId, targetType: 'calendar_event', targetId: result.id }
+    if (result.status === 'executed') {
+      return {
+        status: 'executed', reply: result.reply, undoId: result.undoId, targetType: 'calendar_event', targetId: result.id,
+        title: result.title, notes: result.notes, dateTimeStart: result.dateTimeStart, dateTimeEnd: result.dateTimeEnd,
+      }
+    }
     return { status: result.status, reply: result.status === 'not_found' ? 'I could not find that event.' : result.reply }
   }
 
@@ -348,6 +386,17 @@ function errorCodeForOutcome(outcome: ExecutionOutcome): string {
   if (outcome.status === 'not_found') return 'TARGET_NOT_FOUND'
   return 'EXECUTION_FAILED'
 }
+
+// BLOCKER 4 CORRECTION: the one honest response body for every path that
+// reaches an unprovable outcome after the durable executing claim -- never
+// fabricated as succeeded or failed. A single shared constant (rather than
+// building this object at each call site) so the wording/error code can
+// never drift between the three places that need it.
+const UNCERTAIN_BODY = Object.freeze({
+  status: 'uncertain' as const,
+  reply: 'We could not confirm whether this action completed. Please check before trying again.',
+  errorCode: 'EXECUTION_OUTCOME_UNKNOWN',
+})
 
 interface ApprovalResult {
   httpStatus: number
@@ -405,14 +454,37 @@ async function approveAndExecute(env: Env, userId: string, executionId: string, 
     return { httpStatus: 409, body: { error: 'DUPLICATE_EXECUTION' } }
   }
 
-  const outcome = await executeByToolId(env, userId, row, now)
+  // BLOCKER 4 CORRECTION: the durable claim above (approved -> executing)
+  // already happened -- if the domain executor throws, we do NOT know
+  // whether the write itself committed before the exception. Claiming
+  // 'failed' would be a LIE if it actually went through; claiming
+  // 'succeeded' would be a LIE if it didn't. 'uncertain' is the only honest
+  // terminal state for this row -- no automatic retry, and decision 9 (one
+  // approval authorizes exactly one immutable action) still means this row
+  // can never simply be re-approved/re-executed afterward (see the
+  // lifecycle status check above: only 'approval_pending'/'approved' are
+  // ever accepted as an entry state -- 'uncertain' is not).
+  let outcome: ExecutionOutcome
+  try {
+    outcome = await executeByToolId(env, userId, row, now)
+  } catch {
+    await transitionStatus(env, executionId, 'executing', 'uncertain', {
+      completed_at: now.toISOString(),
+      error_code: 'EXECUTION_OUTCOME_UNKNOWN',
+    })
+    return { httpStatus: 200, body: UNCERTAIN_BODY }
+  }
 
   if (outcome.status === 'executed') {
-    await transitionStatus(env, executionId, 'executing', 'succeeded', {
+    const recorded = await transitionStatus(env, executionId, 'executing', 'succeeded', {
       completed_at: now.toISOString(),
       target_type: outcome.targetType ?? null,
       target_id: outcome.targetId ?? row.target_id ?? null,
     })
+    // The domain write DID succeed (outcome.status === 'executed'), but the
+    // durable succeeded transition itself could not be recorded -- never
+    // report authoritative success when the row does not durably agree.
+    if (!recorded) return { httpStatus: 200, body: UNCERTAIN_BODY }
     if (outcome.undoId) await correlateUndoRecordWithExecution(env, outcome.undoId, executionId)
     return {
       httpStatus: 200,
@@ -422,12 +494,18 @@ async function approveAndExecute(env: Env, userId: string, executionId: string, 
         undoId: outcome.undoId,
         targetId: outcome.targetId ?? row.target_id ?? undefined,
         completedAt: outcome.completedAt,
+        title: outcome.title,
+        notes: outcome.notes,
+        dueDate: outcome.dueDate,
+        dateTimeStart: outcome.dateTimeStart,
+        dateTimeEnd: outcome.dateTimeEnd,
       },
     }
   }
 
   const errorCode = errorCodeForOutcome(outcome)
-  await transitionStatus(env, executionId, 'executing', 'failed', { completed_at: now.toISOString(), error_code: errorCode })
+  const recordedFailure = await transitionStatus(env, executionId, 'executing', 'failed', { completed_at: now.toISOString(), error_code: errorCode })
+  if (!recordedFailure) return { httpStatus: 200, body: UNCERTAIN_BODY }
   return { httpStatus: 200, body: { status: 'failed', reply: outcome.reply, errorCode } }
 }
 

@@ -66,34 +66,36 @@ export const tasksUpdateHandler: AgentWriteToolHandler<TasksUpdateHandlerOutput>
   },
   // Chat V2 Slice 2A / BLOCKER A CORRECTION: see tasksCreateHandler.ts's own
   // comment on this same change -- no direct-write fallback remains.
+  //
+  // BLOCKER 1 CORRECTION: the request that durably creates the row now
+  // happens BEFORE approval; context.pendingAgentExecutionId already names
+  // it here -- approveExecution() sends nothing else.
+  //
+  // BLOCKER 3 CORRECTION: this used to build `data` (and claim
+  // `verified: true`) from the LOCALLY ECHOED `updates` object -- the
+  // fields the request ASKED to change, never proof they were actually
+  // applied (a real, pre-existing bug in the Worker's own PATCH body meant
+  // title/notes were silently dropped there; see flow-write-policy.ts's own
+  // fix). Now built from the Worker's own authoritative response
+  // (outcome.title/dueDate), which reflects the row's real, just-persisted
+  // state.
   async execute(input: Record<string, unknown>, context: ExecutionContext = {}) {
     const validation = validateTasksUpdateInput(input);
     if (!validation.valid) return failure("invalid_input", "INVALID_INPUT", "tasks.update input failed validation.");
     const taskId = String(input.taskId).trim();
-    if (!context.agentToolExecutionClient) {
-      return failure("failed", "AGENT_EXECUTION_CLIENT_UNAVAILABLE", "Server-owned execution is unavailable.", taskId);
+    if (!context.agentToolExecutionClient || !context.pendingAgentExecutionId) {
+      return failure("failed", "AGENT_EXECUTION_NOT_REQUESTED", "Server-owned execution was not requested before approval.", taskId);
     }
-    const updates = {
-      ...(typeof input.title === "string" ? { title: input.title } : {}),
-      ...(typeof input.notes === "string" ? { notes: input.notes } : {}),
-      ...(input.dueDate !== undefined ? { dueDate: typeof input.dueDate === "string" ? input.dueDate : null } : {}),
-    };
 
     try {
-      const outcome = await context.agentToolExecutionClient.requestAndExecute({
-        toolId: "tasks.update",
-        targetId: taskId,
-        arguments: updates,
-        requestId: crypto.randomUUID(),
-        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      });
-      if (outcome.status !== "succeeded") {
+      const outcome = await context.agentToolExecutionClient.approveExecution(context.pendingAgentExecutionId);
+      if (outcome.status !== "succeeded" || !outcome.title) {
         return failure("failed", outcome.errorCode ?? "TASK_UPDATE_FAILED", outcome.reply || "Unable to update task.", taskId);
       }
       return {
         status: "success",
         success: true,
-        data: Object.freeze({ taskId, title: (updates.title as string | undefined) ?? "", dueDate: (updates as { dueDate?: string | null }).dueDate ?? null, verified: true }),
+        data: Object.freeze({ taskId, title: outcome.title, dueDate: outcome.dueDate ?? null, verified: true }),
         auditMetadata: { taskId, verified: true, resultShape: "object", redacted: true },
       };
     } catch (caught) {

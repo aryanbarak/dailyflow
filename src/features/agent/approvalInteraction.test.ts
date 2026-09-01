@@ -305,6 +305,35 @@ describe("approvalInteraction", () => {
     }
   });
 
+  // Chat V2 Slice 2A, Blocker 1 correction: serverExecutionId identifies an
+  // already-existing durable Worker row created by a PRIOR, pre-approval
+  // requestExecution() call -- it must carry through approve/reject
+  // unchanged, same as codeProposalBinding above, since the approval
+  // decision does not produce it.
+  it("carries serverExecutionId (a pre-approval Worker execution row id) through approve and reject unchanged", async () => {
+    const approval = stepApproval({ serverExecutionId: "exec-42" });
+
+    const approved = await approveWorkspaceStep({ now, step: step(), stepApproval: approval });
+    expect(approved.ok).toBe(true);
+    if (approved.ok) {
+      expect(approved.approval?.serverExecutionId).toBe("exec-42");
+    }
+
+    const rejected = rejectWorkspaceStep({ now, step: step(), stepApproval: approval });
+    expect(rejected.ok).toBe(true);
+    if (rejected.ok) {
+      expect(rejected.approval?.serverExecutionId).toBe("exec-42");
+    }
+  });
+
+  it("omits serverExecutionId entirely for approvals that never had one", async () => {
+    const result = await approveWorkspaceStep({ now, step: step(), stepApproval: stepApproval() });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.approval).not.toHaveProperty("serverExecutionId");
+    }
+  });
+
   it("omits codeProposalBinding entirely for approvals that never had one (e.g. tasks.complete)", async () => {
     const result = await approveWorkspaceStep({ now, step: step(), stepApproval: stepApproval() });
     expect(result.ok).toBe(true);

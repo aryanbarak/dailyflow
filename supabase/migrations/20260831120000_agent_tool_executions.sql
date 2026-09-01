@@ -60,8 +60,14 @@ create table if not exists public.agent_tool_executions (
   constraint agent_tool_executions_domain_check check (domain in ('tasks', 'calendar')),
   constraint agent_tool_executions_language_check check (language in ('en', 'de', 'fa')),
   constraint agent_tool_executions_action_check check (action in ('create', 'update', 'complete')),
+  -- BLOCKER 4 CORRECTION: 'uncertain' -- reachable only from 'executing',
+  -- when the domain executor threw after the durable approved->executing
+  -- claim, or the durable succeeded/failed transition itself could not be
+  -- recorded. Terminal, same as succeeded/failed/denied/expired/revoked --
+  -- never re-approved or re-executed (agent-tool-execution.ts's own header
+  -- comment). Never fabricated as succeeded or failed.
   constraint agent_tool_executions_status_check check (
-    status in ('approval_pending', 'approved', 'executing', 'succeeded', 'failed', 'denied', 'expired', 'revoked')
+    status in ('approval_pending', 'approved', 'executing', 'succeeded', 'failed', 'denied', 'expired', 'revoked', 'uncertain')
   ),
   constraint agent_tool_executions_normalized_arguments_object_check check (
     jsonb_typeof(normalized_arguments) = 'object'

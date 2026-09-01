@@ -82,6 +82,7 @@ import {
   clearWriteRuntimeRequestHistory,
   expectedCapabilityForToolId,
   expectedStepShapeForToolId,
+  requestWriteExecution,
   runWriteTool,
   validateApprovalBoundary,
   type WriteRuntimeRequest,
@@ -1289,13 +1290,20 @@ describe("writeRuntime", () => {
     const sourceResolution = resolution(sourceStep, "calendar.create_event", {
       requiredInput: ["title", "start", "end"],
     });
+    // BLOCKER 1 correction: serverExecutionId simulates a PRIOR, pre-approval
+    // requestWriteExecution() call already having durably created this row
+    // (see writeRuntime.ts's own requestWriteExecution and ChatPage.tsx's
+    // wiring) -- runWriteTool now only ever calls approveExecution() with
+    // this id, never requestExecution()+approveExecution() together.
     const sourceApproval = approval(sourceStep, {
       toolId: "calendar.create_event",
       dataDomains: ["calendar"],
       reversible: true,
       previewText: "Title: Team sync\nStart: 2026-08-14T09:00:00.000Z",
+      serverExecutionId: "exec-cal-create-1",
     });
-    const requestAndExecute = vi.fn().mockResolvedValue({
+    const requestExecution = vi.fn();
+    const approveExecution = vi.fn().mockResolvedValue({
       status: "succeeded",
       reply: "Event created.",
       targetId: "event-1",
@@ -1308,21 +1316,16 @@ describe("writeRuntime", () => {
       approval: sourceApproval,
       target: { eventTitle: "Team sync", start: "2026-08-14T09:00:00.000Z" },
       executionContext: {
-        agentToolExecutionClient: { requestAndExecute },
+        agentToolExecutionClient: { requestExecution, approveExecution },
       } as ExecutionContext,
     }), {
       authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
       now: () => now,
     });
 
-    expect(requestAndExecute).toHaveBeenCalledTimes(1);
-    expect(requestAndExecute).toHaveBeenCalledWith(expect.objectContaining({
-      toolId: "calendar.create_event",
-      arguments: expect.objectContaining({
-        title: "Team sync",
-        dateTimeStart: "2026-08-14T09:00:00.000Z",
-      }),
-    }));
+    expect(requestExecution).not.toHaveBeenCalled();
+    expect(approveExecution).toHaveBeenCalledTimes(1);
+    expect(approveExecution).toHaveBeenCalledWith("exec-cal-create-1");
     expect(calendarServiceMock.create).not.toHaveBeenCalled();
     expect(result.status).toBe("success");
     expect(result.success).toBe(true);
@@ -1342,15 +1345,20 @@ describe("writeRuntime", () => {
     const sourceResolution = resolution(sourceStep, "calendar.update_event", {
       requiredInput: ["eventId"],
     });
+    // BLOCKER 1 correction: see the create test above's own comment.
     const sourceApproval = approval(sourceStep, {
       toolId: "calendar.update_event",
       dataDomains: ["calendar"],
       reversible: true,
       previewText: "Start: 2026-08-14T10:00:00.000Z",
+      serverExecutionId: "exec-cal-update-1",
     });
-    const requestAndExecute = vi.fn().mockResolvedValue({
+    const requestExecution = vi.fn();
+    const approveExecution = vi.fn().mockResolvedValue({
       status: "succeeded",
       reply: "Event updated.",
+      title: "Team sync",
+      dateTimeStart: "2026-08-14T10:00:00.000Z",
     });
 
     const result = await runWriteTool(request({
@@ -1360,19 +1368,16 @@ describe("writeRuntime", () => {
       approval: sourceApproval,
       target: { start: "2026-08-14T10:00:00.000Z" },
       executionContext: {
-        agentToolExecutionClient: { requestAndExecute },
+        agentToolExecutionClient: { requestExecution, approveExecution },
       } as ExecutionContext,
     }), {
       authorityContext: { getAuthenticatedActor: async () => ({ id: "user-1" }), resolveAuthoritativeScope: async () => "user:user-1" },
       now: () => now,
     });
 
-    expect(requestAndExecute).toHaveBeenCalledTimes(1);
-    expect(requestAndExecute).toHaveBeenCalledWith(expect.objectContaining({
-      toolId: "calendar.update_event",
-      targetId: "event-1",
-      arguments: expect.objectContaining({ dateTimeStart: "2026-08-14T10:00:00.000Z" }),
-    }));
+    expect(requestExecution).not.toHaveBeenCalled();
+    expect(approveExecution).toHaveBeenCalledTimes(1);
+    expect(approveExecution).toHaveBeenCalledWith("exec-cal-update-1");
     expect(calendarServiceMock.update).not.toHaveBeenCalled();
     expect(result.status).toBe("success");
     expect(result.success).toBe(true);
@@ -1644,5 +1649,110 @@ describe("writeRuntime", () => {
     expect(result.status).toBe("unresolved");
     expect(getWriteHandlerByToolId("tasks.list")).toBeUndefined();
     expect(getWriteHandlerByToolId("tasks.complete")?.toolId).toBe("tasks.complete");
+  });
+
+  // Chat V2 Slice 2A, BLOCKER 1 CORRECTION: requestWriteExecution is the
+  // new pre-approval call ChatPage.tsx's own wiring makes as soon as a
+  // write proposal is normalized -- well BEFORE the user has approved
+  // anything. These tests prove the properties the correction explicitly
+  // required: a durable row exists before approval, no domain mutation
+  // happens as part of creating it, and the stable WriteRuntimeRequest
+  // requestId (never a handler-local random UUID) is what reaches the
+  // Worker.
+  describe("requestWriteExecution (BLOCKER 1: pre-approval durable request)", () => {
+    const authorityContext = {
+      getAuthenticatedActor: async () => ({ id: "user-1" }),
+      resolveAuthoritativeScope: async () => "user:user-1",
+    };
+
+    it("creates a durable approval_pending row BEFORE any user approval exists on the request -- proving no domain mutation occurred, since approveExecution is never called", async () => {
+      const sourceStep = step({
+        id: "step:pre-approval-create",
+        domain: "tasks",
+        actionType: "create",
+        targetId: "step:pre-approval-create",
+      });
+      const requestExecution = vi.fn().mockResolvedValue({ status: "approval_pending", executionId: "exec-pre-1" });
+      const approveExecution = vi.fn();
+
+      // Deliberately NO `approval` field at all on this request -- proving
+      // this call is genuinely independent of, and prior to, any approval
+      // decision (unlike runWriteTool, which refuses to proceed without
+      // one).
+      const result = await requestWriteExecution({
+        requestId: "write:pre-approval-1",
+        step: sourceStep,
+        toolResolution: resolution(sourceStep, "tasks.create", { requiredInput: ["title"] }),
+        target: { title: "Call Ahmad" },
+        executionContext: { agentToolExecutionClient: { requestExecution, approveExecution } } as ExecutionContext,
+      }, { authorityContext });
+
+      expect(result).toEqual({ status: "requested", executionId: "exec-pre-1", serverStatus: "approval_pending", errorCode: undefined });
+      expect(requestExecution).toHaveBeenCalledTimes(1);
+      expect(approveExecution).not.toHaveBeenCalled();
+    });
+
+    // BLOCKER 2: the requestId the Worker actually receives is
+    // request.requestId itself -- writeRuntime's OWN stable, application-
+    // level attempt id -- never freshly minted inside this call.
+    it("propagates the exact WriteRuntimeRequest.requestId to the Worker, never a freshly generated id", async () => {
+      const sourceStep = step({ id: "step:stable-id", domain: "tasks", actionType: "create", targetId: "step:stable-id" });
+      const requestExecution = vi.fn().mockResolvedValue({ status: "approval_pending", executionId: "exec-stable-1" });
+
+      await requestWriteExecution({
+        requestId: "write:the-one-true-id",
+        step: sourceStep,
+        toolResolution: resolution(sourceStep, "tasks.create", { requiredInput: ["title"] }),
+        target: { title: "Call Ahmad" },
+        executionContext: { agentToolExecutionClient: { requestExecution, approveExecution: vi.fn() } } as ExecutionContext,
+      }, { authorityContext });
+
+      expect(requestExecution).toHaveBeenCalledWith(expect.objectContaining({ requestId: "write:the-one-true-id" }));
+    });
+
+    it("is not_applicable for a tool that isn't one of the five Worker-execution-backed tools -- never calls the Worker", async () => {
+      const sourceStep = step({ id: "step:github", domain: "github", actionType: "create", targetId: "aryan/smartflow#5" });
+      const requestExecution = vi.fn();
+
+      const result = await requestWriteExecution({
+        requestId: "write:github-1",
+        step: sourceStep,
+        toolResolution: resolution(sourceStep, "github.issues.comment", { requiredInput: [] }),
+        target: { repo: "aryan/smartflow", issueNumber: 5, commentBody: "hi" },
+        executionContext: { agentToolExecutionClient: { requestExecution, approveExecution: vi.fn() } } as ExecutionContext,
+      }, { authorityContext });
+
+      expect(result).toEqual({ status: "not_applicable" });
+      expect(requestExecution).not.toHaveBeenCalled();
+    });
+
+    it("is blocked, not silently skipped, when no agentToolExecutionClient is present in context", async () => {
+      const sourceStep = step({ id: "step:no-client", domain: "tasks", actionType: "create", targetId: "step:no-client" });
+
+      const result = await requestWriteExecution({
+        requestId: "write:no-client-1",
+        step: sourceStep,
+        toolResolution: resolution(sourceStep, "tasks.create", { requiredInput: ["title"] }),
+        target: { title: "Call Ahmad" },
+        executionContext: {},
+      }, { authorityContext });
+
+      expect(result).toEqual({ status: "blocked", errorCode: "AGENT_EXECUTION_CLIENT_UNAVAILABLE" });
+    });
+
+    it("surfaces the Worker's own rejection (e.g. POLICY_DENIED) as blocked, without throwing", async () => {
+      const sourceStep = step({ id: "step:denied", domain: "tasks", actionType: "create", targetId: "step:denied" });
+      const requestExecution = vi.fn().mockRejectedValue({ code: "POLICY_DENIED", message: "Denied." });
+
+      const result = await requestWriteExecution({
+        requestId: "write:denied-1",
+        step: sourceStep,
+        toolResolution: resolution(sourceStep, "tasks.create", { requiredInput: ["title"] }),
+        target: { title: "Call Ahmad" },
+        executionContext: { agentToolExecutionClient: { requestExecution, approveExecution: vi.fn() } } as ExecutionContext,
+      }, { authorityContext });
+
+      expect(result).toEqual({ status: "blocked", errorCode: "POLICY_DENIED" });
+    });
   });
 });

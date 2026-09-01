@@ -169,15 +169,23 @@ export interface GitHubIssueCommentClient {
 
 // Chat V2 Slice 2A -- see agent/worker/agent-tool-execution.ts's own header
 // comment for the full request -> approve -> execute lifecycle this client
-// drives. requestAndExecute performs BOTH Worker calls (POST
-// /agent/execution/request, then POST /agent/execution/approve) as one
-// awaited round trip from the handler's point of view -- by the time a
-// write handler's execute() runs, the user has already approved in the UI
-// (or the write resolved to policy mode 'auto', which the Worker itself
-// completes in the request call alone), so there is exactly one moment in
-// the existing write path where this needs to be called, matching this
-// slice's own "change the post-approval write path only as much as
-// necessary" scope.
+// drives.
+//
+// BLOCKER 1 CORRECTION: this client used to expose one combined
+// requestAndExecute() that POSTed /agent/execution/request immediately
+// followed by /agent/execution/approve, invoked only once the UI had
+// already marked its OWN, client-side proposal "approved" -- meaning the
+// durable server row never existed until AFTER that decision was already
+// made, so the row the Worker eventually approved was never actually what
+// the user's approval act was bound to. Split into two independently
+// callable methods instead: requestExecution() is now called as soon as a
+// write proposal is normalized (see writeRuntime.ts's requestWriteExecution
+// and ChatPage.tsx's own wiring), well before the user acts on it, so a
+// durable approval_pending row already exists by the time the approval UI
+// is shown; approveExecution() is called ONLY from the user's actual
+// approval action, and (per the Worker's own two-phase design) accepts
+// nothing but the executionId that earlier requestExecution() call
+// returned -- never arguments, never toolId, never domain, again.
 export interface AgentToolExecutionInput {
   toolId: 'tasks.create' | 'tasks.update' | 'tasks.complete' | 'calendar.create_event' | 'calendar.update_event';
   targetId?: string;
@@ -189,17 +197,50 @@ export interface AgentToolExecutionInput {
   language?: 'en' | 'de' | 'fa';
 }
 
-export interface AgentToolExecutionResult {
-  status: 'succeeded' | 'failed';
-  reply: string;
+// 'approval_pending' is a genuine, non-error outcome of this call in ask
+// mode: the durable row now exists, but nothing has executed yet.
+// 'succeeded'/'failed'/'uncertain' are only reachable when server policy
+// independently resolved 'auto' -- the Worker executed inline during this
+// same request, and there is no separate approval step to make.
+export interface AgentToolExecutionRequestResult {
+  status: 'approval_pending' | 'succeeded' | 'failed' | 'uncertain';
+  executionId?: string;
+  reply?: string;
   undoId?: string;
   errorCode?: string;
   targetId?: string;
   completedAt?: string;
 }
 
+// BLOCKER 4 CORRECTION: 'uncertain' -- the durable row was claimed
+// (approved -> executing) but the outcome could not be proven succeeded or
+// failed (the domain executor threw after the claim, or the durable
+// succeeded/failed transition itself could not be recorded). Never
+// fabricated as success or failure -- see agent-tool-execution.ts's own
+// header comment on this status.
+export interface AgentToolExecutionResult {
+  status: 'succeeded' | 'failed' | 'uncertain';
+  reply: string;
+  undoId?: string;
+  errorCode?: string;
+  targetId?: string;
+  completedAt?: string;
+  // BLOCKER 3 CORRECTION: the ACTUAL, authoritative persisted field values
+  // for a successful update/create (agent-tool-execution.ts's own
+  // ExecutionOutcome, forwarded verbatim) -- never an echo of the request.
+  // A write handler must build its result data (and its `verified` claim)
+  // from these, never from the arguments it originally sent. Present only
+  // for tasks.*/calendar.* on a succeeded outcome; absent otherwise.
+  title?: string;
+  notes?: string | null;
+  dueDate?: string | null;
+  dateTimeStart?: string;
+  dateTimeEnd?: string;
+}
+
 export interface AgentToolExecutionClient {
-  requestAndExecute(input: AgentToolExecutionInput): Promise<AgentToolExecutionResult>;
+  requestExecution(input: AgentToolExecutionInput): Promise<AgentToolExecutionRequestResult>;
+  approveExecution(executionId: string): Promise<AgentToolExecutionResult>;
 }
 
 export interface GitHubIssueUpdateInput {
@@ -297,6 +338,22 @@ export interface ExecutionContext {
   workspace?: Workspace | null;
   policyContext?: ExecutionPolicyContext;
   currentTime?: string;
+  // BLOCKER 2 CORRECTION: the stable, application-level attempt identity
+  // for this write (writeRuntime.ts's own WriteRuntimeRequest.requestId),
+  // threaded through by runWriteTool so a write handler never has to mint
+  // its own idempotency key. See agentToolExecutionClient.ts's own comment
+  // on why a handler-local crypto.randomUUID() defeats the Worker's
+  // (user_id, request_id) idempotency guarantee across a genuine retry.
+  requestId?: string;
+  // BLOCKER 1 CORRECTION: the executionId a prior, pre-approval
+  // agentToolExecutionClient.requestExecution() call already durably
+  // created for this exact write (see writeRuntime.ts's
+  // requestWriteExecution and ChatPage.tsx's own wiring) -- set once the
+  // user's approval action is bound to a specific already-existing Worker
+  // row. A write handler with agentToolExecutionClient present but no
+  // pendingAgentExecutionId has nothing safe to approve and must fail
+  // closed, never fall back to requesting-and-approving in one call.
+  pendingAgentExecutionId?: string;
   githubRepositoriesClient?: GitHubRepositoriesClient;
   githubIssuesClient?: GitHubIssuesClient;
   githubEpicsClient?: GitHubEpicsClient;
