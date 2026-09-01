@@ -59,21 +59,27 @@ describe("ChatPage: pre-approval requestWriteExecution wiring (Chat V2 Slice 2A,
   it("calls requestWriteExecution from inside a useEffect that watches reasoningProposal, not from the approval click handler", () => {
     const effectStart = pageSource.indexOf("const agentExecutionRequestedRef = useRef");
     expect(effectStart).toBeGreaterThan(-1);
-    const effectEnd = pageSource.indexOf("}, [reasoningProposal, user?.id, workerUrl])", effectStart);
+    const effectEnd = pageSource.indexOf("}, [reasoningProposal, user?.id, workerUrl, t])", effectStart);
     expect(effectEnd).toBeGreaterThan(effectStart);
     const effectBody = pageSource.slice(effectStart, effectEnd);
 
     expect(effectBody).toMatch(/void requestWriteExecution\(\{/);
-    // Only proposals actually pending (not yet approved) and not already
-    // requested are eligible -- the effect must be idempotent per proposal.
-    expect(effectBody).toMatch(/proposal\.approval\.status !== 'pending'/);
-    expect(effectBody).toMatch(/proposal\.approval\.serverExecutionId/);
+    // FINAL BINDING CORRECTION: eligibility is gated on executionRequestStatus
+    // === 'requesting' -- computed synchronously by proposalToState on first
+    // render (see BLOCKER A's own test below), not on approval.status/
+    // serverExecutionId, which only ever describe the LOCAL decision state.
+    expect(effectBody).toMatch(/proposal\.executionRequestStatus !== 'requesting'/);
     expect(effectBody).toMatch(/agentExecutionRequestedRef\.current\.has\(proposal\.requestId\)/);
-    // The resulting executionId is merged back onto the SAME proposal's
-    // approval (by requestId), which is what runWriteTool later reads
-    // (request.approval.serverExecutionId) to call approveExecution --
-    // never re-sending arguments at approval time.
+    // Every outcome branch the Worker's /agent/execution/request call can
+    // resolve to is handled explicitly -- approval_pending binds
+    // serverExecutionId, a terminal auto status (succeeded/failed/uncertain)
+    // marks the proposal terminal without ever binding an approval, and
+    // anything else (a blocked request) fails closed to 'failed'.
     expect(effectBody).toMatch(/serverExecutionId: outcome\.executionId/);
+    expect(effectBody).toMatch(/executionRequestStatus: 'approval_pending'/);
+    expect(effectBody).toMatch(/outcome\.serverStatus === 'succeeded' \|\| outcome\.serverStatus === 'failed' \|\| outcome\.serverStatus === 'uncertain'/);
+    expect(effectBody).toMatch(/executionRequestStatus: outcome\.serverStatus/);
+    expect(effectBody).toMatch(/executionRequestStatus: 'failed', executionRequestReply: t\('agent_intent_execution_request_failed'\)/);
   });
 
   it("runWriteProposalWithApproval reuses the proposal's own stable requestId, never a freshly generated one", () => {
@@ -86,5 +92,52 @@ describe("ChatPage: pre-approval requestWriteExecution wiring (Chat V2 Slice 2A,
     // reusing WriteRuntimeRequest's own stable id, not minting a new one.
     const fnBodyBeforeRequestId = pageSource.slice(fnStart, fnEnd);
     expect(fnBodyBeforeRequestId).not.toMatch(/reasoning:write:\$\{toolId\}/);
+  });
+});
+
+// FINAL BINDING / UNCERTAIN CORRECTION, BLOCKER A: the user must not be able
+// to approve a server-execution-backed proposal while its pre-approval
+// requestWriteExecution() binding is still unresolved. proposalToState
+// itself is exercised directly (it's exported and pure), and the gate
+// (isExecutionBindingReady) plus every call site that must consult it are
+// verified against the real source, following this file's own established
+// "prove wiring against ChatPage.tsx's actual source" convention.
+describe("ChatPage: approval is gated on the server-execution binding, not just approval.status (Blocker A correction)", () => {
+  it("proposalToState puts a gated proposal (one of the five server-execution-backed tools) into 'requesting' synchronously, before any network call", () => {
+    expect(pageSource).toMatch(/requiresServerExecutionBinding \? 'requesting' : 'idle'/);
+    expect(pageSource).toMatch(/isAgentExecutionToolId\(resolution\.toolId\)/);
+  });
+
+  it("isExecutionBindingReady treats only 'idle', undefined, and 'approval_pending' as ready -- 'requesting' and every terminal auto status are not", () => {
+    const fnStart = pageSource.indexOf("function isExecutionBindingReady(");
+    expect(fnStart).toBeGreaterThan(-1);
+    const fnEnd = pageSource.indexOf("\n}", fnStart);
+    const fnBody = pageSource.slice(fnStart, fnEnd);
+    expect(fnBody).toMatch(/status === undefined \|\| status === 'idle' \|\| status === 'approval_pending'/);
+  });
+
+  it("the one-click confirm button, the Review button, and the post-review Run button are all gated on the execution binding", () => {
+    expect(pageSource).toMatch(/const executionBindingReady = isExecutionBindingReady\(proposal\.executionRequestStatus\)/);
+    expect(pageSource).toMatch(/disabled=\{isRunning \|\| !executionBindingReady\}/);
+    expect(pageSource).toMatch(/onClick=\{onReviewApproval\} disabled=\{!executionBindingReady\}/);
+    expect(pageSource).toMatch(/const canRunWrite = isWriteProposal && isApproved && executionBindingReady/);
+  });
+
+  it("the Review dialog itself is disabled while the binding is not ready -- an executable approval is never reachable through it either", () => {
+    const dialogStart = pageSource.indexOf("<StepApprovalDialog");
+    expect(dialogStart).toBeGreaterThan(-1);
+    const dialogEnd = pageSource.indexOf("/>", dialogStart);
+    const dialogProps = pageSource.slice(dialogStart, dialogEnd);
+    expect(dialogProps).toMatch(/disabled=\{!isExecutionBindingReady\(reasoningProposal\?\.\[0\]\?\.executionRequestStatus\)\}/);
+  });
+
+  it("handleRunWriteProposal and handleConfirmAndRunWrite both re-check the binding before calling approveWorkspaceStep/runWriteProposalWithApproval -- defense in depth beyond the disabled UI", () => {
+    const runFnStart = pageSource.indexOf("const handleRunWriteProposal = useCallback");
+    const runFnEnd = pageSource.indexOf("const handleConfirmAndRunWrite", runFnStart);
+    expect(pageSource.slice(runFnStart, runFnEnd)).toMatch(/if \(!isExecutionBindingReady\(current\.executionRequestStatus\)\) return/);
+
+    const confirmFnStart = pageSource.indexOf("const handleConfirmAndRunWrite = useCallback");
+    const confirmFnEnd = pageSource.indexOf("const approvedApproval = decision.approval", confirmFnStart);
+    expect(pageSource.slice(confirmFnStart, confirmFnEnd)).toMatch(/if \(!isExecutionBindingReady\(current\.executionRequestStatus\)\) return/);
   });
 });

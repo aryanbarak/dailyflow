@@ -69,6 +69,7 @@ import {
   runReadOnlyTool,
   runWriteTool,
   requestWriteExecution,
+  isAgentExecutionToolId,
   approveWorkspaceStep,
   withTimeout,
   type AgentReasoningResult,
@@ -236,6 +237,38 @@ const MSG_MD_COMPONENTS = createDirectionalMarkdownComponents({
 type ReasoningRunStatus = 'idle' | 'running' | 'success' | 'failed' | 'approval_required' | 'approved' | 'rejected'
 type Translate = (key: TranslationKey, vars?: Record<string, string | number>) => string
 
+// Chat V2 Slice 2A, BLOCKER A CORRECTION: an explicit, narrow state for
+// whether the pre-approval requestWriteExecution() binding for a proposal
+// has resolved -- deliberately NOT folded into approval.status (which only
+// ever describes the user's own LOCAL decision, independent of whether the
+// server has durably recorded anything yet) or runStatus (the actual write
+// attempt). See isExecutionBindingReady below for the single gate every
+// approval affordance (the one-click Confirm button, the Review dialog's
+// own Approve button, the post-review Run button) is checked against.
+//   'idle'            -- this proposal's tool has no server-execution
+//                         binding requirement at all (github.*,
+//                         engineering.task.propose, or a read-only
+//                         proposal) -- always ready.
+//   'requesting'       -- a binding IS required and the pre-approval
+//                         request is still in flight -- NOT ready; this is
+//                         the race window the correction closes.
+//   'approval_pending' -- the durable row exists and is bound
+//                         (approval.serverExecutionId is set) -- ready.
+//   'succeeded'/'failed'/'uncertain' -- server policy independently
+//                         resolved 'auto' and the write already concluded
+//                         during the request call itself -- never ready;
+//                         see executionRequestReply for what to show
+//                         instead of an approval affordance.
+type ExecutionRequestStatus = 'idle' | 'requesting' | 'approval_pending' | 'succeeded' | 'failed' | 'uncertain'
+
+// Absent (undefined) is treated exactly like 'idle' -- every hand-built
+// ReasoningProposalState in this file's own tests that predates this
+// correction, and every proposal for a tool outside
+// isAgentExecutionToolId, never needs to set this field at all.
+function isExecutionBindingReady(status: ExecutionRequestStatus | undefined): boolean {
+  return status === undefined || status === 'idle' || status === 'approval_pending'
+}
+
 interface ReasoningProposalState {
   result: AgentReasoningResult
   step: WorkspacePlanStep | null
@@ -254,6 +287,14 @@ interface ReasoningProposalState {
   // guarantee). Read-only proposals carry one too, unused, for shape
   // simplicity -- harmless, since nothing reads it for a read.
   requestId: string
+  // BLOCKER A CORRECTION: see ExecutionRequestStatus's own comment above.
+  executionRequestStatus?: ExecutionRequestStatus
+  // The Worker's own human-readable outcome text for a terminal auto-
+  // resolved status (succeeded/failed/uncertain), or a bounded client-side
+  // message when the pre-approval request itself could not be completed.
+  // Absent otherwise -- see the pre-approval useEffect and
+  // ReasoningProposalCard's own rendering of this.
+  executionRequestReply?: string
 }
 
 // Task 40: WorkspacePlanStep['domain'] is broader (habits/documents/
@@ -1048,6 +1089,17 @@ export function proposalToState(result: AgentReasoningResult, t: Translate, cand
   const approval = step && resolution?.resolved && isWriteProposal
     ? approvalForReasoningStep(result, step, resolution, t)
     : null
+  // BLOCKER A CORRECTION: computed synchronously here, from the resolved
+  // toolId alone -- never from anything the pre-approval network call
+  // returns -- so a proposal for one of the five server-execution-backed
+  // tools starts life already in the non-approvable 'requesting' state on
+  // its very first render, before the pre-approval useEffect has even had
+  // a chance to run once. This is what closes the race entirely: there is
+  // no window, however small, where such a proposal is approvable before
+  // the binding effect has fired.
+  const requiresServerExecutionBinding = Boolean(
+    approval && resolution?.resolved && resolution.toolId && isAgentExecutionToolId(resolution.toolId)
+  )
   return {
     result,
     step,
@@ -1055,6 +1107,7 @@ export function proposalToState(result: AgentReasoningResult, t: Translate, cand
     approval,
     runStatus: result.proposal.requiresApproval ? 'approval_required' : 'idle',
     requestId: `agent-exec:${result.proposal.id}:${candidateIndex}`,
+    executionRequestStatus: requiresServerExecutionBinding ? 'requesting' : 'idle',
   }
 }
 
@@ -1611,8 +1664,15 @@ export function ReasoningProposalCard({
     runStatus !== 'success' &&
     runStatus !== 'failed'
   )
-  const canReviewApproval = isWriteProposal && approval?.status === 'pending'
-  const canRunWrite = isWriteProposal && isApproved && runStatus !== 'success' && runStatus !== 'failed'
+  // BLOCKER A CORRECTION: the ONE gate every approval affordance below is
+  // checked against -- see isExecutionBindingReady's own comment. While a
+  // server-execution binding is still in flight, or once server policy has
+  // already auto-resolved this proposal to a terminal outcome, approval
+  // must never be offered.
+  const executionBindingReady = isExecutionBindingReady(proposal.executionRequestStatus)
+  const executionRequestTerminal = proposal.executionRequestStatus === 'succeeded' || proposal.executionRequestStatus === 'failed' || proposal.executionRequestStatus === 'uncertain'
+  const canReviewApproval = isWriteProposal && approval?.status === 'pending' && !executionRequestTerminal
+  const canRunWrite = isWriteProposal && isApproved && executionBindingReady && runStatus !== 'success' && runStatus !== 'failed'
   const runtimeResult = proposal.readOnlyResult ?? proposal.writeResult
 
   return (
@@ -1705,15 +1765,20 @@ export function ReasoningProposalCard({
                   stays available as a secondary action for anyone who wants
                   the full diagnostic panel first -- it is no longer
                   mandatory. */}
+              {/* BLOCKER A CORRECTION: disabled (never hidden) while a
+                  server-execution binding is still in flight -- the row
+                  and its buttons stay in place, just non-executable, so
+                  the layout does not jump and the user can see something
+                  is happening (see agent_intent_preparing). */}
               <Button
                 type="button"
                 size="sm"
                 onClick={onConfirmAndRunWrite}
-                disabled={isRunning}
+                disabled={isRunning || !executionBindingReady}
               >
-                {isRunning ? t('agent_intent_running') : intentTitle(result.proposal.type, t)}
+                {!executionBindingReady ? t('agent_intent_preparing') : isRunning ? t('agent_intent_running') : intentTitle(result.proposal.type, t)}
               </Button>
-              <Button type="button" size="sm" variant="outline" onClick={onReviewApproval}>
+              <Button type="button" size="sm" variant="outline" onClick={onReviewApproval} disabled={!executionBindingReady}>
                 {t('agent_intent_review_approval')}
               </Button>
             </>
@@ -1729,6 +1794,22 @@ export function ReasoningProposalCard({
             </Button>
           )}
         </div>
+      )}
+
+      {/* BLOCKER C CORRECTION: server policy resolved 'auto' and the write
+          already concluded during the pre-approval request call itself --
+          this proposal never went through runWriteTool (runtimeResult is
+          unset), so this is the ONLY place its outcome is ever shown. The
+          button row above is already gated off (canReviewApproval excludes
+          every terminal executionRequestStatus) -- an auto write can never
+          execute a second time from this card. */}
+      {!runtimeResult && proposal.executionRequestReply && (
+        <p
+          className="mt-3 rounded-lg border border-border/25 bg-background/30 px-3 py-2 text-xs leading-5 text-muted-foreground"
+          dir="auto"
+        >
+          {proposal.executionRequestReply}
+        </p>
       )}
 
       {runtimeResult && (
@@ -1971,19 +2052,36 @@ export default function ChatPage() {
   // the user's approval action. Every OTHER write tool (github.*,
   // engineering.task.propose, tasks.complete's own separate
   // ExecutionIntent ceremony) is untouched -- requestWriteExecution itself
-  // no-ops (`not_applicable`) for anything outside that tool set.
+  // no-ops (`not_applicable`) for anything outside that tool set, and such
+  // a proposal's executionRequestStatus starts (and stays) 'idle', so this
+  // effect never has anything to fire for it in the first place.
   // Fire-and-forget per proposal, deduplicated by requestId (the SAME
   // stable id proposalToState already generated) so a re-render never
-  // re-issues the same request twice; the resulting executionId is merged
-  // onto that exact proposal's approval so runWriteTool's later
-  // approveExecution() call has something to reference.
+  // re-issues the same request twice.
+  //
+  // BLOCKER A/C CORRECTION: only fires for a proposal whose
+  // executionRequestStatus is exactly 'requesting' -- proposalToState
+  // already put every gated proposal there synchronously on first render
+  // (see its own comment), so approval is never briefly enabled before
+  // this effect gets a chance to run. Every one of the four outcomes the
+  // Worker's /agent/execution/request call can resolve to is handled
+  // explicitly below, never silently ignored:
+  //   'approval_pending' -- bind serverExecutionId, become approvable.
+  //   'succeeded'/'failed'/'uncertain' -- server policy independently
+  //     resolved 'auto' and the write already concluded during this same
+  //     request call; the proposal is marked terminal (never approvable)
+  //     and the Worker's own reply text is shown -- the UI must never
+  //     display an approval card for a write that already ran.
+  //   the request itself failing ('blocked', or a malformed response
+  //     missing what the outcome status requires) -- marked 'failed' with
+  //     a bounded, translated message; approval stays disabled and no
+  //     domain write is ever attempted from this state.
   const agentExecutionRequestedRef = useRef<Set<string>>(new Set())
   useEffect(() => {
     if (!reasoningProposal || !user?.id) return
     for (const proposal of reasoningProposal) {
       if (!proposal.step || !proposal.resolution?.resolved || !proposal.approval) continue
-      if (proposal.approval.status !== 'pending') continue
-      if (proposal.approval.serverExecutionId) continue
+      if (proposal.executionRequestStatus !== 'requesting') continue
       if (agentExecutionRequestedRef.current.has(proposal.requestId)) continue
       agentExecutionRequestedRef.current.add(proposal.requestId)
 
@@ -2003,15 +2101,31 @@ export default function ChatPage() {
           }),
         },
       }).then((outcome) => {
-        if (outcome.status !== 'requested' || !outcome.executionId) return
         setReasoningProposal(prev => prev
-          ? prev.map(p => p.requestId === requestId && p.approval
-            ? { ...p, approval: { ...p.approval, serverExecutionId: outcome.executionId } }
-            : p)
+          ? prev.map(p => {
+            if (p.requestId !== requestId || !p.approval) return p
+            if (outcome.status === 'requested' && outcome.serverStatus === 'approval_pending' && outcome.executionId) {
+              return { ...p, approval: { ...p.approval, serverExecutionId: outcome.executionId }, executionRequestStatus: 'approval_pending' }
+            }
+            if (outcome.status === 'requested' && (outcome.serverStatus === 'succeeded' || outcome.serverStatus === 'failed' || outcome.serverStatus === 'uncertain')) {
+              return {
+                ...p,
+                executionRequestStatus: outcome.serverStatus,
+                executionRequestReply: outcome.reply,
+                runStatus: outcome.serverStatus === 'succeeded' ? 'success' : p.runStatus,
+              }
+            }
+            // status === 'blocked' (the pre-approval request itself could
+            // not be completed), or a 'requested' response this client
+            // could not make sense of -- fail closed exactly the same way:
+            // terminal, never approvable, bounded surfaced message, no
+            // domain write possible from this state.
+            return { ...p, executionRequestStatus: 'failed', executionRequestReply: t('agent_intent_execution_request_failed') }
+          })
           : prev)
       })
     }
-  }, [reasoningProposal, user?.id, workerUrl])
+  }, [reasoningProposal, user?.id, workerUrl, t])
 
   const loadSessionMessages = useCallback(async (sessionId: string) => {
     if (!user?.id) return
@@ -2866,6 +2980,11 @@ export default function ChatPage() {
   const handleRunWriteProposal = useCallback(async () => {
     const current = reasoningProposal?.[0]
     if (!current?.approval || current.approval.status !== 'approved') return
+    // BLOCKER A CORRECTION: defense in depth beyond the UI's own disabled
+    // button -- even a programmatic/stale-closure invocation of this
+    // handler cannot execute a write whose server-execution binding never
+    // resolved (or resolved to a terminal auto outcome already).
+    if (!isExecutionBindingReady(current.executionRequestStatus)) return
     await runWriteProposalWithApproval(current.approval)
   }, [reasoningProposal, runWriteProposalWithApproval])
 
@@ -2882,6 +3001,11 @@ export default function ChatPage() {
   const handleConfirmAndRunWrite = useCallback(async () => {
     const current = reasoningProposal?.[0]
     if (!current?.step || !current.approval || current.approval.status !== 'pending') return
+    // BLOCKER A CORRECTION: same defense-in-depth as handleRunWriteProposal
+    // above -- approveWorkspaceStep must never even be called while a
+    // server-execution binding is still in flight, or once one has already
+    // resolved to a terminal auto outcome.
+    if (!isExecutionBindingReady(current.executionRequestStatus)) return
     const decision = await approveWorkspaceStep({
       step: current.step,
       stepApproval: current.approval,
@@ -3155,6 +3279,13 @@ export default function ChatPage() {
         step={reasoningProposal?.[0]?.step ?? null}
         stepApproval={reasoningProposal?.[0]?.approval ?? null}
         tool={reasoningProposal?.[0]?.resolution?.tool ?? null}
+        // BLOCKER A CORRECTION, requirement 2: the Review dialog's own
+        // Approve/Reject buttons must not allow an executable approval
+        // either -- disabled for the exact same reason (and using the exact
+        // same gate) the card's own buttons are, in case the dialog was
+        // reachable through any path other than the card's now-disabled
+        // Review button.
+        disabled={!isExecutionBindingReady(reasoningProposal?.[0]?.executionRequestStatus)}
         onClose={() => setApprovalDialogOpen(false)}
         onDecision={handleApprovalDecision}
       />

@@ -466,9 +466,38 @@ describe('Chat V2 Slice 2A -- server-owned tool execution lifecycle', () => {
     const { fetchMock } = buildFetchMock({ table, policyMode: 'auto', taskRow: { id: 'task-auto', title: 'Call Ahmad', due_date: '2026-09-01' } })
     const response = await withFetch(fetchMock, () => handleAgentToolExecutionRequest(authRequest('/agent/execution/request', TASK_CREATE_REQUEST_BODY), mockEnv()))
     expect(response.status).toBe(200)
-    const body = await response.json() as { status: string }
+    const body = await response.json() as { status: string; executionId: string }
     expect(body.status).toBe('succeeded')
     expect(table.rows[0].status).toBe('succeeded')
+    // BLOCKER C CORRECTION: a terminal auto result must still carry the
+    // executionId the durable row was actually created under -- previously
+    // absent from this response entirely, which left the client with no way
+    // to distinguish (or diagnostically correlate) a genuinely auto-executed
+    // write from a malformed response, and no id to log/report against.
+    expect(body.executionId).toBe(table.rows[0].id)
+  })
+
+  // BLOCKER C: an auto-resolved FAILURE or UNCERTAIN outcome must carry
+  // executionId too, not only the succeeded case above -- the client-side
+  // wiring (ChatPage.tsx / writeRuntime.ts's requestWriteExecution) needs it
+  // to correlate a terminal auto result back to the exact row it describes,
+  // for every terminal status, not just the happy path.
+  it('BLOCKER C: mode auto still returns executionId when the auto-executed write fails', async () => {
+    const table = new FakeExecutionsTable()
+    const { fetchMock } = buildFetchMock({ table, policyMode: 'auto', failDomainWrite: true })
+    const response = await withFetch(fetchMock, () => handleAgentToolExecutionRequest(authRequest('/agent/execution/request', TASK_CREATE_REQUEST_BODY), mockEnv()))
+    const body = await response.json() as { status: string; executionId: string }
+    expect(body.status).toBe('failed')
+    expect(body.executionId).toBe(table.rows[0].id)
+  })
+
+  it('BLOCKER C: mode auto still returns executionId when the auto-executed write resolves to uncertain', async () => {
+    const table = new FakeExecutionsTable()
+    const { fetchMock } = buildFetchMock({ table, policyMode: 'auto', throwOnDomainWrite: true })
+    const response = await withFetch(fetchMock, () => handleAgentToolExecutionRequest(authRequest('/agent/execution/request', TASK_CREATE_REQUEST_BODY), mockEnv()))
+    const body = await response.json() as { status: string; executionId: string }
+    expect(body.status).toBe('uncertain')
+    expect(body.executionId).toBe(table.rows[0].id)
   })
 
   it('a genuine retry of the identical pending request (same idempotency-relevant fields) reuses the existing row instead of erroring', async () => {
@@ -780,7 +809,7 @@ describe('Chat V2 Slice 2A -- server-owned tool execution lifecycle', () => {
       expect(body.errorCode).toBe('EXECUTION_OUTCOME_UNKNOWN')
     })
 
-    it('2. simulated network ambiguity: the domain write succeeds but the durable succeeded transition cannot be recorded -- resolves to uncertain, never a fabricated succeeded', async () => {
+    it('2. simulated network ambiguity: the domain write succeeds but the durable succeeded transition cannot be recorded -- resolves to uncertain, and the row itself is durably moved to uncertain (never left parked in executing)', async () => {
       const table = new FakeExecutionsTable()
       table.blockTransitionTo.add('succeeded')
       table.insert({
@@ -791,12 +820,59 @@ describe('Chat V2 Slice 2A -- server-owned tool execution lifecycle', () => {
       const { fetchMock } = buildFetchMock({ table, policyMode: 'ask' })
       const response = await withFetch(fetchMock, () => handleAgentToolExecutionApprove(authRequest('/agent/execution/approve', { executionId: table.rows[0].id }), mockEnv()))
       expect(response.status).toBe(200)
-      const body = await response.json() as { status: string }
+      const body = await response.json() as { status: string; errorCode: string }
       expect(body.status).toBe('uncertain')
-      // The row itself is still 'executing' -- the blocked transition never
-      // applied -- proving test 3's "never silently uncontrolled" the other
-      // way: the row's OWN state is honest about what could be recorded,
-      // even though the caller already received 'uncertain'.
+      expect(body.errorCode).toBe('EXECUTION_OUTCOME_UNKNOWN')
+      // BLOCKER B CORRECTION: the executing -> succeeded transition being
+      // blocked no longer leaves the row silently parked in 'executing' --
+      // the module now attempts (and here, succeeds at) the separate
+      // executing -> uncertain transition, since only 'succeeded' is
+      // blocked in this fake, not 'uncertain'.
+      expect(table.rows[0].status).toBe('uncertain')
+    })
+
+    it('2b. BLOCKER B: the durable failed transition being blocked also resolves to uncertain, both for the caller and the row itself', async () => {
+      const table = new FakeExecutionsTable()
+      table.blockTransitionTo.add('failed')
+      table.insert({
+        user_id: USER_ID, domain: 'tasks', action: 'update', tool_id: 'tasks.update',
+        request_id: 'req-failed-blocked', intent_id: 'intent:failed-blocked', canonical_hash: 'failed-blocked', normalized_arguments: { title: 'New' }, target_id: 'task-1',
+        status: 'approved', approval_requested_at: new Date().toISOString(), approved_at: new Date().toISOString(),
+      })
+      // failDomainWrite: the domain write itself resolves to a proven,
+      // ordinary failure (empty RETURNING -> 'not_found'), not a thrown
+      // exception; only the durable 'failed' transition is blocked.
+      const { fetchMock } = buildFetchMock({ table, policyMode: 'ask', failDomainWrite: true })
+      const response = await withFetch(fetchMock, () => handleAgentToolExecutionApprove(authRequest('/agent/execution/approve', { executionId: table.rows[0].id }), mockEnv()))
+      expect(response.status).toBe(200)
+      const body = await response.json() as { status: string; errorCode: string }
+      expect(body.status).toBe('uncertain')
+      expect(body.errorCode).toBe('EXECUTION_OUTCOME_UNKNOWN')
+      expect(table.rows[0].status).toBe('uncertain')
+    })
+
+    it('2c. BLOCKER B: when even the executing -> uncertain transition itself cannot be recorded, the response is a distinct, bounded lifecycle-persistence outcome -- never a fabricated durable "uncertain" claim', async () => {
+      const table = new FakeExecutionsTable()
+      table.blockTransitionTo.add('succeeded')
+      table.blockTransitionTo.add('uncertain')
+      table.insert({
+        user_id: USER_ID, domain: 'tasks', action: 'create', tool_id: 'tasks.create',
+        request_id: 'req-doubly-blocked', intent_id: 'intent:doubly-blocked', canonical_hash: 'doubly-blocked', normalized_arguments: { title: 'Call Ahmad' },
+        status: 'approved', approval_requested_at: new Date().toISOString(), approved_at: new Date().toISOString(),
+      })
+      const { fetchMock } = buildFetchMock({ table, policyMode: 'ask' })
+      const response = await withFetch(fetchMock, () => handleAgentToolExecutionApprove(authRequest('/agent/execution/approve', { executionId: table.rows[0].id }), mockEnv()))
+      expect(response.status).toBe(200)
+      const body = await response.json() as { status: string; errorCode: string }
+      // Still never claims succeeded/failed -- but a DIFFERENT errorCode
+      // than the ordinary, durably-recorded uncertain outcome, since this
+      // path could not even confirm the row itself says 'uncertain'.
+      expect(body.status).toBe('uncertain')
+      expect(body.errorCode).toBe('EXECUTION_LIFECYCLE_PERSISTENCE_FAILED')
+      expect(body.errorCode).not.toBe('EXECUTION_OUTCOME_UNKNOWN')
+      // The row's real status is whatever it already was -- still
+      // 'executing' here, since neither blocked transition ever applied --
+      // proving this path never silently reports "recorded" when it wasn't.
       expect(table.rows[0].status).toBe('executing')
     })
 

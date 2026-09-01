@@ -398,6 +398,46 @@ const UNCERTAIN_BODY = Object.freeze({
   errorCode: 'EXECUTION_OUTCOME_UNKNOWN',
 })
 
+// BLOCKER B CORRECTION: the same wire status/reply as UNCERTAIN_BODY --
+// from the caller's perspective both mean "never retried, never
+// re-approved, check before trying again," and that behavior must hold
+// even here -- but a DISTINCT errorCode. UNCERTAIN_BODY is only ever
+// returned once the executing -> uncertain durable transition has itself
+// been confirmed; this body is for the rarer case where even THAT
+// transition could not be recorded, so the row's real status is unknown
+// (it may still read 'executing', or something else already moved it).
+// Never claims the row durably says 'uncertain' when that was never
+// confirmed -- see recordUncertainOutcome below, the only place either
+// body is chosen.
+const UNCERTAIN_UNRECORDED_BODY = Object.freeze({
+  status: 'uncertain' as const,
+  reply: UNCERTAIN_BODY.reply,
+  errorCode: 'EXECUTION_LIFECYCLE_PERSISTENCE_FAILED',
+})
+
+// BLOCKER B CORRECTION: the one place every unprovable-outcome path
+// (executor threw; the succeeded transition couldn't be recorded; the
+// failed transition couldn't be recorded) goes through to durably record
+// 'uncertain' -- previously these paths returned UNCERTAIN_BODY to the
+// caller WITHOUT ever attempting this transition, silently leaving the row
+// parked in 'executing' forever. Attempts the transition; only reports the
+// row as durably 'uncertain' if that attempt actually succeeded. If even
+// this fails, never fabricates -- returns the distinct
+// UNCERTAIN_UNRECORDED_BODY instead and logs a bounded diagnostic (no
+// domain data) for operator visibility. Never retries the domain mutation
+// either way.
+async function recordUncertainOutcome(env: Env, executionId: string, now: Date): Promise<Record<string, unknown>> {
+  const recorded = await transitionStatus(env, executionId, 'executing', 'uncertain', {
+    completed_at: now.toISOString(),
+    error_code: 'EXECUTION_OUTCOME_UNKNOWN',
+  })
+  if (!recorded) {
+    console.error('[agent-tool-execution] could not durably record an uncertain outcome', { executionId })
+    return { ...UNCERTAIN_UNRECORDED_BODY, executionId }
+  }
+  return { ...UNCERTAIN_BODY, executionId }
+}
+
 interface ApprovalResult {
   httpStatus: number
   body: Record<string, unknown>
@@ -468,11 +508,7 @@ async function approveAndExecute(env: Env, userId: string, executionId: string, 
   try {
     outcome = await executeByToolId(env, userId, row, now)
   } catch {
-    await transitionStatus(env, executionId, 'executing', 'uncertain', {
-      completed_at: now.toISOString(),
-      error_code: 'EXECUTION_OUTCOME_UNKNOWN',
-    })
-    return { httpStatus: 200, body: UNCERTAIN_BODY }
+    return { httpStatus: 200, body: await recordUncertainOutcome(env, executionId, now) }
   }
 
   if (outcome.status === 'executed') {
@@ -484,12 +520,13 @@ async function approveAndExecute(env: Env, userId: string, executionId: string, 
     // The domain write DID succeed (outcome.status === 'executed'), but the
     // durable succeeded transition itself could not be recorded -- never
     // report authoritative success when the row does not durably agree.
-    if (!recorded) return { httpStatus: 200, body: UNCERTAIN_BODY }
+    if (!recorded) return { httpStatus: 200, body: await recordUncertainOutcome(env, executionId, now) }
     if (outcome.undoId) await correlateUndoRecordWithExecution(env, outcome.undoId, executionId)
     return {
       httpStatus: 200,
       body: {
         status: 'succeeded',
+        executionId,
         reply: outcome.reply,
         undoId: outcome.undoId,
         targetId: outcome.targetId ?? row.target_id ?? undefined,
@@ -505,8 +542,8 @@ async function approveAndExecute(env: Env, userId: string, executionId: string, 
 
   const errorCode = errorCodeForOutcome(outcome)
   const recordedFailure = await transitionStatus(env, executionId, 'executing', 'failed', { completed_at: now.toISOString(), error_code: errorCode })
-  if (!recordedFailure) return { httpStatus: 200, body: UNCERTAIN_BODY }
-  return { httpStatus: 200, body: { status: 'failed', reply: outcome.reply, errorCode } }
+  if (!recordedFailure) return { httpStatus: 200, body: await recordUncertainOutcome(env, executionId, now) }
+  return { httpStatus: 200, body: { status: 'failed', executionId, reply: outcome.reply, errorCode } }
 }
 
 export async function handleAgentToolExecutionRequest(request: Request, env: Env): Promise<Response> {

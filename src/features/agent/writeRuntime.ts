@@ -1043,7 +1043,13 @@ const AGENT_EXECUTION_TOOL_IDS: ReadonlySet<string> = new Set([
   "calendar.update_event",
 ]);
 
-function isAgentExecutionToolId(toolId: string): toolId is AgentToolExecutionInput["toolId"] {
+// BLOCKER A CORRECTION: exported so ChatPage.tsx can decide, synchronously
+// and BEFORE any network call, whether a given proposal will ever need a
+// pre-approval server binding at all -- see ChatPage.tsx's own
+// isExecutionBindingReady/proposalToState for why this must be knowable
+// from the very first render, not only once requestWriteExecution's own
+// promise resolves.
+export function isAgentExecutionToolId(toolId: string): toolId is AgentToolExecutionInput["toolId"] {
   return AGENT_EXECUTION_TOOL_IDS.has(toolId);
 }
 
@@ -1074,6 +1080,13 @@ export interface RequestWriteExecutionResult {
   status: "not_applicable" | "blocked" | "requested";
   executionId?: string;
   serverStatus?: "approval_pending" | "succeeded" | "failed" | "uncertain";
+  // BLOCKER C CORRECTION: present when server policy independently
+  // resolved 'auto' and the write already concluded during this same
+  // request call (serverStatus succeeded/failed/uncertain) -- the Worker's
+  // own human-readable outcome text, forwarded verbatim so the caller can
+  // show what actually happened instead of a pending-approval card for a
+  // write that has already run. Absent for 'approval_pending'.
+  reply?: string;
   errorCode?: string;
 }
 
@@ -1123,7 +1136,7 @@ export async function requestWriteExecution(
       requestId: request.requestId,
       timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     });
-    return { status: "requested", executionId: result.executionId, serverStatus: result.status, errorCode: result.errorCode };
+    return { status: "requested", executionId: result.executionId, serverStatus: result.status, reply: result.reply, errorCode: result.errorCode };
   } catch (caught) {
     const error = caught as Partial<ExecutionError>;
     return { status: "blocked", errorCode: typeof error.code === "string" ? error.code : "AGENT_EXECUTION_REQUEST_FAILED" };
