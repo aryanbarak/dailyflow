@@ -1150,19 +1150,20 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
 
     let pendingWritePolicy: { domain: 'tasks' | 'calendar' | 'finance'; action: 'create' | 'update'; mode: 'ask' } | undefined
 
-    // Task 22 / Slice 2B.1 -- routing (LOCKED DOMAIN RULE): a request
-    // naming a calendar concept is calendar business regardless of
-    // whether a time was given. A request naming an EXPLICIT task noun
-    // that ALSO carries a resolved time-of-day (tasks have no time-of-day
-    // column) is a genuine ambiguity to ask about, not silently
-    // reclassified into calendar -- see detectWriteDomainSignal's own
-    // comment on 'task_time_ambiguous' vs 'ambiguous'. Only a task write
-    // with NO explicit noun at all (a bare personal statement like "I
-    // have a dentist appointment tomorrow at 3pm") still silently
-    // resolves to calendar when a time is present -- unchanged. A
-    // date-only task-shaped request is unchanged from today. Two
-    // DIFFERENT domain nouns both matching is genuinely ambiguous -- ask
-    // once, don't loop: no pending state is stored, so the very next
+    // Task 22 / Slice 2B.1.1 -- routing: a request naming a calendar
+    // concept is calendar business regardless of whether a time was
+    // given. PO decision (SUPERSEDES Slice 2B.1's "LOCKED DOMAIN RULE"):
+    // a request naming an EXPLICIT task noun that ALSO carries a resolved
+    // time-of-day (tasks have no time-of-day column) now PRESERVES that
+    // time by resolving directly to calendar business, instead of asking
+    // the user to resolve an internal schema detail -- see
+    // shared/schedulingDomain.ts and detectWriteDomainSignal's own
+    // comment. Only a task write with NO explicit noun at all (a bare
+    // personal statement like "I have a dentist appointment tomorrow at
+    // 3pm") still silently resolves to calendar when a time is present --
+    // unchanged. A date-only task-shaped request is unchanged from today.
+    // Two DIFFERENT domain nouns both matching is genuinely ambiguous --
+    // ask once, don't loop: no pending state is stored, so the very next
     // message is evaluated fresh and resolves on its own once it names
     // either domain.
     const writeDomainSignal = detectWriteDomainSignal(message, new Date(), timeZone)
@@ -1175,25 +1176,6 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
       await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'user', content: message })
       await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: reply })
       return json({ reply }, 200, origin)
-    }
-    if (writeDomainSignal === 'task_time_ambiguous') {
-      const reply = language === 'de'
-        ? 'Aufgaben unterstützen noch keine Uhrzeit. Soll ich sie als Aufgabe ohne Uhrzeit anlegen, oder als Kalendertermin zur genannten Uhrzeit?'
-        : language === 'fa'
-          ? 'تسک‌ها فعلاً ساعت مشخص ندارند. آن را به‌عنوان Task بدون ساعت بسازم، یا به‌عنوان یک Calendar Event در همان ساعت؟'
-          : "Tasks don't support a specific time yet. Should I create it as a Task without a time, or as a Calendar Event at that time?"
-      await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'user', content: message })
-      await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: reply })
-      // Slice 2B.1 correction (Blocker 4): a minimal, non-sensitive,
-      // structured marker -- lets the client (ChatPage.tsx) arm its
-      // bounded task/calendar continuation from THIS deterministic
-      // Worker-side detection, not only from the separate LLM reasoning
-      // overlay, so the continuation still works when the overlay's own
-      // provider call fails or never runs at all. Carries no target
-      // fields (title/notes are the reasoning overlay's own concern,
-      // when it is available) -- just the fact that this turn was a
-      // task-time domain clarification.
-      return json({ reply, clarification: { kind: 'task_time' } }, 200, origin)
     }
 
     // 'none' on THIS message doesn't rule out a continuation (an

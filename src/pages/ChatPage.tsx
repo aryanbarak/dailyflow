@@ -63,10 +63,7 @@ import {
   PROVIDER_UNAVAILABLE_REASON_MARKER,
   MODEL_RESPONSE_INCOMPLETE_REASON_MARKER,
   ENGINEERING_TASK_NOT_PROPOSED_REASON_MARKER,
-  TASK_TIME_CLARIFICATION_REASON_MARKER,
-  TASK_TO_CALENDAR_CONVERSION_REASON_MARKER,
   reasonAboutUserMessage,
-  resolveTaskCalendarClarificationFollowUp,
   resolveAgentReasoningTransport,
   resolveToolForStep,
   runReadOnlyTool,
@@ -77,7 +74,6 @@ import {
   withTimeout,
   type AgentReasoningResult,
   type AgentReasoningGitHubInventory,
-  type AgentIntentTarget,
   type ReadOnlyRuntimeResult,
   type WriteRuntimeResult,
   type ApprovalInteractionResult,
@@ -802,97 +798,6 @@ export function proposalMessage(result: AgentReasoningResult) {
   if (result.proposal.clarificationQuestion) return result.proposal.clarificationQuestion
   const responseT = responseLanguageTranslator(result.responseLanguage)
   return `${responseT('agent_intent_proposed')}: ${intentTitle(result.proposal.type, responseT)}. ${responseT('agent_intent_run_hint')}`
-}
-
-// Chat V2 Slice 2B.1: the ONLY thing this classifies is which side of the
-// TASK_TIME_CLARIFICATION_REASON_MARKER question the user's IMMEDIATE next
-// reply picked -- deliberately narrow (a handful of hand-written phrases
-// per language), never a general intent classifier. Returns null for
-// anything that doesn't clearly match either side, which the caller
-// (handleSend) treats as "no consent given" -- the pending clarification is
-// still consumed (single-turn only, per the contract), but the message
-// falls through to ordinary processing instead of being force-interpreted.
-// This is the concrete embodiment of "do NOT infer this consent from
-// silence": a bare "task" or "10am" reply, with no explicit "without time"/
-// domain-noun phrase, does not match either branch below.
-export function classifyTaskCalendarFollowUp(message: string): 'task_without_time' | 'calendar_with_time' | null {
-  const taskWithoutTime =
-    (/\btask\b/i.test(message) && /\bwithout\s+(?:a\s+)?time\b|\bno\s+time\b/i.test(message)) ||
-    (/\baufgabe\b/i.test(message) && /\bohne\s+uhrzeit\b/i.test(message)) ||
-    (/(تسک|وظیفه)/.test(message) && /بدون\s*(?:ساعت|زمان)/.test(message))
-  if (taskWithoutTime) return 'task_without_time'
-
-  const calendarWithTime =
-    /\bcalendar\b|\bevent\b/i.test(message) ||
-    /\bkalender\b|\btermin\b/i.test(message) ||
-    /کلندر|تقویم|رویداد/.test(message)
-  if (calendarWithTime) return 'calendar_with_time'
-
-  return null
-}
-
-// Chat V2 Slice 2B.1 correction (Blocker 2): classifies the user's reply to
-// the SECOND question -- TASK_TO_CALENDAR_CONVERSION_REASON_MARKER, "should
-// I leave the task unchanged and create a new calendar event instead?" --
-// which only ever fires after an update-worded task request picked
-// "calendar" at the first question. Deliberately narrow, same discipline as
-// classifyTaskCalendarFollowUp above: a handful of hand-written yes/no
-// phrases per language, gated entirely by the pending ref being in the
-// 'conversion_confirmation' stage (never interpreted as an answer to
-// anything else), and returns null (never infers consent) for anything that
-// doesn't clearly match either side.
-export function classifyCalendarConversionConfirmation(message: string): boolean | null {
-  const affirmative =
-    /\b(yes|yeah|yep|sure|go ahead|confirm)\b/i.test(message) ||
-    /\b(ja|klar|bestätige|bestaetige)\b/i.test(message) ||
-    /(بله|باشه|تایید)/.test(message)
-  if (affirmative) return true
-
-  const negative =
-    /\b(no|nope|don't|cancel)\b/i.test(message) ||
-    /\b(nein|abbrechen)\b/i.test(message) ||
-    /(نه|لغو کن)/.test(message)
-  if (negative) return false
-
-  return null
-}
-
-// Slice 2B.1 correction (fail-closed persistence): the row shape this
-// helper inserts -- a plain function type, not the real supabase-js
-// PostgrestFilterBuilder, so a test can supply a fake without mocking the
-// whole chainable client surface.
-export type ShortcutChatTurnInsert = (
-  rows: Array<{ user_id: string; session_id: string; role: 'user' | 'assistant'; content: string }>,
-) => PromiseLike<{ error: unknown }>
-
-// Slice 2B.1 correction (fail-closed persistence): with supabase-js v2, an
-// ordinary PostgREST/database error on `.insert(...)` is RETURNED as
-// `{ error }`, not thrown, unless `.throwOnError()` is used. The previous
-// version of persistShortcutTurn only had a try/catch around the insert,
-// which only ever catches a genuinely thrown exception (a network failure
-// before the request completes) -- an ordinary insert rejection (RLS
-// denial, constraint violation, etc.) resolved normally with `{ error }`
-// and was silently treated as success. This is the single, exported,
-// fail-closed source of truth for "did this turn actually persist":
-// checks the resolved `error` field AND still catches a thrown exception,
-// collapsing both into one boolean so callers can gate on it directly
-// without duplicating either check. No user id at all is treated the same
-// as a failure -- there is nothing to attribute the write to.
-export async function persistShortcutChatTurn(
-  insert: ShortcutChatTurnInsert,
-  params: { userId: string | undefined; sessionId: string; userText: string; assistantContent: string },
-): Promise<boolean> {
-  if (!params.userId) return false
-  try {
-    const { error } = await insert([
-      { user_id: params.userId, session_id: params.sessionId, role: 'user', content: params.userText },
-      { user_id: params.userId, session_id: params.sessionId, role: 'assistant', content: params.assistantContent },
-    ])
-    return !error
-  } catch (thrown) {
-    console.error('[ChatPage] persistShortcutChatTurn: insert threw', thrown)
-    return false
-  }
 }
 
 function stepForReasoning(result: AgentReasoningResult, t: Translate): WorkspacePlanStep | null {
@@ -2392,31 +2297,6 @@ export default function ChatPage() {
   const isMemoryOfferEligible = (mimeType: string | null) =>
     mimeType === 'application/pdf' || mimeType === 'text/plain'
 
-  // Chat V2 Slice 2B.1: the bounded continuation for
-  // TASK_TIME_CLARIFICATION_REASON_MARKER (and, for an originally
-  // update-worded task request that picks Calendar, the SECOND
-  // TASK_TO_CALENDAR_CONVERSION_REASON_MARKER question -- Blocker 2) --
-  // see resolveTaskCalendarClarificationFollowUp's own comment for the
-  // full contract. `stage` tells the two questions apart so the SAME
-  // reply text is never misclassified as an answer to the wrong one.
-  // Armed from the WORKER's own server-confirmed clarification marker
-  // (Blocker 4 -- see the arming site further down in handleSend), or
-  // re-armed (still the same bounded state, never a third independent
-  // piece of state) when a 'domain_choice' resolution itself comes back
-  // as the second question. ALWAYS consumed (read once, then cleared) at
-  // the top of the very next handleSend call, matched or not -- so a
-  // stale clarification can never leak into a later, unrelated turn.
-  // This remains the ONLY piece of cross-turn state this correction
-  // introduces -- not a general conversation-history mechanism (see
-  // ENG-06h's own deferral note in intentValidator.ts for why that stays
-  // out of scope here).
-  const pendingTaskCalendarClarificationRef = useRef<{
-    stage: 'domain_choice' | 'conversion_confirmation'
-    originalUserMessage: string
-    capturedTarget: AgentIntentTarget | undefined
-    language: SupportedAiResponseLanguage
-  } | null>(null)
-
   const handleSend = useCallback(async (overrideText?: string) => {
     const text = (overrideText ?? draft).trim()
     if (text === '' || sending) return
@@ -2441,17 +2321,6 @@ export default function ChatPage() {
     // outcome, so it is never silently re-sent on a later, unrelated turn.
     const sentDocument = attachedDocument
 
-    // Chat V2 Slice 2B.1: consumed here, unconditionally, before anything
-    // else -- single-turn only per stage (see the ref's own comment).
-    // Whether or not this message actually resolves the pending
-    // clarification, it is never carried forward beyond this turn (a
-    // re-arm for the second question is a fresh, explicit write further
-    // below, not a carry-forward of this one).
-    const pendingClarification = pendingTaskCalendarClarificationRef.current
-    pendingTaskCalendarClarificationRef.current = null
-    const domainChoiceResolution = pendingClarification?.stage === 'domain_choice' ? classifyTaskCalendarFollowUp(text) : null
-    const conversionConfirmation = pendingClarification?.stage === 'conversion_confirmation' ? classifyCalendarConversionConfirmation(text) : null
-
     let sessionId = activeSessionId
 
     try {
@@ -2461,171 +2330,6 @@ export default function ChatPage() {
         sessionId = newId
         setActiveSessionId(newId)
       }
-      const ownerSessionId = sessionId
-
-      // Fail-closed persistence correction: the shortcut path must never
-      // publish an actionable Task/Calendar proposal (or even a plain
-      // assistant reply) that was never actually durably persisted.
-      // persistShortcutChatTurn is the single source of truth for "did
-      // this turn actually persist" (checks the RESOLVED `{ error }` a
-      // supabase-js v2 insert returns, not just a thrown exception -- see
-      // its own header comment). On success this publishes local state,
-      // arms/clears the pending continuation, restores attachment
-      // cleanup, and refreshes session metadata, exactly like the
-      // ordinary send path does after a successful /chat round-trip. On
-      // failure NOTHING from this turn is published: no message, no
-      // reasoning proposal, no attachment mutation, no execution request
-      // is even reachable (proposalToState/requestWriteExecution never
-      // see a step that was never set) -- the ORIGINAL pending
-      // clarification is restored (not the next one) so the exact same
-      // reply, resent, re-enters this same branch, and the draft is
-      // restored so the user's words are not lost.
-      const commitShortcutTurn = async (params: {
-        assistantContent: string
-        language: SupportedAiResponseLanguage
-        reasoningResult: AgentReasoningResult | null
-        nextPendingClarification: typeof pendingTaskCalendarClarificationRef.current
-      }) => {
-        const persisted = await persistShortcutChatTurn(
-          (rows) => supabase.from('agent_chat_messages').insert(rows),
-          { userId: user?.id, sessionId: ownerSessionId, userText: text, assistantContent: params.assistantContent },
-        )
-        if (!persisted) {
-          pendingTaskCalendarClarificationRef.current = pendingClarification
-          if (!overrideText) setDraft(text)
-          setSendError(t('chat_error_send'))
-          return
-        }
-        setMessages(prev => [
-          ...prev,
-          { id: `u-${Date.now()}`, role: 'user', content: text },
-          { id: `a-${Date.now() + 1}`, role: 'assistant', content: params.assistantContent, language: params.language },
-        ])
-        setReasoningProposal(params.reasoningResult ? proposalsToStates(params.reasoningResult, t) : null)
-        pendingTaskCalendarClarificationRef.current = params.nextPendingClarification
-        if (sentDocument) {
-          setAttachedFile(null)
-          setAttachedDocument(null)
-          setMemoryOffer(
-            isMemoryOfferEligible(sentDocument.mimeType)
-              ? { documentId: sentDocument.id, fileName: sentDocument.fileName }
-              : null,
-          )
-        }
-        void refreshSessions()
-      }
-
-      // SHORTCUT PATH (stage 'domain_choice'): the user's immediately
-      // preceding turn asked the TASK_TIME_CLARIFICATION_REASON_MARKER
-      // question and this message explicitly answered it -- the domain is
-      // already known, so this skips the /chat call and the normal
-      // reasoning overlay entirely (no LLM round-trip; see
-      // resolveTaskCalendarClarificationFollowUp's own comment on why
-      // that's safe here). Falls through to ordinary processing below when
-      // pendingClarification was armed but this message did NOT clearly
-      // pick a side -- never force-interpreted.
-      if (pendingClarification?.stage === 'domain_choice' && domainChoiceResolution) {
-        const result = resolveTaskCalendarClarificationFollowUp({
-          originalUserMessage: pendingClarification.originalUserMessage,
-          resolvedAs: domainChoiceResolution,
-          capturedTarget: pendingClarification.capturedTarget,
-          safeContext: {
-            tasks: liveTaskReasoningContext({
-              tasks,
-              isLoading: tasksLoading,
-              error: tasksError,
-            }),
-            events: workspace.agentContext.events,
-            learningProgress: workspace.agentContext.learningProgress,
-            workspace: {
-              goal: workspace.goal,
-              plan: workspace.plan,
-              signalFeed: workspace.signalFeed,
-            },
-            githubRepositoryInventory,
-          },
-          language: pendingClarification.language,
-          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        })
-        // Blocker 2: an originally update-worded task request that picked
-        // "calendar" here does not resolve directly -- it comes back as
-        // the SECOND question (TASK_TO_CALENDAR_CONVERSION_REASON_MARKER).
-        // The SAME bounded ref is armed for that question's own
-        // single-turn continuation instead of being cleared; every other
-        // outcome (resolved to create_task/update_task/
-        // create_calendar_event) clears it, matching the original
-        // single-shot contract. Computed before persistence so a failed
-        // persist can restore the ORIGINAL pending clarification instead
-        // (see commitShortcutTurn).
-        const nextPendingClarification = result.proposal.reasons.includes(TASK_TO_CALENDAR_CONVERSION_REASON_MARKER)
-          ? {
-              stage: 'conversion_confirmation' as const,
-              originalUserMessage: pendingClarification.originalUserMessage,
-              capturedTarget: pendingClarification.capturedTarget,
-              language: pendingClarification.language,
-            }
-          : null
-        await commitShortcutTurn({
-          assistantContent: proposalMessage(result),
-          language: result.responseLanguage,
-          reasoningResult: result,
-          nextPendingClarification,
-        })
-        return
-      }
-
-      // SHORTCUT PATH (stage 'conversion_confirmation'): the user's
-      // immediately preceding turn asked the SECOND, fail-closed question
-      // (Blocker 2) and this message explicitly answered it.
-      if (pendingClarification?.stage === 'conversion_confirmation' && conversionConfirmation !== null) {
-        if (conversionConfirmation) {
-          const result = resolveTaskCalendarClarificationFollowUp({
-            originalUserMessage: pendingClarification.originalUserMessage,
-            resolvedAs: 'calendar_conversion_confirmed',
-            capturedTarget: pendingClarification.capturedTarget,
-            safeContext: {
-              tasks: liveTaskReasoningContext({
-                tasks,
-                isLoading: tasksLoading,
-                error: tasksError,
-              }),
-              events: workspace.agentContext.events,
-              learningProgress: workspace.agentContext.learningProgress,
-              workspace: {
-                goal: workspace.goal,
-                plan: workspace.plan,
-                signalFeed: workspace.signalFeed,
-              },
-              githubRepositoryInventory,
-            },
-            language: pendingClarification.language,
-            timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          })
-          await commitShortcutTurn({
-            assistantContent: proposalMessage(result),
-            language: result.responseLanguage,
-            reasoningResult: result,
-            nextPendingClarification: null,
-          })
-        } else {
-          // Declined: no event is created, and the original task was
-          // never touched by any of this -- there is nothing left to
-          // execute, so this never reaches the validator at all.
-          const declinedText = pendingClarification.language === 'de'
-            ? 'Verstanden, die Aufgabe bleibt unverändert. Es wurde kein Kalendertermin erstellt.'
-            : pendingClarification.language === 'fa'
-              ? 'باشه، تسک بدون تغییر باقی می‌ماند. هیچ رویداد تقویمی ساخته نشد.'
-              : 'Understood, the task stays unchanged. No calendar event was created.'
-          await commitShortcutTurn({
-            assistantContent: declinedText,
-            language: pendingClarification.language,
-            reasoningResult: null,
-            nextPendingClarification: null,
-          })
-        }
-        return
-      }
-
       const { data: { session } } = await supabase.auth.getSession()
       if (session === null) throw new Error('No session')
 
@@ -2648,7 +2352,7 @@ export default function ChatPage() {
       // with an early `return` in the explicit branch) was the actual
       // production bug: a message misclassified 'explicit' by a keyword
       // collision never reached this call at all.
-      const chatCallPromise = (async (): Promise<{ reply: string; writePolicy?: { mode?: 'auto' | 'ask' | 'off' }; writeExecution?: string; undo?: ChatMsg['undo']; clarification?: { kind: 'task_time' } }> => {
+      const chatCallPromise = (async (): Promise<{ reply: string; writePolicy?: { mode?: 'auto' | 'ask' | 'off' }; writeExecution?: string; undo?: ChatMsg['undo'] }> => {
         // GH-06: previously an unbounded fetch -- a Worker stall here hung
         // this whole promise forever, which in turn hung the Promise.all
         // below indefinitely (nothing downstream, including the read-tool
@@ -2686,7 +2390,7 @@ export default function ChatPage() {
           'Chat request timed out.',
         )
         if (!res.ok) throw new Error(`Worker responded ${res.status}`)
-        return (await res.json()) as { reply: string; writePolicy?: { mode?: 'auto' | 'ask' | 'off' }; writeExecution?: string; undo?: ChatMsg['undo']; clarification?: { kind: 'task_time' } }
+        return (await res.json()) as { reply: string; writePolicy?: { mode?: 'auto' | 'ask' | 'off' }; writeExecution?: string; undo?: ChatMsg['undo'] }
       })()
 
       // Task 11 fix: the OVERLAY LANE. Action interpretation runs
@@ -2743,36 +2447,7 @@ export default function ChatPage() {
         })
       }
 
-      const [{ reply, writePolicy, writeExecution, undo, clarification }, overlayResult] = await Promise.all([chatCallPromise, overlayPromise])
-
-      // Chat V2 Slice 2B.1 correction (Blocker 4): armed from the WORKER's
-      // own structured `clarification: { kind: 'task_time' }` marker on
-      // the /chat response -- not from the reasoning overlay alone. The
-      // Worker's deterministic detectWriteDomainSignal runs independently
-      // of the LLM reasoning overlay (a separate pipeline -- see
-      // flow-write-policy.ts), so it stays correct even when the
-      // overlay's own LLM call failed entirely (provider outage, timeout,
-      // or shouldStartReasoningOverlay's gate simply not firing for this
-      // message) -- a case the old overlay-marker-only gate could never
-      // arm for, silently losing the bounded continuation exactly when
-      // the deterministic Worker had already asked the user this same
-      // question via `reply`. The overlay result, when it independently
-      // agrees (carries the SAME marker), only ENRICHES the captured
-      // target with the model's own title/notes guess -- it is never
-      // trusted as the sole authority for whether to arm: an
-      // overlay-only marker with no server confirmation must never arm
-      // this on its own (see intentValidator.test.ts's/ChatPage.test.tsx's
-      // adversarial "overlay claims it, server doesn't" tests).
-      if (clarification?.kind === 'task_time') {
-        pendingTaskCalendarClarificationRef.current = {
-          stage: 'domain_choice',
-          originalUserMessage: text,
-          capturedTarget: overlayResult?.proposal.reasons.includes(TASK_TIME_CLARIFICATION_REASON_MARKER)
-            ? overlayResult.proposal.target
-            : undefined,
-          language: responseLanguage,
-        }
-      }
+      const [{ reply, writePolicy, writeExecution, undo }, overlayResult] = await Promise.all([chatCallPromise, overlayPromise])
 
       // Task 11d (auto-execute read-only tools): a supported, actionable,
       // non-write, non-disambiguated read proposal whose resolved tool is

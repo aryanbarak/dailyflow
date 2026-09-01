@@ -514,53 +514,58 @@ describe('TITLE-01: framing-token stripping (Defect A) and instruction-fragment 
 // stay day-level (no time-of-day column); a request carrying a specific
 // time is calendar business instead. detectWriteDomainSignal is the
 // single deterministic routing decision this whole slice hangs off of.
-describe('task 22 / Slice 2B.1: calendar write slice + task/event routing', () => {
-  // Slice 2B.1 -- LOCKED DOMAIN RULE: explicit domain noun wins before
-  // temporal inference. An explicit task noun ("task"/"Aufgabe"/"تسک")
-  // paired with a create/update verb no longer silently becomes calendar
-  // when a time-of-day is present -- it raises 'task_time_ambiguous'
-  // instead (a caller must ask, never guess). Only a task write with NO
+describe('task 22 / Slice 2B.1.1: calendar write slice + task/event routing', () => {
+  // Slice 2B.1.1 -- PO decision SUPERSEDES Slice 2B.1's "LOCKED DOMAIN
+  // RULE" (which asked when an explicit task noun carried a time). A
+  // concrete time-of-day is scheduling intent; Tasks have no time-of-day
+  // column, so the requested time is now PRESERVED by routing to Calendar
+  // instead of asking the user to resolve an internal schema detail. The
+  // final precedence rule -- explicit calendar noun OR a concrete clock
+  // time wins -- now lives once in shared/schedulingDomain.ts (see
+  // resolvesToCalendarDomain's own comment). A task write with NO
   // explicit noun at all (a bare personal statement, e.g. "I have a
   // dentist appointment tomorrow at 3pm") still silently resolves to
   // 'calendar' when a time is present -- unchanged, see the implicit-
   // schedule-statement describe block further down.
   describe('detectWriteDomainSignal (the routing rule)', () => {
     it.each([
-      ['EN, explicit task noun + time -> task_time_ambiguous (LOCKED DOMAIN RULE)', 'Add a task for next Tuesday at 9', 'task_time_ambiguous'],
+      ['EN, explicit task noun + time -> calendar (PRESERVE THE USER\'S SEMANTICS)', 'Add a task for next Tuesday at 9', 'calendar'],
       ['EN, task noun, date only -> task (unchanged)', 'Create a task for tomorrow', 'task'],
-      ['DE, explicit task noun + time -> task_time_ambiguous (LOCKED DOMAIN RULE)', 'Erstelle eine Aufgabe fuer morgen um 15 Uhr', 'task_time_ambiguous'],
+      ['DE, explicit task noun + time -> calendar', 'Erstelle eine Aufgabe fuer morgen um 15 Uhr', 'calendar'],
       ['DE, task noun, date only -> task (unchanged)', 'Erstelle eine Aufgabe fuer morgen', 'task'],
-      ['FA, explicit task noun + time (Persian digits, 12h) -> task_time_ambiguous (LOCKED DOMAIN RULE)', 'یک تسک برای فردا بساز که نوبت دکتر فامیلی دارم. ساعت ۱۳ عصر', 'task_time_ambiguous'],
+      ['FA, explicit task noun + time (Persian digits, 12h) -> calendar', 'یک تسک برای فردا بساز که نوبت دکتر فامیلی دارم. ساعت ۱۳ عصر', 'calendar'],
       ['FA, task noun, date only -> task (unchanged)', 'یک تسک برای فردا بساز که نوبت دکتر فامیلی دارم', 'task'],
       ['EN, explicit event noun, no time -> calendar (explicit wording wins)', 'Create an event for tomorrow', 'calendar'],
       ['FA, explicit calendar noun + time -> calendar', 'یک جلسه برای فردا بساز، ساعت ۱۰', 'calendar'],
       ['mixed task+calendar nouns -> ambiguous', 'Create a task for the meeting tomorrow', 'ambiguous'],
       ['no create/update trigger at all -> none', 'What is the weather tomorrow?', 'none'],
       ['bare date+time phrase with no verb/noun trigger -> none (not a write command)', 'فردا ساعت ۱۳ نوبت دکتر', 'none'],
+      // Slice 2B.1.1 acceptance matrix item 7: an UPDATE-shaped existing-task
+      // reference ("بگذار" -- see isExplicitTaskWriteTrigger's own comment)
+      // also routes to calendar when it carries a time.
+      ['FA, explicit task UPDATE ("بگذار") + time -> calendar', 'تسک تماس با احمد را فردا ساعت ۱۰ بگذار', 'calendar'],
     ])('%s', (_label, message, expected) => {
       expect(detectWriteDomainSignal(message, NOW, TZ)).toBe(expected)
     })
 
-    it('24h compact time also triggers task_time_ambiguous, not a silent calendar reclassification', () => {
-      expect(detectWriteDomainSignal('Create a task for tomorrow at 16:00', NOW, TZ)).toBe('task_time_ambiguous')
+    it('24h compact time also routes to calendar, preserving the requested time instead of discarding it', () => {
+      expect(detectWriteDomainSignal('Create a task for tomorrow at 16:00', NOW, TZ)).toBe('calendar')
     })
 
-    it('the exact Persian acceptance case never becomes calendar automatically', () => {
+    it('the exact Persian production acceptance case resolves to calendar directly -- no clarification signal at all', () => {
       const signal = detectWriteDomainSignal('برای فردا ساعت ۱۰ یک تسک بساز که به احمد زنگ بزنم', NOW, TZ)
-      expect(signal).toBe('task_time_ambiguous')
-      expect(signal).not.toBe('calendar')
+      expect(signal).toBe('calendar')
     })
   })
 
-  // Slice 2B.1: client/server parity -- see
+  // Slice 2B.1.1: client/server parity -- see
   // shared/taskCalendarDomainParityCases.ts's own header comment for why
   // this shared, framework-free fixture is what keeps this Worker
   // function and the client's validateAgentIntentProposal
   // (src/features/agent/reasoning/intentValidator.test.ts has the mirror
   // of this describe block) from silently drifting apart. CI fails here
   // if this function's answer for any case ever disagrees with the
-  // pinned expectation -- in particular, if this function ever says
-  // 'calendar' for a case the fixture pins to 'task_time_ambiguous'.
+  // pinned expectation.
   describe('client/server domain parity (shared/taskCalendarDomainParityCases.ts)', () => {
     it.each(taskCalendarDomainParityCases)('$label', ({ message, expected }) => {
       expect(detectWriteDomainSignal(message, NOW, TZ)).toBe(expected)
@@ -568,9 +573,9 @@ describe('task 22 / Slice 2B.1: calendar write slice + task/event routing', () =
   })
 
   describe('detectContinuationDomain (multi-turn routing)', () => {
-    it('an original message with an explicit task noun + time is task_time_ambiguous, never assumed calendar, so it does not continue as either domain', () => {
+    it('an original message with an explicit task noun + time continues as calendar, preserving the requested time', () => {
       const history = [{ role: 'user', content: 'Add a task for next Tuesday at 9' }]
-      expect(detectContinuationDomain(history, NOW, TZ)).toBeNull()
+      expect(detectContinuationDomain(history, NOW, TZ)).toBe('calendar')
     })
 
     it('stays task when the original message never carried a time', () => {
@@ -607,29 +612,65 @@ describe('task 22 / Slice 2B.1: calendar write slice + task/event routing', () =
   })
 
   describe('parseCalendarWriteIntent', () => {
-    // Slice 2B.1 -- LOCKED DOMAIN RULE: both messages below name an
-    // EXPLICIT task noun ("تسک"/"task") paired with a create verb, so
-    // resolvesToCalendarDomain no longer silently claims them as calendar
-    // business, even though a time-of-day is present -- that combination
-    // is now detectWriteDomainSignal's own 'task_time_ambiguous' signal
-    // (a caller must ask, never guess), not something parseCalendarWriteIntent
-    // resolves at all. This replaces the two tests that used to pin the
-    // old silent-reclassification behavior these exact messages exercised.
-    it('an explicit task-worded message with a time is NOT calendar business, even mentioning an incidental calendar-ish word ("appointment"/co-occurring context) -- the explicit task noun wins', () => {
+    // Slice 2B.1.1 -- both messages below name an EXPLICIT task noun
+    // ("تسک"/"task") paired with a create verb AND a concrete time --
+    // resolvesToCalendarDomain now claims them as calendar business
+    // DIRECTLY (preserving the requested time), producing a NEW
+    // create_calendar_event, never update_calendar_event (no existing
+    // event identity to bridge from -- these are CREATE-worded). The
+    // pattern-extracted title here is only ever the last-resort fallback
+    // (resolveCreateEventTitle asks the model for the real title first in
+    // production, same as every other create_calendar_event/create_task
+    // path) -- these exact strings are what extractTaskTitle's own
+    // fallback regexes happen to produce for these two messages today.
+    it('an explicit task-worded CREATE message with a time preserves the time by becoming create_calendar_event, even mentioning an incidental calendar-ish word ("appointment"/co-occurring context)', () => {
       const message = 'ترمین داکتر فامیلی : برایم یک تسک برای فردا بساز به ساعت ۱۳:۰۰'
-      expect(parseCalendarWriteIntent(message, NOW, TZ)).toBeNull()
+      expect(parseCalendarWriteIntent(message, NOW, TZ)).toMatchObject({
+        kind: 'create_calendar_event',
+        title: 'ترمین داکتر فامیلی',
+        startDate: '2026-08-14',
+        startTime: '13:00',
+      })
     })
 
-    it('an EN explicit task-worded message with a time is NOT calendar business either, even when a family doctor appointment is mentioned in passing', () => {
+    it('an EN explicit task-worded CREATE message with a time also preserves the time, even when a family doctor appointment is mentioned in passing', () => {
       const message = 'Create a task for tomorrow because I have a family doctor appointment at 11am.'
-      expect(parseCalendarWriteIntent(message, NOW, TZ)).toBeNull()
+      expect(parseCalendarWriteIntent(message, NOW, TZ)).toMatchObject({
+        kind: 'create_calendar_event',
+        title: 'a family doctor appointment',
+        startDate: '2026-08-14',
+        startTime: '11:00',
+      })
+    })
+
+    // Slice 2B.1.1 acceptance matrix item 4/7: an UPDATE-worded reference
+    // to an EXISTING task (move/reschedule-shaped, or "بگذار") must NEVER
+    // become update_calendar_event -- that would bridge the task's own
+    // identity into an event lookup. It always creates a brand-new event
+    // instead, even though "move"/"بگذار" would otherwise look
+    // update-shaped to isUpdate's own generic verb check.
+    it('an UPDATE-worded reference to an existing task ("move the task X") with a time creates a NEW event, never update_calendar_event', () => {
+      const message = 'Move the task "Call Ahmad" to tomorrow at 10'
+      expect(parseCalendarWriteIntent(message, NOW, TZ)).toMatchObject({
+        kind: 'create_calendar_event',
+        title: 'Call Ahmad',
+        startDate: '2026-08-14',
+        startTime: '10:00',
+      })
+    })
+
+    it('the FA "بگذار" reschedule-an-existing-task phrasing also creates a NEW event, never update_calendar_event', () => {
+      const message = 'تسک تماس با احمد را فردا ساعت ۱۰ بگذار'
+      const intent = parseCalendarWriteIntent(message, NOW, TZ)
+      expect(intent?.kind).toBe('create_calendar_event')
+      expect(intent).toMatchObject({ startDate: '2026-08-14', startTime: '10:00' })
     })
 
     it('a date-only message (no time) is not calendar business', () => {
       expect(parseCalendarWriteIntent('Create a task for tomorrow', NOW, TZ)).toBeNull()
     })
 
-    it('parses an update_calendar_event intent from an explicit event-update phrasing', () => {
+    it('parses an update_calendar_event intent from an explicit event-update phrasing (an EXPLICIT calendar noun, not a task reference)', () => {
       const message = 'Update the "Team sync" meeting to 15:00'
       expect(parseCalendarWriteIntent(message, NOW, TZ)).toMatchObject({
         kind: 'update_calendar_event',
@@ -801,11 +842,11 @@ describe('task 22-fix: implicit schedule statements (C1/C2 production root cause
     })
 
     it('detectContinuationDomain also anchors to the original turn\'s own timestamp', () => {
-      // Slice 2B.1: an explicit CALENDAR noun here (not "task" + time,
-      // which is now task_time_ambiguous -- LOCKED DOMAIN RULE, and would
-      // reveal nothing about timestamp anchoring since it never resolves
-      // to a domain at all) -- this test's actual subject is the
-      // timestamp anchoring itself, unaffected by that change.
+      // An explicit CALENDAR noun here (a task + time would also resolve
+      // to calendar since Slice 2B.1.1, so either would prove the point --
+      // this uses an explicit event noun to keep the test unambiguous
+      // about which trigger fired) -- this test's actual subject is the
+      // timestamp anchoring itself.
       const history = [
         { role: 'user', content: 'Add an event for tomorrow at 9am', createdAt: ORIGINAL_SENT_AT },
       ]

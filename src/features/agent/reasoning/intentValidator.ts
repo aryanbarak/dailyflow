@@ -4,7 +4,6 @@ import {
   type AgentIntentConfidence,
   type AgentIntentDomain,
   type AgentIntentProposal,
-  type AgentIntentTarget,
   type AgentIntentType,
   type AgentReasoningSafeContext,
   type AgentReasoningValidationResult,
@@ -20,6 +19,7 @@ import {
   type WriteIntentType,
 } from "../../../../shared/writeIntentRegistry";
 import { parseFinanceDirection } from "../../../../shared/financeDirection";
+import { resolveSchedulingDomain } from "../../../../shared/schedulingDomain";
 
 // Task 22-fix (C1): every existing call site of validateAgentIntentProposal
 // omits `timeZone` (it wasn't a parameter before this fix), so this is the
@@ -152,56 +152,6 @@ const domainByIntent: Partial<Record<AgentIntentType, AgentIntentDomain>> = {
 // ChatPage.tsx to one condition; splitting the reasons keeps ENG-06f's
 // "every cause is greppable" discipline.
 export const ENGINEERING_TASK_NOT_PROPOSED_REASON_MARKER = "ENGINEERING_TASK_NOT_PROPOSED";
-
-// Slice 2B.1 -- LOCKED DOMAIN RULE: an explicit domain noun ("task"/
-// "تسک"/"Aufgabe" paired with a create/update verb) wins before temporal
-// inference. Tasks have no time-of-day field, so a request that explicitly
-// names "task" AND carries a resolved time-of-day is genuinely ambiguous
-// (silently reclassifying it into a calendar event, the OLD behavior,
-// discarded the user's own stated domain; silently keeping it a task
-// discarded the time they gave) -- this marker identifies that specific
-// ask_clarification so ChatPage.tsx's bounded, single-turn continuation
-// (see resolveTaskCalendarClarificationFollowUp in
-// reasoningOrchestrator.ts) knows to arm itself, and so it is told apart
-// in logs from every other clarification reason. Same convention as
-// ENGINEERING_TASK_NOT_PROPOSED_REASON_MARKER above.
-export const TASK_TIME_CLARIFICATION_REASON_MARKER = "TASK_TIME_CLARIFICATION";
-
-// Desired meaning (PO decision): tasks don't have a specific time yet --
-// ask whether to keep it a Task (dropping the time) or make it a Calendar
-// Event (keeping the time). Hand-written per-language, same convention as
-// textFor/engineeringTaskNotProposedMessage above -- this is NOT
-// registry-driven approval-card copy (src/i18n/index.ts), it's a dynamic
-// clarification question.
-function taskTimeClarificationMessage(language: SupportedAiResponseLanguage): string {
-  const copy = {
-    en: "Tasks don't support a specific time yet. Should I create it as a Task without a time, or as a Calendar Event at that time?",
-    de: "Aufgaben unterstützen noch keine Uhrzeit. Soll ich sie als Aufgabe ohne Uhrzeit anlegen, oder als Kalendertermin zur genannten Uhrzeit?",
-    fa: "تسک‌ها فعلاً ساعت مشخص ندارند. آن را به‌عنوان Task بدون ساعت بسازم، یا به‌عنوان یک Calendar Event در همان ساعت؟",
-  } as const;
-  return copy[language];
-}
-
-// Slice 2B.1 correction (Blocker 2): SmartFlow has no safe "convert this
-// Task into a Calendar Event" primitive -- an UPDATE-worded task request
-// (target names an EXISTING task via taskId/taskReference) that picks
-// "Calendar" at the first TASK_TIME_CLARIFICATION question must not be
-// silently resolved into update_calendar_event, which would bridge the
-// task's own identity into an event lookup and either fail to match
-// anything or, worse, match and mutate an unrelated existing event. This
-// is the SECOND, distinct question that fires only in that specific case
-// -- fail closed rather than guess. Same marker convention as
-// TASK_TIME_CLARIFICATION_REASON_MARKER above.
-export const TASK_TO_CALENDAR_CONVERSION_REASON_MARKER = "TASK_TO_CALENDAR_CONVERSION_CONFIRMATION";
-
-function taskToCalendarConversionMessage(language: SupportedAiResponseLanguage): string {
-  const copy = {
-    en: "You selected Calendar. Should I leave the existing task unchanged and create a new calendar event at that time instead?",
-    de: "Du hast Kalender gewählt. Soll ich die vorhandene Aufgabe unverändert lassen und stattdessen einen neuen Kalendertermin zu dieser Uhrzeit anlegen?",
-    fa: "شما تقویم را انتخاب کردید. آیا تسک موجود را بدون تغییر رها کنم و در عوض یک رویداد تقویم جدید در همان ساعت بسازم؟",
-  } as const;
-  return copy[language];
-}
 
 // ENG-06g-fix RULING 1: three distinct outcomes, each with its own reason
 // code so a log line says which one fired.
@@ -367,15 +317,6 @@ function createSafeProposal(
     // use, so ChatPage.tsx can identify the outcome with the same
     // `reasons.includes(MARKER)` check it uses for those.
     reasonMarker?: string;
-    // Slice 2B.1: captured target fields (currently just title/notes --
-    // everything else this clarification cares about, dueDate/start/end,
-    // is re-derived deterministically from the ORIGINAL message text on
-    // the follow-up call regardless) for a clarification whose answer
-    // should be resumable without re-deriving them from scratch -- see
-    // reasoningOrchestrator.ts's resolveTaskCalendarClarificationFollowUp.
-    // Absent for every other caller (an ask_clarification/unsupported
-    // proposal ordinarily has no actionable target at all).
-    target?: AgentIntentTarget;
   },
 ): AgentReasoningValidationResult {
   const proposal: AgentIntentProposal = {
@@ -383,7 +324,7 @@ function createSafeProposal(
     type,
     confidence: "medium",
     userMessage: input.userMessage,
-    target: input.target,
+    target: undefined,
     requestedDomain: undefined,
     requiresTool: false,
     requiresApproval: false,
@@ -687,8 +628,13 @@ function requestLooksLikeTaskCreate(message: string) {
 }
 
 function requestLooksLikeTaskUpdate(message: string) {
+  // Slice 2B.1.1 parity fix: "\u0628\u06af\u0630\u0627\u0631" ("set/put/schedule") added to the FA
+  // alternatives -- acceptance matrix item 7 ("\u062a\u0633\u06a9 \u062a\u0645\u0627\u0633 \u0628\u0627 \u0627\u062d\u0645\u062f \u0631\u0627 \u0641\u0631\u062f\u0627
+  // \u0633\u0627\u0639\u062a \u06f1\u06f0 \u0628\u06af\u0630\u0627\u0631") names an EXISTING task and reschedules it using
+  // neither a create verb nor "\u0628\u0647\u200c\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06cc \u06a9\u0646"/"\u0648\u06cc\u0631\u0627\u06cc\u0634 \u06a9\u0646"/"\u062a\u063a\u06cc\u06cc\u0631 \u0628\u062f\u0647".
+  // Mirrors agent/worker/flow-write-policy.ts's own isExplicitTaskWriteTrigger.
   return /\b(update|edit|change|move|reschedule|aktualisiere|bearbeite|verschiebe)\b.{0,50}\b(task|todo|aufgabe)\b/i.test(message) ||
-    /(\u062a\u0633\u06a9|\u0648\u0638\u06cc\u0641\u0647|\u06a9\u0627\u0631).{0,50}(\u0628\u0647[\u200c\s-]?\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06cc\s+\u06a9\u0646|\u0648\u06cc\u0631\u0627\u06cc\u0634\s+\u06a9\u0646|\u062a\u063a\u06cc\u06cc\u0631\s+\u0628\u062f\u0647)/i.test(message);
+    /(\u062a\u0633\u06a9|\u0648\u0638\u06cc\u0641\u0647|\u06a9\u0627\u0631).{0,50}(\u0628\u0647[\u200c\s-]?\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06cc\s+\u06a9\u0646|\u0648\u06cc\u0631\u0627\u06cc\u0634\s+\u06a9\u0646|\u062a\u063a\u06cc\u06cc\u0631\s+\u0628\u062f\u0647|\u0628\u06af\u0630\u0627\u0631)/i.test(message);
 }
 
 // Task 22 (calendar write slice): same two-clause shape as the task
@@ -984,24 +930,6 @@ export function validateAgentIntentProposal(input: {
   language: SupportedAiResponseLanguage;
   now?: Date;
   timeZone?: string;
-  // Slice 2B.1: set ONLY by ChatPage.tsx's bounded, single-turn
-  // continuation (reasoningOrchestrator.ts's
-  // resolveTaskCalendarClarificationFollowUp) when the user's IMMEDIATELY
-  // preceding turn was TASK_TIME_CLARIFICATION_REASON_MARKER's own
-  // clarification and this call is re-resolving that same original
-  // message now that the user explicitly picked a side. Never inferred
-  // from silence; every other caller omits this.
-  //
-  // Blocker 2 correction: "calendar_with_time" resolves DIRECTLY only when
-  // the original request was a CREATE. When it was an UPDATE, there is no
-  // safe task-to-event conversion, so that answer instead produces a
-  // SECOND clarification (TASK_TO_CALENDAR_CONVERSION_REASON_MARKER) --
-  // "calendar_conversion_confirmed" is set only by a THIRD call, resolving
-  // THAT second question, and is the only value that can ever produce a
-  // create_calendar_event for an originally-UPDATE-worded request (the
-  // original task's identity is stripped from the target first -- see
-  // stripTaskIdentityForConversion below).
-  resolvedTaskTimeAmbiguityAs?: "task_without_time" | "calendar_with_time" | "calendar_conversion_confirmed";
 }): AgentReasoningValidationResult {
   const now = input.now ?? new Date();
   // Task 22-fix (C1): was hardcoded to "Europe/Berlin" regardless of the
@@ -1147,28 +1075,25 @@ export function validateAgentIntentProposal(input: {
           (normalizationSourceType === "ask_clarification" || normalizationSourceType === "propose_engineering_task")
           ? "propose_engineering_task"
         : normalizeReadIntentFromEvidence(normalizationSourceType, domainEvidence, input.userMessage);
-  // Slice 2B.1 post-step, CORRECTED AGAIN (Blocker 1) -- LOCKED DOMAIN
-  // RULE: explicit domain noun wins before temporal inference, and this
-  // must hold regardless of what the MODEL proposed. The first correction
-  // derived explicitTaskTimeAmbiguity from baseType, which only becomes
-  // "create_task"/"update_task" when normalizationSourceType (== the
-  // model's own initialType, when supported) already started as one of a
-  // few specific compatible values (ask_clarification/inspect_tasks/
-  // create_task, or the update equivalents) -- a model that answered with
-  // a DIFFERENT supported type for the exact same explicit-task-worded +
-  // timed message (create_calendar_event, inspect_calendar, or anything
-  // else in CONFIRMED_WRITE_INTENT_TYPES) left baseType carrying THAT
-  // type straight through, so explicitTaskTimeAmbiguity never fired and
-  // the LOCKED DOMAIN RULE was bypassed whenever the model disagreed with
-  // the deterministic evidence. explicitTaskOperation below is computed
-  // ONLY from taskCreateRequested/taskUpdateRequested (regex evidence
-  // over the raw user message, already computed above) and
+  // Slice 2B.1.1 -- PO decision SUPERSEDES the old "LOCKED DOMAIN RULE"
+  // (which asked when an explicit task noun carried a time). A concrete
+  // time-of-day is scheduling intent; Tasks have no time-of-day column,
+  // so the requested time is now PRESERVED by routing directly to
+  // Calendar instead of asking the user to resolve an internal schema
+  // detail they never should have needed to know about. This must hold
+  // regardless of what the MODEL proposed: explicitTaskOperation below is
+  // computed ONLY from taskCreateRequested/taskUpdateRequested (regex
+  // evidence over the raw user message, already computed above) and
   // conflictingWriteRequest (so a message also naming a calendar noun --
   // "create a task for the meeting tomorrow" -- still falls through to
-  // the ordinary conflicting/ambiguous handling below, not this branch) --
-  // it never reads baseType, normalizationSourceType, or initialType, so
-  // no value the model could return (a wrong-but-supported type, an
+  // the ordinary conflicting/ambiguous handling below, not this branch)
+  // -- it never reads baseType, normalizationSourceType, or initialType,
+  // so no value the model could return (a wrong-but-supported type, an
   // unsupported/malformed type, or literally anything) can suppress it.
+  // The final precedence rule itself now lives once in
+  // shared/schedulingDomain.ts, consumed by both this file and the
+  // Worker's flow-write-policy.ts, so it cannot drift between the two
+  // runtimes independently again.
   const explicitTaskOperation: "create_task" | "update_task" | null = conflictingWriteRequest
     ? null
     : taskCreateRequested
@@ -1176,68 +1101,15 @@ export function validateAgentIntentProposal(input: {
       : taskUpdateRequested
         ? "update_task"
         : null;
-  const explicitTaskTimeAmbiguity = messageHasTime && explicitTaskOperation !== null;
-  // Blocker 2: only ever true for a "calendar_with_time" answer to an
-  // originally update_task request, resolved via the SECOND
-  // (TASK_TO_CALENDAR_CONVERSION_REASON_MARKER) question below -- strips
-  // the original task's identity from the target before it can be bridged
-  // into anything event-shaped, so "no task identity bridged into event
-  // identity" holds even though the eventReference-from-taskReference
-  // bridge (further below, unchanged from Task 22) still runs afterward.
-  const stripTaskIdentityForConversion = input.resolvedTaskTimeAmbiguityAs === "calendar_conversion_confirmed";
   let type: AgentIntentType = baseType;
-  if (explicitTaskTimeAmbiguity && explicitTaskOperation) {
-    if (input.resolvedTaskTimeAmbiguityAs === "task_without_time") {
-      type = explicitTaskOperation;
-    } else if (input.resolvedTaskTimeAmbiguityAs === "calendar_conversion_confirmed") {
+  if (explicitTaskOperation) {
+    const schedulingDecision = resolveSchedulingDomain({
+      explicitCalendarTrigger: false,
+      explicitTaskTrigger: true,
+      hasConcreteTime: messageHasTime,
+    });
+    if (schedulingDecision.kind === "calendar") {
       type = "create_calendar_event";
-    } else if (input.resolvedTaskTimeAmbiguityAs === "calendar_with_time") {
-      if (explicitTaskOperation === "create_task") {
-        type = "create_calendar_event";
-      } else {
-        // Blocker 2: fail closed. update_task's target identifies an
-        // EXISTING task (taskId/taskReference) -- silently reinterpreting
-        // "this task" as "this calendar event" via
-        // update_calendar_event's eventReference/eventId lookup would
-        // either match nothing or, worse, match and mutate an unrelated
-        // real event. Nothing here is executable yet; the original task
-        // is never mutated by this branch.
-        return createSafeProposal("ask_clarification", {
-          userMessage: input.userMessage,
-          language: input.language,
-          now,
-          question: taskToCalendarConversionMessage(input.language),
-          reasonMarker: TASK_TO_CALENDAR_CONVERSION_REASON_MARKER,
-          reason: "User chose Calendar for an UPDATE-worded task request -- there is no safe Task-to-Event conversion primitive, so a second explicit confirmation is required before any event is created, and the original task is never mutated.",
-          target: normalizeTarget(input.rawProposal.target),
-        });
-      }
-    } else {
-      // Slice 2B.1: checked before EVERY other gate below (including the
-      // "!initialTypeSupported" and generic "looks unsupported" checks
-      // right after this) -- this is a specific, nameable,
-      // deterministically classified ambiguity, never dependent on
-      // whatever the model's own raw type happened to be. Without this
-      // ordering, an unsupported/malformed model type OR
-      // requestLooksUnsupported's generic create/add-verb blocklist (a
-      // message like "create a task for tomorrow at 3pm" independently
-      // matches it) would intercept first and report a false capability
-      // denial instead of this honest question. Also distinct from the
-      // generic ask_clarification handler further below (which would use
-      // the wrong question text -- the model's own unrelated
-      // clarificationQuestion, or the generic fallback -- and a generic,
-      // non-distinguishing reason) and captures the model's own target
-      // (title/notes) so ChatPage.tsx's bounded, single-turn continuation
-      // can resume without re-deriving it.
-      return createSafeProposal("ask_clarification", {
-        userMessage: input.userMessage,
-        language: input.language,
-        now,
-        question: taskTimeClarificationMessage(input.language),
-        reasonMarker: TASK_TIME_CLARIFICATION_REASON_MARKER,
-        reason: "Explicit task request named a time-of-day, which tasks do not support -- clarification required before any execution intent.",
-        target: normalizeTarget(input.rawProposal.target),
-      });
     }
   }
   const normalizedByEvidence = type !== initialType;
@@ -1392,24 +1264,49 @@ export function validateAgentIntentProposal(input: {
   const target = type === "complete_task"
     ? deriveTaskCompletionTarget(input.safeContext, normalizeTarget(input.rawProposal.target), input.userMessage)
     : normalizeTarget(input.rawProposal.target);
-  // Task 22 / Slice 2B.1: when the explicit-task-time post-step (above)
-  // resolves to the calendar sibling (resolvedTaskTimeAmbiguityAs ===
-  // "calendar_with_time"), the model itself (or the captured target from
-  // the clarification turn) was never told to populate eventTitle/
-  // eventReference -- it populated title/taskReference, believing it was
-  // proposing a task. Bridge that naming gap here rather than silently
-  // failing calendar's own "eventTitle is required" check on a proposal
-  // that DID name a subject, just under the task-shaped field name.
-  // Blocker 2: applied BEFORE the eventTitle/eventReference bridge below
-  // so the original task's identity (taskId/taskReference/taskTitleHint)
-  // can never be bridged into the new event's identity -- this path only
-  // ever produces a NEW create_calendar_event (never an update), and the
-  // task it originated from is left completely untouched.
-  if (stripTaskIdentityForConversion && target) {
-    target.taskId = undefined;
-    target.taskReference = undefined;
-    target.taskTitleHint = undefined;
+  // Slice 2B.1.1: an UPDATE-worded task request that got routed to
+  // create_calendar_event above (an existing task, referenced by name,
+  // now carries a time) needs its NEW event's identity resolved from the
+  // REFERENCED TASK -- "no task identity bridged into event identity"
+  // (never update_calendar_event, never the task's own taskId/
+  // taskReference surviving onto the event) means resolving which task is
+  // meant here, taking its authoritative title, and then stripping the
+  // task's own identity entirely before this proposal is treated as any
+  // kind of calendar target below. The task itself is only ever READ here
+  // (findTaskTarget), never mutated. If the reference can't be resolved
+  // (missing or genuinely ambiguous), this fails closed with the SAME
+  // generic "exact task target is required" clarification update_task
+  // itself would use further down -- never a domain-choice question, and
+  // never a guess.
+  if (explicitTaskOperation === "update_task" && type === "create_calendar_event") {
+    const referencedTask = findTaskTarget(input.safeContext, target);
+    if (referencedTask.status !== "matched" || !referencedTask.task.id) {
+      return createSafeProposal("ask_clarification", {
+        userMessage: input.userMessage,
+        language: input.language,
+        now,
+        question: textFor(input.language, "clarify"),
+        reason: referencedTask.status === "ambiguous"
+          ? "Multiple matching tasks require clarification before scheduling this as a new calendar event."
+          : "Exact task target is required before scheduling this as a new calendar event.",
+      });
+    }
+    if (target) {
+      target.eventTitle = target.eventTitle || target.title || referencedTask.task.title;
+      target.taskId = undefined;
+      target.taskReference = undefined;
+      target.taskTitleHint = undefined;
+    }
   }
+  // Task 22: when a CREATE-worded task request resolves to the calendar
+  // sibling (explicit task noun + a concrete time -- see the
+  // scheduling-domain post-step above), the model was never told to
+  // populate eventTitle -- it populated title, believing it was proposing
+  // a task. Bridge that naming gap here rather than silently failing
+  // calendar's own "eventTitle is required" check on a proposal that DID
+  // name a subject, just under the task-shaped field name. Never reached
+  // for the update-worded case above (target.taskReference/title were
+  // already resolved and cleared by then).
   if ((type === "create_calendar_event" || type === "update_calendar_event") && target) {
     if (!target.eventTitle && target.title) target.eventTitle = target.title;
     if (!target.eventReference && target.taskReference) target.eventReference = target.taskReference;
