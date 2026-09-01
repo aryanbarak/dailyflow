@@ -32,18 +32,50 @@ Every training example carries explicit provenance:
 | `privacyStatus` | `unreviewed` \| `sanitized` \| `cleared_for_export` |
 | `createdAt` | ISO-8601 timestamp |
 
-### The privacy gate
+### `isExportableForTraining` — two separate gates, both required
 
-`source: 'synthetic'` examples (no real user data involved) are exportable
-unconditionally. Every other source (`real_user`, `corrected`,
-`execution_verified`) defaults to `privacyStatus: 'unreviewed'` and is
-**refused** for export by `isExportableForTraining()` until a human or
-process step explicitly moves it to `sanitized` or `cleared_for_export`.
+`isExportableForTraining(value)` accepts `unknown` and combines **three**
+independent checks, all of which must pass — a caller cannot skip any of
+them by asserting a type or by satisfying only one:
+
+1. **Structural validity.** The full `AiTrainingExampleV1` contract
+   (`collectAiTrainingExampleErrors`) must pass — a malformed runtime
+   object is never exportable merely because TypeScript typing was
+   bypassed. This also enforces `example.language === example.expectedOutput.language`:
+   an example cannot be categorized as one language while teaching the
+   model to output another.
+2. **Privacy.** `source: 'synthetic'` examples (no real user data
+   involved) skip this gate entirely — there is nothing to sanitize.
+   Every other source (`real_user`, `corrected`, `execution_verified`)
+   defaults to `privacyStatus: 'unreviewed'` and is refused until a human
+   or process step explicitly moves it to `sanitized` or
+   `cleared_for_export`.
+3. **Quality/truth — separate from privacy, and applies to EVERY source,
+   `synthetic` included.** `source: 'synthetic'` means "no real-user
+   privacy review required." **It does not mean "automatically trusted
+   ground truth."** A model/teacher-generated candidate label
+   (`confidence: 'candidate'`) is never training-exportable, for any
+   source — see ADR-0020 Decision item 6. Each source has its own minimum
+   confidence, compared by rank
+   (`candidate < validated < user_confirmed < execution_verified`):
+
+   | `source` | minimum `confidence` |
+   |---|---|
+   | `synthetic` | `validated` |
+   | `real_user` | `validated` |
+   | `corrected` | `user_confirmed` |
+   | `execution_verified` | `execution_verified` (exact — already the top tier) |
+
+   Confidence is compared by rank only; nothing here ever silently
+   upgrades a weaker confidence to satisfy a stronger requirement.
 
 **No automatic "all chats → training" exporter exists or is planned in
 this slice.** Building one — even one that calls `isExportableForTraining`
 correctly — is out of scope for ALF-0. This contract only defines the
-shape and the gate a future, explicitly-reviewed exporter must satisfy.
+shape and the gates a future, explicitly-reviewed exporter must satisfy.
+Teacher/model-generated examples, whatever their `source`, must be
+validated against every one of these gates before they may enter a
+training dataset.
 
 ## LoRA training harness (skeleton only)
 

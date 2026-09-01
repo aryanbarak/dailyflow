@@ -141,20 +141,44 @@ Three concrete gaps this slice closes:
    this slice or its data model persists that text a second time. Export
    for training is a distinct, later, explicitly curated step (item 6),
    never an automatic byproduct of the ledger itself.
-6. **Exported training datasets require explicit sanitization/curation.**
-   `shared/aiLearningTrainingExample.ts` defines a training-example
-   contract with its own `privacyStatus` field
+6. **Exported training datasets require explicit sanitization/curation
+   AND a minimum truth/confidence bar -- two separate, independently
+   enforced gates.** `shared/aiLearningTrainingExample.ts` defines a
+   training-example contract with its own `privacyStatus` field
    (`unreviewed` | `sanitized` | `cleared_for_export`), separate from and
    never automatically derived from the ledger. Real-user-sourced examples
    (`source` = `real_user` | `corrected` | `execution_verified`) default
    to `unreviewed` and are refused for export
    (`isExportableForTraining`) until a human/process step moves them past
-   that gate. `synthetic` examples (no real user data involved) are
-   export-ready unconditionally. No exporter that reads real chat data
-   and automatically produces training examples exists or is planned in
-   this slice -- see ADR-0020's Section 13 boundary and the task's own
-   explicit "do not build an automatic all-chats -> training exporter"
-   instruction.
+   that gate.
+   **`synthetic` examples bypass this real-user PRIVACY review, because
+   they contain no real-user data -- they do NOT bypass the separate
+   QUALITY/TRUTH gate below.** `source: 'synthetic'` means "no real-user
+   privacy review required"; it does not mean "automatically trusted
+   ground truth." A model/teacher-generated candidate label
+   (`confidence: 'candidate'`) is **never** training-exportable, for any
+   source, synthetic included -- `isExportableForTraining` additionally
+   requires each source's own minimum `AiLearningLabelConfidence`, by
+   rank (`candidate < validated < user_confirmed < execution_verified`):
+   `synthetic` and `real_user` require at least `validated`; `corrected`
+   requires at least `user_confirmed`; `execution_verified` (the source)
+   requires `execution_verified` confidence specifically. Confidence is
+   compared by rank only -- nothing here ever silently upgrades a weaker
+   confidence to satisfy a stronger requirement. `isExportableForTraining`
+   also validates the full example contract itself first (accepts
+   `unknown`, not a pre-typed value) so a malformed runtime object can
+   never become exportable merely because a caller bypassed TypeScript's
+   static typing, and separately requires `example.language` to match
+   `example.expectedOutput.language` (an example cannot be categorized as
+   one language while teaching the model to output another). No exporter
+   that reads real chat data and automatically produces training examples
+   exists or is planned in this slice -- see ADR-0020's Section 13
+   boundary and the task's own explicit "do not build an automatic
+   all-chats -> training exporter" instruction. Teacher/model-generated
+   examples (whatever their `source`) must be validated against every one
+   of these gates before they may enter a training dataset -- this is the
+   training-side enforcement of the same "a model prediction is never
+   truth" invariant Decision item 2 enforces on the ledger side.
 7. **Evaluation data and training data are permanently separate formats
    with no automatic promotion path.** The gold evaluation fixture
    (`ai/evals/intent-routing-v1/cases.jsonl`) and the training-example

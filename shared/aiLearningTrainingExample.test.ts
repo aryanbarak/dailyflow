@@ -64,23 +64,154 @@ describe("AiTrainingExampleV1 validation", () => {
   it("rejects a non-ISO createdAt", () => {
     expect(collectAiTrainingExampleErrors({ ...VALID_EXAMPLE, createdAt: "yesterday" }).length).toBeGreaterThan(0);
   });
+
+  // I. example.language='de', expectedOutput.language='fa' -> INVALID example.
+  describe("language/expectedOutput.language consistency (architectural review correction, round 3)", () => {
+    it("I: rejects an example whose own language does not match expectedOutput.language", () => {
+      const errors = collectAiTrainingExampleErrors({
+        ...VALID_EXAMPLE,
+        language: "de",
+        expectedOutput: { ...VALID_EXAMPLE.expectedOutput, language: "fa" },
+      });
+      expect(errors.length).toBeGreaterThan(0);
+      expect(errors.some((e) => e.includes("language") && e.includes("expectedOutput.language"))).toBe(true);
+    });
+
+    it("accepts an example whose language matches expectedOutput.language", () => {
+      expect(collectAiTrainingExampleErrors(VALID_EXAMPLE)).toEqual([]);
+    });
+  });
 });
 
-describe("isExportableForTraining (the one privacy gate ALF-0 builds)", () => {
-  it("synthetic examples are always exportable, regardless of privacyStatus", () => {
-    expect(isExportableForTraining({ ...VALID_EXAMPLE, source: "synthetic", privacyStatus: "unreviewed" })).toBe(true);
+// ARCHITECTURAL REVIEW CORRECTION (round 3): isExportableForTraining now
+// enforces THREE independent gates -- structural validity, privacy, and
+// quality/truth (minimum confidence per source) -- see the function's own
+// header comment in aiLearningTrainingExample.ts for the full contract.
+// "synthetic" bypasses the real-user PRIVACY review (no real user data
+// was ever involved), but it does NOT bypass the QUALITY/TRUTH gate: a
+// model/teacher-generated 'candidate' label is never training-exportable,
+// regardless of source.
+describe("isExportableForTraining", () => {
+  describe("quality/truth gate: candidate confidence is never exportable, for any source", () => {
+    // A. synthetic + candidate + unreviewed -> NOT exportable.
+    it("A: synthetic + candidate + unreviewed -> NOT exportable", () => {
+      expect(isExportableForTraining({ ...VALID_EXAMPLE, source: "synthetic", confidence: "candidate", privacyStatus: "unreviewed" })).toBe(false);
+    });
+
+    // B. synthetic + validated + unreviewed -> exportable (privacy gate
+    // skipped entirely for synthetic; quality gate satisfied).
+    it("B: synthetic + validated + unreviewed -> exportable", () => {
+      expect(isExportableForTraining({ ...VALID_EXAMPLE, source: "synthetic", confidence: "validated", privacyStatus: "unreviewed" })).toBe(true);
+    });
+
+    // C. real_user + candidate + sanitized -> NOT exportable (privacy ok,
+    // quality gate fails).
+    it("C: real_user + candidate + sanitized -> NOT exportable", () => {
+      expect(isExportableForTraining({ ...VALID_EXAMPLE, source: "real_user", confidence: "candidate", privacyStatus: "sanitized" })).toBe(false);
+    });
+
+    // D. real_user + validated + sanitized -> exportable.
+    it("D: real_user + validated + sanitized -> exportable", () => {
+      expect(isExportableForTraining({ ...VALID_EXAMPLE, source: "real_user", confidence: "validated", privacyStatus: "sanitized" })).toBe(true);
+    });
+
+    // E. corrected + validated + sanitized -> NOT exportable (validated
+    // is below corrected's user_confirmed minimum).
+    it("E: corrected + validated + sanitized -> NOT exportable", () => {
+      expect(isExportableForTraining({ ...VALID_EXAMPLE, source: "corrected", confidence: "validated", privacyStatus: "sanitized" })).toBe(false);
+    });
+
+    // F. corrected + user_confirmed + sanitized -> exportable.
+    it("F: corrected + user_confirmed + sanitized -> exportable", () => {
+      expect(isExportableForTraining({ ...VALID_EXAMPLE, source: "corrected", confidence: "user_confirmed", privacyStatus: "sanitized" })).toBe(true);
+    });
+
+    // G. execution_verified + user_confirmed + cleared_for_export -> NOT
+    // exportable (execution_verified source requires execution_verified
+    // confidence specifically, not merely "high").
+    it("G: execution_verified + user_confirmed + cleared_for_export -> NOT exportable", () => {
+      expect(isExportableForTraining({ ...VALID_EXAMPLE, source: "execution_verified", confidence: "user_confirmed", privacyStatus: "cleared_for_export" })).toBe(false);
+    });
+
+    // H. execution_verified + execution_verified + cleared_for_export ->
+    // exportable.
+    it("H: execution_verified + execution_verified + cleared_for_export -> exportable", () => {
+      expect(isExportableForTraining({ ...VALID_EXAMPLE, source: "execution_verified", confidence: "execution_verified", privacyStatus: "cleared_for_export" })).toBe(true);
+    });
   });
 
-  it("real_user/corrected/execution_verified examples are NOT exportable while unreviewed", () => {
-    for (const source of ["real_user", "corrected", "execution_verified"] as const) {
-      expect(isExportableForTraining({ ...VALID_EXAMPLE, source, privacyStatus: "unreviewed" })).toBe(false);
-    }
+  describe("privacy gate: unreviewed real-user-derived examples are refused regardless of confidence", () => {
+    it("real_user/corrected/execution_verified examples are NOT exportable while unreviewed, even with maximal confidence", () => {
+      expect(isExportableForTraining({ ...VALID_EXAMPLE, source: "real_user", confidence: "validated", privacyStatus: "unreviewed" })).toBe(false);
+      expect(isExportableForTraining({ ...VALID_EXAMPLE, source: "corrected", confidence: "user_confirmed", privacyStatus: "unreviewed" })).toBe(false);
+      expect(isExportableForTraining({ ...VALID_EXAMPLE, source: "execution_verified", confidence: "execution_verified", privacyStatus: "unreviewed" })).toBe(false);
+    });
+
+    it("real_user/corrected/execution_verified examples become exportable once BOTH privacy and confidence requirements are met", () => {
+      expect(isExportableForTraining({ ...VALID_EXAMPLE, source: "real_user", confidence: "validated", privacyStatus: "sanitized" })).toBe(true);
+      expect(isExportableForTraining({ ...VALID_EXAMPLE, source: "real_user", confidence: "validated", privacyStatus: "cleared_for_export" })).toBe(true);
+      expect(isExportableForTraining({ ...VALID_EXAMPLE, source: "corrected", confidence: "user_confirmed", privacyStatus: "sanitized" })).toBe(true);
+      expect(isExportableForTraining({ ...VALID_EXAMPLE, source: "corrected", confidence: "user_confirmed", privacyStatus: "cleared_for_export" })).toBe(true);
+      expect(isExportableForTraining({ ...VALID_EXAMPLE, source: "execution_verified", confidence: "execution_verified", privacyStatus: "sanitized" })).toBe(true);
+      expect(isExportableForTraining({ ...VALID_EXAMPLE, source: "execution_verified", confidence: "execution_verified", privacyStatus: "cleared_for_export" })).toBe(true);
+    });
+
+    it("privacy being satisfied does not bypass the quality gate -- corrected+sanitized still needs at least user_confirmed", () => {
+      expect(isExportableForTraining({ ...VALID_EXAMPLE, source: "corrected", confidence: "candidate", privacyStatus: "cleared_for_export" })).toBe(false);
+      expect(isExportableForTraining({ ...VALID_EXAMPLE, source: "corrected", confidence: "validated", privacyStatus: "cleared_for_export" })).toBe(false);
+    });
   });
 
-  it("real_user/corrected/execution_verified examples become exportable once sanitized or cleared_for_export", () => {
-    for (const source of ["real_user", "corrected", "execution_verified"] as const) {
-      expect(isExportableForTraining({ ...VALID_EXAMPLE, source, privacyStatus: "sanitized" })).toBe(true);
-      expect(isExportableForTraining({ ...VALID_EXAMPLE, source, privacyStatus: "cleared_for_export" })).toBe(true);
+  // I. example.language='de', expectedOutput.language='fa' -> invalid
+  // example, therefore NOT exportable (structural validity gate catches
+  // this before privacy/quality are ever considered).
+  it("I: an example with mismatched language/expectedOutput.language is NOT exportable, even with maximal privacy and confidence", () => {
+    const mismatched = {
+      ...VALID_EXAMPLE,
+      source: "synthetic" as const,
+      confidence: "validated" as const,
+      privacyStatus: "cleared_for_export" as const,
+      language: "de" as const,
+      expectedOutput: { ...VALID_EXAMPLE.expectedOutput, language: "fa" as const },
+    };
+    expect(isValidAiTrainingExample(mismatched)).toBe(false);
+    expect(isExportableForTraining(mismatched)).toBe(false);
+  });
+
+  // J. malformed runtime object -> NOT exportable, never throws.
+  describe("J: a malformed runtime object is never exportable, even if TypeScript typing was bypassed", () => {
+    it("rejects null, a string, an array, and an empty object", () => {
+      expect(isExportableForTraining(null)).toBe(false);
+      expect(isExportableForTraining("not an example")).toBe(false);
+      expect(isExportableForTraining([])).toBe(false);
+      expect(isExportableForTraining({})).toBe(false);
+    });
+
+    it("rejects an object missing required fields even though it superficially resembles an example", () => {
+      const { createdAt: _omit, ...missingCreatedAt } = VALID_EXAMPLE;
+      expect(isExportableForTraining(missingCreatedAt)).toBe(false);
+    });
+
+    it("rejects an object with a bogus confidence/source/privacyStatus value", () => {
+      expect(isExportableForTraining({ ...VALID_EXAMPLE, confidence: "super-duper-sure" })).toBe(false);
+      expect(isExportableForTraining({ ...VALID_EXAMPLE, source: "made_up_source" })).toBe(false);
+      expect(isExportableForTraining({ ...VALID_EXAMPLE, privacyStatus: "trust_me" })).toBe(false);
+    });
+
+    it("never throws for any of the above", () => {
+      expect(() => isExportableForTraining(null)).not.toThrow();
+      expect(() => isExportableForTraining(undefined)).not.toThrow();
+      expect(() => isExportableForTraining(42)).not.toThrow();
+    });
+  });
+
+  it("narrows its argument to AiTrainingExampleV1 on true (usable as a type guard)", () => {
+    const value: unknown = VALID_EXAMPLE;
+    if (isExportableForTraining(value)) {
+      // Compiles only if `value` is narrowed to AiTrainingExampleV1 here.
+      expect(value.exampleId).toBe("ex-1");
+    } else {
+      throw new Error("expected VALID_EXAMPLE to be exportable");
     }
   });
 });

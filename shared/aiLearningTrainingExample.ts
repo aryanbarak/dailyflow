@@ -2,9 +2,12 @@
 // from the gold evaluation fixture (ai/evals/intent-routing-v1/), per
 // ADR-0020 Decision: evaluation data must never automatically become
 // training data. See ai/training/README.md for the export/curation
-// process this type feeds; this file only defines the shape and the one
-// privacy gate every real-user example must pass before it can be
-// exported for training.
+// process this type feeds; this file defines the shape and the gates
+// every example must pass before it can be exported for training --
+// PRIVACY (real-user data must be sanitized/cleared first) and, SEPARATELY,
+// QUALITY/TRUTH (a model/teacher-generated candidate label is never
+// training-exportable, for any source, synthetic included -- see
+// isExportableForTraining's own header comment below).
 //
 // SHARED-MODULE CONSTRAINT: same as shared/aiLearning.ts -- plain data
 // plus pure functions, importable by both the Worker and (in a future
@@ -18,13 +21,15 @@ import {
   collectIntentRoutingLearningPayloadErrors,
   isAiLearningLabelConfidence,
   isAiLearningTask,
+  AI_LEARNING_LABEL_CONFIDENCES,
   AI_LEARNING_LANGUAGES,
 } from './aiLearning'
 
-// Where an example's input/expected-output pair came from. Only
-// 'synthetic' examples may be exported for training with no further
-// review -- every other source carries real user data or a real user
-// decision and must pass an explicit privacy gate first (see
+// Where an example's input/expected-output pair came from. 'synthetic'
+// examples skip the PRIVACY review below (no real user data involved) but
+// still must meet the QUALITY/TRUTH confidence gate like every other
+// source -- every non-synthetic source additionally carries real user
+// data or a real user decision and must pass the privacy gate too (see
 // isExportableForTraining below).
 export const AI_TRAINING_EXAMPLE_SOURCES = ['synthetic', 'real_user', 'corrected', 'execution_verified'] as const
 export type AiTrainingExampleSource = typeof AI_TRAINING_EXAMPLE_SOURCES[number]
@@ -86,6 +91,15 @@ export function collectAiTrainingExampleErrors(value: unknown): string[] {
   for (const error of collectIntentRoutingLearningPayloadErrors(value.expectedOutput)) {
     errors.push(`expectedOutput: ${error}`)
   }
+  // ARCHITECTURAL REVIEW CORRECTION (round 3): a training example's own
+  // `language` field must match what it is teaching the model to output
+  // (`expectedOutput.language`) -- an example categorized as German while
+  // its expected output says language='fa' is internally inconsistent
+  // and must never validate, regardless of how the two fields were
+  // populated.
+  if (isRecord(value.expectedOutput) && value.language !== value.expectedOutput.language) {
+    errors.push(`language (${JSON.stringify(value.language)}) must match expectedOutput.language (${JSON.stringify(value.expectedOutput.language)}) -- an example cannot be categorized as one language while teaching the model to output another`)
+  }
   if (!isAiLearningLabelConfidence(value.confidence)) {
     errors.push('confidence must be a known AiLearningLabelConfidence')
   }
@@ -102,18 +116,65 @@ export function isValidAiTrainingExample(value: unknown): value is AiTrainingExa
   return collectAiTrainingExampleErrors(value).length === 0
 }
 
-// The one privacy gate this slice builds (ADR-0020 Decision: "personal
-// secrets/profile data must not be baked into LoRA merely because they
-// appeared in chat"; "for real-user examples, privacy status must be
-// explicit before export"). 'synthetic' examples never touched real user
-// data, so they pass unconditionally. Every other source requires an
-// explicit human/process step to have already moved privacyStatus past
-// 'unreviewed' -- this function does not do that step itself, it only
-// refuses to treat an unreviewed example as export-ready. No exporter
-// exists yet in ALF-0 that calls this against real data; it exists so a
-// future exporter has one place to enforce the gate rather than each
-// call site inventing its own check.
-export function isExportableForTraining(example: AiTrainingExampleV1): boolean {
-  if (example.source === 'synthetic') return true
-  return example.privacyStatus === 'sanitized' || example.privacyStatus === 'cleared_for_export'
+// ARCHITECTURAL REVIEW CORRECTION (round 3): confidence rank, derived
+// from AI_LEARNING_LABEL_CONFIDENCES' own declared order (candidate <
+// validated < user_confirmed < execution_verified) -- a single source of
+// truth, never a second hand-maintained ordering that could drift from
+// shared/aiLearning.ts's own.
+const CONFIDENCE_RANK: Record<AiLearningLabelConfidence, number> = Object.fromEntries(
+  AI_LEARNING_LABEL_CONFIDENCES.map((confidence, index) => [confidence, index] as const),
+) as Record<AiLearningLabelConfidence, number>
+
+// The QUALITY/TRUTH gate (ADR-0020: a model prediction is never truth),
+// SEPARATE from and in addition to the privacy gate below.
+// `source: 'synthetic'` means "no real-user data, so no privacy review is
+// required" -- it does NOT mean "automatically trusted ground truth."
+// A model/teacher-generated candidate label (confidence: 'candidate')
+// can never satisfy any source's minimum here, so it can never become
+// training-exportable no matter how the example was sourced.
+// 'execution_verified' as a SOURCE requires 'execution_verified'
+// confidence specifically -- since that is already the strongest tier,
+// this is effectively an exact-match requirement (a weaker confidence on
+// an execution_verified-sourced example means the outcome verification
+// itself did not actually happen, which is internally inconsistent and
+// must not be trusted regardless of source label).
+const SOURCE_MINIMUM_CONFIDENCE: Record<AiTrainingExampleSource, AiLearningLabelConfidence> = {
+  synthetic: 'validated',
+  real_user: 'validated',
+  corrected: 'user_confirmed',
+  execution_verified: 'execution_verified',
+}
+
+// Combines THREE independent gates, all of which must pass:
+//   1. STRUCTURAL VALIDITY -- the full AiTrainingExampleV1 contract
+//      (collectAiTrainingExampleErrors/isValidAiTrainingExample), so a
+//      malformed runtime object can never become exportable merely
+//      because a caller bypassed TypeScript's static typing. Accepts
+//      `unknown`, not a pre-typed AiTrainingExampleV1, precisely so a
+//      caller cannot skip this step by asserting a type.
+//   2. PRIVACY (ADR-0020: "personal secrets/profile data must not be
+//      baked into LoRA merely because they appeared in chat"; "for
+//      real-user examples, privacy status must be explicit before
+//      export"). 'synthetic' examples never touched real user data, so
+//      this gate is skipped for them entirely. Every other source
+//      requires an explicit human/process step to have already moved
+//      privacyStatus past 'unreviewed'.
+//   3. QUALITY/TRUTH (SOURCE_MINIMUM_CONFIDENCE above) -- applies to
+//      EVERY source, 'synthetic' included. Confidence is compared by
+//      RANK ONLY; nothing here ever silently upgrades a weaker
+//      confidence to satisfy a stronger requirement.
+// No exporter exists yet in ALF-0 that calls this against real data; it
+// exists so a future exporter has one place to enforce every gate rather
+// than each call site inventing (and potentially forgetting) its own.
+export function isExportableForTraining(value: unknown): value is AiTrainingExampleV1 {
+  if (!isValidAiTrainingExample(value)) return false
+
+  if (value.source !== 'synthetic') {
+    if (value.privacyStatus !== 'sanitized' && value.privacyStatus !== 'cleared_for_export') {
+      return false
+    }
+  }
+
+  const requiredMinimum = SOURCE_MINIMUM_CONFIDENCE[value.source]
+  return CONFIDENCE_RANK[value.confidence] >= CONFIDENCE_RANK[requiredMinimum]
 }
