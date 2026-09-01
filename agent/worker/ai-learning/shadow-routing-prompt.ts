@@ -12,6 +12,7 @@ import {
   type IntentRoutingLearningPayloadV1,
 } from '../../../shared/aiLearning'
 import { isAllowedShadowIntentType, isAllowedShadowToolId } from './shadow-vocabulary'
+import { isSemanticallyConsistentRoutingPayload } from './shadow-semantic-consistency'
 
 // Bounded on purpose (matches "small bounded max output tokens" -- see
 // the Workers AI adapter's own use of this).
@@ -69,12 +70,15 @@ function stripCodeFence(text: string): string {
 // SAME canonical shared ALF-0 validator every other event in this codebase
 // uses (shared/aiLearning.ts's collectIntentRoutingLearningPayloadErrors)
 // -- there is no separate, weaker acceptance rule for shadow output's
-// STRUCTURE. A SECOND, Shadow-only gate follows (ALF-1A correction round
-// 2, item 1): intentType/toolId are freeform at the generic contract
-// level, which is not safe enough for a model that has just seen the raw
-// user message -- see shadow-vocabulary.ts's own header comment for why
-// this lives here, as an allowlist, rather than loosely trusting any
-// non-empty string the model returns.
+// STRUCTURE. Two Shadow-only gates follow: intentType/toolId are freeform
+// at the generic contract level, which is not safe enough for a model
+// that has just seen the raw user message -- ALF-1A correction round 2
+// added the ALLOWLIST gate (shadow-vocabulary.ts: is this individual
+// value even a known routing outcome), and ALF-1B adds the CONSISTENCY
+// gate (shadow-semantic-consistency.ts: do the fields that ARE present
+// combine into something that could ever actually happen, e.g. rejecting
+// domain="tasks" paired with toolId="calendar.create_event" even though
+// both values are individually legal).
 export function parseShadowRoutingOutput(rawText: string): ShadowRoutingOutputParseResult {
   let parsed: unknown
   try {
@@ -89,6 +93,9 @@ export function parseShadowRoutingOutput(rawText: string): ShadowRoutingOutputPa
     return { ok: false, reason: 'schema_invalid' }
   }
   if (payload.toolId !== undefined && !isAllowedShadowToolId(payload.toolId)) {
+    return { ok: false, reason: 'schema_invalid' }
+  }
+  if (!isSemanticallyConsistentRoutingPayload(payload)) {
     return { ok: false, reason: 'schema_invalid' }
   }
   return { ok: true, payload }

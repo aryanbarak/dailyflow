@@ -35,6 +35,23 @@
 // each already its own reviewed artifact) and automatically flows through
 // here -- this module deliberately holds no second, independently
 // maintained copy of the write half of this vocabulary.
+//
+// ALF-1B DECISION (resolves a prior non-blocking concern, documented not
+// silently changed): scoped to `exposure === 'chat'` registry entries
+// ONLY. `writeIntentRegistry.ts`'s own `exposure` field distinguishes
+// intents the reasoning/chat layer may ever propose ('chat') from intents
+// that exist only for a UI-driven flow with no legitimate chat-message
+// origin ('ui-only' -- today, only `import_bank_statement`, reachable
+// solely via an already-server-validated file upload, see that registry
+// entry's own header comment). A live Chat message can never legitimately
+// route to a ui-only intent, so a Shadow model predicting one is never
+// "a plausible answer the model happened to get wrong" -- it is
+// necessarily wrong by construction, the same way an intentType the
+// registry has never heard of is. Excluding ui-only entries here keeps
+// that failure mode caught at the SAME allowlist gate as any other
+// unaudited value, rather than silently accepted as a structurally legal
+// (if never-actually-correct) prediction. See ADR-0022's own note on this
+// decision, and shadow-vocabulary.test.ts's explicit coverage of it.
 
 import { writeIntentRegistry, type WriteIntentToolId, type WriteIntentType } from '../../../shared/writeIntentRegistry'
 
@@ -50,8 +67,9 @@ const SHADOW_ALLOWED_NON_WRITE_INTENT_TYPES = [
   'unsupported_request',
 ] as const
 
-const WRITE_INTENT_TYPES: readonly WriteIntentType[] = writeIntentRegistry.map((entry) => entry.intentType)
-const WRITE_TOOL_IDS: readonly WriteIntentToolId[] = writeIntentRegistry.map((entry) => entry.toolId)
+const CHAT_EXPOSED_ENTRIES = writeIntentRegistry.filter((entry) => entry.exposure === 'chat')
+const WRITE_INTENT_TYPES: readonly WriteIntentType[] = CHAT_EXPOSED_ENTRIES.map((entry) => entry.intentType)
+const WRITE_TOOL_IDS: readonly WriteIntentToolId[] = CHAT_EXPOSED_ENTRIES.map((entry) => entry.toolId)
 
 export const SHADOW_ALLOWED_INTENT_TYPES: readonly string[] = [
   ...WRITE_INTENT_TYPES,
