@@ -2,6 +2,7 @@ import { tasksService, TaskServiceError } from "@/features/tasks/tasksService";
 import type {
   AgentWriteToolExecutionResult,
   AgentWriteToolHandler,
+  ExecutionContext,
   ExecutionError,
   ExecutionInputValidationResult,
 } from "../executionTypes";
@@ -90,7 +91,18 @@ export const tasksCompleteHandler: AgentWriteToolHandler<TasksCompleteHandlerOut
   validateInput(input: unknown, _schema: readonly AgentToolSchemaField[]) {
     return validateTasksCompleteInput(input);
   },
-  async execute(input: Record<string, unknown>) {
+  // Chat V2 Slice 2A / BLOCKER A CORRECTION: only the actual completion
+  // WRITE (below) ever routed through the Worker's server-owned execution
+  // lifecycle -- the already-completed check just above it is a plain read
+  // (ADR-0004: reads are non-consequential) and stays exactly as it was,
+  // client or no client. The write itself now has NO direct-write fallback:
+  // when no agentToolExecutionClient is present, that is a bounded failure,
+  // never a silent tasksService.completeTask call. This handler is called
+  // only after this tool's OWN, separate, pre-existing ExecutionIntent
+  // ceremony (executionIntent.ts/approvalInteraction.ts's
+  // shouldIssueExecutionIntentApproval) has already run and is untouched by
+  // this slice -- see this slice's own report for why that stays intact.
+  async execute(input: Record<string, unknown>, context: ExecutionContext = {}) {
     const validation = validateTasksCompleteInput(input);
     if (!validation.valid) {
       return failure("invalid_input", "INVALID_INPUT", "tasks.complete input failed validation.");
@@ -144,29 +156,33 @@ export const tasksCompleteHandler: AgentWriteToolHandler<TasksCompleteHandlerOut
         };
       }
 
-      const completed = await tasksService.completeTask(userId, taskId);
-      const verifiedReadback = await tasksService.getTaskForUser(userId, taskId);
-      const completedAt = completed.completedAt ?? null;
-
-      const verified =
-        completed.id === taskId &&
-        verifiedReadback.id === taskId &&
-        completed.completed === true &&
-        verifiedReadback.completed === true &&
-        typeof completedAt === "string" &&
-        completedAt.length > 0 &&
-        verifiedReadback.completedAt === completedAt;
-
-      if (!verified) {
+      // BLOCKER 1 CORRECTION: the request that durably creates the row now
+      // happens BEFORE approval; context.pendingAgentExecutionId already
+      // names it here -- approveExecution() sends nothing else.
+      if (!context.agentToolExecutionClient || !context.pendingAgentExecutionId) {
         return {
-          ...failure("verification_failed", "VERIFICATION_FAILED", "Task completion could not be verified.", taskId),
-          compensation: {
-            taskId,
-            previousCompleted: before.completed,
-            previousCompletedAt: before.completedAt ?? null,
-          },
+          ...failure("failed", "AGENT_EXECUTION_NOT_REQUESTED", "Server-owned execution was not requested before approval.", taskId),
+          compensation: { taskId, previousCompleted: before.completed, previousCompletedAt: before.completedAt ?? null },
         };
       }
+
+      let outcome: Awaited<ReturnType<typeof context.agentToolExecutionClient.approveExecution>>;
+      try {
+        outcome = await context.agentToolExecutionClient.approveExecution(context.pendingAgentExecutionId);
+      } catch (caught) {
+        const error = caught as Partial<ExecutionError>;
+        return {
+          ...failure("failed", typeof error.code === "string" ? error.code : "TASK_COMPLETE_FAILED", typeof error.message === "string" ? error.message : "Unable to complete task.", taskId),
+          compensation: { taskId, previousCompleted: before.completed, previousCompletedAt: before.completedAt ?? null },
+        };
+      }
+      if (outcome.status !== "succeeded" || !outcome.completedAt) {
+        return {
+          ...failure(outcome.status === "succeeded" ? "verification_failed" : "failed", outcome.errorCode ?? "TASK_COMPLETE_FAILED", outcome.reply || "Unable to complete task.", taskId),
+          compensation: { taskId, previousCompleted: before.completed, previousCompletedAt: before.completedAt ?? null },
+        };
+      }
+      const completedAt = outcome.completedAt;
 
       const data: TasksCompleteHandlerOutput = Object.freeze({
         taskId,

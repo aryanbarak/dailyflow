@@ -795,6 +795,14 @@ const en = {
   agent_intent_complete_task: 'Complete task',
   agent_intent_rejected: 'This action was rejected.',
   agent_intent_no_runtime: 'No safe runtime action is available yet.',
+  // Chat V2 Slice 2A, BLOCKER A CORRECTION: shown while a pre-approval
+  // requestWriteExecution() call is still in flight -- the approve action
+  // is disabled during this window (see ChatPage.tsx's isExecutionBindingReady).
+  agent_intent_preparing: 'Preparing...',
+  // Shown when the pre-approval request itself could not be completed
+  // (network/auth/policy failure before any durable row existed) -- the
+  // proposal can never be approved from this state.
+  agent_intent_execution_request_failed: 'This action could not be prepared. Please try again.',
   agent_intent_mode: 'Mode',
   agent_intent_mode_read: 'Read-only',
   agent_intent_mode_write: 'Approval required',
@@ -1893,6 +1901,8 @@ const de: TranslationDict = {
   agent_intent_complete_task: 'Aufgabe abschliessen',
   agent_intent_rejected: 'Diese Aktion wurde abgelehnt.',
   agent_intent_no_runtime: 'Noch ist keine sichere Laufzeitaktion verfuegbar.',
+  agent_intent_preparing: 'Wird vorbereitet...',
+  agent_intent_execution_request_failed: 'Diese Aktion konnte nicht vorbereitet werden. Bitte versuche es erneut.',
   agent_intent_mode: 'Modus',
   agent_intent_mode_read: 'Nur Lesen',
   agent_intent_mode_write: 'Genehmigung noetig',
@@ -2917,6 +2927,8 @@ const fa: TranslationDict = {
   agent_intent_complete_task: 'تکمیل وظیفه',
   agent_intent_rejected: 'این اقدام رد شد.',
   agent_intent_no_runtime: 'هنوز اقدام اجرایی ایمنی در دسترس نیست.',
+  agent_intent_preparing: 'در حال آماده‌سازی...',
+  agent_intent_execution_request_failed: 'این اقدام آماده نشد. لطفاً دوباره تلاش کنید.',
   agent_intent_mode: 'حالت',
   agent_intent_mode_read: 'فقط خواندنی',
   agent_intent_mode_write: 'نیازمند تایید',

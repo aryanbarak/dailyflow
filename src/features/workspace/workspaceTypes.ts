@@ -335,6 +335,16 @@ export interface WorkspaceStepApproval {
   // Present only for a code-change proposal. Absent for every other tool.
   codeProposalBinding?: WorkspaceCodeProposalBinding;
   executionIntentApprovalId?: string;
+  // Chat V2 Slice 2A, Blocker 1 correction: the durable
+  // agent_tool_executions row id a pre-approval
+  // agentToolExecutionClient.requestExecution() call already created for
+  // this exact proposal, before the user ever approved it -- see
+  // writeRuntime.ts's requestWriteExecution and ChatPage.tsx's own wiring.
+  // Set on the PENDING approval as soon as that request resolves; must
+  // survive cloneApproval's approved/rejected clone (approvalInteraction.ts)
+  // unchanged, since it identifies a specific already-existing server row,
+  // not something the approval decision itself produces.
+  serverExecutionId?: string;
 }
 
 export interface WorkspaceApprovalModel {

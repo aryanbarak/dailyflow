@@ -532,8 +532,11 @@ describe("ChatPage LLM reasoning UX boundary", () => {
       expect(states[1].result).toBe(candidateB);
       // Each is built via the exact same proposalToState path a lone
       // proposal uses -- proven by comparing against calling it directly.
-      expect(states[0]).toEqual(proposalToState(candidateA, t));
-      expect(states[1]).toEqual(proposalToState(candidateB, t));
+      // The candidateIndex argument (0/1) must match proposalsToStates' own
+      // per-candidate index -- see proposalToState's own comment on why
+      // (each disambiguation candidate needs its own distinct requestId).
+      expect(states[0]).toEqual(proposalToState(candidateA, t, 0));
+      expect(states[1]).toEqual(proposalToState(candidateB, t, 1));
     } finally {
       vi.useRealTimers();
     }
@@ -549,6 +552,7 @@ describe("ChatPage LLM reasoning UX boundary", () => {
           resolution: resolution("tasks.list"),
           approval: null,
           runStatus: "idle",
+          requestId: "req-test-1",
         }}
         onRunReadOnly={onRunReadOnly}
         onReviewApproval={vi.fn()}
@@ -585,6 +589,7 @@ describe("ChatPage LLM reasoning UX boundary", () => {
           resolution: resolution("tasks.complete"),
           approval: approval("pending"),
           runStatus: "approval_required",
+          requestId: "req-test-2",
         }}
         onRunReadOnly={vi.fn()}
         onReviewApproval={vi.fn()}
@@ -600,6 +605,7 @@ describe("ChatPage LLM reasoning UX boundary", () => {
           resolution: resolution("tasks.complete"),
           approval: approval("approved"),
           runStatus: "approved",
+          requestId: "req-test-3",
         }}
         onRunReadOnly={vi.fn()}
         onReviewApproval={vi.fn()}
@@ -676,6 +682,136 @@ describe("ChatPage LLM reasoning UX boundary", () => {
     expect(approvedHtml).toContain("Add a GitHub issue comment");
     expect(approvedHtml).not.toContain(">Complete task<");
     expect(approvedHtml).not.toContain("Run github.issues.comment");
+  });
+
+  // Chat V2 Slice 2A, FINAL BINDING/UNCERTAIN CORRECTION, BLOCKER A: the
+  // user must not be able to approve a server-execution-backed proposal
+  // (tasks.complete is one of the five) while its pre-approval
+  // requestWriteExecution() binding is still unresolved. tasks.complete
+  // reuses the exact same complete_task/approval fixtures the "shows the
+  // one-click confirm button" test above already established.
+  it("BLOCKER A: the one-click confirm and Review buttons are disabled while the execution binding is still in flight ('requesting'), and become enabled once bound ('approval_pending')", () => {
+    const requestingHtml = renderToString(
+      <ReasoningProposalCard
+        proposal={{
+          result: reasoningResult("complete_task"),
+          step: step("complete_task"),
+          resolution: resolution("tasks.complete"),
+          approval: approval("pending"),
+          runStatus: "approval_required",
+          requestId: "req-blocker-a-1",
+          executionRequestStatus: "requesting",
+        }}
+        onRunReadOnly={vi.fn()}
+        onReviewApproval={vi.fn()}
+        onRunWrite={vi.fn()}
+        onConfirmAndRunWrite={vi.fn()}
+      />,
+    );
+    // The row is still shown (not hidden -- the user sees something is
+    // happening), but neither button is executable: the confirm button
+    // shows the "preparing" label and both carry `disabled`.
+    expect(requestingHtml).toContain("Preparing...");
+    expect(requestingHtml).toMatch(/<button[^>]*disabled=""[^>]*>Preparing\.\.\.<\/button>/);
+    expect(requestingHtml).toMatch(/Review approval<\/button>/);
+    const reviewButtonMatch = /<button[^>]*disabled=""[^>]*>\s*Review approval\s*<\/button>/;
+    expect(requestingHtml).toMatch(reviewButtonMatch);
+
+    const boundHtml = renderToString(
+      <ReasoningProposalCard
+        proposal={{
+          result: reasoningResult("complete_task"),
+          step: step("complete_task"),
+          resolution: resolution("tasks.complete"),
+          approval: { ...approval("pending"), serverExecutionId: "exec-bound-1" },
+          runStatus: "approval_required",
+          requestId: "req-blocker-a-1",
+          executionRequestStatus: "approval_pending",
+        }}
+        onRunReadOnly={vi.fn()}
+        onReviewApproval={vi.fn()}
+        onRunWrite={vi.fn()}
+        onConfirmAndRunWrite={vi.fn()}
+      />,
+    );
+    expect(boundHtml).not.toContain("Preparing...");
+    expect(boundHtml).toContain(">Complete task</button>");
+    expect(boundHtml).not.toMatch(/<button[^>]*disabled=""[^>]*>\s*Review approval\s*<\/button>/);
+  });
+
+  // BLOCKER C: server policy may resolve 'auto' and execute the write
+  // during the pre-approval request call itself -- the proposal must never
+  // show an approval affordance for a write that has already concluded,
+  // and must show the authoritative outcome instead.
+  it("BLOCKER C: a terminal auto-resolved 'succeeded' outcome hides every approval affordance and shows the authoritative reply, with the success indicator", () => {
+    const html = renderToString(
+      <ReasoningProposalCard
+        proposal={{
+          result: reasoningResult("complete_task"),
+          step: step("complete_task"),
+          resolution: resolution("tasks.complete"),
+          approval: approval("pending"),
+          runStatus: "success",
+          requestId: "req-blocker-c-1",
+          executionRequestStatus: "succeeded",
+          executionRequestReply: "✓ Task completed: Submit application",
+        }}
+        onRunReadOnly={vi.fn()}
+        onReviewApproval={vi.fn()}
+        onRunWrite={vi.fn()}
+        onConfirmAndRunWrite={vi.fn()}
+      />,
+    );
+    expect(html).not.toContain("Review approval");
+    expect(html).not.toContain("Preparing...");
+    expect(html).not.toContain(">Complete task</button>");
+    expect(html).toContain("Task completed: Submit application");
+  });
+
+  it("BLOCKER C: terminal auto-resolved 'failed' and 'uncertain' outcomes also hide every approval affordance and show the bounded reply, never offering a retry", () => {
+    const failedHtml = renderToString(
+      <ReasoningProposalCard
+        proposal={{
+          result: reasoningResult("complete_task"),
+          step: step("complete_task"),
+          resolution: resolution("tasks.complete"),
+          approval: approval("pending"),
+          runStatus: "approval_required",
+          requestId: "req-blocker-c-2",
+          executionRequestStatus: "failed",
+          executionRequestReply: "I could not find that task.",
+        }}
+        onRunReadOnly={vi.fn()}
+        onReviewApproval={vi.fn()}
+        onRunWrite={vi.fn()}
+        onConfirmAndRunWrite={vi.fn()}
+      />,
+    );
+    expect(failedHtml).not.toContain("Review approval");
+    expect(failedHtml).not.toContain(">Complete task</button>");
+    expect(failedHtml).toContain("I could not find that task.");
+
+    const uncertainHtml = renderToString(
+      <ReasoningProposalCard
+        proposal={{
+          result: reasoningResult("complete_task"),
+          step: step("complete_task"),
+          resolution: resolution("tasks.complete"),
+          approval: approval("pending"),
+          runStatus: "approval_required",
+          requestId: "req-blocker-c-3",
+          executionRequestStatus: "uncertain",
+          executionRequestReply: "We could not confirm whether this action completed. Please check before trying again.",
+        }}
+        onRunReadOnly={vi.fn()}
+        onReviewApproval={vi.fn()}
+        onRunWrite={vi.fn()}
+        onConfirmAndRunWrite={vi.fn()}
+      />,
+    );
+    expect(uncertainHtml).not.toContain("Review approval");
+    expect(uncertainHtml).not.toContain(">Complete task</button>");
+    expect(uncertainHtml).toContain("We could not confirm whether this action completed");
   });
 
   it("formats supported runtime results through context synthesis and the response composer", () => {
@@ -878,6 +1014,7 @@ describe("ChatPage LLM reasoning UX boundary", () => {
           resolution: resolution("tasks.list"),
           approval: null,
           runStatus: "idle",
+          requestId: "req-test-4",
         }}
         onRunReadOnly={vi.fn()}
         onReviewApproval={vi.fn()}

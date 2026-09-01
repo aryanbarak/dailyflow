@@ -1,7 +1,7 @@
-import { calendarService } from "@/features/calendar/calendarService";
 import type {
   AgentWriteToolExecutionResult,
   AgentWriteToolHandler,
+  ExecutionContext,
   ExecutionError,
   ExecutionInputValidationResult,
 } from "../executionTypes";
@@ -65,32 +65,41 @@ export const calendarUpdateEventHandler: AgentWriteToolHandler<CalendarUpdateEve
   validateInput(input: unknown, _schema: readonly AgentToolSchemaField[]) {
     return validateCalendarUpdateInput(input);
   },
-  async execute(input: Record<string, unknown>) {
+  // Chat V2 Slice 2A / BLOCKER A CORRECTION: see tasksCreateHandler.ts's own
+  // comment on this same change -- no direct-write fallback remains.
+  //
+  // BLOCKER 1 CORRECTION: the request that durably creates the row now
+  // happens BEFORE approval; context.pendingAgentExecutionId already names
+  // it here -- approveExecution() sends nothing else.
+  //
+  // BLOCKER 3 CORRECTION: this used to build `data` (and claim
+  // `verified: true`) from the LOCALLY ECHOED `updates` object -- the
+  // fields the request ASKED to change, never proof they were actually
+  // applied. Now built from the Worker's own authoritative response
+  // (outcome.title/notes/dateTimeStart/dateTimeEnd), which reflects the
+  // row's real, just-persisted state.
+  async execute(input: Record<string, unknown>, context: ExecutionContext = {}) {
     const validation = validateCalendarUpdateInput(input);
     if (!validation.valid) return failure("invalid_input", "INVALID_INPUT", "calendar.update_event input failed validation.");
     const eventId = String(input.eventId).trim();
+    if (!context.agentToolExecutionClient || !context.pendingAgentExecutionId) {
+      return failure("failed", "AGENT_EXECUTION_NOT_REQUESTED", "Server-owned execution was not requested before approval.", eventId);
+    }
+
     try {
-      const updates = {
-        ...(typeof input.title === "string" ? { title: input.title } : {}),
-        ...(typeof input.dateTimeStart === "string" ? { dateTimeStart: input.dateTimeStart } : {}),
-        ...(typeof input.dateTimeEnd === "string" ? { dateTimeEnd: input.dateTimeEnd } : {}),
-        ...(typeof input.notes === "string" ? { notes: input.notes } : {}),
-      };
-      const updated = await calendarService.update(eventId, updates);
-      if (!updated) return failure("failed", "CALENDAR_EVENT_UPDATE_FAILED", "Unable to update calendar event.", eventId);
-      const all = await calendarService.getAll();
-      const verified = all.some((event) => event.id === updated.id && event.updatedAt === updated.updatedAt);
-      if (!verified) return failure("verification_failed", "VERIFICATION_FAILED", "Updated event could not be verified.", eventId);
+      const outcome = await context.agentToolExecutionClient.approveExecution(context.pendingAgentExecutionId);
+      if (outcome.status !== "succeeded" || !outcome.title || !outcome.dateTimeStart) {
+        return failure("failed", outcome.errorCode ?? "CALENDAR_EVENT_UPDATE_FAILED", outcome.reply || "Unable to update calendar event.", eventId);
+      }
       return {
         status: "success",
         success: true,
-        data: Object.freeze({ eventId, title: updated.title, dateTimeStart: updated.dateTimeStart, verified: true }),
+        data: Object.freeze({ eventId, title: outcome.title, dateTimeStart: outcome.dateTimeStart, verified: true }),
         auditMetadata: { taskId: eventId, verified: true, resultShape: "object", redacted: true },
-        // No compensation descriptor -- see calendarCreateEventHandler.ts's
-        // own comment; the shared type is task-completion-shaped.
       };
-    } catch {
-      return failure("failed", "CALENDAR_EVENT_UPDATE_FAILED", "Unable to update calendar event.", eventId);
+    } catch (caught) {
+      const error = caught as Partial<ExecutionError>;
+      return failure("failed", typeof error.code === "string" ? error.code : "CALENDAR_EVENT_UPDATE_FAILED", typeof error.message === "string" ? error.message : "Unable to update calendar event.", eventId);
     }
   },
 };

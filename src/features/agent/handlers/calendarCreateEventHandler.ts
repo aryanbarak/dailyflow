@@ -1,7 +1,7 @@
-import { calendarService } from "@/features/calendar/calendarService";
 import type {
   AgentWriteToolExecutionResult,
   AgentWriteToolHandler,
+  ExecutionContext,
   ExecutionError,
   ExecutionInputValidationResult,
 } from "../executionTypes";
@@ -68,38 +68,35 @@ export const calendarCreateEventHandler: AgentWriteToolHandler<CalendarCreateEve
   validateInput(input: unknown, _schema: readonly AgentToolSchemaField[]) {
     return validateCalendarCreateInput(input);
   },
-  async execute(input: Record<string, unknown>) {
+  // Chat V2 Slice 2A / BLOCKER A CORRECTION: see tasksCreateHandler.ts's own
+  // comment on this same change -- no direct-write fallback remains.
+  //
+  // BLOCKER 1 CORRECTION: see tasksCreateHandler.ts's own comment -- the
+  // request that durably creates the row now happens BEFORE approval;
+  // context.pendingAgentExecutionId already names it here.
+  async execute(input: Record<string, unknown>, context: ExecutionContext = {}) {
     const validation = validateCalendarCreateInput(input);
     if (!validation.valid) return failure("invalid_input", "INVALID_INPUT", "calendar.create_event input failed validation.");
+    if (!context.agentToolExecutionClient || !context.pendingAgentExecutionId) {
+      return failure("failed", "AGENT_EXECUTION_NOT_REQUESTED", "Server-owned execution was not requested before approval.");
+    }
     const title = String(input.title).trim();
     const dateTimeStart = String(input.dateTimeStart);
-    const dateTimeEnd = typeof input.dateTimeEnd === "string" ? input.dateTimeEnd : undefined;
-    const notes = typeof input.notes === "string" ? input.notes : undefined;
+
     try {
-      const created = await calendarService.create({ title, dateTimeStart, dateTimeEnd, notes });
-      // calendarService.create() has no dedicated "get by id" readback
-      // (unlike tasksService.getTaskForUser) and silently falls back to
-      // localStorage if the Supabase insert fails for any reason -- so an
-      // independent read via getAll() (the only listing method available)
-      // is the closest equivalent verification: confirms the row is
-      // actually visible through the same read path the real calendar UI
-      // uses, not just that create() returned an object.
-      const all = await calendarService.getAll();
-      const verified = all.some((event) => event.id === created.id && event.title === created.title);
-      if (!verified) return failure("verification_failed", "VERIFICATION_FAILED", "Created event could not be verified.", created.id);
+      const outcome = await context.agentToolExecutionClient.approveExecution(context.pendingAgentExecutionId);
+      if (outcome.status !== "succeeded" || !outcome.targetId) {
+        return failure("failed", outcome.errorCode ?? "CALENDAR_EVENT_CREATE_FAILED", outcome.reply || "Unable to create calendar event.");
+      }
       return {
         status: "success",
         success: true,
-        data: Object.freeze({ eventId: created.id, title: created.title, dateTimeStart: created.dateTimeStart, verified: true }),
-        auditMetadata: { taskId: created.id, verified: true, resultShape: "object", redacted: true },
-        // No compensation descriptor: AgentWriteToolCompensationDescriptor
-        // is shaped for task-completion undo (previousCompleted/
-        // previousCompletedAt), which has no calendar-event equivalent --
-        // omitted here for the same reason the GitHub write handlers omit
-        // it, rather than populating it with meaningless placeholder data.
+        data: Object.freeze({ eventId: outcome.targetId, title, dateTimeStart, verified: true }),
+        auditMetadata: { taskId: outcome.targetId, verified: true, resultShape: "object", redacted: true },
       };
-    } catch {
-      return failure("failed", "CALENDAR_EVENT_CREATE_FAILED", "Unable to create calendar event.");
+    } catch (caught) {
+      const error = caught as Partial<ExecutionError>;
+      return failure("failed", typeof error.code === "string" ? error.code : "CALENDAR_EVENT_CREATE_FAILED", typeof error.message === "string" ? error.message : "Unable to create calendar event.");
     }
   },
 };

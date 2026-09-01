@@ -103,7 +103,7 @@ describe("ReasoningProposalCard compact mode", () => {
   it("defaults to comfortable padding when compact is omitted", () => {
     const html = renderToString(
       <ReasoningProposalCard
-        proposal={{ result: reasoningResult(), step: step(), resolution: resolution(), approval: null, runStatus: "idle" }}
+        proposal={{ result: reasoningResult(), step: step(), resolution: resolution(), approval: null, runStatus: "idle", requestId: "req-test-1" }}
         onRunReadOnly={vi.fn()}
         onReviewApproval={vi.fn()}
         onRunWrite={vi.fn()}
@@ -116,7 +116,7 @@ describe("ReasoningProposalCard compact mode", () => {
   it("applies reduced padding when compact=true, without changing any button text/labels", () => {
     const html = renderToString(
       <ReasoningProposalCard
-        proposal={{ result: reasoningResult(), step: step(), resolution: resolution(), approval: null, runStatus: "idle" }}
+        proposal={{ result: reasoningResult(), step: step(), resolution: resolution(), approval: null, runStatus: "idle", requestId: "req-test-1" }}
         onRunReadOnly={vi.fn()}
         onReviewApproval={vi.fn()}
         onRunWrite={vi.fn()}

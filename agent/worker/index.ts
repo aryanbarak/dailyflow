@@ -56,6 +56,7 @@ import { AttachmentsUnsupportedError } from './providers/workers-ai/WorkersAITex
 import { resolveGeminiModel } from './geminiModel'
 import { recordProposalOutcome } from './proposal-outcome-recording'
 import { parseProposalOutcomeRequestBody } from './proposal-outcome-endpoint'
+import { handleAgentToolExecutionApprove, handleAgentToolExecutionRequest } from './agent-tool-execution'
 import type { WriteIntentType } from '../../shared/writeIntentRegistry'
 import { parseBankStatement } from '../../shared/bankStatementParser'
 import { buildBatchImportPreview, selectImportableRows } from '../../shared/bankImportBatchPreview'
@@ -147,6 +148,16 @@ export default {
 
     if (pathname === '/agent/proposal-outcome') {
       return handleProposalOutcomeRequest(request, env, ctx)
+    }
+
+    // Chat V2 Slice 2A: server-owned execution lifecycle foundation. See
+    // agent/worker/agent-tool-execution.ts's own header comment.
+    if (pathname === '/agent/execution/request') {
+      return handleAgentToolExecutionRequest(request, env)
+    }
+
+    if (pathname === '/agent/execution/approve') {
+      return handleAgentToolExecutionApprove(request, env)
     }
 
     if (pathname === '/finance/import-batch/preview') {
