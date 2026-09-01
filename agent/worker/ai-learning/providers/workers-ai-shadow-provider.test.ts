@@ -117,6 +117,92 @@ describe('WorkersAIShadowModelProvider', () => {
     expect(JSON.stringify(result)).not.toContain('a very secret raw user message')
   })
 
+  // ALF-1A correction (round 2, item 2): Workers AI candidate models
+  // return at least two documented shapes -- the OpenAI-compatible
+  // Chat-Completions shape (already covered by every test above) and a
+  // bespoke `{ response: "..." }` completion shape some candidate
+  // families (e.g. Qwen-family models) use instead.
+  describe('both Workers AI response shapes (round 2, item 2)', () => {
+    it('A: the OpenAI-compatible choices[0].message.content shape still succeeds', async () => {
+      const binding = bindingReturning(JSON.stringify(VALID_PAYLOAD))
+      const provider = new WorkersAIShadowModelProvider(binding, { modelId: 'm', modelVersion: 'v1' })
+
+      await expect(provider.predictRouting({ message: 'x', schemaVersion: 'intent-routing-v1' })).resolves.toMatchObject({ ok: true, payload: VALID_PAYLOAD })
+    })
+
+    it('B: the bespoke { response: validJson } shape succeeds', async () => {
+      const binding: WorkersAIBinding = { run: vi.fn(async () => ({ response: JSON.stringify(VALID_PAYLOAD) })) }
+      const provider = new WorkersAIShadowModelProvider(binding, { modelId: '@cf/qwen-family/candidate', modelVersion: 'v1' })
+
+      await expect(provider.predictRouting({ message: 'x', schemaVersion: 'intent-routing-v1' })).resolves.toEqual({
+        ok: true,
+        payload: VALID_PAYLOAD,
+        providerId: 'workers-ai',
+        modelId: '@cf/qwen-family/candidate',
+        modelVersion: 'v1',
+      })
+    })
+
+    it('C: the bespoke { response: invalidJson } shape returns invalid_output, never a fabricated success', async () => {
+      const binding: WorkersAIBinding = { run: vi.fn(async () => ({ response: 'not valid json' })) }
+      const provider = new WorkersAIShadowModelProvider(binding, { modelId: 'm', modelVersion: 'v1' })
+
+      await expect(provider.predictRouting({ message: 'x', schemaVersion: 'intent-routing-v1' })).resolves.toEqual({ ok: false, reason: 'invalid_output' })
+    })
+
+    it('D: a response matching neither documented shape returns invalid_output', async () => {
+      const binding: WorkersAIBinding = { run: vi.fn(async () => ({ output_text: JSON.stringify(VALID_PAYLOAD) })) }
+      const provider = new WorkersAIShadowModelProvider(binding, { modelId: 'm', modelVersion: 'v1' })
+
+      await expect(provider.predictRouting({ message: 'x', schemaVersion: 'intent-routing-v1' })).resolves.toEqual({ ok: false, reason: 'invalid_output' })
+    })
+
+    it('D: a null/undefined run() result returns invalid_output, never throws', async () => {
+      const binding: WorkersAIBinding = { run: vi.fn(async () => null as unknown as Record<string, unknown>) }
+      const provider = new WorkersAIShadowModelProvider(binding, { modelId: 'm', modelVersion: 'v1' })
+
+      await expect(provider.predictRouting({ message: 'x', schemaVersion: 'intent-routing-v1' })).resolves.toEqual({ ok: false, reason: 'invalid_output' })
+    })
+
+    // E. a configured Qwen-like (or any bespoke-shape) model id is not
+    // rejected merely because it uses the bespoke shape -- there is no
+    // model-id-based branching anywhere in this adapter; both shapes are
+    // always tried for ANY configured model id. Base model remains
+    // UNDECIDED (ADR-0020 Decision 11) -- this is a compatibility fix, not
+    // a decision that Qwen (or any specific model) is SmartFlow Core's
+    // shadow or production model.
+    it('E: a configured Qwen-family-shaped model id is accepted via the bespoke shape exactly like any other configured model', async () => {
+      const binding: WorkersAIBinding = { run: vi.fn(async () => ({ response: JSON.stringify(VALID_PAYLOAD) })) }
+      const provider = new WorkersAIShadowModelProvider(binding, { modelId: '@cf/qwen/qwen1.5-14b-chat-awq', modelVersion: '2026-09-01' })
+
+      const result = await provider.predictRouting({ message: 'x', schemaVersion: 'intent-routing-v1' })
+
+      expect(result.ok).toBe(true)
+      expect(binding.run).toHaveBeenCalledWith('@cf/qwen/qwen1.5-14b-chat-awq', expect.any(Object))
+    })
+
+    it('prefers the OpenAI-compatible shape when both are somehow present', async () => {
+      const binding: WorkersAIBinding = {
+        run: vi.fn(async () => ({
+          choices: [{ message: { content: JSON.stringify(VALID_PAYLOAD) } }],
+          response: 'not json at all -- must never be read since choices already had valid content',
+        })),
+      }
+      const provider = new WorkersAIShadowModelProvider(binding, { modelId: 'm', modelVersion: 'v1' })
+
+      await expect(provider.predictRouting({ message: 'x', schemaVersion: 'intent-routing-v1' })).resolves.toMatchObject({ ok: true, payload: VALID_PAYLOAD })
+    })
+
+    it('still exactly one env.AI.run call and no fallback for the bespoke shape\'s own failures', async () => {
+      const binding: WorkersAIBinding = { run: vi.fn(async () => ({ response: 'not valid json' })) }
+      const provider = new WorkersAIShadowModelProvider(binding, { modelId: 'm', modelVersion: 'v1' })
+
+      await provider.predictRouting({ message: 'x', schemaVersion: 'intent-routing-v1' })
+
+      expect(binding.run).toHaveBeenCalledTimes(1)
+    })
+  })
+
   // S. no Gemini/production-provider fallback in shadow adapter. Scoped to
   // actual import statements, not the whole file text -- this module's own
   // header comment legitimately explains IN PROSE why it never falls back

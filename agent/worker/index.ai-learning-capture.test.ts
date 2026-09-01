@@ -370,4 +370,69 @@ describe('ALF-1A live-capture wiring inside /chat', () => {
       expect(requests.some((r) => r.url.includes('ai_learning_events'))).toBe(false)
     })
   })
+
+  // ALF-1A correction (round 2, item 3): the staged pendingWritePolicy/ask
+  // capture must never fire if the durable user-message insert it depends
+  // on itself fails -- and on success, must always follow that insert.
+  describe('section 3: durable-insert failure/order regression (round 2, item 3)', () => {
+    it('a failed user agent_chat_messages insert for the staged ask-mode capture never calls ctx.waitUntil and never posts to ai_learning_events, and /chat keeps its existing failure behavior', async () => {
+      currentProviders = stubProviders({
+        text: new StubTextGenerationProvider(async () => ({ text: 'Sure, want me to go ahead?', finishReason: 'stop' })),
+      })
+      const requests: CapturedRequest[] = []
+      vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        const method = init?.method ?? 'GET'
+        const body = init?.body ? JSON.parse(String(init.body)) : undefined
+        requests.push({ url, method, body })
+
+        if (url.includes('/auth/v1/user')) return new Response(JSON.stringify({ id: USER_ID }), { status: 200 })
+        if (url.includes('/rest/v1/user_settings')) return new Response(JSON.stringify([{ language: 'en' }]), { status: 200 })
+        if (url.includes('/rest/v1/personal_memory_records')) return new Response(JSON.stringify([]), { status: 200 })
+        if (url.includes('/rest/v1/flow_write_permissions')) return new Response(JSON.stringify([{ mode: 'ask' }]), { status: 200 })
+        if (method === 'GET' && url.includes('/rest/v1/agent_chat_messages')) return new Response(JSON.stringify([]), { status: 200 })
+        // Only the USER-role insert fails -- this is the exact row this
+        // turn's staged capture depends on existing durably before firing.
+        if (method === 'POST' && url.includes('/rest/v1/agent_chat_messages') && body?.role === 'user') {
+          return new Response(JSON.stringify({ message: 'insert failed' }), { status: 500 })
+        }
+        if (method === 'POST' && url.includes('/rest/v1/agent_chat_messages')) return new Response(null, { status: 201 })
+        if (method === 'POST' && url.includes('/rest/v1/ai_learning_events')) return new Response(null, { status: 201 })
+        if (method === 'PATCH' && url.includes('/rest/v1/chat_sessions')) return new Response(null, { status: 204 })
+        throw new Error(`Unhandled fetch in test router: ${method} ${url}`)
+      }))
+      const { ctx, promises } = makeCtx()
+      const env = testEnv({ AI_LEARNING_CAPTURE_ENABLED: 'true' })
+
+      const response = await worker.fetch(chatRequest(), env, ctx)
+      // Pre-existing /chat failure behavior (task 22-fix2 D2, unchanged by
+      // ALF-1A): any turn failure not otherwise handled degrades to a
+      // clean 200 with the generic honest-retry reply, never a bare 500.
+      expect(response.status).toBe(200)
+      const body = await response.json() as { reply: string }
+      expect(body.reply).toBe('Something went wrong on my end. Please try again.')
+      await Promise.all(promises())
+
+      expect(ctx.waitUntil).not.toHaveBeenCalled()
+      expect(requests.some((r) => r.url.includes('ai_learning_events'))).toBe(false)
+    })
+
+    it('on success, the user agent_chat_messages insert happens BEFORE the ai_learning_events insert for the staged ask-mode capture', async () => {
+      currentProviders = stubProviders({
+        text: new StubTextGenerationProvider(async () => ({ text: 'Sure, want me to go ahead?', finishReason: 'stop' })),
+      })
+      const { requests } = installRouter({ flowWriteMode: 'ask' })
+      const { ctx, promises } = makeCtx()
+      const env = testEnv({ AI_LEARNING_CAPTURE_ENABLED: 'true' })
+
+      await worker.fetch(chatRequest(), env, ctx)
+      await Promise.all(promises())
+
+      const userInsertIndex = requests.findIndex((r) => r.method === 'POST' && r.url.includes('agent_chat_messages') && r.body?.role === 'user')
+      const learningIndex = requests.findIndex((r) => r.method === 'POST' && r.url.includes('ai_learning_events'))
+      expect(userInsertIndex).toBeGreaterThanOrEqual(0)
+      expect(learningIndex).toBeGreaterThanOrEqual(0)
+      expect(userInsertIndex).toBeLessThan(learningIndex)
+    })
+  })
 })

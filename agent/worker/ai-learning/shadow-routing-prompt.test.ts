@@ -6,6 +6,7 @@ import {
   buildShadowRoutingUserTurn,
   parseShadowRoutingOutput,
 } from './shadow-routing-prompt'
+import { SHADOW_ALLOWED_INTENT_TYPES, SHADOW_ALLOWED_TOOL_IDS } from './shadow-vocabulary'
 
 const VALID_JSON = JSON.stringify({
   schemaVersion: 'intent-routing-v1',
@@ -17,6 +18,12 @@ const VALID_JSON = JSON.stringify({
   requiresClarification: false,
   requiresApproval: true,
 })
+
+const RAW_MESSAGE = 'برای فردا ساعت ۱۰ یک تسک بساز که به احمد زنگ بزنم -- SECRET_MARKER_DO_NOT_LEAK'
+
+function payloadWith(overrides: Record<string, unknown>): string {
+  return JSON.stringify({ ...JSON.parse(VALID_JSON), ...overrides })
+}
 
 describe('shadow routing prompt (section 6: minimal, no prose, no chain-of-thought)', () => {
   it('the system prompt names exactly the eight IntentRoutingLearningPayloadV1 fields and no others', () => {
@@ -91,5 +98,52 @@ describe('parseShadowRoutingOutput', () => {
   it('rejects prose wrapped around otherwise-valid JSON (no partial extraction)', () => {
     const result = parseShadowRoutingOutput(`Here is my answer: ${VALID_JSON}`)
     expect(result.ok).toBe(false)
+  })
+})
+
+// ALF-1A correction (round 2, item 1): the Shadow-only vocabulary gate --
+// a raw-text echo or an unaudited invented value in intentType/toolId must
+// be rejected even though the GENERIC shared contract (shared/aiLearning.ts)
+// allows any non-empty string there.
+describe('parseShadowRoutingOutput: shadow-only vocabulary gate (round 2, item 1)', () => {
+  it('A: a model echoing the raw user message as intentType is rejected, never persisted', () => {
+    const result = parseShadowRoutingOutput(payloadWith({ intentType: RAW_MESSAGE }))
+    expect(result).toEqual({ ok: false, reason: 'schema_invalid' })
+  })
+
+  it('B: a model echoing the raw user message as toolId is rejected, never persisted', () => {
+    const result = parseShadowRoutingOutput(payloadWith({ toolId: RAW_MESSAGE }))
+    expect(result).toEqual({ ok: false, reason: 'schema_invalid' })
+  })
+
+  it('C: an unknown, arbitrary, plausible-looking intentType is rejected', () => {
+    for (const bogus of ['create_reminder', 'delete_everything', 'schedule_meeting_v2', 'admin_override']) {
+      expect(parseShadowRoutingOutput(payloadWith({ intentType: bogus }))).toEqual({ ok: false, reason: 'schema_invalid' })
+    }
+  })
+
+  it('D: an unknown, arbitrary, plausible-looking toolId is rejected', () => {
+    for (const bogus of ['tasks.delete', 'calendar.delete_event', 'system.run_shell', 'admin.override']) {
+      expect(parseShadowRoutingOutput(payloadWith({ toolId: bogus }))).toEqual({ ok: false, reason: 'schema_invalid' })
+    }
+  })
+
+  it('E: every audited write intentType/toolId from shared/writeIntentRegistry.ts is still accepted end-to-end', () => {
+    for (const intentType of SHADOW_ALLOWED_INTENT_TYPES) {
+      const result = parseShadowRoutingOutput(payloadWith({ intentType }))
+      expect(result.ok, `intentType=${intentType}`).toBe(true)
+    }
+    for (const toolId of SHADOW_ALLOWED_TOOL_IDS) {
+      const result = parseShadowRoutingOutput(payloadWith({ toolId }))
+      expect(result.ok, `toolId=${toolId}`).toBe(true)
+    }
+  })
+
+  it('an omitted intentType/toolId (e.g. a conversation/clarification turn) is still accepted -- the gate only constrains a PRESENT value', () => {
+    const withoutEither = JSON.parse(VALID_JSON)
+    delete withoutEither.intentType
+    delete withoutEither.toolId
+    const result = parseShadowRoutingOutput(JSON.stringify(withoutEither))
+    expect(result.ok).toBe(true)
   })
 })

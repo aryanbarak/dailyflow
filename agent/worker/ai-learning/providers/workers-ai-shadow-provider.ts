@@ -30,17 +30,44 @@ import type {
   ShadowRoutingPredictionResult,
 } from '../shadow-model-provider'
 
-// Same Chat-Completions response shape WorkersAITextGenerationProvider.ts
-// already reads (`choices[0].message.content`) -- see that file's own
-// header comment for why this adapter defines its own minimal structural
-// type rather than the ambient embedded `Ai` types.
-interface WorkersAIChatCompletionResponse {
+// ALF-1A correction (round 2, item 2): the Workers AI catalog has at
+// least two relevant output shapes for a text-generation-style model --
+// see this file's own predictRouting comment on `extractResponseContent`
+// for the exact precedence. This structural type covers BOTH, matching
+// WorkersAITextGenerationProvider.ts's own `choices[0].message.content`
+// reading plus the bespoke `{ response: "..." }` shape some candidate
+// families (e.g. Qwen-family models) use -- see that file's own header
+// comment for why this adapter defines its own minimal structural type
+// rather than the ambient embedded `Ai` types.
+interface WorkersAIRunResponse {
   choices?: Array<{ message?: { content?: string | null } }>
+  response?: string | null
 }
 
 export interface WorkersAIShadowProviderConfig {
   readonly modelId: string
   readonly modelVersion: string
+}
+
+// Tries the OpenAI-compatible Chat-Completions shape first (today's only
+// previously-supported shape), then the bespoke completion shape some
+// Workers AI candidate families use instead -- NEVER a provider/model
+// fallback (both are two documented string locations within the SAME
+// single env.AI.run response for the ONE configured model; this is not a
+// retry and never queries a second model). An unrecognized/missing shape
+// in both locations returns null, mapped to `invalid_output` by the
+// caller below -- never a thrown error, never a guess.
+function extractResponseContent(raw: unknown): string | null {
+  const typed = raw as WorkersAIRunResponse
+  const chatCompletionContent = typed?.choices?.[0]?.message?.content
+  if (typeof chatCompletionContent === 'string' && chatCompletionContent.trim() !== '') {
+    return chatCompletionContent
+  }
+  const bespokeContent = typed?.response
+  if (typeof bespokeContent === 'string' && bespokeContent.trim() !== '') {
+    return bespokeContent
+  }
+  return null
 }
 
 export class WorkersAIShadowModelProvider implements ShadowModelProvider {
@@ -76,8 +103,8 @@ export class WorkersAIShadowModelProvider implements ShadowModelProvider {
       return { ok: false, reason: 'provider_error' }
     }
 
-    const content = (raw as WorkersAIChatCompletionResponse)?.choices?.[0]?.message?.content
-    if (typeof content !== 'string' || content.trim() === '') {
+    const content = extractResponseContent(raw)
+    if (content === null) {
       return { ok: false, reason: 'invalid_output' }
     }
 

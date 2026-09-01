@@ -83,6 +83,58 @@ implementation:
 6. **Production-label `language` is now always `'unknown'`.** See Decision
    item 15 below.
 
+## Correction (round 2)
+
+A second architectural review, focused on Shadow-boundary safety and
+Workers AI catalog compatibility, found four further issues:
+
+1. **A Shadow-specific closed vocabulary now gates `intentType`/`toolId`.**
+   `shared/aiLearning.ts`'s `IntentRoutingLearningPayloadV1` deliberately
+   keeps `intentType`/`toolId` freeform (any non-empty string) at the
+   generic shared-contract level -- correct for that contract, but not
+   safe enough for a live Shadow model that has just seen the raw user
+   message: a confused or adversarial model could echo that raw message
+   straight into `intentType`/`toolId` and still pass generic schema
+   validation. `agent/worker/ai-learning/shadow-vocabulary.ts` adds a
+   SECOND, Shadow-only gate -- an ALLOWLIST, audited against
+   `shared/writeIntentRegistry.ts` (every real write intent/tool) and
+   `ai/evals/intent-routing-v1/cases.jsonl` (every audited non-write
+   intentType) -- applied in `shadow-routing-prompt.ts`'s
+   `parseShadowRoutingOutput` AFTER generic schema validation. Anything
+   outside that allowlist is rejected (`schema_invalid`, mapped to
+   `invalid_output` by the provider adapter) -- zero
+   `shadow_prediction` persistence. The generic shared contract itself is
+   deliberately left unchanged; narrowing it would weaken every OTHER
+   producer of this payload to solve a problem specific to the Shadow
+   boundary. See the Privacy note under Decision item 9 below.
+2. **The Workers AI adapter now reads BOTH documented response shapes.**
+   The Workers AI catalog has at least two relevant text-generation output
+   shapes: the OpenAI-compatible `choices[0].message.content` (the only
+   shape previously read) and a bespoke `{ response: "..." }` completion
+   shape some candidate families (e.g. Qwen-family models) use instead.
+   `WorkersAIShadowModelProvider` now tries both (chat-completions shape
+   first, then the bespoke shape) within the SAME single `env.AI.run`
+   call for the ONE configured model -- this is compatibility, never a
+   fallback: no second model is ever queried, no retry occurs, and an
+   unrecognized/missing shape in both locations still returns
+   `invalid_output`, never a guess. This does NOT pick Qwen (or any other
+   specific model) as SmartFlow Core's base or shadow model -- that stays
+   UNDECIDED (Decision item 6) and independently configured; this is
+   purely a response-parsing compatibility fix so a correctly-configured
+   candidate from either response family can actually be read.
+3. **Durable-insert-failure and durable-insert-order are now both
+   explicitly tested**, not just structurally implied, for the staged
+   `pendingWritePolicy: 'ask'` capture: a failing user-message insert
+   results in zero `ctx.waitUntil` call and zero `ai_learning_events`
+   POST for that turn (and `/chat` keeps its pre-existing, unrelated
+   failure behavior -- the generic honest-retry reply, unchanged by ALF-1A);
+   a succeeding insert is proven to happen strictly BEFORE the
+   `ai_learning_events` POST it enables.
+4. **Live-eval usability limitations are now documented explicitly** --
+   see "Live-Eval Limitations (deferred to ALF-1B)" below. Nothing in this
+   round changes ALF-1A's own scope: the limitations are recorded, not
+   solved, here.
+
 ## Context
 
 ADR-0020 built the foundation (the ledger, the contracts, the eval fixture,
@@ -212,7 +264,17 @@ prevent:
    unchanged from ADR-0020's `computeSourceHash`, and (per the round-1
    correction) is now actually computed and populated on every row this
    module writes, once per turn, identically on the `production_label` and
-   any `shadow_prediction` row for that same turn.
+   any `shadow_prediction` row for that same turn. **A closed top-level
+   shape alone is not sufficient (round-2 correction):** even though
+   `IntentRoutingLearningPayloadV1`'s top-level keys are closed (ADR-0020),
+   two of its fields -- `intentType`/`toolId` -- are deliberately freeform
+   strings at that generic level, which a model that has just seen the raw
+   message could otherwise abuse to smuggle raw text through a
+   structurally-valid field instead of an unrecognized one. Every value a
+   Shadow prediction supplies for `intentType`/`toolId` is therefore ALSO
+   checked against `shadow-vocabulary.ts`'s allowlist (Decision item 16)
+   before the payload is accepted -- transience is enforced at both the
+   payload-shape level AND the model-controlled-freeform-field level.
 10. **Exact durable source-message correlation, no lookup.** The Worker
     now pre-generates the user message's row id (`crypto.randomUUID()`,
     the same established pattern already used in `github-integration.ts`
@@ -302,6 +364,75 @@ prevent:
     `language` field is unaffected by this -- it is the model's own
     inference from the message text, independent of the production label
     (see `shadow-model-provider.ts`'s own comment on `languageHint`).
+16. **A Shadow-only closed vocabulary gates `intentType`/`toolId`
+    (round-2 correction).** `agent/worker/ai-learning/shadow-vocabulary.ts`
+    exports an ALLOWLIST -- never a blacklist -- of every `intentType`/
+    `toolId` value a Shadow prediction may legitimately carry, audited
+    against `shared/writeIntentRegistry.ts` (every real write intent/tool)
+    and `ai/evals/intent-routing-v1/cases.jsonl` (every audited non-write
+    intentType). `shadow-routing-prompt.ts`'s `parseShadowRoutingOutput`
+    applies this gate AFTER the generic `collectIntentRoutingLearningPayloadErrors`
+    check passes -- a present `intentType`/`toolId` outside the allowlist
+    is rejected (`schema_invalid`); an OMITTED `intentType`/`toolId` (a
+    conversation/read/clarification turn) is unaffected, since the gate
+    only constrains a value that is actually present. This is deliberately
+    NOT a change to the generic shared contract (`shared/aiLearning.ts`) --
+    that contract is used by non-Shadow producers too (the production
+    label path), which do not carry this particular risk (their values
+    come from SmartFlow's own deterministic code, never from a model that
+    also saw the raw message).
+17. **The Workers AI Shadow adapter reads two documented response shapes,
+    never a fallback (round-2 correction).** `WorkersAIShadowModelProvider`
+    tries `choices[0].message.content` (OpenAI-compatible, checked first)
+    then `response` (a bespoke completion shape some Workers AI candidate
+    families use) within the SAME single `env.AI.run` response for the ONE
+    configured model. Neither is a retry or a second model query; an
+    unrecognized/missing shape in both locations still returns
+    `invalid_output`. This is a compatibility fix for reading a correctly-
+    configured candidate's actual output shape, not a decision about which
+    model SmartFlow Core uses -- the base/shadow model remains UNDECIDED
+    (Decision item 6).
+
+## Live-Eval Limitations (deferred to ALF-1B)
+
+Recorded here, not solved here (round-2 correction item 4) -- these are
+real gaps in what today's `production_label`/`shadow_prediction` pair can
+be used for, not oversights this slice's own code fixes:
+
+- **`production_label.payload.language = 'unknown'` is NOT usable as a
+  language gold label** for scoring a Shadow prediction's own `language`
+  field, comparing it, or computing anything like the offline scorer's
+  existing `languageAccuracy` metric against LIVE-captured data -- see
+  Decision item 15. It only becomes usable once a deterministic or
+  user-confirmed message-language label exists for the same turn (a
+  distinct future capability, not part of ALF-1A/ALF-1B's foundation as
+  currently defined).
+- **`requiresApproval` is server-policy-dependent, not a property of the
+  message text alone.** The exact same message can legitimately produce
+  `requiresApproval: true` for one user (a `'ask'`-mode
+  `flow_write_permissions` row) and `requiresApproval: false` for another
+  (an `'auto'`-mode row) -- this is correct, intentional behavior (Decision
+  item 12), but it means a Shadow prediction's own `requiresApproval`
+  guess cannot be fairly scored as right-or-wrong purely from the raw
+  message; the comparison would need to also know (or explicitly mask
+  against) the evaluated user's own resolved write-mode policy at
+  prediction time.
+- **Therefore: ALF-1B (or whichever slice first turns live-captured
+  `production_label`/`shadow_prediction` pairs into a benchmark, a
+  training signal, or a promotion decision) MUST define explicit
+  comparison/masking semantics for these two fields before doing so** --
+  e.g. excluding `language` from live-eval agreement metrics until a real
+  gold label exists, and either excluding `requiresApproval` or scoring it
+  only against turns where the evaluated user's own resolved policy is
+  independently known. ALF-1A/this correction does NOT attempt to solve
+  that evaluation-contract design here; solving it would require decisions
+  (what counts as a fair comparison, whether/how to fetch the policy
+  context at scoring time) that belong to whichever slice actually builds
+  the live-eval consumer, not to the capture-only foundation this ADR
+  describes. No schema change was found to be required to make this
+  documentation possible -- if a future slice concludes one IS required to
+  actually solve the comparison problem, that is its own decision to make
+  and its own migration to propose, not something to retrofit here.
 
 ## What This ADR Deliberately Does NOT Do
 
@@ -312,7 +443,11 @@ prevent:
 - **Does not enable anything.** Every flag ships OFF; enabling capture
   and/or shadow prediction in any real environment is a separate,
   explicit, reviewed configuration change this ADR does not itself make.
-- **Does not pick a base/shadow model.** See Decision item 6.
+- **Does not pick a base/shadow model.** See Decision item 6 -- and does
+  not pick Qwen (or any Workers AI candidate family) either, merely by
+  parsing its response shape. See Decision item 17.
+- **Does not define live-eval comparison/masking semantics.** See "Live-Eval
+  Limitations (deferred to ALF-1B)" above -- capture-only, on purpose.
 - **Does not build guaranteed-delivery infrastructure.** See Decision
   item 2 -- a Queue-backed slice is future work.
 - **Does not wire `user_feedback`/`execution_outcome`.** See Decision

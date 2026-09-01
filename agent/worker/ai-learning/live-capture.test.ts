@@ -310,6 +310,37 @@ describe('captureProductionRoutingTurn', () => {
     expect(shadowInserts).toHaveLength(0)
   })
 
+  // F (round 2, item 1): raw text never reaches ai_learning_events even
+  // when the MODEL ITSELF attempts to echo it into intentType/toolId --
+  // proven end-to-end through the full captureProductionRoutingTurn path
+  // (shadow-vocabulary.ts's gate, exercised via the real
+  // parseShadowRoutingOutput this module calls, not a hand-stubbed
+  // shortcut).
+  it('F: a model echoing the raw message into intentType or toolId never results in a persisted shadow_prediction row, and the raw message never appears in any insert body', async () => {
+    const bodies: Record<string, unknown>[] = []
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      bodies.push(init?.body ? JSON.parse(String(init.body)) : {})
+      return new Response(null, { status: 201 })
+    }))
+    const echoingPayload = { ...VALID_SHADOW_PAYLOAD, intentType: RAW_MESSAGE }
+    const aiRun = vi.fn(async () => ({ choices: [{ message: { content: JSON.stringify(echoingPayload) } }] }))
+
+    await captureProductionRoutingTurn(baseParams({
+      config: shadowConfig(),
+      env: testEnv({ AI: { run: aiRun } as unknown as Env['AI'] }),
+    }))
+
+    const shadowRows = bodies.filter((b) => b.event_kind === 'shadow_prediction')
+    expect(shadowRows).toHaveLength(0)
+    for (const body of bodies) {
+      expect(JSON.stringify(body)).not.toContain('SECRET_MARKER_DO_NOT_LEAK')
+      expect(JSON.stringify(body)).not.toContain(RAW_MESSAGE)
+    }
+    // The production_label row still lands -- a model attempting to echo
+    // raw text never affects the (independently-sourced) production side.
+    expect(bodies.some((b) => b.event_kind === 'production_label')).toBe(true)
+  })
+
   // Item 3 (ALF-1A correction): source_hash is computed once per
   // invocation and reused identically across every event this call
   // produces.
