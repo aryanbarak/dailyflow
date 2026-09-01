@@ -1233,35 +1233,39 @@ describe('ADR-0012 server-side task write policy', () => {
     expect(log.geminiCalls.length).toBe(1)
   })
 
-  // Task 22: a Persian request naming "task" wording but carrying a
-  // specific time now routes to the calendar instead of stranding the
-  // time in task notes -- this is the actual PO-mandated fix (tasks have
-  // no time-of-day column). The pre-task-22 version of this test asserted
-  // the old workaround (time text-only in notes); that workaround no
-  // longer applies once the request correctly becomes a calendar event.
-  it('routes a Persian time-bearing "task" request to a calendar event instead of stranding the time in notes', async () => {
-    const log = installFetchMock([], null, 'Gemini should not be called', 'auto')
+  // Chat V2 Slice 2B.1 -- LOCKED DOMAIN RULE (replaces the old "task 22"
+  // test this text block used to describe): a Persian request naming an
+  // EXPLICIT task word ("\u062a\u0633\u06a9") that ALSO carries a specific time no longer
+  // silently routes to the calendar (the OLD, now-incorrect behavior this
+  // test used to pin -- tasks have no time-of-day column, but silently
+  // discarding the user's own stated domain word was never honest either).
+  // It now asks, via the deterministic 'task_time_ambiguous' short-circuit
+  // -- no task write, no calendar write, no model call, no guess.
+  it('a Persian request naming an explicit "task" word that ALSO carries a specific time asks instead of silently becoming a calendar event', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], null, 'fa')
     const response = await worker.fetch(chatRequest({
       message: '\u06a9 \u062a\u0633\u06a9 \u0628\u0631\u0627\u06cc \u0641\u0631\u062f\u0627 \u0628\u0633\u0627\u0632 \u06a9\u0647 \u0646\u0648\u0628\u062a \u062f\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc \u062f\u0627\u0631\u0645. \u0627\u0644\u0628\u062a\u0647 \u0633\u0627\u0639\u062a \u06f1\u06f1 \u0635\u0628\u062d',
       timeZone: 'Europe/Berlin',
     }), testEnv(), fakeExecutionContext())
-    const body = await response.json() as { reply?: string; writeExecution?: string; undo?: { id?: string } }
+    const body = await response.json() as { reply?: string; writeExecution?: string }
 
     expect(response.status).toBe(200)
-    expect(body.writeExecution).toBe('executed')
+    expect(body.writeExecution).toBeUndefined()
+    expect(body.reply).toBe('\u062a\u0633\u06a9\u200c\u0647\u0627 \u0641\u0639\u0644\u0627\u064b \u0633\u0627\u0639\u062a \u0645\u0634\u062e\u0635 \u0646\u062f\u0627\u0631\u0646\u062f. \u0622\u0646 \u0631\u0627 \u0628\u0647\u200c\u0639\u0646\u0648\u0627\u0646 Task \u0628\u062f\u0648\u0646 \u0633\u0627\u0639\u062a \u0628\u0633\u0627\u0632\u0645\u060c \u06cc\u0627 \u0628\u0647\u200c\u0639\u0646\u0648\u0627\u0646 \u06cc\u06a9 Calendar Event \u062f\u0631 \u0647\u0645\u0627\u0646 \u0633\u0627\u0639\u062a\u061f')
     expect(log.taskWrites.length).toBe(0)
-    expect(log.calendarWrites[0]?.body?.title).toBe('\u0646\u0648\u0628\u062a \u062f\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc')
-    expect(log.calendarWrites[0]?.body?.date).toBe('2026-08-15')
-    // 11:00 Europe/Berlin (CEST, UTC+2) in August -> 09:00 UTC.
-    expect(log.calendarWrites[0]?.body?.start_time).toBe('09:00')
-    expect(body.reply).not.toMatch(/undo:[0-9a-f-]{36}/i)
-    expect(body.undo?.id).toMatch(/^undo:[0-9a-f-]{36}$/)
+    expect(log.calendarWrites.length).toBe(0)
+    expect(log.geminiCalls.length).toBe(0)
   })
 
   it('creates a clean Persian title and a calendar event alarm for title-prefix requests with a time of day (task 22 supersedes the task-alarm workaround)', async () => {
+    // Slice 2B.1: the trigger word is now the explicit calendar noun
+    // "\u062c\u0644\u0633\u0647" (meeting), not "\u062a\u0633\u06a9" (task) -- a task-worded message with a
+    // time is no longer calendar business at all (LOCKED DOMAIN RULE).
+    // This test's real subject (title-prefix extraction feeding a
+    // calendar-event alarm) is unaffected by that change.
     const log = installFetchMock([], null, 'Gemini should not be called', 'auto')
     const response = await worker.fetch(chatRequest({
-      message: '\u062a\u0631\u0645\u06cc\u0646 \u062f\u0627\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc: \u0628\u0631\u0627\u06cc\u0645 \u06cc\u06a9 \u062a\u0633\u06a9 \u0628\u0631\u0627\u06cc \u0641\u0631\u062f\u0627 \u0628\u0633\u0627\u0632 \u0628\u0647 \u0633\u0627\u0639\u062a \u06f1\u06f3',
+      message: '\u062a\u0631\u0645\u06cc\u0646 \u062f\u0627\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc: \u0628\u0631\u0627\u06cc\u0645 \u06cc\u06a9 \u062c\u0644\u0633\u0647 \u0628\u0631\u0627\u06cc \u0641\u0631\u062f\u0627 \u0628\u0633\u0627\u0632 \u0628\u0647 \u0633\u0627\u0639\u062a \u06f1\u06f3',
       timeZone: 'Europe/Berlin',
     }), testEnv(), fakeExecutionContext())
     const body = await response.json() as { reply?: string; writeExecution?: string }
@@ -1295,53 +1299,62 @@ describe('ADR-0012 server-side task write policy', () => {
     // same validator as resolveCreateTaskTitle) is unaffected by domain, so
     // these assert against calendarWrites instead of taskWrites.
     it('uses the model-proposed title (not the pattern-extracted one) when it validates', async () => {
+      // Slice 2B.1: explicit "event" (not "task") and no "I have" phrasing
+      // -- a "task" noun + time is no longer calendar business at all
+      // (LOCKED DOMAIN RULE), and "I have" would separately trip the
+      // implicit-personal-statement trigger alongside the explicit
+      // "event" trigger, making this message ambiguous instead of clean
+      // calendar business. This test's real subject (title resolution) is
+      // unaffected by either change.
       const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'Family doctor appointment')
       const response = await worker.fetch(chatRequest({
-        message: 'Create a task for tomorrow because I have a family doctor appointment at 11am.',
+        message: 'Create an event for tomorrow, a family doctor appointment, at 11am.',
         timeZone: 'Europe/Berlin',
       }), testEnv(), fakeExecutionContext())
       const body = await response.json() as { writeExecution?: string }
 
       expect(body.writeExecution).toBe('executed')
       expect(log.taskWrites.length).toBe(0)
-      // The pattern extractor alone would have produced "a family doctor
-      // appointment" (see flow-write-policy.test.ts) -- this proves the
-      // MODEL's title is what actually reached the database.
+      // The pattern extractor alone would have produced a different title
+      // (see flow-write-policy.test.ts) -- this proves the MODEL's title
+      // is what actually reached the database.
       expect(log.calendarWrites[0]?.body?.title).toBe('Family doctor appointment')
     })
 
-    // Task 22: this is the literal production-evidence message from task
-    // 21-fix6's own bug report -- "به ساعت ۱۳:۰۰" is exactly the specific
-    // time the PO decision is about. It now lands as a calendar event
-    // (not a task with the time stranded in notes), which IS the fix.
-    it('the exact production-evidence message now lands as a calendar event, not a task', async () => {
-      const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'ترمین داکتر فامیلی')
+    // Chat V2 Slice 2B.1 -- LOCKED DOMAIN RULE: this is the literal
+    // production-evidence message from task 21-fix6's own bug report --
+    // "به ساعت ۱۳:۰۰" is exactly the specific time that original PO
+    // decision was about. The OLD fix (task 22) made it land as a
+    // calendar event; that silently overrode the user's own explicit
+    // "تسک" (task) word, which is the exact class of bug THIS slice
+    // corrects. The honest fix for the real production case is to ask,
+    // never to guess either domain.
+    it('the exact production-evidence message now asks instead of silently landing as a calendar event', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'ترمین داکتر فامیلی', 'fa')
       const response = await worker.fetch(chatRequest({
         message: 'ترمین داکتر فامیلی : برایم یک تسک برای فردا بساز به ساعت ۱۳:۰۰',
         timeZone: 'Europe/Berlin',
       }), testEnv(), fakeExecutionContext())
       const body = await response.json() as { writeExecution?: string; reply?: string }
 
-      expect(body.writeExecution).toBe('executed')
+      expect(response.status).toBe(200)
+      expect(body.writeExecution).toBeUndefined()
+      expect(body.reply).toBe('تسک‌ها فعلاً ساعت مشخص ندارند. آن را به‌عنوان Task بدون ساعت بسازم، یا به‌عنوان یک Calendar Event در همان ساعت؟')
       expect(log.taskWrites.length).toBe(0)
-      expect(log.calendarWrites[0]?.body?.title).toBe('ترمین داکتر فامیلی')
-      // The PERSISTED columns are still UTC-sliced, exactly matching
-      // calendarService.ts's own toInsertRow convention on the frontend --
-      // that part was never the bug.
-      expect(log.calendarWrites[0]?.body?.date).toBe('2026-08-15')
-      expect(log.calendarWrites[0]?.body?.start_time).toBe('11:00')
-      // No leaked command fragments or stray punctuation/digits.
-      expect(log.calendarWrites[0]?.body?.title).not.toContain('برایم')
-      expect(log.calendarWrites[0]?.body?.title).not.toMatch(/[0-9۰-۹]/)
-      // Task 22-fix3: the CHAT confirmation line must show the user's own
-      // local wall-clock time (13:00 CEST -- what they typed and what the
-      // Calendar page displays), never the raw UTC-sliced DB columns above.
-      expect(body.reply).toContain('13:00')
-      expect(body.reply).not.toContain('11:00')
+      expect(log.calendarWrites.length).toBe(0)
+      expect(log.geminiCalls.length).toBe(0)
     })
 
     it('rejects a model title that is just the whole raw message and falls back to the validated pattern title (unit-tested overlap-specific case lives in flow-write-policy.test.ts)', async () => {
-      const message = 'Create a task for tomorrow because I have a family doctor appointment at 11am.'
+      // Slice 2B.1: explicit "event" (not "task"), and the subject is
+      // quoted (extractTaskTitle's own quoted-substring rule) rather than
+      // phrased as "because I have X" -- a "task" noun + time is no
+      // longer calendar business (LOCKED DOMAIN RULE), and "I have" would
+      // separately trip the implicit-personal-statement trigger alongside
+      // the explicit "event" trigger, making this message ambiguous
+      // instead of clean calendar business. This test's real subject
+      // (rejecting a model title that IS the whole message) is unaffected.
+      const message = 'Create an event "a family doctor appointment" for tomorrow at 11am.'
       const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], message)
       const response = await worker.fetch(chatRequest({ message, timeZone: 'Europe/Berlin' }), testEnv(), fakeExecutionContext())
       const body = await response.json() as { writeExecution?: string }
@@ -1351,9 +1364,14 @@ describe('ADR-0012 server-side task write policy', () => {
     })
 
     it('a German phrasing resolves via the model to a clean short subject', async () => {
+      // Slice 2B.1: explicit "Termin" (not "Aufgabe"), and no "ich...habe"
+      // phrasing -- "Aufgabe" + time is no longer calendar business
+      // (LOCKED DOMAIN RULE), and "ich...habe" would separately trip the
+      // implicit-personal-statement trigger. This test's real subject
+      // (title resolution) is unaffected by either change.
       const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'Arzttermin')
       const response = await worker.fetch(chatRequest({
-        message: 'Erstelle eine Aufgabe fuer morgen, dass ich einen Arzttermin um 14:30 Uhr habe.',
+        message: 'Erstelle einen Termin fuer morgen um 14:30 Uhr wegen eines Arztbesuchs.',
         timeZone: 'Europe/Berlin',
       }), testEnv(), fakeExecutionContext())
       const body = await response.json() as { writeExecution?: string }
@@ -1362,11 +1380,14 @@ describe('ADR-0012 server-side task write policy', () => {
       expect(log.calendarWrites[0]?.body?.title).toBe('Arzttermin')
     })
 
-    it('falls back to a targeted clarify question, never a garbage title, when neither the model nor the pattern extractor finds a subject (routed to calendar since a time is present)', async () => {
-      // Same command-only message flow-write-policy.test.ts's own
-      // "keeps a command-only mixed Persian task request under-specified"
-      // test proves extractTaskTitle already returns undefined for --
-      // exercised here end to end with the model ALSO finding nothing.
+    // Chat V2 Slice 2B.1: this message names an explicit "task" word
+    // ("task", mixed-Persian) AND a time -- it no longer even reaches
+    // title resolution (the OLD premise this test used to exercise): the
+    // domain-ambiguity short-circuit intercepts it first (LOCKED DOMAIN
+    // RULE). This is a real, honest supersession -- "never a garbage
+    // title" now generalizes to "never a garbage GUESS of any kind, title
+    // or domain."
+    it('asks about the task/calendar ambiguity before ever reaching title resolution -- never a garbage title, never a garbage domain guess', async () => {
       const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], '')
       const response = await worker.fetch(chatRequest({
         message: 'یک task برای فردا بساز، ساعت ۱۶:۰۰',
@@ -1374,10 +1395,12 @@ describe('ADR-0012 server-side task write policy', () => {
       }), testEnv(), fakeExecutionContext())
       const body = await response.json() as { reply?: string; writeExecution?: string }
 
-      expect(body.writeExecution).toBe('clarify')
-      expect(body.reply).toBe('What should the event be called?')
+      expect(response.status).toBe(200)
+      expect(body.writeExecution).toBeUndefined()
+      expect(body.reply).toBe("Tasks don't support a specific time yet. Should I create it as a Task without a time, or as a Calendar Event at that time?")
       expect(log.taskWrites.length).toBe(0)
       expect(log.calendarWrites.length).toBe(0)
+      expect(log.geminiCalls.length).toBe(0)
     })
 
     it('never re-derives an explicit title correction through the model', async () => {
@@ -1495,66 +1518,65 @@ describe('ADR-0012 server-side task write policy', () => {
     expect(log.geminiCalls.length).toBe(1)
   })
 
-  // Task 22: the turn1 message carries "\u0633\u0627\u0639\u062a \u06f1\u06f6:\u06f0\u06f0" (a specific time), so
-  // this now assembles as a calendar event, not a task -- renamed from
-  // its pre-task-22 "...creates exactly one task..." title accordingly.
-  // The title-correction turn (turn2) still says "\u0646\u0627\u0645 \u062a\u0633\u06a9 \u0631\u0627..." (names
-  // "the task"), which is fine: parseTitleCorrection matches on that
-  // literal phrase regardless of which domain the request actually
-  // resolved to, exactly like a user would naturally keep saying it.
-  it('assembles the production Persian multi-turn write transcript and creates exactly one calendar event instead of looping', async () => {
+  // Chat V2 Slice 2B.1: the ORIGINAL version of this test relied on
+  // turn1 being an explicit-task-worded, time-bearing, subject-less
+  // message that (per the OLD "task 22" rule) silently assembled as an
+  // EMPTY-title calendar event, asked "What should the event be called?",
+  // then turn2's title correction filled it in. Under the LOCKED DOMAIN
+  // RULE, that exact turn1 no longer reaches title resolution at all --
+  // it is a task/calendar domain ambiguity, asked about BEFORE ever
+  // assembling a calendar (or task) intent, and (like the existing
+  // 'ambiguous' signal) is deliberately NOT continuable, so it can never
+  // be silently resolved by a later turn's wording alone either. That
+  // multi-turn title-CORRECTION mechanism itself is still fully covered
+  // at the unit level (flow-write-policy.test.ts's "assembles a pending
+  // calendar write across a title-correction turn"). This replacement
+  // proves the NEW, adjacent guarantee instead: a task/calendar
+  // domain-ambiguity turn is a dead end, never silently resolved by
+  // whatever the user happens to say next, and never leaks a false
+  // capability-denial message either.
+  it('a task/calendar domain-ambiguity turn is never silently resolved by a later turn, and leaks no false capability denial', async () => {
     const log = installFetchMock([], null, 'Conversation fallback only after execution.', 'auto')
     const env = testEnv()
 
     const turn1 = await worker.fetch(chatRequest({
-      message: '\u06cc\u06a9 task \u0628\u0631\u0627\u06cc \u0641\u0631\u062f\u0627 \u0628\u0633\u0627\u0632\u060c \u0633\u0627\u0639\u062a \u06f1\u06f6:\u06f0\u06f0',
+      message: 'یک task برای فردا بساز، ساعت ۱۶:۰۰',
       timeZone: 'Europe/Berlin',
     }), env, fakeExecutionContext())
     const body1 = await turn1.json() as { reply?: string; writeExecution?: string }
 
-    expect(body1.writeExecution).toBe('clarify')
-    expect(body1.reply).toBe('What should the event be called?')
+    expect(body1.writeExecution).toBeUndefined()
     expect(log.taskWrites.length).toBe(0)
     expect(log.calendarWrites.length).toBe(0)
-    // Task 21-fix6: the title-extraction call still happens (there's no
-    // subject to find either way -- the mock's default empty title and
-    // the pattern fallback agree), but no event is written and the reply
-    // stays the same targeted clarify question, not a garbage title.
-    expect(log.geminiCalls.length).toBe(1)
+    expect(log.geminiCalls.length).toBe(0)
 
     const turn2 = await worker.fetch(chatRequest({
-      message: '\u0646\u0627\u0645 \u062a\u0633\u06a9 \u0631\u0627 \u062a\u0631\u0645\u06cc\u0646 \u062f\u0627\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc \u0628\u06af\u0630\u0627\u0631 \u0648 \u0628\u0642\u06cc\u0647 \u062f\u0631\u0633\u062a \u0627\u0633\u062a',
+      message: 'بلی بساز',
       timeZone: 'Europe/Berlin',
     }), env, fakeExecutionContext())
     const body2 = await turn2.json() as { reply?: string; writeExecution?: string }
-
-    expect(body2.writeExecution).toBe('executed')
-    expect(log.calendarWrites.filter(write => write.method === 'POST')).toHaveLength(1)
-    expect(log.calendarWrites[0]?.body?.title).toBe('\u062a\u0631\u0645\u06cc\u0646 \u062f\u0627\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc')
-    expect(log.calendarWrites[0]?.body?.date).toBe('2026-08-15')
-    expect(log.calendarWrites[0]?.body?.start_time).toBe('14:00')
-
     const turn3 = await worker.fetch(chatRequest({
-      message: '\u0628\u0644\u06cc \u0628\u0633\u0627\u0632',
+      message: 'بلی تایید می کنم',
       timeZone: 'Europe/Berlin',
     }), env, fakeExecutionContext())
     const body3 = await turn3.json() as { reply?: string; writeExecution?: string }
-    const turn4 = await worker.fetch(chatRequest({
-      message: '\u0628\u0644\u06cc \u062a\u0627\u06cc\u06cc\u062f \u0645\u06cc \u06a9\u0646\u0645',
-      timeZone: 'Europe/Berlin',
-    }), env, fakeExecutionContext())
-    const body4 = await turn4.json() as { reply?: string; writeExecution?: string }
 
+    expect(body2.writeExecution).toBeUndefined()
     expect(body3.writeExecution).toBeUndefined()
-    expect(body4.writeExecution).toBeUndefined()
-    expect(`${body2.reply}\n${body3.reply}\n${body4.reply}`).not.toContain('Flow AI')
-    expect(`${body2.reply}\n${body3.reply}\n${body4.reply}`).not.toContain('does not have this capability')
-    expect(log.calendarWrites.filter(write => write.method === 'POST')).toHaveLength(1)
+    expect(`${body2.reply}\n${body3.reply}`).not.toContain('Flow AI')
+    expect(`${body2.reply}\n${body3.reply}`).not.toContain('does not have this capability')
+    expect(log.taskWrites.length).toBe(0)
+    expect(log.calendarWrites.length).toBe(0)
   })
 
-  it('an affirmative after a complete pending calendar event spec executes on the server', async () => {
+      // Slice 2B.1: explicit "جلسه" (meeting), not "تسک" (task) -- an
+    // explicit task noun + time is no longer calendar business at all
+    // (LOCKED DOMAIN RULE). This test's real subject (an affirmative
+    // continuation resolving a complete pending calendar spec) is
+    // unaffected.
+    it('an affirmative after a complete pending calendar event spec executes on the server', async () => {
     const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [
-      { role: 'user', content: '\u06cc\u06a9 \u062a\u0633\u06a9 \u0628\u0631\u0627\u06cc \u0641\u0631\u062f\u0627 \u0628\u0633\u0627\u0632 \u06a9\u0647 \u0646\u0648\u0628\u062a \u062f\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc \u062f\u0627\u0631\u0645. \u0627\u0644\u0628\u062a\u0647 \u0633\u0627\u0639\u062a \u06f1\u06f1 \u0635\u0628\u062d' },
+      { role: 'user', content: 'یک جلسه برای فردا بساز، نوبت دکتر فامیلی، ساعت ۱۱ صبح' },
     ])
     const response = await worker.fetch(chatRequest({
       message: '\u0628\u0644\u06cc \u0628\u0633\u0627\u0632',
@@ -1564,7 +1586,7 @@ describe('ADR-0012 server-side task write policy', () => {
 
     expect(body.writeExecution).toBe('executed')
     expect(log.taskWrites.length).toBe(0)
-    expect(log.calendarWrites[0]?.body?.title).toBe('\u0646\u0648\u0628\u062a \u062f\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc')
+    expect(log.calendarWrites[0]?.body?.title).toBe('یک جلسه نوبت دکتر فامیلی')
     // Task 21-fix6: this continuation's own title comes from the earlier
     // turn's base intent, not a fresh correction, so it is NOT exempt from
     // model resolution -- one title-extraction call happens; the mock's
@@ -1775,7 +1797,14 @@ describe('task 22: calendar write policy + routing', () => {
   it('executes calendar event create server-side when service-role policy resolves to auto', async () => {
     const log = installFetchMock([], null, 'Gemini should not be called', 'auto')
     const response = await worker.fetch(chatRequest({
-      message: 'Add a task for next Tuesday at 9 because I have a family doctor appointment',
+      // Slice 2B.1: explicit "event" (not "task"), and no "I have"
+      // phrasing -- a "task" noun + time is no longer calendar business at
+      // all (LOCKED DOMAIN RULE), and "I have" would separately trip the
+      // implicit-personal-statement trigger alongside the explicit
+      // "event" trigger, making this message ambiguous instead of clean
+      // calendar business. These tests' real subject (calendar write
+      // policy/undo/rollback mechanics) is unaffected by either change.
+      message: 'Add an event for next Tuesday at 9am',
       timeZone: 'Europe/Berlin',
     }), testEnv(), fakeExecutionContext())
     const body = await response.json() as { reply?: string; writeExecution?: string; writePolicy?: { domain?: string; action?: string; mode?: string }; undo?: { id?: string } }
@@ -1792,7 +1821,14 @@ describe('task 22: calendar write policy + routing', () => {
   it('this Flow AI action is switched off in settings for calendar domain', async () => {
     const log = installFetchMock([], null, 'Gemini should not be called', 'off')
     const response = await worker.fetch(chatRequest({
-      message: 'Add a task for next Tuesday at 9 because I have a family doctor appointment',
+      // Slice 2B.1: explicit "event" (not "task"), and no "I have"
+      // phrasing -- a "task" noun + time is no longer calendar business at
+      // all (LOCKED DOMAIN RULE), and "I have" would separately trip the
+      // implicit-personal-statement trigger alongside the explicit
+      // "event" trigger, making this message ambiguous instead of clean
+      // calendar business. These tests' real subject (calendar write
+      // policy/undo/rollback mechanics) is unaffected by either change.
+      message: 'Add an event for next Tuesday at 9am',
       timeZone: 'Europe/Berlin',
     }), testEnv(), fakeExecutionContext())
     const body = await response.json() as { reply?: string; writePolicy?: { domain?: string; mode?: string } }
@@ -1806,7 +1842,14 @@ describe('task 22: calendar write policy + routing', () => {
   it('resolved ask for calendar returns the server policy and leaves execution to the approval flow', async () => {
     const log = installFetchMock([], null, 'Write action requires explicit approval.', 'ask')
     const response = await worker.fetch(chatRequest({
-      message: 'Add a task for next Tuesday at 9 because I have a family doctor appointment',
+      // Slice 2B.1: explicit "event" (not "task"), and no "I have"
+      // phrasing -- a "task" noun + time is no longer calendar business at
+      // all (LOCKED DOMAIN RULE), and "I have" would separately trip the
+      // implicit-personal-statement trigger alongside the explicit
+      // "event" trigger, making this message ambiguous instead of clean
+      // calendar business. These tests' real subject (calendar write
+      // policy/undo/rollback mechanics) is unaffected by either change.
+      message: 'Add an event for next Tuesday at 9am',
       timeZone: 'Europe/Berlin',
     }), testEnv(), fakeExecutionContext())
     const body = await response.json() as { reply?: string; writePolicy?: { domain?: string; mode?: string } }
@@ -1820,7 +1863,14 @@ describe('task 22: calendar write policy + routing', () => {
   it('tampered client policy cannot execute a calendar write when the server policy is off', async () => {
     const log = installFetchMock([], null, 'Gemini should not be called', 'off')
     const response = await worker.fetch(chatRequest({
-      message: 'Add a task for next Tuesday at 9 because I have a family doctor appointment',
+      // Slice 2B.1: explicit "event" (not "task"), and no "I have"
+      // phrasing -- a "task" noun + time is no longer calendar business at
+      // all (LOCKED DOMAIN RULE), and "I have" would separately trip the
+      // implicit-personal-statement trigger alongside the explicit
+      // "event" trigger, making this message ambiguous instead of clean
+      // calendar business. These tests' real subject (calendar write
+      // policy/undo/rollback mechanics) is unaffected by either change.
+      message: 'Add an event for next Tuesday at 9am',
       timeZone: 'Europe/Berlin',
       writePolicy: { domain: 'calendar', action: 'create', mode: 'auto' },
     }), testEnv(), fakeExecutionContext())
@@ -1873,7 +1923,14 @@ describe('task 22: calendar write policy + routing', () => {
     const undoStore: UndoStore = new Map()
     const log = installFetchMock([], null, 'Gemini should not be called', 'auto', undoStore)
     const createResponse = await worker.fetch(chatRequest({
-      message: 'Add a task for next Tuesday at 9 because I have a family doctor appointment',
+      // Slice 2B.1: explicit "event" (not "task"), and no "I have"
+      // phrasing -- a "task" noun + time is no longer calendar business at
+      // all (LOCKED DOMAIN RULE), and "I have" would separately trip the
+      // implicit-personal-statement trigger alongside the explicit
+      // "event" trigger, making this message ambiguous instead of clean
+      // calendar business. These tests' real subject (calendar write
+      // policy/undo/rollback mechanics) is unaffected by either change.
+      message: 'Add an event for next Tuesday at 9am',
       timeZone: 'Europe/Berlin',
     }), testEnv(), fakeExecutionContext())
     const createBody = await createResponse.json() as { reply?: string; undo?: { id?: string } }
@@ -2008,7 +2065,14 @@ describe('task 22-fix2: undo-persist failure must not destroy the turn (D2/D3)',
   it('create_calendar_event: undo-persist failure (the exact production 23514) rolls back the event and its alarm, and returns a clean reply -- never a bare "Failed to send"', async () => {
     const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], null, null, true)
     const response = await worker.fetch(chatRequest({
-      message: 'Add a task for next Tuesday at 9 because I have a family doctor appointment',
+      // Slice 2B.1: explicit "event" (not "task"), and no "I have"
+      // phrasing -- a "task" noun + time is no longer calendar business at
+      // all (LOCKED DOMAIN RULE), and "I have" would separately trip the
+      // implicit-personal-statement trigger alongside the explicit
+      // "event" trigger, making this message ambiguous instead of clean
+      // calendar business. These tests' real subject (calendar write
+      // policy/undo/rollback mechanics) is unaffected by either change.
+      message: 'Add an event for next Tuesday at 9am',
       timeZone: 'Europe/Berlin',
     }), testEnv(), fakeExecutionContext())
     const body = await response.json() as { reply?: string; error?: string; writeExecution?: string; undo?: unknown }
@@ -2104,7 +2168,14 @@ describe('task 22-fix2: undo-persist failure must not destroy the turn (D2/D3)',
       return originalFetch(input, init)
     }))
     const response = await worker.fetch(chatRequest({
-      message: 'Add a task for next Tuesday at 9 because I have a family doctor appointment',
+      // Slice 2B.1: explicit "event" (not "task"), and no "I have"
+      // phrasing -- a "task" noun + time is no longer calendar business at
+      // all (LOCKED DOMAIN RULE), and "I have" would separately trip the
+      // implicit-personal-statement trigger alongside the explicit
+      // "event" trigger, making this message ambiguous instead of clean
+      // calendar business. These tests' real subject (calendar write
+      // policy/undo/rollback mechanics) is unaffected by either change.
+      message: 'Add an event for next Tuesday at 9am',
       timeZone: 'Europe/Berlin',
     }), testEnv(), fakeExecutionContext())
     const body = await response.json() as { reply?: string; error?: string; writeExecution?: string }

@@ -142,13 +142,27 @@ export function buildReasoningPrompt(input: AgentReasoningPromptInput) {
     "Requests to add a comment to a GitHub issue map to write_github_issue_comment. Populate target.repo (owner/name), target.issueNumber, and target.commentBody with the exact comment text -- never invent any of these if the message does not state them explicitly.",
     "Requests to edit a GitHub issue's title, body, or labels map to write_github_issue_update. Populate target.repo, target.issueNumber, and at least one of target.updateTitle, target.updateBody, target.updateLabels -- never invent any of these if the message does not state them explicitly.",
     "write_github_issue_comment and write_github_issue_update require explicit user approval before anything runs -- you are proposing the action, not performing it. Never claim the comment was posted or the issue was updated.",
-    // ADR-0013 Slice 5: this is the task-vs-calendar cross-domain
-    // disambiguation rule -- stays hand-written per ADR-0013 (it reasons
-    // across both domains, not per-intent data). The target-field
-    // instructions this sentence used to also carry (Populate
-    // target.eventTitle.../target.eventReference...) now come from the
-    // registry's promptInstruction, appended below.
-    "Tasks have no time-of-day field. A request to create or update a task-like item that ALSO names a specific time (e.g. \"add a task tomorrow at 3pm\") is create_calendar_event or update_calendar_event, never create_task/update_task, regardless of whether the user said \"task\". A request naming an explicit calendar concept (event, appointment, meeting, Termin, Kalender, رویداد, جلسه, قرار) is also create_calendar_event/update_calendar_event even with no time. A plain date with no time and no calendar wording stays create_task/update_task, unchanged. Never invent a time -- if the request is genuinely unclear about whether it means a task or a calendar event, propose ask_clarification instead of guessing.",
+    // ADR-0013 Slice 5 / Slice 2B.1 LOCKED DOMAIN RULE: this is the
+    // task-vs-calendar cross-domain disambiguation rule -- stays
+    // hand-written per ADR-0013 (it reasons across both domains, not
+    // per-intent data). The target-field instructions this sentence used
+    // to also carry (Populate target.eventTitle.../target.eventReference...)
+    // now come from the registry's promptInstruction, appended below.
+    // CORRECTED (Slice 2B.1): the previous wording told the model to
+    // silently reclassify a task-worded+timed request into
+    // create_calendar_event "regardless of whether the user said 'task'"
+    // -- the exact bug this slice fixes. An explicit domain noun now wins
+    // before temporal inference; a task+time request is genuinely
+    // ambiguous and must be asked about, never silently resolved either
+    // way. src/features/agent/reasoning/intentValidator.ts's own
+    // deterministic post-step (TASK_TIME_CLARIFICATION_REASON_MARKER)
+    // enforces this regardless of what the model proposes, but only when
+    // the model's own type is itself compatible with the regex-evidence
+    // rescue -- a model that still complied with the OLD instruction and
+    // proposed create_calendar_event directly would bypass that rescue
+    // entirely, which is why this prompt text must match, not just the
+    // code.
+    "Tasks have no time-of-day field. A request that explicitly names a task (task/todo/Aufgabe/تسک/وظیفه) and ALSO carries a specific time (e.g. \"add a task tomorrow at 3pm\") is genuinely ambiguous: propose ask_clarification, asking whether to create it as a Task without the time or as a Calendar Event at that time. Never silently propose create_task/update_task with the time dropped, and never silently propose create_calendar_event/update_calendar_event just because a time was given -- the explicit domain word the user chose always wins over inferring a domain from a time alone. A request naming an explicit calendar concept (event, appointment, meeting, Termin, Kalender, رویداد, جلسه, قرار) is create_calendar_event/update_calendar_event, with or without a time. A plain date with no time and no calendar wording stays create_task/update_task, unchanged. Never invent a time -- if the request is genuinely unclear about whether it means a task or a calendar event, propose ask_clarification instead of guessing.",
     // ADR-0013 Slice 5: create_calendar_event's, update_calendar_event's, and
     // create_finance_transaction's own field-population/approval guidance,
     // sourced from the registry's promptInstruction instead of hand-written

@@ -1,5 +1,7 @@
 
 
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { renderToString } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
@@ -16,7 +18,11 @@ import {
   buildChatTimeoutFailureMessages,
   CHAT_REQUEST_TIMEOUT_MS,
   ChatBubble,
+  classifyCalendarConversionConfirmation,
   classifyMessageIntentSignal,
+  classifyTaskCalendarFollowUp,
+  persistShortcutChatTurn,
+  type ShortcutChatTurnInsert,
   getAmbiguousOfferHint,
   getAmbiguousOfferText,
   isAutoExecutableReadOnlyProposal,
@@ -34,7 +40,7 @@ import {
   shouldUseReasoningForMessage,
 } from "./ChatPage";
 import { shouldAutoRunReadOnlyOverlay } from "@/features/chat/autoReadOverlayGate";
-import { ENGINEERING_TASK_NOT_PROPOSED_REASON_MARKER, getStrongReadDomainEvidence, getToolById, isAutoExecutableReadOnlyToolId, PROVIDER_UNAVAILABLE_REASON_MARKER, withTimeout } from "@/features/agent";
+import { ENGINEERING_TASK_NOT_PROPOSED_REASON_MARKER, TASK_TIME_CLARIFICATION_REASON_MARKER, TASK_TO_CALENDAR_CONVERSION_REASON_MARKER, getStrongReadDomainEvidence, getToolById, isAutoExecutableReadOnlyToolId, PROVIDER_UNAVAILABLE_REASON_MARKER, withTimeout } from "@/features/agent";
 import type {
   AgentReasoningResult,
   ReadOnlyRuntimeResult,
@@ -812,6 +818,270 @@ describe("ChatPage LLM reasoning UX boundary", () => {
     expect(uncertainHtml).not.toContain("Review approval");
     expect(uncertainHtml).not.toContain(">Complete task</button>");
     expect(uncertainHtml).toContain("We could not confirm whether this action completed");
+  });
+
+  // Chat V2 Slice 2B.1: TASK_TIME_CLARIFICATION_REASON_MARKER proposals are
+  // ordinary ask_clarification results -- proposalToState/stepForReasoning's
+  // own pre-existing, blanket rule ("!proposal.toolId || proposal.type ===
+  // 'ask_clarification' || proposal.type === 'unsupported' -> null step")
+  // already applies to them like every other clarification, with no new
+  // mechanism needed. This is what makes items 15-17 of the slice's own
+  // test matrix true: proposal.step === null is what
+  // requestWriteExecution's ChatPage.tsx effect gates on (it only fires
+  // "if (!proposal.step || ...) continue"), so no execution request, no
+  // approval_pending row, and no executable approval are even reachable
+  // for this proposal -- proven here structurally, not by mocking the
+  // Worker and hoping it's never called.
+  describe("Slice 2B.1: task-time clarification never produces an actionable step (no execution request, no approval_pending row, no executable approval)", () => {
+    const clarificationResult: AgentReasoningResult = {
+      proposal: {
+        id: "intent:ask_clarification:task-time-1",
+        type: "ask_clarification",
+        confidence: "medium",
+        userMessage: "Create a task for tomorrow at 3pm to call Ahmad",
+        target: { title: "Call Ahmad" },
+        requestedDomain: undefined,
+        requiresTool: false,
+        requiresApproval: false,
+        clarificationQuestion: "Tasks don't support a specific time yet. Should I create it as a Task without a time, or as a Calendar Event at that time?",
+        reasons: [TASK_TIME_CLARIFICATION_REASON_MARKER, "Explicit task request named a time-of-day, which tasks do not support -- clarification required before any execution intent."],
+        language: "en",
+        generatedAt: now,
+        schemaVersion: 1,
+      },
+      validationReasons: ["Explicit task request named a time-of-day, which tasks do not support -- clarification required before any execution intent."],
+      responseLanguage: "en",
+      promptPreview: {
+        containsTaskNotes: false,
+        containsRawMemory: false,
+        containsAuditPolicy: false,
+        containsUserId: false,
+      },
+    };
+
+    it("proposalToState resolves no step at all for it", () => {
+      const t = (key: string) => key;
+      const state = proposalToState(clarificationResult, t);
+      expect(state.step).toBeNull();
+      expect(state.approval).toBeNull();
+    });
+
+    it("renders no actionable card content -- only the clarification text, via ReasoningProposalCard's existing 'no runtime action' branch", () => {
+      const t = (key: string) => key;
+      const state = proposalToState(clarificationResult, t);
+      const html = renderToString(
+        <ReasoningProposalCard
+          proposal={state}
+          onRunReadOnly={vi.fn()}
+          onReviewApproval={vi.fn()}
+          onRunWrite={vi.fn()}
+          onConfirmAndRunWrite={vi.fn()}
+        />,
+      );
+      expect(html).not.toContain("<button");
+    });
+  });
+
+  // Chat V2 Slice 2B.1: classifyTaskCalendarFollowUp -- the narrow,
+  // deterministic follow-up-reply classifier ChatPage.tsx's bounded
+  // single-turn continuation uses. "Do NOT infer this consent from
+  // silence": a bare "task" or "10am" reply, with no explicit "without
+  // time"/domain-noun phrase, must match neither branch.
+  describe("classifyTaskCalendarFollowUp (Slice 2B.1 bounded continuation)", () => {
+    it("recognizes an explicit task-without-time answer in EN/DE/FA", () => {
+      expect(classifyTaskCalendarFollowUp("task without time")).toBe("task_without_time");
+      expect(classifyTaskCalendarFollowUp("Make it a task, no time")).toBe("task_without_time");
+      expect(classifyTaskCalendarFollowUp("Aufgabe ohne Uhrzeit")).toBe("task_without_time");
+      expect(classifyTaskCalendarFollowUp("تسک بدون ساعت")).toBe("task_without_time");
+    });
+
+    it("recognizes an explicit calendar answer in EN/DE/FA", () => {
+      expect(classifyTaskCalendarFollowUp("calendar")).toBe("calendar_with_time");
+      expect(classifyTaskCalendarFollowUp("as an event at 10")).toBe("calendar_with_time");
+      expect(classifyTaskCalendarFollowUp("Kalender")).toBe("calendar_with_time");
+      expect(classifyTaskCalendarFollowUp("کلندر ساعت ۱۰")).toBe("calendar_with_time");
+      expect(classifyTaskCalendarFollowUp("تقویم")).toBe("calendar_with_time");
+    });
+
+    it("never infers consent from silence -- a bare answer with no explicit domain word/phrase matches neither branch", () => {
+      expect(classifyTaskCalendarFollowUp("task")).toBeNull();
+      expect(classifyTaskCalendarFollowUp("10am")).toBeNull();
+      expect(classifyTaskCalendarFollowUp("yes")).toBeNull();
+      expect(classifyTaskCalendarFollowUp("بله")).toBeNull();
+    });
+  });
+
+  // Slice 2B.1 correction (Blocker 2): the SECOND, fail-closed question --
+  // "should I leave the task unchanged and create a new event instead?" --
+  // only ever reached for an originally UPDATE-worded task request that
+  // picked Calendar. Same narrow, never-infer-from-silence discipline as
+  // classifyTaskCalendarFollowUp above.
+  describe("classifyCalendarConversionConfirmation (Slice 2B.1 Blocker 2 second question)", () => {
+    it("recognizes an explicit affirmative in EN/DE/FA", () => {
+      expect(classifyCalendarConversionConfirmation("yes")).toBe(true);
+      expect(classifyCalendarConversionConfirmation("Yes, go ahead")).toBe(true);
+      expect(classifyCalendarConversionConfirmation("ja")).toBe(true);
+      expect(classifyCalendarConversionConfirmation("بله")).toBe(true);
+    });
+
+    it("recognizes an explicit decline in EN/DE/FA", () => {
+      expect(classifyCalendarConversionConfirmation("no")).toBe(false);
+      expect(classifyCalendarConversionConfirmation("nein")).toBe(false);
+      expect(classifyCalendarConversionConfirmation("نه")).toBe(false);
+    });
+
+    it("never infers consent from silence -- unrelated text matches neither branch", () => {
+      expect(classifyCalendarConversionConfirmation("what time is it")).toBeNull();
+      expect(classifyCalendarConversionConfirmation("call Ahmad")).toBeNull();
+    });
+  });
+
+  // Slice 2B.1 final persistence correction: persistShortcutChatTurn is the
+  // single, EXPORTED, fully unit-testable source of truth for "did this
+  // shortcut-path turn actually persist" -- checks the RESOLVED
+  // `{ error }` shape a supabase-js v2 insert returns (never thrown for an
+  // ordinary PostgREST/database rejection unless `.throwOnError()` is
+  // used), and also still catches a genuinely thrown exception (a network
+  // failure before the request completes). A fake `insert` function
+  // stands in for the real chainable supabase-js client -- no need to mock
+  // its whole builder surface.
+  describe("persistShortcutChatTurn (Slice 2B.1 fail-closed persistence)", () => {
+    function fakeInsert(behavior: { error: unknown } | "throw"): { insert: ShortcutChatTurnInsert; calls: unknown[][] } {
+      const calls: unknown[][] = [];
+      const insert: ShortcutChatTurnInsert = async (rows) => {
+        calls.push(rows);
+        if (behavior === "throw") throw new Error("network error");
+        return behavior;
+      };
+      return { insert, calls };
+    }
+
+    it("A: insert resolves with no error -> considered durable (persisted)", async () => {
+      const { insert } = fakeInsert({ error: null });
+      const persisted = await persistShortcutChatTurn(insert, {
+        userId: "user-1",
+        sessionId: "session-1",
+        userText: "task without time",
+        assistantContent: "Understood.",
+      });
+      expect(persisted).toBe(true);
+    });
+
+    it("B: insert RESOLVES with { error: PostgrestError } (never thrown) -> detected as a failure, not silently treated as success", async () => {
+      const { insert } = fakeInsert({ error: { message: "row-level security violation", code: "42501" } });
+      const persisted = await persistShortcutChatTurn(insert, {
+        userId: "user-1",
+        sessionId: "session-1",
+        userText: "task without time",
+        assistantContent: "Understood.",
+      });
+      expect(persisted).toBe(false);
+    });
+
+    it("C: the insert promise actually THROWS -> the same fail-closed result as a resolved error", async () => {
+      const { insert } = fakeInsert("throw");
+      const persisted = await persistShortcutChatTurn(insert, {
+        userId: "user-1",
+        sessionId: "session-1",
+        userText: "task without time",
+        assistantContent: "Understood.",
+      });
+      expect(persisted).toBe(false);
+    });
+
+    it("D: the user + assistant rows are submitted together, in ONE insert call, never as two separate writes", async () => {
+      const { insert, calls } = fakeInsert({ error: null });
+      await persistShortcutChatTurn(insert, {
+        userId: "user-1",
+        sessionId: "session-1",
+        userText: "calendar at 10",
+        assistantContent: "Created.",
+      });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toEqual([
+        { user_id: "user-1", session_id: "session-1", role: "user", content: "calendar at 10" },
+        { user_id: "user-1", session_id: "session-1", role: "assistant", content: "Created." },
+      ]);
+    });
+
+    it("no user id at all is treated as a failure -- there is nothing to attribute the write to, and the real insert is never even called", async () => {
+      const { insert, calls } = fakeInsert({ error: null });
+      const persisted = await persistShortcutChatTurn(insert, {
+        userId: undefined,
+        sessionId: "session-1",
+        userText: "task without time",
+        assistantContent: "Understood.",
+      });
+      expect(persisted).toBe(false);
+      expect(calls).toHaveLength(0);
+    });
+  });
+
+  // Slice 2B.1 corrections (Blockers 2/3/4, and the fail-closed persistence
+  // correction) -- ChatPage.tsx's own handleSend is an unexported closure
+  // with heavy AppLayout/context dependencies that this codebase
+  // deliberately does not full-DOM-mount in tests (see
+  // ChatPagePwaScroll.test.tsx's own header comment on the same
+  // constraint, for the same file). The PURE persistence signal itself is
+  // now fully unit-tested above (A-D); what remains here is verified the
+  // same way that file verifies equally hard-to-integration-test
+  // properties: directly against the real shipped source, so a regression
+  // in the ACTUAL send-path wiring (not just the pure functions already
+  // covered above and in reasoningOrchestrator.test.ts) fails this test.
+  describe("Slice 2B.1 corrections: the actual follow-up send path (source-verified -- see file header comment)", () => {
+    const chatPageSource = readFileSync(path.join(path.resolve(process.cwd(), "src"), "pages", "ChatPage.tsx"), "utf-8");
+
+    it("G: arms the pending continuation from the WORKER's own structured `clarification` marker, not from the reasoning overlay alone -- so it still works with no overlay at all", () => {
+      expect(chatPageSource).toMatch(/if \(clarification\?\.kind === 'task_time'\) \{/);
+      // The overlay result may only ENRICH the captured target -- it must
+      // never be the SOLE condition that arms the ref (an overlay-only
+      // marker with no server confirmation could arm continuation on its
+      // own, which is the exact bug this must not regress to).
+      const armingBlock = chatPageSource.slice(
+        chatPageSource.indexOf("if (clarification?.kind === 'task_time') {"),
+        chatPageSource.indexOf("if (clarification?.kind === 'task_time') {") + 700,
+      );
+      expect(armingBlock).toMatch(/overlayResult\?\.proposal\.reasons\.includes\(TASK_TIME_CLARIFICATION_REASON_MARKER\)\s*\n\s*\? overlayResult\.proposal\.target\s*\n\s*: undefined/);
+    });
+
+    it("fail-closed persistence: commitShortcutTurn gates EVERY publish (messages, reasoning proposal, pending-continuation arming, attachment cleanup) behind a confirmed persistShortcutChatTurn success -- none of it runs on the early-return failure path", () => {
+      const helperStart = chatPageSource.indexOf("const commitShortcutTurn = async");
+      expect(helperStart).toBeGreaterThan(-1);
+      const helperBody = chatPageSource.slice(helperStart, helperStart + 1600);
+      expect(helperBody).toMatch(/const persisted = await persistShortcutChatTurn\(/);
+      // The failure branch: restores the ORIGINAL pending clarification
+      // (not the next one) so a retry re-enters the same branch, restores
+      // the draft so the user's words are not lost, surfaces a bounded
+      // error, and returns BEFORE any of the publish calls below it.
+      const failureBranch = helperBody.slice(helperBody.indexOf("if (!persisted) {"), helperBody.indexOf("setMessages(prev"));
+      expect(failureBranch).toMatch(/pendingTaskCalendarClarificationRef\.current = pendingClarification/);
+      expect(failureBranch).toMatch(/if \(!overrideText\) setDraft\(text\)/);
+      expect(failureBranch).toMatch(/setSendError\(t\('chat_error_send'\)\)/);
+      expect(failureBranch).toMatch(/return/);
+      // Everything that publishes this turn as real/actionable comes AFTER
+      // the failure branch's return, i.e. never runs on a failed persist.
+      expect(helperBody.indexOf("setMessages(prev")).toBeGreaterThan(helperBody.indexOf("if (!persisted) {"));
+      expect(helperBody).toMatch(/setReasoningProposal\(params\.reasoningResult \? proposalsToStates\(params\.reasoningResult, t\) : null\)/);
+      expect(helperBody).toMatch(/pendingTaskCalendarClarificationRef\.current = params\.nextPendingClarification/);
+      expect(helperBody).toMatch(/setAttachedFile\(null\)/);
+      expect(helperBody).toMatch(/setAttachedDocument\(null\)/);
+      expect(helperBody).toMatch(/void refreshSessions\(\)/);
+    });
+
+    it("E: the domain-choice continuation still calls commitShortcutTurn with the resolved proposal (unchanged end-to-end wiring)", () => {
+      expect(chatPageSource).toMatch(/if \(pendingClarification\?\.stage === 'domain_choice' && domainChoiceResolution\) \{/);
+      expect(chatPageSource).toMatch(/await commitShortcutTurn\(\{\s*\n\s*assistantContent: proposalMessage\(result\),\s*\n\s*language: result\.responseLanguage,\s*\n\s*reasoningResult: result,\s*\n\s*nextPendingClarification,\s*\n\s*\}\)/);
+    });
+
+    it("F: an originally update-worded task request that picks Calendar re-arms the SAME bounded ref for the second, fail-closed question instead of resolving directly, and the confirmed third turn still resolves to calendar_conversion_confirmed", () => {
+      const shortcutStart = chatPageSource.indexOf("if (pendingClarification?.stage === 'domain_choice' && domainChoiceResolution) {");
+      expect(shortcutStart).toBeGreaterThan(-1);
+      const shortcutBody = chatPageSource.slice(shortcutStart, chatPageSource.indexOf("return\n      }", shortcutStart));
+      expect(shortcutBody).toMatch(/result\.proposal\.reasons\.includes\(TASK_TO_CALENDAR_CONVERSION_REASON_MARKER\)/);
+      expect(shortcutBody).toMatch(/stage: 'conversion_confirmation' as const/);
+
+      expect(chatPageSource).toMatch(/resolvedAs: 'calendar_conversion_confirmed'/);
+    });
   });
 
   it("formats supported runtime results through context synthesis and the response composer", () => {

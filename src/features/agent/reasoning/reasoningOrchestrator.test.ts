@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { MODEL_RESPONSE_INCOMPLETE_REASON_MARKER, PROVIDER_UNAVAILABLE_REASON_MARKER, reasonAboutUserMessage } from "./reasoningOrchestrator";
+import { MODEL_RESPONSE_INCOMPLETE_REASON_MARKER, PROVIDER_UNAVAILABLE_REASON_MARKER, reasonAboutUserMessage, resolveTaskCalendarClarificationFollowUp } from "./reasoningOrchestrator";
+import { TASK_TO_CALENDAR_CONVERSION_REASON_MARKER } from "./intentValidator";
 import { buildReasoningPrompt } from "./reasoningPrompt";
 import type { AgentLlmReasoningCaller, AgentReasoningSafeContext } from "./reasoningTypes";
 
@@ -623,5 +624,132 @@ describe("reasoningOrchestrator disambiguation", () => {
 
     expect(result.proposal.type).toBe("inspect_tasks");
     expect(result.disambiguationCandidates).toBeUndefined();
+  });
+});
+
+// Chat V2 Slice 2B.1: resolveTaskCalendarClarificationFollowUp -- the
+// bounded, single-turn continuation ChatPage.tsx uses once the user's
+// immediately preceding turn asked TASK_TIME_CLARIFICATION_REASON_MARKER's
+// own question and this call resolves it. Deliberately never calls the
+// LLM (no AgentLlmReasoningCaller involved anywhere below) -- proving the
+// follow-up resolution is fully deterministic, matching the function's
+// own header comment.
+describe("resolveTaskCalendarClarificationFollowUp (Slice 2B.1 bounded continuation)", () => {
+  it("'task_without_time' resolves to create_task, preserving the title and date, discarding the time -- no execution row possible before this point since the domain was never settled until now", () => {
+    const result = resolveTaskCalendarClarificationFollowUp({
+      originalUserMessage: "Create a task for tomorrow at 3pm to call the dentist",
+      resolvedAs: "task_without_time",
+      capturedTarget: { title: "Call the dentist" },
+      safeContext,
+      language: "en",
+      now,
+      timeZone: "UTC",
+    });
+    expect(result.proposal.type).toBe("create_task");
+    expect(result.proposal.target?.title).toBe("Call the dentist");
+    expect(result.proposal.target?.dueDate).toBe("2026-07-16");
+  });
+
+  it("'calendar_with_time' resolves to create_calendar_event, preserving the title, date, AND time -- bridging the task-shaped title field", () => {
+    const result = resolveTaskCalendarClarificationFollowUp({
+      originalUserMessage: "Create a task for tomorrow at 3pm to call the dentist",
+      resolvedAs: "calendar_with_time",
+      capturedTarget: { title: "Call the dentist" },
+      safeContext,
+      language: "en",
+      now,
+      timeZone: "UTC",
+    });
+    expect(result.proposal.type).toBe("create_calendar_event");
+    expect(result.proposal.target?.eventTitle).toBe("Call the dentist");
+    expect(result.proposal.target?.start).toBe("2026-07-16T15:00:00.000Z");
+  });
+
+  it("the exact Persian acceptance case: 'task without time' follow-up preserves dueDate, discards the time, never silently becomes calendar", () => {
+    const result = resolveTaskCalendarClarificationFollowUp({
+      originalUserMessage: "برای فردا ساعت ۱۰ یک تسک بساز که به احمد زنگ بزنم",
+      resolvedAs: "task_without_time",
+      capturedTarget: { title: "به احمد زنگ بزنم" },
+      safeContext,
+      language: "fa",
+      now,
+      timeZone: "UTC",
+    });
+    expect(result.proposal.type).toBe("create_task");
+    expect(result.proposal.type).not.toBe("create_calendar_event");
+    expect(result.proposal.target?.dueDate).toBe("2026-07-16");
+  });
+
+  it("the exact Persian acceptance case: 'calendar at 10' follow-up preserves date/time/title", () => {
+    const result = resolveTaskCalendarClarificationFollowUp({
+      originalUserMessage: "برای فردا ساعت ۱۰ یک تسک بساز که به احمد زنگ بزنم",
+      resolvedAs: "calendar_with_time",
+      capturedTarget: { title: "به احمد زنگ بزنم" },
+      safeContext,
+      language: "fa",
+      now,
+      timeZone: "UTC",
+    });
+    expect(result.proposal.type).toBe("create_calendar_event");
+    expect(result.proposal.target?.eventTitle).toBe("به احمد زنگ بزنم");
+    expect(result.proposal.target?.start).toBe("2026-07-16T10:00:00.000Z");
+  });
+});
+
+// Slice 2B.1 correction (Blocker 2): resolveTaskCalendarClarificationFollowUp
+// always hardcodes `rawProposal.type: "create_task"` internally (a
+// placeholder -- see its own header comment) but must still preserve the
+// ORIGINAL request's real create/update semantics end to end, because
+// validateAgentIntentProposal re-derives the operation purely from
+// EXPLICIT MESSAGE EVIDENCE on `originalUserMessage` (never from that
+// placeholder). Exercised at THIS layer (not only intentValidator.test.ts
+// directly) so a regression in how the orchestrator wires the call through
+// is caught here too.
+describe("resolveTaskCalendarClarificationFollowUp: create vs update semantics (Slice 2B.1 Blocker 2)", () => {
+  it("an ORIGINALLY UPDATE-worded request's 'task_without_time' answer resolves to update_task (never create_task), preserving the resolved task's identity", () => {
+    const result = resolveTaskCalendarClarificationFollowUp({
+      originalUserMessage: "Update the Tax report task for tomorrow at 3pm",
+      resolvedAs: "task_without_time",
+      capturedTarget: { taskReference: "Tax report" },
+      safeContext,
+      language: "en",
+      now,
+      timeZone: "UTC",
+    });
+    expect(result.proposal.type).toBe("update_task");
+    expect(result.proposal.target?.taskId).toBe("task-1");
+  });
+
+  it("an ORIGINALLY UPDATE-worded request's 'calendar_with_time' answer does NOT resolve directly -- it comes back as the SECOND, fail-closed question, never update_calendar_event, never an executable proposal", () => {
+    const result = resolveTaskCalendarClarificationFollowUp({
+      originalUserMessage: "Update the Tax report task for tomorrow at 3pm",
+      resolvedAs: "calendar_with_time",
+      capturedTarget: { taskReference: "Tax report" },
+      safeContext,
+      language: "en",
+      now,
+      timeZone: "UTC",
+    });
+    expect(result.proposal.type).toBe("ask_clarification");
+    expect(result.proposal.type).not.toBe("update_calendar_event");
+    expect(result.proposal.reasons).toContain(TASK_TO_CALENDAR_CONVERSION_REASON_MARKER);
+    expect(result.proposal.requiresApproval).toBe(false);
+  });
+
+  it("a THIRD call with 'calendar_conversion_confirmed' finally produces create_calendar_event, with no task identity bridged into the event", () => {
+    const result = resolveTaskCalendarClarificationFollowUp({
+      originalUserMessage: "Update the Tax report task for tomorrow at 3pm",
+      resolvedAs: "calendar_conversion_confirmed",
+      capturedTarget: { title: "Tax report", taskReference: "Tax report", taskId: "task-1" },
+      safeContext,
+      language: "en",
+      now,
+      timeZone: "UTC",
+    });
+    expect(result.proposal.type).toBe("create_calendar_event");
+    expect(result.proposal.target?.eventTitle).toBe("Tax report");
+    expect(result.proposal.target?.taskId).toBeUndefined();
+    expect(result.proposal.target?.taskReference).toBeUndefined();
+    expect(result.proposal.target?.eventReference).toBeUndefined();
   });
 });

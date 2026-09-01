@@ -2,12 +2,18 @@ import { describe, expect, it } from "vitest";
 import {
   ENGINEERING_TASK_NOT_PROPOSED_REASON_MARKER,
   ENGINEERING_TASK_NOT_PROPOSED_REASONS,
+  TASK_TIME_CLARIFICATION_REASON_MARKER,
+  TASK_TO_CALENDAR_CONVERSION_REASON_MARKER,
   engineeringTaskTriggerPhraseFor,
   resolveDisambiguationCandidates,
   validateAgentIntentProposal,
 } from "./intentValidator";
-import type { AgentReasoningSafeContext } from "./reasoningTypes";
+import type { AgentReasoningSafeContext, AgentReasoningValidationResult } from "./reasoningTypes";
 import type { SupportedAiResponseLanguage } from "@/features/ai/responseLanguage";
+import {
+  taskCalendarDomainParityCases,
+  type TaskCalendarDomainParityExpectation,
+} from "../../../../shared/taskCalendarDomainParityCases";
 
 const now = new Date("2026-07-15T08:00:00.000Z");
 
@@ -522,13 +528,12 @@ describe("intentValidator", () => {
       expect(result.proposal.target?.start).toBe("2026-07-16T11:00:00.000Z");
     });
 
-    it("routes a time-bearing task-worded request to create_calendar_event, not create_task (a time forces calendar), bridging the model's task-shaped title field", () => {
-      // The model proposed create_task (it saw "task" wording) and
-      // populated the task-shaped title/start fields it was told to for
-      // that type; the deterministic time-forces-calendar rule overrides
-      // the type, and the validator bridges title->eventTitle so the
-      // reclassified proposal isn't immediately rejected for a "missing"
-      // title the model actually did provide, just under the other name.
+    // Slice 2B.1 -- LOCKED DOMAIN RULE: explicit domain noun wins before
+    // temporal inference. This replaces the old "a time forces calendar"
+    // test above (the behavior it pinned is now the bug this slice fixes):
+    // an explicit task noun plus a time-of-day is a genuine ambiguity to
+    // ASK about, never a silent reclassification into calendar.
+    it("an explicit task-worded request with a time-of-day asks for clarification instead of silently becoming a calendar event, capturing the model's own title for the follow-up", () => {
       // (Deliberately avoids an incidental calendar-ish word like
       // "appointment"/"meeting" in the message -- getStrongReadDomainEvidence's
       // own, coarser task-vs-calendar evidence check treats co-occurring
@@ -545,8 +550,249 @@ describe("intentValidator", () => {
         }),
         "Create a task for tomorrow at 3pm to call the dentist",
       );
+      expect(result.proposal.type).toBe("ask_clarification");
+      expect(result.proposal.reasons).toContain("TASK_TIME_CLARIFICATION");
+      expect(result.proposal.clarificationQuestion).toBeTruthy();
+      // The model's own title survives onto the captured target, even
+      // though the proposal itself is a clarification -- so a follow-up
+      // resolution never has to re-derive it.
+      expect(result.proposal.target?.title).toBe("Call the dentist");
+    });
+
+    it("the exact Persian acceptance case never becomes calendar automatically -- first turn is a clarification only", () => {
+      const result = validate(
+        proposal({ type: "create_task", target: { title: "به احمد زنگ بزنم" } }),
+        "برای فردا ساعت ۱۰ یک تسک بساز که به احمد زنگ بزنم",
+      );
+      expect(result.proposal.type).toBe("ask_clarification");
+      expect(result.proposal.type).not.toBe("create_calendar_event");
+      expect(result.proposal.reasons).toContain("TASK_TIME_CLARIFICATION");
+    });
+
+    it("24h compact time also triggers the clarification, not a silent calendar reclassification", () => {
+      const result = validate(
+        proposal({ type: "create_task", target: { title: "Review invoices" } }),
+        "Create a task for tomorrow at 16:00",
+      );
+      expect(result.proposal.type).toBe("ask_clarification");
+      expect(result.proposal.reasons).toContain("TASK_TIME_CLARIFICATION");
+    });
+
+    it("an explicit UPDATE-worded task request with a time-of-day also asks, never silently becoming update_calendar_event", () => {
+      const result = validateWithContext(
+        proposal({ type: "update_task", target: { taskReference: "Tax", start: "2026-08-14T15:00:00.000Z" } }),
+        "Update the Tax task for tomorrow at 3pm",
+        { tasks: [{ id: "task-1", title: "Tax", completed: false }], events: [], learningProgress: null },
+      );
+      expect(result.proposal.type).toBe("ask_clarification");
+      expect(result.proposal.reasons).toContain("TASK_TIME_CLARIFICATION");
+    });
+
+    it("resolvedTaskTimeAmbiguityAs: 'task_without_time' resolves deterministically to create_task, discarding the time, once the user has explicitly chosen", () => {
+      const result = validateAgentIntentProposal({
+        rawProposal: { type: "create_task", target: { title: "Call the dentist" } },
+        userMessage: "Create a task for tomorrow at 3pm to call the dentist",
+        safeContext: context,
+        language: "en",
+        now,
+        timeZone: "UTC",
+        resolvedTaskTimeAmbiguityAs: "task_without_time",
+      });
+      expect(result.proposal.type).toBe("create_task");
+      expect(result.proposal.target?.title).toBe("Call the dentist");
+      expect(result.proposal.target?.dueDate).toBe("2026-07-16");
+    });
+
+    it("resolvedTaskTimeAmbiguityAs: 'calendar_with_time' resolves deterministically to create_calendar_event, preserving the date/time/title, bridging the task-shaped title field", () => {
+      const result = validateAgentIntentProposal({
+        rawProposal: { type: "create_task", target: { title: "Call the dentist" } },
+        userMessage: "Create a task for tomorrow at 3pm to call the dentist",
+        safeContext: context,
+        language: "en",
+        now,
+        timeZone: "UTC",
+        resolvedTaskTimeAmbiguityAs: "calendar_with_time",
+      });
       expect(result.proposal.type).toBe("create_calendar_event");
       expect(result.proposal.target?.eventTitle).toBe("Call the dentist");
+      expect(result.proposal.target?.start).toBe("2026-07-16T15:00:00.000Z");
+    });
+
+    // Slice 2B.1 correction (Blocker 1): the FIRST version of this
+    // correction derived explicitTaskTimeAmbiguity from baseType, which
+    // only became "create_task"/"update_task" when the model's own raw
+    // type was already one of a few specific compatible starting values
+    // -- a model that answered with a DIFFERENT supported type for the
+    // exact same explicit-task-worded + timed message bypassed the LOCKED
+    // DOMAIN RULE entirely. This describe block proves the rule now holds
+    // regardless of what the model proposed -- exactly the adversarial
+    // matrix the correction task specified.
+    describe("Blocker 1 correction: the LOCKED DOMAIN RULE cannot be bypassed by ANY model-proposed type", () => {
+      const wrongButSupportedOrMalformedTypes = [
+        "create_task",
+        "create_calendar_event",
+        "inspect_calendar",
+        "inspect_tasks",
+        "ask_clarification",
+        "unsupported",
+        "totally_made_up_type",
+      ];
+
+      it.each(wrongButSupportedOrMalformedTypes)(
+        "an explicit CREATE-worded task request + time forces TASK_TIME_CLARIFICATION regardless of the model's raw type: %s",
+        (rawType) => {
+          const result = validate(
+            proposal({ type: rawType, target: { title: "Call the dentist", eventTitle: "Call the dentist" } }),
+            "Create a task for tomorrow at 3pm to call the dentist",
+          );
+          expect(result.proposal.type).toBe("ask_clarification");
+          expect(result.proposal.reasons).toContain(TASK_TIME_CLARIFICATION_REASON_MARKER);
+          expect(result.proposal.requiresApproval).toBe(false);
+        },
+      );
+
+      it("also holds with NO type field at all (fully malformed model output)", () => {
+        const result = validate(
+          { target: { title: "Call the dentist" } },
+          "Create a task for tomorrow at 3pm to call the dentist",
+        );
+        expect(result.proposal.type).toBe("ask_clarification");
+        expect(result.proposal.reasons).toContain(TASK_TIME_CLARIFICATION_REASON_MARKER);
+      });
+
+      it.each(["update_task", "update_calendar_event", "inspect_calendar", "unsupported", "garbage"])(
+        "an explicit UPDATE-worded task request + time forces TASK_TIME_CLARIFICATION regardless of the model's raw type: %s",
+        (rawType) => {
+          const result = validateWithContext(
+            proposal({ type: rawType, target: { taskReference: "Tax" } }),
+            "Update the Tax task for tomorrow at 3pm",
+            { tasks: [{ id: "task-1", title: "Tax", completed: false }], events: [], learningProgress: null },
+          );
+          expect(result.proposal.type).toBe("ask_clarification");
+          expect(result.proposal.reasons).toContain(TASK_TIME_CLARIFICATION_REASON_MARKER);
+        },
+      );
+
+      it("a genuinely mixed task+calendar noun message still falls through to ordinary ambiguity handling, never this branch, regardless of the model's raw type", () => {
+        const result = validate(
+          proposal({ type: "create_calendar_event", target: { title: "x" } }),
+          "Create a task for the meeting tomorrow at 3pm",
+        );
+        expect(result.proposal.reasons).not.toContain(TASK_TIME_CLARIFICATION_REASON_MARKER);
+      });
+    });
+
+    // Slice 2B.1 correction (Blocker 2): SmartFlow has no safe "convert
+    // this Task into a Calendar Event" primitive. An originally
+    // UPDATE-worded task request must preserve its own create/update
+    // semantics through the bounded follow-up, and picking Calendar for
+    // an update must fail closed (a SECOND, explicit question) rather
+    // than silently becoming update_calendar_event with the task's own
+    // identity bridged into the event lookup.
+    describe("Blocker 2 correction: create vs update semantics survive the task-time continuation, and Task-to-Event conversion fails closed", () => {
+      const updateContext: AgentReasoningSafeContext = {
+        tasks: [{ id: "task-1", title: "Tax report", completed: false }],
+        events: [],
+        learningProgress: null,
+      };
+
+      it("resolvedTaskTimeAmbiguityAs: 'task_without_time' for an ORIGINALLY UPDATE-worded request resolves to update_task, preserving the exact resolved task identity, never create_task", () => {
+        const result = validateAgentIntentProposal({
+          rawProposal: { type: "create_task", target: { taskReference: "Tax report" } },
+          userMessage: "Update the Tax report task for tomorrow at 3pm",
+          safeContext: updateContext,
+          language: "en",
+          now,
+          timeZone: "UTC",
+          resolvedTaskTimeAmbiguityAs: "task_without_time",
+        });
+        expect(result.proposal.type).toBe("update_task");
+        expect(result.proposal.target?.taskId).toBe("task-1");
+      });
+
+      it("resolvedTaskTimeAmbiguityAs: 'calendar_with_time' for an ORIGINALLY UPDATE-worded request does NOT resolve directly -- it asks a SECOND, fail-closed question, never producing update_calendar_event or any executable intent", () => {
+        const result = validateAgentIntentProposal({
+          rawProposal: { type: "create_task", target: { taskReference: "Tax report" } },
+          userMessage: "Update the Tax report task for tomorrow at 3pm",
+          safeContext: updateContext,
+          language: "en",
+          now,
+          timeZone: "UTC",
+          resolvedTaskTimeAmbiguityAs: "calendar_with_time",
+        });
+        expect(result.proposal.type).toBe("ask_clarification");
+        expect(result.proposal.type).not.toBe("update_calendar_event");
+        expect(result.proposal.reasons).toContain(TASK_TO_CALENDAR_CONVERSION_REASON_MARKER);
+        expect(result.proposal.requiresApproval).toBe(false);
+        expect(result.proposal.clarificationQuestion).toBeTruthy();
+      });
+
+      it("resolvedTaskTimeAmbiguityAs: 'calendar_with_time' for an ORIGINALLY CREATE-worded request still resolves DIRECTLY to create_calendar_event -- the fail-closed second question is UPDATE-only (regression check)", () => {
+        const result = validateAgentIntentProposal({
+          rawProposal: { type: "create_task", target: { title: "Call the dentist" } },
+          userMessage: "Create a task for tomorrow at 3pm to call the dentist",
+          safeContext: context,
+          language: "en",
+          now,
+          timeZone: "UTC",
+          resolvedTaskTimeAmbiguityAs: "calendar_with_time",
+        });
+        expect(result.proposal.type).toBe("create_calendar_event");
+      });
+
+      it("resolvedTaskTimeAmbiguityAs: 'calendar_conversion_confirmed' resolves to a BRAND NEW create_calendar_event, with the original task's identity stripped -- never bridged into eventReference/eventId", () => {
+        const result = validateAgentIntentProposal({
+          rawProposal: { type: "create_task", target: { title: "Tax report", taskReference: "Tax report", taskId: "task-1", taskTitleHint: "Tax report" } },
+          userMessage: "Update the Tax report task for tomorrow at 3pm",
+          safeContext: updateContext,
+          language: "en",
+          now,
+          timeZone: "UTC",
+          resolvedTaskTimeAmbiguityAs: "calendar_conversion_confirmed",
+        });
+        expect(result.proposal.type).toBe("create_calendar_event");
+        expect(result.proposal.target?.eventTitle).toBe("Tax report");
+        expect(result.proposal.target?.taskId).toBeUndefined();
+        expect(result.proposal.target?.taskReference).toBeUndefined();
+        expect(result.proposal.target?.eventReference).toBeUndefined();
+        // The original task is never looked up/matched/mutated by this
+        // path -- findTaskTarget is never even reached for this type.
+        expect(result.proposal.target?.start).toBe("2026-07-16T15:00:00.000Z");
+      });
+    });
+
+    // Slice 2B.1: client/server parity -- see
+    // shared/taskCalendarDomainParityCases.ts's own header comment for why
+    // this shared, framework-free fixture is what keeps this validator and
+    // the Worker's detectWriteDomainSignal (agent/worker/flow-write-policy.test.ts
+    // has the mirror of this describe block) from silently drifting apart.
+    // CI fails here if this validator's answer for any case ever disagrees
+    // with the pinned expectation -- in particular, if this validator ever
+    // silently resolves a case the fixture pins to 'task_time_ambiguous'
+    // into either create_task or create_calendar_event.
+    describe("client/server domain parity (shared/taskCalendarDomainParityCases.ts)", () => {
+      function domainSignalFromValidation(result: AgentReasoningValidationResult): TaskCalendarDomainParityExpectation | "other" {
+        const { type, reasons } = result.proposal;
+        if (type === "create_task" || type === "update_task") return "task";
+        if (type === "create_calendar_event" || type === "update_calendar_event") return "calendar";
+        if (reasons.includes(TASK_TIME_CLARIFICATION_REASON_MARKER)) return "task_time_ambiguous";
+        if (type === "ask_clarification" || type === "unsupported") return "ambiguous";
+        return "other";
+      }
+
+      it.each(taskCalendarDomainParityCases)("$label", ({ message, expected }) => {
+        // A plausible model-guessed subject, supplied up front, purely so
+        // the unrelated "title is required" completeness checks (which
+        // this parity fixture is not testing) never mask the DOMAIN
+        // routing decision this test cares about -- title.eventTitle
+        // covers whichever of create_task/create_calendar_event this
+        // resolves to.
+        const result = validate(
+          proposal({ type: "ask_clarification", target: { title: "Subject", eventTitle: "Subject" } }),
+          message,
+        );
+        expect(domainSignalFromValidation(result)).toBe(expected);
+      });
     });
 
     it("a date-only task-worded request still resolves to create_task, unchanged", () => {
@@ -587,7 +833,15 @@ describe("intentValidator", () => {
       learningProgress: null,
     }).proposal.type).toBe("update_task");
     expect(validate(proposal({ type: "inspect_tasks" }), "Delete this task").proposal.type).toBe("unsupported");
-    expect(validate(proposal({ type: "inspect_calendar", requestedDomain: "calendar", toolId: "calendar.list_today" }), "Verschiebe meinen Termin auf 15 Uhr.").proposal.type).toBe("unsupported");
+    // Slice 2B.1 parity fix: "Termin" is now a recognized calendar noun
+    // (requestLooksLikeCalendarUpdate, matching the Worker's own
+    // isCalendarWriteTrigger) -- this message correctly resolves toward
+    // update_calendar_event now, but no single event in the default
+    // `context` fixture matches "Termin", so it honestly asks which event
+    // is meant instead of the OLD, less honest "unsupported" denial (the
+    // same ENG-06g-fix "a hedge is a question, not a denial" principle
+    // this file already applies elsewhere).
+    expect(validate(proposal({ type: "inspect_calendar", requestedDomain: "calendar", toolId: "calendar.list_today" }), "Verschiebe meinen Termin auf 15 Uhr.").proposal.type).toBe("ask_clarification");
     expect(validate(proposal({ type: "inspect_tasks" }), "برای فردا یک وظیفه بساز.").proposal.type).toBe("ask_clarification");
   });
 

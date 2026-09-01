@@ -893,12 +893,57 @@ function isCalendarWriteTrigger(message: string): boolean {
   return createCal || updateCal
 }
 
+// Slice 2B.1 -- LOCKED DOMAIN RULE: explicit domain noun wins before
+// temporal inference. A standalone, freshly-written predicate (not
+// extracted from parseTaskWriteIntent's own create/cleanPersianCreate/
+// cleanMixedPersianCreate/update variables above, to avoid any risk of
+// touching that function's existing regex literals) matching the exact
+// same semantic trigger: an explicit "task"/"todo"/"aufgabe"/"تسک"/
+// "وظیفه"/"کار" noun paired with a create/update verb. Used by
+// resolvesToCalendarDomain/detectWriteDomainSignal below to tell "the
+// user actually named a task" apart from "no task noun at all, but this
+// reads like a bare personal schedule statement" (isImplicitScheduleStatement)
+// -- only the former must ASK instead of silently reclassifying into
+// calendar when a time is present; the latter (no noun to contradict) is
+// unaffected, unchanged product behavior. Mirrors
+// src/features/agent/reasoning/intentValidator.ts's own
+// requestLooksLikeTaskCreate/requestLooksLikeTaskUpdate (independent,
+// hand-written copies on each side, same convention as every other
+// domain-detection regex pair in this codebase).
+function isExplicitTaskWriteTrigger(message: string): boolean {
+  const create = /\b(create|add|set up|erstelle|hinzuf[üu]gen)\b.{0,50}\b(task|todo|aufgabe)\b/i.test(message) ||
+    /(?:یک|ک|یه)?\s*(?:تسک|وظیفه|کار).{0,50}(?:بساز|ایجاد کن|اضافه کن)/i.test(message) ||
+    /(?:یک|ک|یه)?\s*(?:task|todo).{0,50}(?:بساز|ایجاد کن|اضافه کن)/i.test(message)
+  // Blocker 2/parity correction: the FA alternative was missing entirely
+  // for UPDATE (only CREATE had one, above) -- an FA update-worded task
+  // request naming a time-of-day fell through past this predicate
+  // (isExplicitTaskWriteTrigger returned false) straight into
+  // resolvesToCalendarDomain's OWN generic "no explicit noun" fallback,
+  // silently resolving to calendar -- the exact bug the LOCKED DOMAIN
+  // RULE exists to prevent, just for one specific language/operation
+  // pair. Mirrors src/features/agent/reasoning/intentValidator.ts's own
+  // requestLooksLikeTaskUpdate FA pattern.
+  const update = /\b(update|edit|change|reschedule|aktualisiere|bearbeite|verschiebe)\b.{0,60}\b(task|todo|aufgabe)\b/i.test(message) ||
+    /(?:تسک|وظیفه|کار).{0,60}(?:به‌روزرسانی کن|ویرایش کن|تغییر بده)/i.test(message)
+  return create || update
+}
+
 function resolvesToCalendarDomain(message: string, now: Date, timeZone: string): boolean {
   if (isCalendarWriteTrigger(message)) return true
+  // LOCKED DOMAIN RULE: an EXPLICIT task noun wins before temporal
+  // inference -- a time-of-day alongside it is the caller's
+  // (detectWriteDomainSignal) own 'task_time_ambiguous' signal to raise,
+  // never silently reclassified here. Only a task write with NO explicit
+  // noun (the implicit personal-statement branch inside
+  // parseTaskWriteIntent, e.g. "I have a dentist appointment tomorrow at
+  // 3pm") still silently resolves to calendar when a time is present --
+  // unchanged, deliberately out of this correction's scope (there is no
+  // noun to contradict).
+  if (isExplicitTaskWriteTrigger(message)) return false
   return parseTaskWriteIntent(message, now, timeZone) !== null && Boolean(parseDeterministicTimeOfDay(message))
 }
 
-export type WriteDomainSignal = 'task' | 'calendar' | 'finance' | 'ambiguous' | 'none'
+export type WriteDomainSignal = 'task' | 'calendar' | 'finance' | 'ambiguous' | 'task_time_ambiguous' | 'none'
 
 /**
  * The single deterministic routing decision -- see file header above.
@@ -907,6 +952,14 @@ export type WriteDomainSignal = 'task' | 'calendar' | 'finance' | 'ambiguous' | 
  * any pre-existing task/calendar message), behaviour is byte-identical to
  * before this task, satisfying task 23's own "zero behaviour change for
  * existing domains" constraint. Exported for direct unit testing.
+ *
+ * Slice 2B.1: 'task_time_ambiguous' is a NEW, narrower signal than
+ * 'ambiguous' above -- 'ambiguous' means two DIFFERENT domain nouns both
+ * matched (genuinely don't know which domain); 'task_time_ambiguous'
+ * means exactly one domain matched (task, via an explicit noun) but it
+ * also carries a time-of-day tasks cannot hold, per the LOCKED DOMAIN
+ * RULE. Callers must never trust either signal to represent a resolved,
+ * mutation-ready domain.
  */
 export function detectWriteDomainSignal(message: string, now: Date, timeZone: string): WriteDomainSignal {
   const taskTrigger = parseTaskWriteIntent(message, now, timeZone) !== null
@@ -916,6 +969,9 @@ export function detectWriteDomainSignal(message: string, now: Date, timeZone: st
   if (triggerCount === 0) return 'none'
   if (triggerCount > 1) return 'ambiguous'
   if (financeTrigger) return 'finance'
+  if (taskTrigger && isExplicitTaskWriteTrigger(message) && Boolean(parseDeterministicTimeOfDay(message))) {
+    return 'task_time_ambiguous'
+  }
   return resolvesToCalendarDomain(message, now, timeZone) ? 'calendar' : 'task'
 }
 
@@ -990,10 +1046,18 @@ export function parseTaskWriteIntent(message: string, now: Date, timeZone: strin
     /(?:ÛŒÚ©|ÙŠÙ‡|ÛŒÙ‡)?\s*(?:ØªØ³Ú©|ÙˆØ¸ÛŒÙÙ‡|Ú©Ø§Ø±).{0,50}(?:Ø¨Ø³Ø§Ø²|Ø§ÛŒØ¬Ø§Ø¯ Ú©Ù†|Ø§Ø¶Ø§ÙÙ‡ Ú©Ù†)/i.test(message)
   const cleanPersianCreate = /(?:\u06cc\u06a9|\u06a9|\u06cc\u0647)?\s*(?:\u062a\u0633\u06a9|\u0648\u0638\u06cc\u0641\u0647|\u06a9\u0627\u0631).{0,50}(?:\u0628\u0633\u0627\u0632|\u0627\u06cc\u062c\u0627\u062f\s+\u06a9\u0646|\u0627\u0636\u0627\u0641\u0647\s+\u06a9\u0646)/i.test(message)
   const cleanMixedPersianCreate = /(?:\u06cc\u06a9|\u06a9|\u06cc\u0647)?\s*(?:task|todo).{0,50}(?:\u0628\u0633\u0627\u0632|\u0627\u06cc\u062c\u0627\u062f\s+\u06a9\u0646|\u0627\u0636\u0627\u0641\u0647\s+\u06a9\u0646)/i.test(message)
+  // Slice 2B.1 correction (Blocker 2/parity coverage): parseTaskWriteIntent had NO
+  // Persian UPDATE recognition at all (only cleanPersianCreate/cleanMixedPersianCreate
+  // above cover FA create; the corrupted create/update variables further up this
+  // function are pre-existing, out-of-scope mojibake) -- an FA update-worded task
+  // message returned null here entirely, never even reaching
+  // isExplicitTaskWriteTrigger own (now-fixed) FA update check. Freshly written,
+  // clean escapes mirroring cleanPersianCreate own style.
+  const cleanPersianUpdate = /(?:\u06cc\u06a9|\u06a9|\u06cc\u0647)?\s*(?:\u062a\u0633\u06a9|\u0648\u0638\u06cc\u0641\u0647|\u06a9\u0627\u0631).{0,60}(?:\u0628\u0647\u200c\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06cc\s+\u06a9\u0646|\u0648\u06cc\u0631\u0627\u06cc\u0634\s+\u06a9\u0646|\u062a\u063a\u06cc\u06cc\u0631\s+\u0628\u062f\u0647)/i.test(message)
   const update = /\b(update|edit|change|reschedule|aktualisiere|bearbeite|verschiebe)\b.{0,60}\b(task|todo|aufgabe)\b/i.test(message)
-  const implicitCreate = !create && !cleanPersianCreate && !cleanMixedPersianCreate && !update &&
+  const implicitCreate = !create && !cleanPersianCreate && !cleanMixedPersianCreate && !update && !cleanPersianUpdate &&
     isImplicitScheduleStatement(message) && hasResolvedDateOrTimeSignal(message, now, timeZone)
-  if (!create && !cleanPersianCreate && !cleanMixedPersianCreate && !update && !implicitCreate) return null
+  if (!create && !cleanPersianCreate && !cleanMixedPersianCreate && !update && !cleanPersianUpdate && !implicitCreate) return null
 
   const date = parseDeterministicDueDate(message, now, timeZone)
   const timeOfDay = parseDeterministicTimeOfDay(message)
