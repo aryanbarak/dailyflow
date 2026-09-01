@@ -634,6 +634,58 @@ describe("intentValidator", () => {
         expect(result.proposal.type).toBe("ask_clarification");
         expect(result.proposal.type).not.toBe("create_calendar_event");
       });
+
+      const callAhmadContext: AgentReasoningSafeContext = {
+        tasks: [{ id: "task-2", title: "Call Ahmad", completed: false }],
+        events: [],
+        learningProgress: null,
+      };
+
+      // Review blocker 1: the referenced task's own PERSISTED title is
+      // authoritative -- a model-proposed eventTitle/title (stale,
+      // hallucinated, or copied from something else entirely) must never
+      // win over it.
+      it("the referenced task's own persisted title always wins over a conflicting model-proposed eventTitle/title", () => {
+        const result = validateWithContext(
+          proposal({
+            type: "update_task",
+            target: { taskReference: "Call Ahmad", eventTitle: "Dentist", title: "Wrong title" },
+          }),
+          "Move the task 'Call Ahmad' to tomorrow at 10",
+          callAhmadContext,
+        );
+        expect(result.proposal.type).toBe("create_calendar_event");
+        expect(result.proposal.target?.eventTitle).toBe("Call Ahmad");
+      });
+
+      // Review blocker 3: a realistic model output for this exact request
+      // may be shaped like update_calendar_event (eventReference/eventTitle)
+      // rather than any task field at all, since the model was never told
+      // this is a task lookup before this slice's prompt correction. The
+      // deterministic system must still recover the task's identity (here,
+      // from the quoted reference in the user's own message text) and
+      // land on create_calendar_event with the task's real title -- the
+      // happy path for this clear, common phrasing must not degrade into
+      // an unnecessary clarification, and the model's eventReference must
+      // never be blindly trusted as the task's identity.
+      it("recovers the task reference deterministically from the message when the model's raw output is update_calendar_event-shaped (eventReference/eventTitle, no task field)", () => {
+        const result = validateWithContext(
+          proposal({
+            type: "update_calendar_event",
+            toolId: undefined,
+            requestedDomain: undefined,
+            target: { eventReference: "Call Ahmad", eventTitle: "Call Ahmad" },
+          }),
+          "Move the task 'Call Ahmad' to tomorrow at 10",
+          callAhmadContext,
+        );
+        expect(result.proposal.type).toBe("create_calendar_event");
+        expect(result.proposal.type).not.toBe("update_calendar_event");
+        expect(result.proposal.target?.eventTitle).toBe("Call Ahmad");
+        expect(result.proposal.target?.taskId).toBeUndefined();
+        expect(result.proposal.target?.taskReference).toBeUndefined();
+        expect(result.proposal.target?.eventReference).toBeUndefined();
+      });
     });
 
     // Slice 2B.1.1 correction: the FIRST version of Slice 2B.1 derived its

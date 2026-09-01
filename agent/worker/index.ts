@@ -1249,8 +1249,14 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
           // Task 22: same model-title-resolution treatment as tasks above.
           // INC-01: same provider-unavailable distinction as the task
           // branch above.
+          // Slice 2B.1.1 correction (review blocker 4): sourceTaskReference
+          // means executeAutoCalendarWrite is about to resolve this event's
+          // title from an EXISTING task's own authoritative persisted row,
+          // never from Gemini -- skip the model call entirely rather than
+          // let its guess be computed and then discarded, and rather than
+          // risk any model output surviving that resolution step.
           let providerUnavailable = false
-          if (calendarWriteIntent.kind === 'create_calendar_event' && !calendarWriteIntent.dateClarificationNeeded && calendarWriteIntent.titleSource !== 'correction') {
+          if (calendarWriteIntent.kind === 'create_calendar_event' && !calendarWriteIntent.dateClarificationNeeded && calendarWriteIntent.titleSource !== 'correction' && calendarWriteIntent.sourceTaskReference === undefined) {
             try {
               calendarWriteIntent.title = await resolveCreateEventTitle(env, calendarWriteIntent, message)
             } catch (err) {

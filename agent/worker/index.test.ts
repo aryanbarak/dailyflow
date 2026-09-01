@@ -1434,6 +1434,130 @@ describe('ADR-0012 server-side task write policy', () => {
     })
   })
 
+  // Slice 2B.1.1 correction (review blocker 4): the legacy deterministic
+  // /chat path can auto-execute writes on its own (flow_write_permissions
+  // mode=auto) without the browser reasoning overlay ever having run, so
+  // an UPDATE/reschedule-worded reference to an EXISTING task carrying a
+  // time must be resolved and verified SERVER-SIDE, exactly one match,
+  // before anything is written -- the client-side findTaskTarget guarantee
+  // (intentValidator.test.ts) does not cover this path at all.
+  describe('Slice 2B.1.1 correction (review blocker 4): Worker mode=auto safety for reschedule-worded existing task + time', () => {
+    function stubTasks(tasks: Array<{ id: string; title: string }>) {
+      const originalFetch = globalThis.fetch
+      vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (url.startsWith(`${SUPABASE_URL}/rest/v1/tasks`) && (init?.method ?? 'GET') === 'GET') {
+          return new Response(JSON.stringify(tasks.map((t) => ({
+            id: t.id, user_id: 'user-1', title: t.title, notes: null, due_date: null, completed: false,
+            created_at: '2026-08-13T00:00:00.000Z', updated_at: '2026-08-13T00:00:00.000Z',
+          }))), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
+        return originalFetch(input, init)
+      }))
+    }
+
+    // D
+    it('resolvable existing task: exactly one new calendar event, using the task\'s own authoritative title -- the task row is never touched, and the model title-resolution call is never made', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'auto')
+      stubTasks([{ id: 'task-call-ahmad', title: 'Call Ahmad' }])
+      const response = await worker.fetch(chatRequest({
+        message: "Move the task 'Call Ahmad' to tomorrow at 10",
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writeExecution?: string }
+
+      expect(body.writeExecution).toBe('executed')
+      expect(log.taskWrites.length).toBe(0)
+      expect(log.calendarWrites.length).toBe(1)
+      expect(log.calendarWrites[0]?.method).toBe('POST')
+      expect(log.calendarWrites[0]?.body?.title).toBe('Call Ahmad')
+      // sourceTaskReference short-circuits resolveCreateEventTitle in
+      // index.ts -- the model is never asked to guess a title once the
+      // referenced task's own persisted title is available.
+      expect(log.geminiCalls.length).toBe(0)
+    })
+
+    // E
+    it('missing task: no calendar event is created, no task is mutated -- falls back to asking, never a fabricated write', async () => {
+      const log = installFetchMock([], null, 'Sure, tell me more.', 'auto')
+      stubTasks([])
+      const response = await worker.fetch(chatRequest({
+        message: "Move the task 'Call Ahmad' to tomorrow at 10",
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writeExecution?: string; writePolicy?: { domain: string; action: string; mode: string } }
+
+      expect(body.writeExecution).toBeUndefined();
+      expect(body.writePolicy).toMatchObject({ domain: 'calendar', action: 'create', mode: 'ask' })
+      expect(log.taskWrites.length).toBe(0)
+      expect(log.calendarWrites.length).toBe(0)
+    })
+
+    // F
+    it('ambiguous task (more than one match): no calendar event is created, no task is mutated -- a clarify reply, never a guess', async () => {
+      const log = installFetchMock([], null, 'Sure, tell me more.', 'auto')
+      stubTasks([
+        { id: 'task-1', title: 'Call Ahmad about taxes' },
+        { id: 'task-2', title: 'Call Ahmad about the trip' },
+      ])
+      const response = await worker.fetch(chatRequest({
+        message: "Move the task 'Call Ahmad' to tomorrow at 10",
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writeExecution?: string }
+
+      expect(body.writeExecution).toBe('clarify')
+      expect(log.taskWrites.length).toBe(0)
+      expect(log.calendarWrites.length).toBe(0)
+    })
+
+    // G
+    it('never issues an update_calendar_event (a PATCH) from task identity, even under mode=auto -- only a brand-new event (a POST)', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'auto')
+      stubTasks([{ id: 'task-call-ahmad', title: 'Call Ahmad' }])
+      await worker.fetch(chatRequest({
+        message: "Move the task 'Call Ahmad' to tomorrow at 10",
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+
+      expect(log.calendarWrites.length).toBeGreaterThan(0)
+      expect(log.calendarWrites.every((w) => w.method === 'POST')).toBe(true)
+    })
+
+    // H (mandatory production acceptance case, CREATE-worded -- unaffected
+    // by this correction: no existing task is referenced, so no
+    // task-resolution gating applies, and the model title-resolution call
+    // still runs exactly as it did before this correction).
+    it('the mandatory production acceptance case (CREATE-worded, no existing task referenced) is unaffected: still create_calendar_event via the model\'s own title', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'تماس با احمد', 'fa')
+      const response = await worker.fetch(chatRequest({
+        message: 'برای فردا ساعت ۱۰ یک تسک بساز که به احمد زنگ بزنم',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writeExecution?: string }
+
+      expect(body.writeExecution).toBe('executed')
+      expect(log.taskWrites.length).toBe(0)
+      expect(log.calendarWrites.length).toBe(1)
+      expect(log.calendarWrites[0]?.body?.title).toBe('تماس با احمد')
+    })
+
+    // I (a task without an exact time stays a plain task write -- no
+    // task-resolution gating applies to create_task at all).
+    it('a task without an exact time is unaffected: still a plain create_task', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'Call Ahmad')
+      const response = await worker.fetch(chatRequest({
+        message: 'Create a task to call Ahmad tomorrow',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writeExecution?: string }
+
+      expect(body.writeExecution).toBe('executed')
+      expect(log.calendarWrites.length).toBe(0)
+      expect(log.taskWrites.length).toBe(1)
+    })
+  })
+
   // INC-01 (2026-08-22 incident): the actual production defect this
   // incident is about. "Create a task for tomorrow" has a date but no
   // identifiable subject -- pattern extraction alone would ALSO find

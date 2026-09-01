@@ -55,6 +55,18 @@ export interface ParsedCalendarWriteIntent {
   // -- an already-resolved event id, used directly instead of
   // eventReference's fuzzy-match-by-title resolution.
   targetId?: string
+  // Slice 2B.1.1 correction (review blocker 4): set ONLY when this
+  // create_calendar_event was routed here by an UPDATE/reschedule-worded
+  // reference to an EXISTING task carrying a time (parseCalendarWriteIntent's
+  // isExplicitTaskRescheduleRoutedHere below) -- e.g. "Move the task 'Call
+  // Ahmad' to tomorrow at 10". `title` above is only ever this function's
+  // own LAST-RESORT pattern guess for that case; executeAutoCalendarWrite
+  // must resolve the referenced task from the user's own Tasks table and
+  // use ITS authoritative persisted title instead, the same server-side
+  // safety the browser overlay's findTaskTarget already provides for the
+  // client path -- the legacy deterministic /chat auto-write path must not
+  // depend on the browser overlay ever having run.
+  sourceTaskReference?: string
 }
 
 export interface RecentChatTurn {
@@ -911,32 +923,45 @@ function isCalendarWriteTrigger(message: string): boolean {
 // requestLooksLikeTaskCreate/requestLooksLikeTaskUpdate (independent,
 // hand-written copies on each side, same convention as every other
 // domain-detection regex pair in this codebase).
-function isExplicitTaskWriteTrigger(message: string): boolean {
-  const create = /\b(create|add|set up|erstelle|hinzuf[üu]gen)\b.{0,50}\b(task|todo|aufgabe)\b/i.test(message) ||
+function isExplicitTaskCreateTrigger(message: string): boolean {
+  return /\b(create|add|set up|erstelle|hinzuf[üu]gen)\b.{0,50}\b(task|todo|aufgabe)\b/i.test(message) ||
     /(?:یک|ک|یه)?\s*(?:تسک|وظیفه|کار).{0,50}(?:بساز|ایجاد کن|اضافه کن)/i.test(message) ||
     /(?:یک|ک|یه)?\s*(?:task|todo).{0,50}(?:بساز|ایجاد کن|اضافه کن)/i.test(message)
-  // Blocker 2/parity correction (#202): the FA alternative was missing
-  // entirely for UPDATE (only CREATE had one, above). Slice 2B.1.1: also
-  // added "بگذار" ("set/put/schedule") -- the acceptance case "تسک تماس با
-  // احمد را فردا ساعت ۱۰ بگذار" names an EXISTING task and reschedules it,
-  // but uses neither a create verb nor "به‌روزرسانی کن"/"ویرایش کن"/
-  // "تغییر بده" -- still noun-gated (تسک/وظیفه/کار within 60 chars), same
-  // discipline as every other verb here. Mirrors
-  // src/features/agent/reasoning/intentValidator.ts's own
-  // requestLooksLikeTaskUpdate FA pattern.
-  //
-  // "بگذار" is overloaded, though: "نام تسک را X بگذار" ("name the task
-  // X") is parseTitleCorrection's OWN idiom (a rename, not a reschedule)
-  // -- excluded via the same guard below so a title-correction message
-  // is never misread as reschedule-with-time evidence.
-  // Slice 2B.1.1 parity fix: "move" was missing from the EN verb list --
-  // the client's requestLooksLikeTaskUpdate already had it (a genuine,
-  // pre-existing client/Worker parity gap, surfaced by acceptance matrix
-  // item 4, "Move the task 'Call Ahmad' to tomorrow at 10").
-  const update = (/\b(update|edit|change|move|reschedule|aktualisiere|bearbeite|verschiebe)\b.{0,60}\b(task|todo|aufgabe)\b/i.test(message) ||
+}
+
+// Blocker 2/parity correction (#202): the FA alternative was missing
+// entirely for UPDATE (only CREATE had one, above). Slice 2B.1.1: also
+// added "بگذار" ("set/put/schedule") -- the acceptance case "تسک تماس با
+// احمد را فردا ساعت ۱۰ بگذار" names an EXISTING task and reschedules it,
+// but uses neither a create verb nor "به‌روزرسانی کن"/"ویرایش کن"/
+// "تغییر بده" -- still noun-gated (تسک/وظیفه/کار within 60 chars), same
+// discipline as every other verb here. Mirrors
+// src/features/agent/reasoning/intentValidator.ts's own
+// requestLooksLikeTaskUpdate FA pattern.
+//
+// "بگذار" is overloaded, though: "نام تسک را X بگذار" ("name the task
+// X") is parseTitleCorrection's OWN idiom (a rename, not a reschedule)
+// -- excluded via the same guard below so a title-correction message
+// is never misread as reschedule-with-time evidence.
+// Slice 2B.1.1 parity fix: "move" was missing from the EN verb list --
+// the client's requestLooksLikeTaskUpdate already had it (a genuine,
+// pre-existing client/Worker parity gap, surfaced by acceptance matrix
+// item 4, "Move the task 'Call Ahmad' to tomorrow at 10").
+//
+// Slice 2B.1.1 correction (review blocker 4): exported as its own named
+// predicate (previously inlined inside isExplicitTaskWriteTrigger below)
+// so parseCalendarWriteIntent can tell "an EXISTING task is being
+// rescheduled" apart from "a NEW task is being created" -- only the
+// former has a real task row to resolve server-side before an auto-write
+// executes.
+function isExplicitTaskUpdateTrigger(message: string): boolean {
+  return (/\b(update|edit|change|move|reschedule|aktualisiere|bearbeite|verschiebe)\b.{0,60}\b(task|todo|aufgabe)\b/i.test(message) ||
     /(?:تسک|وظیفه|کار).{0,60}(?:به‌روزرسانی کن|ویرایش کن|تغییر بده|بگذار)/i.test(message)) &&
     !parseTitleCorrection(message)
-  return create || update
+}
+
+function isExplicitTaskWriteTrigger(message: string): boolean {
+  return isExplicitTaskCreateTrigger(message) || isExplicitTaskUpdateTrigger(message)
 }
 
 // Slice 2B.1.1 -- PO decision SUPERSEDES the Slice 2B.1 "LOCKED DOMAIN
@@ -1218,6 +1243,12 @@ export function parseCalendarWriteIntent(message: string, now: Date, timeZone: s
   // resolved and left untouched entirely by the caller
   // (index.ts)/intentValidator.ts, never here.
   const isExplicitTaskRoutedHere = !isCalendarWriteTrigger(message) && isExplicitTaskWriteTrigger(message)
+  // Slice 2B.1.1 correction (review blocker 4): which of the two task
+  // triggers actually fired matters once this becomes an auto-write --
+  // reschedule-worded evidence names an EXISTING task that must be
+  // resolved and read (never mutated) before an event is created in its
+  // name; create-worded evidence names no existing row at all.
+  const isExplicitTaskRescheduleRoutedHere = isExplicitTaskRoutedHere && isExplicitTaskUpdateTrigger(message)
   const isUpdate = !isExplicitTaskRoutedHere && (
     /\b(update|edit|change|reschedule|move|aktualisiere|bearbeite|verschiebe)\b/i.test(message) ||
     /(?:به‌روزرسانی کن|ویرایش کن|جابجا کن|تغییر بده)/.test(message)
@@ -1228,13 +1259,18 @@ export function parseCalendarWriteIntent(message: string, now: Date, timeZone: s
   const quoted = message.match(/["'«“](.+?)["'»”]/)?.[1]?.trim()
 
   if (!isUpdate) {
-    // Slice 2B.1.1: prefer an explicitly quoted title ("Move the task
-    // 'Call Ahmad' to tomorrow at 10") over the generic fallback
+    // Slice 2B.1.1: prefer an explicitly quoted title (“Move the task
+    // 'Call Ahmad' to tomorrow at 10”) over the generic fallback
     // extraction -- extractTaskTitle's stripping regexes are tuned for
     // CREATE-shaped task phrasing and do not reliably clean an
     // update/reschedule-shaped one. Either way this is only ever the
-    // LAST-RESORT pattern fallback: resolveCreateEventTitle (index.ts)
-    // still asks the model for the real title first, same as every other
+    // LAST-RESORT pattern fallback for a genuinely NEW task/event: when
+    // isExplicitTaskRescheduleRoutedHere is true below, this `title` is
+    // discarded entirely by executeAutoCalendarWrite in favour of the
+    // referenced task's own authoritative persisted title -- it survives
+    // here only as the `clarify` question's context if that resolution
+    // fails. Otherwise resolveCreateEventTitle (index.ts) still asks the
+    // model for the real title first, same as every other
     // create_calendar_event/create_task path.
     const title = quoted || extractTaskTitle(message)
     return {
@@ -1245,6 +1281,16 @@ export function parseCalendarWriteIntent(message: string, now: Date, timeZone: s
       startTime: start,
       endTime: end,
       dateClarificationNeeded: date.clarificationNeeded,
+      // Deliberately derived ONLY from the user's own message text
+      // (the same quoted-text extraction parseTaskWriteIntent's own
+      // update branch uses for taskReference) -- never from an
+      // eventReference/eventTitle-shaped field, so a task's identity is
+      // never blindly bridged from a calendar-shaped guess.
+      // '' (not undefined) when the reschedule trigger fired but no
+      // quoted reference could be extracted -- executeAutoCalendarWrite
+      // treats an empty reference as zero matches, so the request still
+      // fails closed instead of silently skipping task resolution.
+      sourceTaskReference: isExplicitTaskRescheduleRoutedHere ? (quoted ?? '') : undefined,
     }
   }
   return {
@@ -1273,6 +1319,12 @@ function mergeCalendarIntent(base: ParsedCalendarWriteIntent, message: string, n
     startTime,
     endTime,
     dateClarificationNeeded: direct?.dateClarificationNeeded ?? base.dateClarificationNeeded,
+    // Slice 2B.1.1 correction (review blocker 4): carried across a
+    // multi-turn continuation the same way title/dateClarificationNeeded
+    // already are -- a reschedule-worded original turn's task-resolution
+    // requirement must not be lost just because the turn that finally
+    // triggers execution is a bare "yes"/title correction.
+    sourceTaskReference: direct?.sourceTaskReference ?? base.sourceTaskReference,
   }
 }
 
@@ -1791,6 +1843,26 @@ export async function executeAutoCalendarWrite(input: {
   const { env, userId, intent, language, now, timeZone } = input
   if (intent.dateClarificationNeeded) return { status: 'clarify', reply: 'Which exact date should I use?' }
   if (intent.kind === 'create_calendar_event') {
+    // Slice 2B.1.1 correction (review blocker 4): a create_calendar_event
+    // routed here by an UPDATE/reschedule-worded reference to an EXISTING
+    // task (parseCalendarWriteIntent's sourceTaskReference) must resolve
+    // that task from the authenticated user's OWN Tasks table -- exactly
+    // one match -- before this auto-write executes anything. The task is
+    // only ever READ here, never mutated; its authoritative persisted
+    // title always overrides whatever `intent.title` was set to (a
+    // pattern guess, or -- if index.ts still called it -- a Gemini
+    // guess), since neither is grounded in the real row. Missing or
+    // ambiguous identity fails closed with no mutation at all, the same
+    // guarantee findTaskTarget already gives the browser overlay path --
+    // this legacy deterministic /chat path must not depend on that
+    // overlay having run.
+    if (intent.sourceTaskReference !== undefined) {
+      const tasks = await supabaseGet<TaskRow[]>(env, `tasks?user_id=eq.${esc(userId)}&completed=eq.false&select=id,user_id,title,notes,due_date,completed,created_at,updated_at`)
+      const ref = intent.sourceTaskReference.toLowerCase()
+      const matches = ref ? tasks.filter(task => task.title.toLowerCase().includes(ref) || ref.includes(task.title.toLowerCase())) : []
+      if (matches.length !== 1) return { status: matches.length > 1 ? 'clarify' : 'not_found', reply: 'Which exact task should I schedule this for?' }
+      intent.title = matches[0].title
+    }
     if (!intent.title) return { status: 'clarify', reply: 'What should the event be called?' }
     if (!intent.startDate || !intent.startTime) return { status: 'clarify', reply: 'What date and time should the event be at?' }
     const startUtcIso = zonedDateTimeToUtcIso(intent.startDate, intent.startTime, timeZone)

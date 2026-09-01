@@ -555,6 +555,18 @@ function normalizeTitle(value: string) {
   return value.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
+// Slice 2B.1.1 correction (review blocker 1/3): mirrors
+// agent/worker/flow-write-policy.ts's parseTaskWriteIntent quoted-title
+// extraction. Used ONLY as a last-resort fallback (see its one call site
+// below) to recover which EXISTING task a reschedule-worded message means
+// when the model supplied no task identity field at all -- deliberately
+// derived from the user's OWN message text, never from a model-proposed
+// eventReference/eventTitle: never bridge eventReference into task
+// identity blindly.
+function extractQuotedTaskReference(message: string): string | undefined {
+  return message.match(/["'«“‘](.+?)["'»”’]/)?.[1]?.trim() || undefined;
+}
+
 function findTaskTarget(
   context: AgentReasoningSafeContext,
   target: ReturnType<typeof normalizeTarget>,
@@ -1279,6 +1291,21 @@ export function validateAgentIntentProposal(input: {
   // itself would use further down -- never a domain-choice question, and
   // never a guess.
   if (explicitTaskOperation === "update_task" && type === "create_calendar_event") {
+    // Review blocker 3: a realistic model output for this case may be
+    // shaped like update_calendar_event (target.eventReference/eventTitle)
+    // rather than a task field, since prior prompt wording never told the
+    // model this was a task lookup -- see reasoningPrompt.ts's updated
+    // instruction. When the model supplied NO task identity field at all,
+    // recover the reference deterministically from the user's own message
+    // text (mirroring agent/worker/flow-write-policy.ts's own quoted-title
+    // extraction) so this common, clear-cut phrasing still resolves on the
+    // happy path instead of degrading into an unnecessary clarification.
+    // Deliberately NEVER read from target.eventReference/eventTitle here:
+    // bridging an eventReference into task identity blindly is exactly the
+    // failure mode this guards against.
+    if (target && !target.taskId && !target.taskReference && !target.taskTitleHint) {
+      target.taskReference = extractQuotedTaskReference(input.userMessage);
+    }
     const referencedTask = findTaskTarget(input.safeContext, target);
     if (referencedTask.status !== "matched" || !referencedTask.task.id) {
       return createSafeProposal("ask_clarification", {
@@ -1292,10 +1319,15 @@ export function validateAgentIntentProposal(input: {
       });
     }
     if (target) {
-      target.eventTitle = target.eventTitle || target.title || referencedTask.task.title;
+      // Review blocker 1: the referenced task's own PERSISTED title is
+      // always authoritative -- never target.eventTitle/target.title,
+      // which may be stale, hallucinated, or copied from an unrelated
+      // event/task the model imagined.
+      target.eventTitle = referencedTask.task.title;
       target.taskId = undefined;
       target.taskReference = undefined;
       target.taskTitleHint = undefined;
+      target.eventReference = undefined;
     }
   }
   // Task 22: when a CREATE-worded task request resolves to the calendar
