@@ -1,31 +1,28 @@
-// Chat V2 Slice 2B.1 -- LOCKED DOMAIN RULE parity fixture.
+// Chat V2 Slice 2B.1.1 -- scheduling-domain parity fixture (SUPERSEDES
+// Slice 2B.1's "LOCKED DOMAIN RULE" fixture of the same name).
 //
 // Task-vs-calendar domain routing exists TWICE: the client's
 // src/features/agent/reasoning/intentValidator.ts (drives the reasoning
 // overlay/approval-card lane) and the Worker's
 // agent/worker/flow-write-policy.ts (detectWriteDomainSignal, drives the
-// older deterministic /chat lane) -- the same rule, hand-written
-// independently in two files, because agent/worker is an independently
-// bundled deployable that cannot import from src/ (and vice versa: src/
-// importing agent/worker drags in Cloudflare's ambient types and fails
-// typecheck -- see flowWriteDefaultParity.test.ts's own comment on this
-// exact cross-runtime constraint).
-//
-// Nothing enforced their agreement before this file. This is a plain,
+// older deterministic /chat lane). Both now consume the SAME final
+// precedence rule from shared/schedulingDomain.ts's resolveSchedulingDomain
+// -- this fixture is what keeps their EVIDENCE EXTRACTION (still
+// independently hand-written per runtime; see that module's own header
+// comment for why) from drifting apart in practice. This is a plain,
 // framework-free data fixture (no vitest, no runtime-specific imports) so
 // BOTH src/features/agent/reasoning/intentValidator.test.ts and
 // agent/worker/flow-write-policy.test.ts can import it directly and each
 // assert their OWN function's behavior against the SAME expected outcome
-// for the SAME message -- CI fails if either side's answer for an
-// explicit-domain case ever disagrees with this pinned expectation, i.e.
-// if the Worker says 'task' while the client says 'calendar' (or vice
-// versa) for the same message.
+// for the SAME message -- CI fails if either side's answer for a case ever
+// disagrees with this pinned expectation.
 //
-// LOCKED DOMAIN RULE: an explicit domain noun ("task"/"تسک"/"Aufgabe" or
-// "event"/"meeting"/"جلسه"/"Termin"/...) wins before temporal inference.
-// An explicit task noun paired with a time-of-day is a genuine ambiguity
-// -- neither runtime may silently resolve it either way.
-export type TaskCalendarDomainParityExpectation = "task" | "calendar" | "task_time_ambiguous" | "ambiguous";
+// PO decision (Slice 2B.1.1): a concrete time-of-day is scheduling
+// intent -- PRESERVE THE USER'S SEMANTICS, NOT THE DATABASE NOUN THEY
+// HAPPENED TO USE. An explicit calendar noun OR a concrete clock time
+// wins; only two DIFFERENT domain nouns co-occurring is a genuine
+// ambiguity.
+export type TaskCalendarDomainParityExpectation = "task" | "calendar" | "ambiguous";
 
 export interface TaskCalendarDomainParityCase {
   readonly label: string;
@@ -35,8 +32,8 @@ export interface TaskCalendarDomainParityCase {
 
 export const taskCalendarDomainParityCases: readonly TaskCalendarDomainParityCase[] = [
   { label: "EN explicit task, date only -> task", message: "Create a task for tomorrow", expected: "task" },
-  { label: "EN explicit task + time -> task_time_ambiguous, never calendar", message: "Create a task for tomorrow at 3pm", expected: "task_time_ambiguous" },
-  { label: "EN explicit task + 24h compact time -> task_time_ambiguous, never calendar", message: "Create a task for tomorrow at 16:00", expected: "task_time_ambiguous" },
+  { label: "EN explicit task + time -> calendar (preserve the requested time)", message: "Create a task for tomorrow at 3pm", expected: "calendar" },
+  { label: "EN explicit task + 24h compact time -> calendar", message: "Create a task for tomorrow at 16:00", expected: "calendar" },
   { label: "EN explicit calendar noun + time -> calendar", message: "Create an event for tomorrow at 3pm", expected: "calendar" },
   // NOTE: "explicit calendar noun, no time" is deliberately NOT in this
   // shared fixture -- the two runtimes disagree at a DIFFERENT layer for
@@ -51,26 +48,33 @@ export const taskCalendarDomainParityCases: readonly TaskCalendarDomainParityCas
   // would be comparing two different questions. The Worker's own
   // dedicated test table (flow-write-policy.test.ts) still covers this
   // case on its own.
-  { label: "DE explicit task + time -> task_time_ambiguous, never calendar", message: "Erstelle eine Aufgabe fuer morgen um 15 Uhr", expected: "task_time_ambiguous" },
+  { label: "DE explicit task + time -> calendar", message: "Erstelle eine Aufgabe fuer morgen um 15 Uhr", expected: "calendar" },
   { label: "DE explicit task, date only -> task", message: "Erstelle eine Aufgabe fuer morgen", expected: "task" },
-  { label: "FA explicit task + time -> task_time_ambiguous, never calendar", message: "یک تسک برای فردا بساز که نوبت دکتر فامیلی دارم. ساعت ۱۳ عصر", expected: "task_time_ambiguous" },
+  { label: "FA explicit task + time -> calendar", message: "یک تسک برای فردا بساز که نوبت دکتر فامیلی دارم. ساعت ۱۳ عصر", expected: "calendar" },
   { label: "FA explicit task, date only -> task", message: "یک تسک برای فردا بساز که نوبت دکتر فامیلی دارم", expected: "task" },
-  { label: "FA acceptance case: explicit task + time -> task_time_ambiguous, never calendar", message: "برای فردا ساعت ۱۰ یک تسک بساز که به احمد زنگ بزنم", expected: "task_time_ambiguous" },
+  { label: "FA production acceptance case: explicit task + time -> calendar directly, no clarification", message: "برای فردا ساعت ۱۰ یک تسک بساز که به احمد زنگ بزنم", expected: "calendar" },
   { label: "FA explicit calendar noun + time -> calendar", message: "یک جلسه برای فردا بساز، ساعت ۱۰", expected: "calendar" },
   { label: "DE explicit calendar noun (Termin) + time -> calendar", message: "Erstelle einen Termin fuer morgen um 15 Uhr", expected: "calendar" },
-  { label: "FA acceptance case G: explicit calendar noun (with تقویم mentioned too) + time -> calendar", message: "فردا ساعت ۱۰ در تقویم جلسه با احمد بساز", expected: "calendar" },
+  { label: "FA acceptance case: explicit calendar noun (with تقویم mentioned too) + time -> calendar", message: "فردا ساعت ۱۰ در تقویم جلسه با احمد بساز", expected: "calendar" },
   { label: "mixed task+calendar nouns -> ambiguous (two different domain nouns)", message: "Create a task for the meeting tomorrow", expected: "ambiguous" },
-  // Slice 2B.1 correction (Blocker 2/parity coverage): CREATE and UPDATE
-  // are two independently-matched operations on each side
-  // (requestLooksLikeTaskCreate/Update client-side, the `create`/`update`
-  // variables inside isExplicitTaskWriteTrigger Worker-side) -- every case
-  // above this point exercised CREATE only, which left UPDATE's own parity
-  // completely unverified. FA update support did not exist on the Worker
-  // side until this same correction added it (see
-  // isExplicitTaskWriteTrigger's own comment in flow-write-policy.ts) --
-  // it is included here specifically so a regression cannot silently
-  // resurface.
-  { label: "EN explicit task UPDATE + time -> task_time_ambiguous, never calendar", message: "Update my task for tomorrow at 3pm", expected: "task_time_ambiguous" },
-  { label: "DE explicit task UPDATE + time -> task_time_ambiguous, never calendar", message: "Aktualisiere meine Aufgabe fuer morgen um 15 Uhr", expected: "task_time_ambiguous" },
-  { label: "FA explicit task UPDATE + time -> task_time_ambiguous, never calendar", message: "تسک من را برای فردا ویرایش کن، ساعت ۱۰", expected: "task_time_ambiguous" },
+  // NOTE: an explicit task UPDATE + time (e.g. "Update my task for
+  // tomorrow at 3pm", or the "بگذار" reschedule phrasing) is deliberately
+  // NOT in this shared fixture either, for the same reason "explicit
+  // calendar noun, no time" above is excluded -- the two runtimes
+  // disagree at a DIFFERENT layer, not on domain routing. Slice 2B.1.1:
+  // an UPDATE-worded task+time message resolves to a BRAND NEW calendar
+  // event using the REFERENCED TASK's own title (never bridging task
+  // identity into update_calendar_event) -- the client's
+  // validateAgentIntentProposal must additionally resolve WHICH task via
+  // safeContext.tasks (findTaskTarget) before it can produce an
+  // executable create_calendar_event, and fails closed with a generic
+  // "task target required" clarification when no plausible taskReference
+  // is present (as none of these generic messages actually name one) --
+  // a genuine, DIFFERENT question from domain routing, which the
+  // lightweight Worker signal never asks at all. Both runtimes are
+  // correct at their own layer; each has its own dedicated test coverage
+  // (flow-write-policy.test.ts's detectWriteDomainSignal table;
+  // intentValidator.test.ts's own "explicit UPDATE-worded task + time"
+  // describe block, which supplies a safeContext task to resolve
+  // against).
 ];

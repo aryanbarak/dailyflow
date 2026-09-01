@@ -1233,15 +1233,13 @@ describe('ADR-0012 server-side task write policy', () => {
     expect(log.geminiCalls.length).toBe(1)
   })
 
-  // Chat V2 Slice 2B.1 -- LOCKED DOMAIN RULE (replaces the old "task 22"
-  // test this text block used to describe): a Persian request naming an
-  // EXPLICIT task word ("\u062a\u0633\u06a9") that ALSO carries a specific time no longer
-  // silently routes to the calendar (the OLD, now-incorrect behavior this
-  // test used to pin -- tasks have no time-of-day column, but silently
-  // discarding the user's own stated domain word was never honest either).
-  // It now asks, via the deterministic 'task_time_ambiguous' short-circuit
-  // -- no task write, no calendar write, no model call, no guess.
-  it('a Persian request naming an explicit "task" word that ALSO carries a specific time asks instead of silently becoming a calendar event', async () => {
+  // Chat V2 Slice 2B.1.1 -- PO decision (supersedes Slice 2B.1's "LOCKED
+  // DOMAIN RULE", which asked here instead): a Persian request naming an
+  // EXPLICIT task word ("\u062a\u0633\u06a9") that ALSO carries a specific time preserves
+  // that time by routing directly to Calendar -- tasks have no time-of-day
+  // column, and the user should never need to know that; PRESERVE THE
+  // USER'S SEMANTICS, NOT THE DATABASE NOUN THEY HAPPENED TO USE.
+  it('a Persian request naming an explicit "task" word that ALSO carries a specific time preserves the time by becoming a calendar event (Slice 2B.1.1 supersedes the old ask-instead behavior)', async () => {
     const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], null, 'fa')
     const response = await worker.fetch(chatRequest({
       message: '\u06a9 \u062a\u0633\u06a9 \u0628\u0631\u0627\u06cc \u0641\u0631\u062f\u0627 \u0628\u0633\u0627\u0632 \u06a9\u0647 \u0646\u0648\u0628\u062a \u062f\u06a9\u062a\u0631 \u0641\u0627\u0645\u06cc\u0644\u06cc \u062f\u0627\u0631\u0645. \u0627\u0644\u0628\u062a\u0647 \u0633\u0627\u0639\u062a \u06f1\u06f1 \u0635\u0628\u062d',
@@ -1250,11 +1248,9 @@ describe('ADR-0012 server-side task write policy', () => {
     const body = await response.json() as { reply?: string; writeExecution?: string }
 
     expect(response.status).toBe(200)
-    expect(body.writeExecution).toBeUndefined()
-    expect(body.reply).toBe('\u062a\u0633\u06a9\u200c\u0647\u0627 \u0641\u0639\u0644\u0627\u064b \u0633\u0627\u0639\u062a \u0645\u0634\u062e\u0635 \u0646\u062f\u0627\u0631\u0646\u062f. \u0622\u0646 \u0631\u0627 \u0628\u0647\u200c\u0639\u0646\u0648\u0627\u0646 Task \u0628\u062f\u0648\u0646 \u0633\u0627\u0639\u062a \u0628\u0633\u0627\u0632\u0645\u060c \u06cc\u0627 \u0628\u0647\u200c\u0639\u0646\u0648\u0627\u0646 \u06cc\u06a9 Calendar Event \u062f\u0631 \u0647\u0645\u0627\u0646 \u0633\u0627\u0639\u062a\u061f')
+    expect(body.writeExecution).toBe('executed')
     expect(log.taskWrites.length).toBe(0)
-    expect(log.calendarWrites.length).toBe(0)
-    expect(log.geminiCalls.length).toBe(0)
+    expect(log.calendarWrites.length).toBe(1)
   })
 
   it('creates a clean Persian title and a calendar event alarm for title-prefix requests with a time of day (task 22 supersedes the task-alarm workaround)', async () => {
@@ -1321,15 +1317,14 @@ describe('ADR-0012 server-side task write policy', () => {
       expect(log.calendarWrites[0]?.body?.title).toBe('Family doctor appointment')
     })
 
-    // Chat V2 Slice 2B.1 -- LOCKED DOMAIN RULE: this is the literal
+    // Chat V2 Slice 2B.1.1 -- PO decision: this is the literal
     // production-evidence message from task 21-fix6's own bug report --
-    // "به ساعت ۱۳:۰۰" is exactly the specific time that original PO
-    // decision was about. The OLD fix (task 22) made it land as a
-    // calendar event; that silently overrode the user's own explicit
-    // "تسک" (task) word, which is the exact class of bug THIS slice
-    // corrects. The honest fix for the real production case is to ask,
-    // never to guess either domain.
-    it('the exact production-evidence message now asks instead of silently landing as a calendar event', async () => {
+    // "به ساعت ۱۳:۰۰" is exactly the specific time this whole slice is
+    // about. Tasks have no time-of-day column, so the requested time is
+    // preserved by landing as a calendar event -- the user's own explicit
+    // "تسک" (task) word named the ACTION, not the internal SmartFlow
+    // schema detail that a Task entity cannot hold a clock time.
+    it('the exact production-evidence message now preserves the requested time by landing as a calendar event, using the model\'s own title', async () => {
       const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'ترمین داکتر فامیلی', 'fa')
       const response = await worker.fetch(chatRequest({
         message: 'ترمین داکتر فامیلی : برایم یک تسک برای فردا بساز به ساعت ۱۳:۰۰',
@@ -1338,11 +1333,9 @@ describe('ADR-0012 server-side task write policy', () => {
       const body = await response.json() as { writeExecution?: string; reply?: string }
 
       expect(response.status).toBe(200)
-      expect(body.writeExecution).toBeUndefined()
-      expect(body.reply).toBe('تسک‌ها فعلاً ساعت مشخص ندارند. آن را به‌عنوان Task بدون ساعت بسازم، یا به‌عنوان یک Calendar Event در همان ساعت؟')
+      expect(body.writeExecution).toBe('executed')
       expect(log.taskWrites.length).toBe(0)
-      expect(log.calendarWrites.length).toBe(0)
-      expect(log.geminiCalls.length).toBe(0)
+      expect(log.calendarWrites[0]?.body?.title).toBe('ترمین داکتر فامیلی')
     })
 
     it('rejects a model title that is just the whole raw message and falls back to the validated pattern title (unit-tested overlap-specific case lives in flow-write-policy.test.ts)', async () => {
@@ -1380,15 +1373,14 @@ describe('ADR-0012 server-side task write policy', () => {
       expect(log.calendarWrites[0]?.body?.title).toBe('Arzttermin')
     })
 
-    // Chat V2 Slice 2B.1: this message names an explicit "task" word
-    // ("task", mixed-Persian) AND a time -- it no longer even reaches
-    // title resolution (the OLD premise this test used to exercise): the
-    // domain-ambiguity short-circuit intercepts it first (LOCKED DOMAIN
-    // RULE). This is a real, honest supersession -- "never a garbage
-    // title" now generalizes to "never a garbage GUESS of any kind, title
-    // or domain."
-    it('asks about the task/calendar ambiguity before ever reaching title resolution -- never a garbage title, never a garbage domain guess', async () => {
-      const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], '')
+    // Chat V2 Slice 2B.1.1: this message names an explicit "task" word
+    // ("task", mixed-Persian) AND a time -- it now reaches title
+    // resolution DIRECTLY (no domain question first): PO decision
+    // preserves the user's requested time by routing to Calendar, so this
+    // proceeds straight through resolveCreateEventTitle exactly like any
+    // other create_calendar_event, using the model's own validated title.
+    it('preserves the requested time by routing to calendar directly -- no domain guess, no clarification, the model title is used when it validates', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'Family task')
       const response = await worker.fetch(chatRequest({
         message: 'یک task برای فردا بساز، ساعت ۱۶:۰۰',
         timeZone: 'Europe/Berlin',
@@ -1396,11 +1388,9 @@ describe('ADR-0012 server-side task write policy', () => {
       const body = await response.json() as { reply?: string; writeExecution?: string }
 
       expect(response.status).toBe(200)
-      expect(body.writeExecution).toBeUndefined()
-      expect(body.reply).toBe("Tasks don't support a specific time yet. Should I create it as a Task without a time, or as a Calendar Event at that time?")
+      expect(body.writeExecution).toBe('executed')
       expect(log.taskWrites.length).toBe(0)
-      expect(log.calendarWrites.length).toBe(0)
-      expect(log.geminiCalls.length).toBe(0)
+      expect(log.calendarWrites[0]?.body?.title).toBe('Family task')
     })
 
     it('never re-derives an explicit title correction through the model', async () => {
@@ -1441,6 +1431,130 @@ describe('ADR-0012 server-side task write policy', () => {
       expect(body.writeExecution).toBe('executed')
       expect(log.taskWrites[0]?.body?.title).toBe('Review invoices')
       expect(body.reply).toContain('15:00')
+    })
+  })
+
+  // Slice 2B.1.1 correction (review blocker 4): the legacy deterministic
+  // /chat path can auto-execute writes on its own (flow_write_permissions
+  // mode=auto) without the browser reasoning overlay ever having run, so
+  // an UPDATE/reschedule-worded reference to an EXISTING task carrying a
+  // time must be resolved and verified SERVER-SIDE, exactly one match,
+  // before anything is written -- the client-side findTaskTarget guarantee
+  // (intentValidator.test.ts) does not cover this path at all.
+  describe('Slice 2B.1.1 correction (review blocker 4): Worker mode=auto safety for reschedule-worded existing task + time', () => {
+    function stubTasks(tasks: Array<{ id: string; title: string }>) {
+      const originalFetch = globalThis.fetch
+      vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (url.startsWith(`${SUPABASE_URL}/rest/v1/tasks`) && (init?.method ?? 'GET') === 'GET') {
+          return new Response(JSON.stringify(tasks.map((t) => ({
+            id: t.id, user_id: 'user-1', title: t.title, notes: null, due_date: null, completed: false,
+            created_at: '2026-08-13T00:00:00.000Z', updated_at: '2026-08-13T00:00:00.000Z',
+          }))), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
+        return originalFetch(input, init)
+      }))
+    }
+
+    // D
+    it('resolvable existing task: exactly one new calendar event, using the task\'s own authoritative title -- the task row is never touched, and the model title-resolution call is never made', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'auto')
+      stubTasks([{ id: 'task-call-ahmad', title: 'Call Ahmad' }])
+      const response = await worker.fetch(chatRequest({
+        message: "Move the task 'Call Ahmad' to tomorrow at 10",
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writeExecution?: string }
+
+      expect(body.writeExecution).toBe('executed')
+      expect(log.taskWrites.length).toBe(0)
+      expect(log.calendarWrites.length).toBe(1)
+      expect(log.calendarWrites[0]?.method).toBe('POST')
+      expect(log.calendarWrites[0]?.body?.title).toBe('Call Ahmad')
+      // sourceTaskReference short-circuits resolveCreateEventTitle in
+      // index.ts -- the model is never asked to guess a title once the
+      // referenced task's own persisted title is available.
+      expect(log.geminiCalls.length).toBe(0)
+    })
+
+    // E
+    it('missing task: no calendar event is created, no task is mutated -- falls back to asking, never a fabricated write', async () => {
+      const log = installFetchMock([], null, 'Sure, tell me more.', 'auto')
+      stubTasks([])
+      const response = await worker.fetch(chatRequest({
+        message: "Move the task 'Call Ahmad' to tomorrow at 10",
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writeExecution?: string; writePolicy?: { domain: string; action: string; mode: string } }
+
+      expect(body.writeExecution).toBeUndefined();
+      expect(body.writePolicy).toMatchObject({ domain: 'calendar', action: 'create', mode: 'ask' })
+      expect(log.taskWrites.length).toBe(0)
+      expect(log.calendarWrites.length).toBe(0)
+    })
+
+    // F
+    it('ambiguous task (more than one match): no calendar event is created, no task is mutated -- a clarify reply, never a guess', async () => {
+      const log = installFetchMock([], null, 'Sure, tell me more.', 'auto')
+      stubTasks([
+        { id: 'task-1', title: 'Call Ahmad about taxes' },
+        { id: 'task-2', title: 'Call Ahmad about the trip' },
+      ])
+      const response = await worker.fetch(chatRequest({
+        message: "Move the task 'Call Ahmad' to tomorrow at 10",
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writeExecution?: string }
+
+      expect(body.writeExecution).toBe('clarify')
+      expect(log.taskWrites.length).toBe(0)
+      expect(log.calendarWrites.length).toBe(0)
+    })
+
+    // G
+    it('never issues an update_calendar_event (a PATCH) from task identity, even under mode=auto -- only a brand-new event (a POST)', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'auto')
+      stubTasks([{ id: 'task-call-ahmad', title: 'Call Ahmad' }])
+      await worker.fetch(chatRequest({
+        message: "Move the task 'Call Ahmad' to tomorrow at 10",
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+
+      expect(log.calendarWrites.length).toBeGreaterThan(0)
+      expect(log.calendarWrites.every((w) => w.method === 'POST')).toBe(true)
+    })
+
+    // H (mandatory production acceptance case, CREATE-worded -- unaffected
+    // by this correction: no existing task is referenced, so no
+    // task-resolution gating applies, and the model title-resolution call
+    // still runs exactly as it did before this correction).
+    it('the mandatory production acceptance case (CREATE-worded, no existing task referenced) is unaffected: still create_calendar_event via the model\'s own title', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'تماس با احمد', 'fa')
+      const response = await worker.fetch(chatRequest({
+        message: 'برای فردا ساعت ۱۰ یک تسک بساز که به احمد زنگ بزنم',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writeExecution?: string }
+
+      expect(body.writeExecution).toBe('executed')
+      expect(log.taskWrites.length).toBe(0)
+      expect(log.calendarWrites.length).toBe(1)
+      expect(log.calendarWrites[0]?.body?.title).toBe('تماس با احمد')
+    })
+
+    // I (a task without an exact time stays a plain task write -- no
+    // task-resolution gating applies to create_task at all).
+    it('a task without an exact time is unaffected: still a plain create_task', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'Call Ahmad')
+      const response = await worker.fetch(chatRequest({
+        message: 'Create a task to call Ahmad tomorrow',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writeExecution?: string }
+
+      expect(body.writeExecution).toBe('executed')
+      expect(log.calendarWrites.length).toBe(0)
+      expect(log.taskWrites.length).toBe(1)
     })
   })
 
@@ -1518,62 +1632,16 @@ describe('ADR-0012 server-side task write policy', () => {
     expect(log.geminiCalls.length).toBe(1)
   })
 
-  // Chat V2 Slice 2B.1: the ORIGINAL version of this test relied on
-  // turn1 being an explicit-task-worded, time-bearing, subject-less
-  // message that (per the OLD "task 22" rule) silently assembled as an
-  // EMPTY-title calendar event, asked "What should the event be called?",
-  // then turn2's title correction filled it in. Under the LOCKED DOMAIN
-  // RULE, that exact turn1 no longer reaches title resolution at all --
-  // it is a task/calendar domain ambiguity, asked about BEFORE ever
-  // assembling a calendar (or task) intent, and (like the existing
-  // 'ambiguous' signal) is deliberately NOT continuable, so it can never
-  // be silently resolved by a later turn's wording alone either. That
-  // multi-turn title-CORRECTION mechanism itself is still fully covered
-  // at the unit level (flow-write-policy.test.ts's "assembles a pending
-  // calendar write across a title-correction turn"). This replacement
-  // proves the NEW, adjacent guarantee instead: a task/calendar
-  // domain-ambiguity turn is a dead end, never silently resolved by
-  // whatever the user happens to say next, and never leaks a false
-  // capability-denial message either.
-  it('a task/calendar domain-ambiguity turn is never silently resolved by a later turn, and leaks no false capability denial', async () => {
-    const log = installFetchMock([], null, 'Conversation fallback only after execution.', 'auto')
-    const env = testEnv()
-
-    const turn1 = await worker.fetch(chatRequest({
-      message: 'یک task برای فردا بساز، ساعت ۱۶:۰۰',
-      timeZone: 'Europe/Berlin',
-    }), env, fakeExecutionContext())
-    const body1 = await turn1.json() as { reply?: string; writeExecution?: string }
-
-    expect(body1.writeExecution).toBeUndefined()
-    expect(log.taskWrites.length).toBe(0)
-    expect(log.calendarWrites.length).toBe(0)
-    expect(log.geminiCalls.length).toBe(0)
-
-    const turn2 = await worker.fetch(chatRequest({
-      message: 'بلی بساز',
-      timeZone: 'Europe/Berlin',
-    }), env, fakeExecutionContext())
-    const body2 = await turn2.json() as { reply?: string; writeExecution?: string }
-    const turn3 = await worker.fetch(chatRequest({
-      message: 'بلی تایید می کنم',
-      timeZone: 'Europe/Berlin',
-    }), env, fakeExecutionContext())
-    const body3 = await turn3.json() as { reply?: string; writeExecution?: string }
-
-    expect(body2.writeExecution).toBeUndefined()
-    expect(body3.writeExecution).toBeUndefined()
-    expect(`${body2.reply}\n${body3.reply}`).not.toContain('Flow AI')
-    expect(`${body2.reply}\n${body3.reply}`).not.toContain('does not have this capability')
-    expect(log.taskWrites.length).toBe(0)
-    expect(log.calendarWrites.length).toBe(0)
-  })
-
-      // Slice 2B.1: explicit "جلسه" (meeting), not "تسک" (task) -- an
-    // explicit task noun + time is no longer calendar business at all
-    // (LOCKED DOMAIN RULE). This test's real subject (an affirmative
-    // continuation resolving a complete pending calendar spec) is
-    // unaffected.
+  // Chat V2 Slice 2B.1.1: the OLD version of this test (Slice 2B.1)
+  // proved a task/calendar domain-ambiguity turn was a dead end, never
+  // silently resolved by a later turn -- that premise is gone now that an
+  // explicit task-worded + timed message resolves directly to Calendar
+  // (see the "preserves the requested time by routing to calendar
+  // directly" test above, which now covers this exact turn1 message as a
+  // normal, single-turn create_calendar_event). The multi-turn
+  // title-CORRECTION mechanism itself is unaffected and still fully
+  // covered at the unit level (flow-write-policy.test.ts's "assembles a
+  // pending calendar write across a title-correction turn").
     it('an affirmative after a complete pending calendar event spec executes on the server', async () => {
     const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [
       { role: 'user', content: 'یک جلسه برای فردا بساز، نوبت دکتر فامیلی، ساعت ۱۱ صبح' },

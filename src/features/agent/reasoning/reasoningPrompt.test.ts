@@ -189,3 +189,28 @@ describe("buildReasoningPrompt finance support", () => {
     expect(prompt).not.toContain("\n\n");
   });
 });
+
+// Slice 2B.1.1 correction (review blocker 2): the model-facing rule for an
+// UPDATE/reschedule-worded reference to an EXISTING task carrying a time
+// must steer the model toward create_calendar_event (a NEW event, the
+// task read only for its title) and explicitly away from
+// update_calendar_event/eventReference/eventId -- deterministic validation
+// is still authoritative regardless of what the model proposes, but a
+// prompt that still asked for eventReference/eventId here would be
+// actively wrong, not merely redundant.
+describe("buildReasoningPrompt: reschedule-worded existing task + time", () => {
+  it("instructs create_calendar_event, never update_calendar_event, for an UPDATE/reschedule-worded task+time request", () => {
+    const prompt = buildReasoningPrompt(promptInput());
+    expect(prompt).toContain("UPDATES, MOVES, or RESCHEDULES an EXISTING task");
+    expect(prompt).toContain("propose create_calendar_event, never update_calendar_event");
+  });
+
+  it("steers the model toward target.taskReference/taskId for this case, and explicitly away from eventReference/eventId", () => {
+    const prompt = buildReasoningPrompt(promptInput());
+    const idx = prompt.indexOf("UPDATES, MOVES, or RESCHEDULES an EXISTING task");
+    expect(idx).toBeGreaterThan(-1);
+    const sentence = prompt.slice(idx, prompt.indexOf("\n", idx) === -1 ? undefined : prompt.indexOf("\n", idx));
+    expect(sentence).toContain("populate target.taskReference");
+    expect(sentence).toContain("never target.eventReference or target.eventId");
+  });
+});

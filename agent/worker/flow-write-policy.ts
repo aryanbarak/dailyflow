@@ -5,6 +5,7 @@ import { ProviderUnavailableError } from './provider-errors'
 import { findWriteIntentDescriptor, writeIntentRegistry, type WriteIntentType } from '../../shared/writeIntentRegistry'
 import { parseFinanceDirection } from '../../shared/financeDirection'
 import type { ParsedBankRow } from '../../shared/bankStatementParser'
+import { resolveSchedulingDomain } from '../../shared/schedulingDomain'
 
 export type FlowWriteMode = 'auto' | 'ask' | 'off'
 export type FlowWriteAction = 'create' | 'update' | 'delete'
@@ -54,6 +55,18 @@ export interface ParsedCalendarWriteIntent {
   // -- an already-resolved event id, used directly instead of
   // eventReference's fuzzy-match-by-title resolution.
   targetId?: string
+  // Slice 2B.1.1 correction (review blocker 4): set ONLY when this
+  // create_calendar_event was routed here by an UPDATE/reschedule-worded
+  // reference to an EXISTING task carrying a time (parseCalendarWriteIntent's
+  // isExplicitTaskRescheduleRoutedHere below) -- e.g. "Move the task 'Call
+  // Ahmad' to tomorrow at 10". `title` above is only ever this function's
+  // own LAST-RESORT pattern guess for that case; executeAutoCalendarWrite
+  // must resolve the referenced task from the user's own Tasks table and
+  // use ITS authoritative persisted title instead, the same server-side
+  // safety the browser overlay's findTaskTarget already provides for the
+  // client path -- the legacy deterministic /chat auto-write path must not
+  // depend on the browser overlay ever having run.
+  sourceTaskReference?: string
 }
 
 export interface RecentChatTurn {
@@ -910,40 +923,76 @@ function isCalendarWriteTrigger(message: string): boolean {
 // requestLooksLikeTaskCreate/requestLooksLikeTaskUpdate (independent,
 // hand-written copies on each side, same convention as every other
 // domain-detection regex pair in this codebase).
-function isExplicitTaskWriteTrigger(message: string): boolean {
-  const create = /\b(create|add|set up|erstelle|hinzuf[üu]gen)\b.{0,50}\b(task|todo|aufgabe)\b/i.test(message) ||
+function isExplicitTaskCreateTrigger(message: string): boolean {
+  return /\b(create|add|set up|erstelle|hinzuf[üu]gen)\b.{0,50}\b(task|todo|aufgabe)\b/i.test(message) ||
     /(?:یک|ک|یه)?\s*(?:تسک|وظیفه|کار).{0,50}(?:بساز|ایجاد کن|اضافه کن)/i.test(message) ||
     /(?:یک|ک|یه)?\s*(?:task|todo).{0,50}(?:بساز|ایجاد کن|اضافه کن)/i.test(message)
-  // Blocker 2/parity correction: the FA alternative was missing entirely
-  // for UPDATE (only CREATE had one, above) -- an FA update-worded task
-  // request naming a time-of-day fell through past this predicate
-  // (isExplicitTaskWriteTrigger returned false) straight into
-  // resolvesToCalendarDomain's OWN generic "no explicit noun" fallback,
-  // silently resolving to calendar -- the exact bug the LOCKED DOMAIN
-  // RULE exists to prevent, just for one specific language/operation
-  // pair. Mirrors src/features/agent/reasoning/intentValidator.ts's own
-  // requestLooksLikeTaskUpdate FA pattern.
-  const update = /\b(update|edit|change|reschedule|aktualisiere|bearbeite|verschiebe)\b.{0,60}\b(task|todo|aufgabe)\b/i.test(message) ||
-    /(?:تسک|وظیفه|کار).{0,60}(?:به‌روزرسانی کن|ویرایش کن|تغییر بده)/i.test(message)
-  return create || update
 }
 
+// Blocker 2/parity correction (#202): the FA alternative was missing
+// entirely for UPDATE (only CREATE had one, above). Slice 2B.1.1: also
+// added "بگذار" ("set/put/schedule") -- the acceptance case "تسک تماس با
+// احمد را فردا ساعت ۱۰ بگذار" names an EXISTING task and reschedules it,
+// but uses neither a create verb nor "به‌روزرسانی کن"/"ویرایش کن"/
+// "تغییر بده" -- still noun-gated (تسک/وظیفه/کار within 60 chars), same
+// discipline as every other verb here. Mirrors
+// src/features/agent/reasoning/intentValidator.ts's own
+// requestLooksLikeTaskUpdate FA pattern.
+//
+// "بگذار" is overloaded, though: "نام تسک را X بگذار" ("name the task
+// X") is parseTitleCorrection's OWN idiom (a rename, not a reschedule)
+// -- excluded via the same guard below so a title-correction message
+// is never misread as reschedule-with-time evidence.
+// Slice 2B.1.1 parity fix: "move" was missing from the EN verb list --
+// the client's requestLooksLikeTaskUpdate already had it (a genuine,
+// pre-existing client/Worker parity gap, surfaced by acceptance matrix
+// item 4, "Move the task 'Call Ahmad' to tomorrow at 10").
+//
+// Slice 2B.1.1 correction (review blocker 4): exported as its own named
+// predicate (previously inlined inside isExplicitTaskWriteTrigger below)
+// so parseCalendarWriteIntent can tell "an EXISTING task is being
+// rescheduled" apart from "a NEW task is being created" -- only the
+// former has a real task row to resolve server-side before an auto-write
+// executes.
+function isExplicitTaskUpdateTrigger(message: string): boolean {
+  return (/\b(update|edit|change|move|reschedule|aktualisiere|bearbeite|verschiebe)\b.{0,60}\b(task|todo|aufgabe)\b/i.test(message) ||
+    /(?:تسک|وظیفه|کار).{0,60}(?:به‌روزرسانی کن|ویرایش کن|تغییر بده|بگذار)/i.test(message)) &&
+    !parseTitleCorrection(message)
+}
+
+function isExplicitTaskWriteTrigger(message: string): boolean {
+  return isExplicitTaskCreateTrigger(message) || isExplicitTaskUpdateTrigger(message)
+}
+
+// Slice 2B.1.1 -- PO decision SUPERSEDES the Slice 2B.1 "LOCKED DOMAIN
+// RULE" (ask when an explicit task noun carries a time). A concrete
+// time-of-day is scheduling intent; Tasks have no time-of-day column, so
+// the requested time is now PRESERVED by routing to Calendar instead of
+// discarding it or asking the user to resolve an internal schema detail
+// they never should have needed to know about. The final precedence rule
+// -- explicit calendar noun OR a concrete clock time wins -- now lives
+// once in shared/schedulingDomain.ts, consumed by both this file and
+// src/features/agent/reasoning/intentValidator.ts, so it cannot drift
+// between the two runtimes independently again (see that shared module's
+// own header comment). Only a task write with NO explicit noun at all
+// (the implicit personal-statement branch inside parseTaskWriteIntent,
+// e.g. "I have a dentist appointment tomorrow at 3pm") still resolves via
+// its own separate, pre-existing tiebreaker below -- unaffected by this
+// change, and unaffected by shared/schedulingDomain.ts (there is no
+// explicit noun for it to evaluate).
 function resolvesToCalendarDomain(message: string, now: Date, timeZone: string): boolean {
   if (isCalendarWriteTrigger(message)) return true
-  // LOCKED DOMAIN RULE: an EXPLICIT task noun wins before temporal
-  // inference -- a time-of-day alongside it is the caller's
-  // (detectWriteDomainSignal) own 'task_time_ambiguous' signal to raise,
-  // never silently reclassified here. Only a task write with NO explicit
-  // noun (the implicit personal-statement branch inside
-  // parseTaskWriteIntent, e.g. "I have a dentist appointment tomorrow at
-  // 3pm") still silently resolves to calendar when a time is present --
-  // unchanged, deliberately out of this correction's scope (there is no
-  // noun to contradict).
-  if (isExplicitTaskWriteTrigger(message)) return false
+  if (isExplicitTaskWriteTrigger(message)) {
+    return resolveSchedulingDomain({
+      explicitCalendarTrigger: false,
+      explicitTaskTrigger: true,
+      hasConcreteTime: Boolean(parseDeterministicTimeOfDay(message)),
+    }).kind === 'calendar'
+  }
   return parseTaskWriteIntent(message, now, timeZone) !== null && Boolean(parseDeterministicTimeOfDay(message))
 }
 
-export type WriteDomainSignal = 'task' | 'calendar' | 'finance' | 'ambiguous' | 'task_time_ambiguous' | 'none'
+export type WriteDomainSignal = 'task' | 'calendar' | 'finance' | 'ambiguous' | 'none'
 
 /**
  * The single deterministic routing decision -- see file header above.
@@ -953,13 +1002,10 @@ export type WriteDomainSignal = 'task' | 'calendar' | 'finance' | 'ambiguous' | 
  * before this task, satisfying task 23's own "zero behaviour change for
  * existing domains" constraint. Exported for direct unit testing.
  *
- * Slice 2B.1: 'task_time_ambiguous' is a NEW, narrower signal than
- * 'ambiguous' above -- 'ambiguous' means two DIFFERENT domain nouns both
- * matched (genuinely don't know which domain); 'task_time_ambiguous'
- * means exactly one domain matched (task, via an explicit noun) but it
- * also carries a time-of-day tasks cannot hold, per the LOCKED DOMAIN
- * RULE. Callers must never trust either signal to represent a resolved,
- * mutation-ready domain.
+ * Slice 2B.1.1: the 'task_time_ambiguous' signal from Slice 2B.1 is
+ * RETIRED -- explicit task noun + concrete time no longer produces a
+ * signal the caller must ask about; resolvesToCalendarDomain above now
+ * resolves it directly to 'calendar', preserving the requested time.
  */
 export function detectWriteDomainSignal(message: string, now: Date, timeZone: string): WriteDomainSignal {
   const taskTrigger = parseTaskWriteIntent(message, now, timeZone) !== null
@@ -969,9 +1015,6 @@ export function detectWriteDomainSignal(message: string, now: Date, timeZone: st
   if (triggerCount === 0) return 'none'
   if (triggerCount > 1) return 'ambiguous'
   if (financeTrigger) return 'finance'
-  if (taskTrigger && isExplicitTaskWriteTrigger(message) && Boolean(parseDeterministicTimeOfDay(message))) {
-    return 'task_time_ambiguous'
-  }
   return resolvesToCalendarDomain(message, now, timeZone) ? 'calendar' : 'task'
 }
 
@@ -1052,9 +1095,19 @@ export function parseTaskWriteIntent(message: string, now: Date, timeZone: strin
   // function are pre-existing, out-of-scope mojibake) -- an FA update-worded task
   // message returned null here entirely, never even reaching
   // isExplicitTaskWriteTrigger own (now-fixed) FA update check. Freshly written,
-  // clean escapes mirroring cleanPersianCreate own style.
-  const cleanPersianUpdate = /(?:\u06cc\u06a9|\u06a9|\u06cc\u0647)?\s*(?:\u062a\u0633\u06a9|\u0648\u0638\u06cc\u0641\u0647|\u06a9\u0627\u0631).{0,60}(?:\u0628\u0647\u200c\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06cc\s+\u06a9\u0646|\u0648\u06cc\u0631\u0627\u06cc\u0634\s+\u06a9\u0646|\u062a\u063a\u06cc\u06cc\u0631\s+\u0628\u062f\u0647)/i.test(message)
-  const update = /\b(update|edit|change|reschedule|aktualisiere|bearbeite|verschiebe)\b.{0,60}\b(task|todo|aufgabe)\b/i.test(message)
+  // clean escapes mirroring cleanPersianCreate own style. Slice 2B.1.1:
+  // the بگذار alternative is also parseTitleCorrection's OWN idiom
+  // (نام تسک را X بگذار, a rename) -- guarded out below so a
+  // title-correction message is never misread as reschedule-with-time
+  // evidence here (it is still handled, correctly, by
+  // assembleTaskWriteIntent's own parseTitleCorrection-driven merge path).
+  const cleanPersianUpdate = /(?:\u06cc\u06a9|\u06a9|\u06cc\u0647)?\s*(?:\u062a\u0633\u06a9|\u0648\u0638\u06cc\u0641\u0647|\u06a9\u0627\u0631).{0,60}(?:\u0628\u0647\u200c\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06cc\s+\u06a9\u0646|\u0648\u06cc\u0631\u0627\u06cc\u0634\s+\u06a9\u0646|\u062a\u063a\u06cc\u06cc\u0631\s+\u0628\u062f\u0647|\u0628\u06af\u0630\u0627\u0631)/i.test(message) &&
+    !parseTitleCorrection(message)
+  // Slice 2B.1.1 parity fix: "move" was missing here too (same gap as
+  // isExplicitTaskWriteTrigger's own EN update list) -- without it,
+  // "Move the task 'Call Ahmad' to tomorrow at 10" never even registered
+  // as a task write at all (taskTrigger stayed false).
+  const update = /\b(update|edit|change|move|reschedule|aktualisiere|bearbeite|verschiebe)\b.{0,60}\b(task|todo|aufgabe)\b/i.test(message)
   const implicitCreate = !create && !cleanPersianCreate && !cleanMixedPersianCreate && !update && !cleanPersianUpdate &&
     isImplicitScheduleStatement(message) && hasResolvedDateOrTimeSignal(message, now, timeZone)
   if (!create && !cleanPersianCreate && !cleanMixedPersianCreate && !update && !cleanPersianUpdate && !implicitCreate) return null
@@ -1177,15 +1230,49 @@ export function assembleTaskWriteIntent(message: string, recentTurns: RecentChat
  */
 export function parseCalendarWriteIntent(message: string, now: Date, timeZone: string): ParsedCalendarWriteIntent | null {
   if (!resolvesToCalendarDomain(message, now, timeZone)) return null
-  const isUpdate = /\b(update|edit|change|reschedule|move|aktualisiere|bearbeite|verschiebe)\b/i.test(message) ||
+  // Slice 2B.1.1: an explicit CALENDAR noun (event/appointment/meeting/...)
+  // is required for update_calendar_event -- a message that reaches this
+  // function only because an explicit TASK noun carried a concrete time
+  // (resolvesToCalendarDomain's new scheduling-domain rule, see
+  // shared/schedulingDomain.ts) must NEVER be treated as an update to an
+  // existing calendar event, even if it also contains an update-shaped
+  // verb like "move"/"reschedule"/"بگذار" -- that would bridge a TASK
+  // reference into an EVENT lookup, exactly what this slice forbids
+  // ("NEVER update_calendar_event from task identity"). It always
+  // produces a brand-new event instead; the referenced task, if any, is
+  // resolved and left untouched entirely by the caller
+  // (index.ts)/intentValidator.ts, never here.
+  const isExplicitTaskRoutedHere = !isCalendarWriteTrigger(message) && isExplicitTaskWriteTrigger(message)
+  // Slice 2B.1.1 correction (review blocker 4): which of the two task
+  // triggers actually fired matters once this becomes an auto-write --
+  // reschedule-worded evidence names an EXISTING task that must be
+  // resolved and read (never mutated) before an event is created in its
+  // name; create-worded evidence names no existing row at all.
+  const isExplicitTaskRescheduleRoutedHere = isExplicitTaskRoutedHere && isExplicitTaskUpdateTrigger(message)
+  const isUpdate = !isExplicitTaskRoutedHere && (
+    /\b(update|edit|change|reschedule|move|aktualisiere|bearbeite|verschiebe)\b/i.test(message) ||
     /(?:به‌روزرسانی کن|ویرایش کن|جابجا کن|تغییر بده)/.test(message)
+  )
 
   const date = parseDeterministicDueDate(message, now, timeZone)
   const { start, end } = parseDeterministicTimeRange(message)
   const quoted = message.match(/["'«“](.+?)["'»”]/)?.[1]?.trim()
 
   if (!isUpdate) {
-    const title = extractTaskTitle(message)
+    // Slice 2B.1.1: prefer an explicitly quoted title (“Move the task
+    // 'Call Ahmad' to tomorrow at 10”) over the generic fallback
+    // extraction -- extractTaskTitle's stripping regexes are tuned for
+    // CREATE-shaped task phrasing and do not reliably clean an
+    // update/reschedule-shaped one. Either way this is only ever the
+    // LAST-RESORT pattern fallback for a genuinely NEW task/event: when
+    // isExplicitTaskRescheduleRoutedHere is true below, this `title` is
+    // discarded entirely by executeAutoCalendarWrite in favour of the
+    // referenced task's own authoritative persisted title -- it survives
+    // here only as the `clarify` question's context if that resolution
+    // fails. Otherwise resolveCreateEventTitle (index.ts) still asks the
+    // model for the real title first, same as every other
+    // create_calendar_event/create_task path.
+    const title = quoted || extractTaskTitle(message)
     return {
       kind: 'create_calendar_event',
       title: title || undefined,
@@ -1194,6 +1281,16 @@ export function parseCalendarWriteIntent(message: string, now: Date, timeZone: s
       startTime: start,
       endTime: end,
       dateClarificationNeeded: date.clarificationNeeded,
+      // Deliberately derived ONLY from the user's own message text
+      // (the same quoted-text extraction parseTaskWriteIntent's own
+      // update branch uses for taskReference) -- never from an
+      // eventReference/eventTitle-shaped field, so a task's identity is
+      // never blindly bridged from a calendar-shaped guess.
+      // '' (not undefined) when the reschedule trigger fired but no
+      // quoted reference could be extracted -- executeAutoCalendarWrite
+      // treats an empty reference as zero matches, so the request still
+      // fails closed instead of silently skipping task resolution.
+      sourceTaskReference: isExplicitTaskRescheduleRoutedHere ? (quoted ?? '') : undefined,
     }
   }
   return {
@@ -1222,6 +1319,12 @@ function mergeCalendarIntent(base: ParsedCalendarWriteIntent, message: string, n
     startTime,
     endTime,
     dateClarificationNeeded: direct?.dateClarificationNeeded ?? base.dateClarificationNeeded,
+    // Slice 2B.1.1 correction (review blocker 4): carried across a
+    // multi-turn continuation the same way title/dateClarificationNeeded
+    // already are -- a reschedule-worded original turn's task-resolution
+    // requirement must not be lost just because the turn that finally
+    // triggers execution is a bare "yes"/title correction.
+    sourceTaskReference: direct?.sourceTaskReference ?? base.sourceTaskReference,
   }
 }
 
@@ -1740,6 +1843,26 @@ export async function executeAutoCalendarWrite(input: {
   const { env, userId, intent, language, now, timeZone } = input
   if (intent.dateClarificationNeeded) return { status: 'clarify', reply: 'Which exact date should I use?' }
   if (intent.kind === 'create_calendar_event') {
+    // Slice 2B.1.1 correction (review blocker 4): a create_calendar_event
+    // routed here by an UPDATE/reschedule-worded reference to an EXISTING
+    // task (parseCalendarWriteIntent's sourceTaskReference) must resolve
+    // that task from the authenticated user's OWN Tasks table -- exactly
+    // one match -- before this auto-write executes anything. The task is
+    // only ever READ here, never mutated; its authoritative persisted
+    // title always overrides whatever `intent.title` was set to (a
+    // pattern guess, or -- if index.ts still called it -- a Gemini
+    // guess), since neither is grounded in the real row. Missing or
+    // ambiguous identity fails closed with no mutation at all, the same
+    // guarantee findTaskTarget already gives the browser overlay path --
+    // this legacy deterministic /chat path must not depend on that
+    // overlay having run.
+    if (intent.sourceTaskReference !== undefined) {
+      const tasks = await supabaseGet<TaskRow[]>(env, `tasks?user_id=eq.${esc(userId)}&completed=eq.false&select=id,user_id,title,notes,due_date,completed,created_at,updated_at`)
+      const ref = intent.sourceTaskReference.toLowerCase()
+      const matches = ref ? tasks.filter(task => task.title.toLowerCase().includes(ref) || ref.includes(task.title.toLowerCase())) : []
+      if (matches.length !== 1) return { status: matches.length > 1 ? 'clarify' : 'not_found', reply: 'Which exact task should I schedule this for?' }
+      intent.title = matches[0].title
+    }
     if (!intent.title) return { status: 'clarify', reply: 'What should the event be called?' }
     if (!intent.startDate || !intent.startTime) return { status: 'clarify', reply: 'What date and time should the event be at?' }
     const startUtcIso = zonedDateTimeToUtcIso(intent.startDate, intent.startTime, timeZone)
