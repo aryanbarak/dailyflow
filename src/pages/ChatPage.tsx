@@ -857,6 +857,44 @@ export function classifyCalendarConversionConfirmation(message: string): boolean
   return null
 }
 
+// Slice 2B.1 correction (fail-closed persistence): the row shape this
+// helper inserts -- a plain function type, not the real supabase-js
+// PostgrestFilterBuilder, so a test can supply a fake without mocking the
+// whole chainable client surface.
+export type ShortcutChatTurnInsert = (
+  rows: Array<{ user_id: string; session_id: string; role: 'user' | 'assistant'; content: string }>,
+) => PromiseLike<{ error: unknown }>
+
+// Slice 2B.1 correction (fail-closed persistence): with supabase-js v2, an
+// ordinary PostgREST/database error on `.insert(...)` is RETURNED as
+// `{ error }`, not thrown, unless `.throwOnError()` is used. The previous
+// version of persistShortcutTurn only had a try/catch around the insert,
+// which only ever catches a genuinely thrown exception (a network failure
+// before the request completes) -- an ordinary insert rejection (RLS
+// denial, constraint violation, etc.) resolved normally with `{ error }`
+// and was silently treated as success. This is the single, exported,
+// fail-closed source of truth for "did this turn actually persist":
+// checks the resolved `error` field AND still catches a thrown exception,
+// collapsing both into one boolean so callers can gate on it directly
+// without duplicating either check. No user id at all is treated the same
+// as a failure -- there is nothing to attribute the write to.
+export async function persistShortcutChatTurn(
+  insert: ShortcutChatTurnInsert,
+  params: { userId: string | undefined; sessionId: string; userText: string; assistantContent: string },
+): Promise<boolean> {
+  if (!params.userId) return false
+  try {
+    const { error } = await insert([
+      { user_id: params.userId, session_id: params.sessionId, role: 'user', content: params.userText },
+      { user_id: params.userId, session_id: params.sessionId, role: 'assistant', content: params.assistantContent },
+    ])
+    return !error
+  } catch (thrown) {
+    console.error('[ChatPage] persistShortcutChatTurn: insert threw', thrown)
+    return false
+  }
+}
+
 function stepForReasoning(result: AgentReasoningResult, t: Translate): WorkspacePlanStep | null {
   const proposal = result.proposal
   if (!proposal.toolId || proposal.type === 'ask_clarification' || proposal.type === 'unsupported') {
@@ -2425,32 +2463,46 @@ export default function ChatPage() {
       }
       const ownerSessionId = sessionId
 
-      // Blocker 3 correction: the shortcut path below used to update local
-      // state only and `return` before the normal /chat persistence path
-      // ever ran, so a refresh/reload silently lost the follow-up turn.
-      // This reuses the EXACT SAME durable-write shape already used by the
-      // timeout-fallback path just below (a direct, RLS-scoped insert into
-      // agent_chat_messages from the browser) rather than inventing a
-      // third persistence mechanism -- append to local state, best-effort
-      // persist both sides of the turn, restore normal turn-scoped
-      // attachment cleanup, and refresh session metadata, exactly like the
-      // ordinary send path does after a successful /chat round-trip.
-      const persistShortcutTurn = async (assistantContent: string, language: SupportedAiResponseLanguage) => {
+      // Fail-closed persistence correction: the shortcut path must never
+      // publish an actionable Task/Calendar proposal (or even a plain
+      // assistant reply) that was never actually durably persisted.
+      // persistShortcutChatTurn is the single source of truth for "did
+      // this turn actually persist" (checks the RESOLVED `{ error }` a
+      // supabase-js v2 insert returns, not just a thrown exception -- see
+      // its own header comment). On success this publishes local state,
+      // arms/clears the pending continuation, restores attachment
+      // cleanup, and refreshes session metadata, exactly like the
+      // ordinary send path does after a successful /chat round-trip. On
+      // failure NOTHING from this turn is published: no message, no
+      // reasoning proposal, no attachment mutation, no execution request
+      // is even reachable (proposalToState/requestWriteExecution never
+      // see a step that was never set) -- the ORIGINAL pending
+      // clarification is restored (not the next one) so the exact same
+      // reply, resent, re-enters this same branch, and the draft is
+      // restored so the user's words are not lost.
+      const commitShortcutTurn = async (params: {
+        assistantContent: string
+        language: SupportedAiResponseLanguage
+        reasoningResult: AgentReasoningResult | null
+        nextPendingClarification: typeof pendingTaskCalendarClarificationRef.current
+      }) => {
+        const persisted = await persistShortcutChatTurn(
+          (rows) => supabase.from('agent_chat_messages').insert(rows),
+          { userId: user?.id, sessionId: ownerSessionId, userText: text, assistantContent: params.assistantContent },
+        )
+        if (!persisted) {
+          pendingTaskCalendarClarificationRef.current = pendingClarification
+          if (!overrideText) setDraft(text)
+          setSendError(t('chat_error_send'))
+          return
+        }
         setMessages(prev => [
           ...prev,
           { id: `u-${Date.now()}`, role: 'user', content: text },
-          { id: `a-${Date.now() + 1}`, role: 'assistant', content: assistantContent, language },
+          { id: `a-${Date.now() + 1}`, role: 'assistant', content: params.assistantContent, language: params.language },
         ])
-        if (user?.id) {
-          try {
-            await supabase.from('agent_chat_messages').insert([
-              { user_id: user.id, session_id: ownerSessionId, role: 'user', content: text },
-              { user_id: user.id, session_id: ownerSessionId, role: 'assistant', content: assistantContent },
-            ])
-          } catch (persistError) {
-            console.error('[ChatPage] Failed to persist task/calendar clarification follow-up:', persistError)
-          }
-        }
+        setReasoningProposal(params.reasoningResult ? proposalsToStates(params.reasoningResult, t) : null)
+        pendingTaskCalendarClarificationRef.current = params.nextPendingClarification
         if (sentDocument) {
           setAttachedFile(null)
           setAttachedDocument(null)
@@ -2498,20 +2550,27 @@ export default function ChatPage() {
         // Blocker 2: an originally update-worded task request that picked
         // "calendar" here does not resolve directly -- it comes back as
         // the SECOND question (TASK_TO_CALENDAR_CONVERSION_REASON_MARKER).
-        // Re-arm the SAME bounded ref for that question's own single-turn
-        // continuation instead of clearing it; every other outcome
-        // (resolved to create_task/update_task/create_calendar_event)
-        // leaves it cleared, matching the original single-shot contract.
-        if (result.proposal.reasons.includes(TASK_TO_CALENDAR_CONVERSION_REASON_MARKER)) {
-          pendingTaskCalendarClarificationRef.current = {
-            stage: 'conversion_confirmation',
-            originalUserMessage: pendingClarification.originalUserMessage,
-            capturedTarget: pendingClarification.capturedTarget,
-            language: pendingClarification.language,
-          }
-        }
-        setReasoningProposal(proposalsToStates(result, t))
-        await persistShortcutTurn(proposalMessage(result), result.responseLanguage)
+        // The SAME bounded ref is armed for that question's own
+        // single-turn continuation instead of being cleared; every other
+        // outcome (resolved to create_task/update_task/
+        // create_calendar_event) clears it, matching the original
+        // single-shot contract. Computed before persistence so a failed
+        // persist can restore the ORIGINAL pending clarification instead
+        // (see commitShortcutTurn).
+        const nextPendingClarification = result.proposal.reasons.includes(TASK_TO_CALENDAR_CONVERSION_REASON_MARKER)
+          ? {
+              stage: 'conversion_confirmation' as const,
+              originalUserMessage: pendingClarification.originalUserMessage,
+              capturedTarget: pendingClarification.capturedTarget,
+              language: pendingClarification.language,
+            }
+          : null
+        await commitShortcutTurn({
+          assistantContent: proposalMessage(result),
+          language: result.responseLanguage,
+          reasoningResult: result,
+          nextPendingClarification,
+        })
         return
       }
 
@@ -2542,19 +2601,27 @@ export default function ChatPage() {
             language: pendingClarification.language,
             timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           })
-          setReasoningProposal(proposalsToStates(result, t))
-          await persistShortcutTurn(proposalMessage(result), result.responseLanguage)
+          await commitShortcutTurn({
+            assistantContent: proposalMessage(result),
+            language: result.responseLanguage,
+            reasoningResult: result,
+            nextPendingClarification: null,
+          })
         } else {
           // Declined: no event is created, and the original task was
           // never touched by any of this -- there is nothing left to
           // execute, so this never reaches the validator at all.
-          setReasoningProposal(null)
           const declinedText = pendingClarification.language === 'de'
             ? 'Verstanden, die Aufgabe bleibt unverändert. Es wurde kein Kalendertermin erstellt.'
             : pendingClarification.language === 'fa'
               ? 'باشه، تسک بدون تغییر باقی می‌ماند. هیچ رویداد تقویمی ساخته نشد.'
               : 'Understood, the task stays unchanged. No calendar event was created.'
-          await persistShortcutTurn(declinedText, pendingClarification.language)
+          await commitShortcutTurn({
+            assistantContent: declinedText,
+            language: pendingClarification.language,
+            reasoningResult: null,
+            nextPendingClarification: null,
+          })
         }
         return
       }

@@ -21,6 +21,8 @@ import {
   classifyCalendarConversionConfirmation,
   classifyMessageIntentSignal,
   classifyTaskCalendarFollowUp,
+  persistShortcutChatTurn,
+  type ShortcutChatTurnInsert,
   getAmbiguousOfferHint,
   getAmbiguousOfferText,
   isAutoExecutableReadOnlyProposal,
@@ -934,24 +936,107 @@ describe("ChatPage LLM reasoning UX boundary", () => {
     });
   });
 
-  // Slice 2B.1 corrections (Blockers 2/3/4) -- ChatPage.tsx's own
-  // handleSend is an unexported closure with heavy AppLayout/context
-  // dependencies that this codebase deliberately does not full-DOM-mount
-  // in tests (see ChatPagePwaScroll.test.tsx's own header comment on the
-  // same constraint, for the same file). Verified the same way that file
-  // verifies equally hard-to-integration-test properties: directly
-  // against the real shipped source, so a regression in the ACTUAL
-  // send-path wiring (not just the pure resolver functions already
+  // Slice 2B.1 final persistence correction: persistShortcutChatTurn is the
+  // single, EXPORTED, fully unit-testable source of truth for "did this
+  // shortcut-path turn actually persist" -- checks the RESOLVED
+  // `{ error }` shape a supabase-js v2 insert returns (never thrown for an
+  // ordinary PostgREST/database rejection unless `.throwOnError()` is
+  // used), and also still catches a genuinely thrown exception (a network
+  // failure before the request completes). A fake `insert` function
+  // stands in for the real chainable supabase-js client -- no need to mock
+  // its whole builder surface.
+  describe("persistShortcutChatTurn (Slice 2B.1 fail-closed persistence)", () => {
+    function fakeInsert(behavior: { error: unknown } | "throw"): { insert: ShortcutChatTurnInsert; calls: unknown[][] } {
+      const calls: unknown[][] = [];
+      const insert: ShortcutChatTurnInsert = async (rows) => {
+        calls.push(rows);
+        if (behavior === "throw") throw new Error("network error");
+        return behavior;
+      };
+      return { insert, calls };
+    }
+
+    it("A: insert resolves with no error -> considered durable (persisted)", async () => {
+      const { insert } = fakeInsert({ error: null });
+      const persisted = await persistShortcutChatTurn(insert, {
+        userId: "user-1",
+        sessionId: "session-1",
+        userText: "task without time",
+        assistantContent: "Understood.",
+      });
+      expect(persisted).toBe(true);
+    });
+
+    it("B: insert RESOLVES with { error: PostgrestError } (never thrown) -> detected as a failure, not silently treated as success", async () => {
+      const { insert } = fakeInsert({ error: { message: "row-level security violation", code: "42501" } });
+      const persisted = await persistShortcutChatTurn(insert, {
+        userId: "user-1",
+        sessionId: "session-1",
+        userText: "task without time",
+        assistantContent: "Understood.",
+      });
+      expect(persisted).toBe(false);
+    });
+
+    it("C: the insert promise actually THROWS -> the same fail-closed result as a resolved error", async () => {
+      const { insert } = fakeInsert("throw");
+      const persisted = await persistShortcutChatTurn(insert, {
+        userId: "user-1",
+        sessionId: "session-1",
+        userText: "task without time",
+        assistantContent: "Understood.",
+      });
+      expect(persisted).toBe(false);
+    });
+
+    it("D: the user + assistant rows are submitted together, in ONE insert call, never as two separate writes", async () => {
+      const { insert, calls } = fakeInsert({ error: null });
+      await persistShortcutChatTurn(insert, {
+        userId: "user-1",
+        sessionId: "session-1",
+        userText: "calendar at 10",
+        assistantContent: "Created.",
+      });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toEqual([
+        { user_id: "user-1", session_id: "session-1", role: "user", content: "calendar at 10" },
+        { user_id: "user-1", session_id: "session-1", role: "assistant", content: "Created." },
+      ]);
+    });
+
+    it("no user id at all is treated as a failure -- there is nothing to attribute the write to, and the real insert is never even called", async () => {
+      const { insert, calls } = fakeInsert({ error: null });
+      const persisted = await persistShortcutChatTurn(insert, {
+        userId: undefined,
+        sessionId: "session-1",
+        userText: "task without time",
+        assistantContent: "Understood.",
+      });
+      expect(persisted).toBe(false);
+      expect(calls).toHaveLength(0);
+    });
+  });
+
+  // Slice 2B.1 corrections (Blockers 2/3/4, and the fail-closed persistence
+  // correction) -- ChatPage.tsx's own handleSend is an unexported closure
+  // with heavy AppLayout/context dependencies that this codebase
+  // deliberately does not full-DOM-mount in tests (see
+  // ChatPagePwaScroll.test.tsx's own header comment on the same
+  // constraint, for the same file). The PURE persistence signal itself is
+  // now fully unit-tested above (A-D); what remains here is verified the
+  // same way that file verifies equally hard-to-integration-test
+  // properties: directly against the real shipped source, so a regression
+  // in the ACTUAL send-path wiring (not just the pure functions already
   // covered above and in reasoningOrchestrator.test.ts) fails this test.
   describe("Slice 2B.1 corrections: the actual follow-up send path (source-verified -- see file header comment)", () => {
     const chatPageSource = readFileSync(path.join(path.resolve(process.cwd(), "src"), "pages", "ChatPage.tsx"), "utf-8");
 
-    it("Blocker 4: arms the pending continuation from the WORKER's own structured `clarification` marker, not from the reasoning overlay alone", () => {
+    it("G: arms the pending continuation from the WORKER's own structured `clarification` marker, not from the reasoning overlay alone -- so it still works with no overlay at all", () => {
       expect(chatPageSource).toMatch(/if \(clarification\?\.kind === 'task_time'\) \{/);
       // The overlay result may only ENRICH the captured target -- it must
-      // never be the SOLE condition that arms the ref (that was the old,
-      // corrected bug: an overlay-only marker with no server confirmation
-      // could arm continuation on its own).
+      // never be the SOLE condition that arms the ref (an overlay-only
+      // marker with no server confirmation could arm continuation on its
+      // own, which is the exact bug this must not regress to).
       const armingBlock = chatPageSource.slice(
         chatPageSource.indexOf("if (clarification?.kind === 'task_time') {"),
         chatPageSource.indexOf("if (clarification?.kind === 'task_time') {") + 700,
@@ -959,31 +1044,43 @@ describe("ChatPage LLM reasoning UX boundary", () => {
       expect(armingBlock).toMatch(/overlayResult\?\.proposal\.reasons\.includes\(TASK_TIME_CLARIFICATION_REASON_MARKER\)\s*\n\s*\? overlayResult\.proposal\.target\s*\n\s*: undefined/);
     });
 
-    it("Blocker 3: the shortcut path persists both sides of the follow-up turn via the same RLS-scoped agent_chat_messages insert the timeout-fallback path already uses, not local state alone", () => {
-      const helperStart = chatPageSource.indexOf("const persistShortcutTurn = async");
+    it("fail-closed persistence: commitShortcutTurn gates EVERY publish (messages, reasoning proposal, pending-continuation arming, attachment cleanup) behind a confirmed persistShortcutChatTurn success -- none of it runs on the early-return failure path", () => {
+      const helperStart = chatPageSource.indexOf("const commitShortcutTurn = async");
       expect(helperStart).toBeGreaterThan(-1);
-      const helperBody = chatPageSource.slice(helperStart, helperStart + 1200);
-      expect(helperBody).toMatch(/supabase\.from\('agent_chat_messages'\)\.insert\(\[/);
-      expect(helperBody).toMatch(/role: 'user', content: text/);
-      expect(helperBody).toMatch(/role: 'assistant', content: assistantContent/);
-      // Turn-scoped attachment cleanup and session-metadata refresh must
-      // survive the shortcut path exactly like the ordinary send path.
+      const helperBody = chatPageSource.slice(helperStart, helperStart + 1600);
+      expect(helperBody).toMatch(/const persisted = await persistShortcutChatTurn\(/);
+      // The failure branch: restores the ORIGINAL pending clarification
+      // (not the next one) so a retry re-enters the same branch, restores
+      // the draft so the user's words are not lost, surfaces a bounded
+      // error, and returns BEFORE any of the publish calls below it.
+      const failureBranch = helperBody.slice(helperBody.indexOf("if (!persisted) {"), helperBody.indexOf("setMessages(prev"));
+      expect(failureBranch).toMatch(/pendingTaskCalendarClarificationRef\.current = pendingClarification/);
+      expect(failureBranch).toMatch(/if \(!overrideText\) setDraft\(text\)/);
+      expect(failureBranch).toMatch(/setSendError\(t\('chat_error_send'\)\)/);
+      expect(failureBranch).toMatch(/return/);
+      // Everything that publishes this turn as real/actionable comes AFTER
+      // the failure branch's return, i.e. never runs on a failed persist.
+      expect(helperBody.indexOf("setMessages(prev")).toBeGreaterThan(helperBody.indexOf("if (!persisted) {"));
+      expect(helperBody).toMatch(/setReasoningProposal\(params\.reasoningResult \? proposalsToStates\(params\.reasoningResult, t\) : null\)/);
+      expect(helperBody).toMatch(/pendingTaskCalendarClarificationRef\.current = params\.nextPendingClarification/);
       expect(helperBody).toMatch(/setAttachedFile\(null\)/);
       expect(helperBody).toMatch(/setAttachedDocument\(null\)/);
       expect(helperBody).toMatch(/void refreshSessions\(\)/);
-      // Both the 'domain_choice' and 'conversion_confirmation' resolution
-      // branches must actually call the durable helper (not just build a
-      // local message and return early, the original bug).
-      expect(chatPageSource).toMatch(/await persistShortcutTurn\(proposalMessage\(result\), result\.responseLanguage\)/);
-      expect(chatPageSource).toMatch(/await persistShortcutTurn\(declinedText, pendingClarification\.language\)/);
     });
 
-    it("Blocker 2: an originally update-worded task request that picks Calendar re-arms the SAME bounded ref for the second, fail-closed question instead of resolving directly", () => {
+    it("E: the domain-choice continuation still calls commitShortcutTurn with the resolved proposal (unchanged end-to-end wiring)", () => {
+      expect(chatPageSource).toMatch(/if \(pendingClarification\?\.stage === 'domain_choice' && domainChoiceResolution\) \{/);
+      expect(chatPageSource).toMatch(/await commitShortcutTurn\(\{\s*\n\s*assistantContent: proposalMessage\(result\),\s*\n\s*language: result\.responseLanguage,\s*\n\s*reasoningResult: result,\s*\n\s*nextPendingClarification,\s*\n\s*\}\)/);
+    });
+
+    it("F: an originally update-worded task request that picks Calendar re-arms the SAME bounded ref for the second, fail-closed question instead of resolving directly, and the confirmed third turn still resolves to calendar_conversion_confirmed", () => {
       const shortcutStart = chatPageSource.indexOf("if (pendingClarification?.stage === 'domain_choice' && domainChoiceResolution) {");
       expect(shortcutStart).toBeGreaterThan(-1);
       const shortcutBody = chatPageSource.slice(shortcutStart, chatPageSource.indexOf("return\n      }", shortcutStart));
       expect(shortcutBody).toMatch(/result\.proposal\.reasons\.includes\(TASK_TO_CALENDAR_CONVERSION_REASON_MARKER\)/);
-      expect(shortcutBody).toMatch(/stage: 'conversion_confirmation'/);
+      expect(shortcutBody).toMatch(/stage: 'conversion_confirmation' as const/);
+
+      expect(chatPageSource).toMatch(/resolvedAs: 'calendar_conversion_confirmed'/);
     });
   });
 
