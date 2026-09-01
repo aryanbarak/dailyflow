@@ -236,11 +236,23 @@ async function loadExecutionRow(env: Env, executionId: string): Promise<AgentToo
 }
 
 // The one atomic, database-backed conditional transition every lifecycle
-// move in this module goes through. Returns false (never throws) when the
-// row is not currently in `fromStatus` -- indistinguishable, by design,
-// between "does not exist," "owned by someone else" (already filtered out
-// by the caller's own id+user_id predicate before this is ever reached),
-// and "a concurrent request already won this exact transition."
+// move in this module goes through.
+//
+// LIFECYCLE TRANSPORT CORRECTION: despite what an earlier version of this
+// comment claimed, this function is NOT throw-free -- it calls
+// supabaseWriteReturning, which throws on a network rejection or a
+// non-2xx Supabase response, and that exception propagates straight out
+// of here. A resolved `false` return remains a RELIABLE, non-ambiguous
+// signal (PostgREST's own conditional `status=eq.<fromStatus>` WHERE
+// clause ran, got a normal response, and proved zero rows currently match
+// -- "does not exist," "owned by someone else" (already filtered out by
+// the caller's own id+user_id predicate before this is ever reached), or
+// "a concurrent request already won this exact transition"). A THROW is
+// the genuinely ambiguous case: the request itself failed, so whether the
+// database actually committed the change is unknown. Callers for whom
+// that ambiguity is load-bearing (any transition after the durable
+// `executing` claim, where a domain mutation may already have happened)
+// must go through attemptTransition below, never call this directly.
 async function transitionStatus(
   env: Env,
   executionId: string,
@@ -255,6 +267,43 @@ async function transitionStatus(
     { status: toStatus, ...patch },
   )
   return rows.length === 1
+}
+
+// LIFECYCLE TRANSPORT CORRECTION: the transport-safe wrapper every
+// post-`executing`-claim transition goes through. Turns transitionStatus's
+// two-state (boolean) result plus its one uncaught-throw case into three
+// EXPLICIT, never-throwing outcomes:
+//   'applied'           -- the conditional PATCH matched and updated
+//                          exactly this row. Durable fact.
+//   'not_applied'       -- a reliable negative: PostgREST's own
+//                          conditional WHERE clause resolved normally and
+//                          proved this row was NOT in fromStatus. Also a
+//                          durable fact, just the other one.
+//   'transport_unknown' -- the request itself failed (network rejection
+//                          or non-2xx response). The database may or may
+//                          not have committed the change -- this is the
+//                          ONLY outcome that requires a readback before
+//                          any terminal result can be reported. See
+//                          settleTerminalTransition/recordUncertainOutcome,
+//                          the only callers of this function.
+type TransitionAttempt = 'applied' | 'not_applied' | 'transport_unknown'
+
+async function attemptTransition(
+  env: Env,
+  executionId: string,
+  fromStatus: ExecutionLifecycleStatus,
+  toStatus: ExecutionLifecycleStatus,
+  patch: Record<string, unknown>,
+): Promise<TransitionAttempt> {
+  try {
+    const applied = await transitionStatus(env, executionId, fromStatus, toStatus, patch)
+    return applied ? 'applied' : 'not_applied'
+  } catch (error) {
+    console.error('[agent-tool-execution] transitionStatus transport failure', {
+      executionId, fromStatus, toStatus, error: error instanceof Error ? error.message : String(error),
+    })
+    return 'transport_unknown'
+  }
 }
 
 interface ExecutionOutcome {
@@ -421,21 +470,85 @@ const UNCERTAIN_UNRECORDED_BODY = Object.freeze({
 // 'uncertain' -- previously these paths returned UNCERTAIN_BODY to the
 // caller WITHOUT ever attempting this transition, silently leaving the row
 // parked in 'executing' forever. Attempts the transition; only reports the
-// row as durably 'uncertain' if that attempt actually succeeded. If even
-// this fails, never fabricates -- returns the distinct
+// row as durably 'uncertain' if that attempt actually succeeded (or, for
+// LIFECYCLE TRANSPORT CORRECTION, if a readback confirms it applied
+// despite the attempt's own response being lost). If even that cannot
+// establish the truth, never fabricates -- returns the distinct
 // UNCERTAIN_UNRECORDED_BODY instead and logs a bounded diagnostic (no
-// domain data) for operator visibility. Never retries the domain mutation
-// either way.
+// domain data) for operator visibility. Never retries the domain mutation,
+// and never retries this same transition itself -- a single readback is
+// the only recovery step ever taken.
 async function recordUncertainOutcome(env: Env, executionId: string, now: Date): Promise<Record<string, unknown>> {
-  const recorded = await transitionStatus(env, executionId, 'executing', 'uncertain', {
+  const attempt = await attemptTransition(env, executionId, 'executing', 'uncertain', {
     completed_at: now.toISOString(),
     error_code: 'EXECUTION_OUTCOME_UNKNOWN',
   })
-  if (!recorded) {
-    console.error('[agent-tool-execution] could not durably record an uncertain outcome', { executionId })
-    return { ...UNCERTAIN_UNRECORDED_BODY, executionId }
+  if (attempt === 'applied') return { ...UNCERTAIN_BODY, executionId }
+
+  if (attempt === 'transport_unknown') {
+    // The uncertain-transition request itself failed -- the row may
+    // already durably say 'uncertain' even though this response was lost.
+    // One readback, never a second attempt at the same transition.
+    const reread = await loadExecutionRow(env, executionId)
+    if (reread?.status === 'uncertain') return { ...UNCERTAIN_BODY, executionId }
   }
-  return { ...UNCERTAIN_BODY, executionId }
+
+  // attempt === 'not_applied' (a reliable negative -- this row was proven
+  // not to be 'executing' anymore), or attempt === 'transport_unknown' and
+  // the readback still could not confirm 'uncertain': this path can never
+  // establish the truth. Bounded, distinct outcome -- never a fabricated
+  // 'uncertain' claim.
+  console.error('[agent-tool-execution] could not durably confirm an uncertain outcome', { executionId })
+  return { ...UNCERTAIN_UNRECORDED_BODY, executionId }
+}
+
+// LIFECYCLE TRANSPORT CORRECTION: the one place both terminal-success and
+// terminal-failure transitions (executing -> succeeded / executing ->
+// failed) go through -- see approveAndExecute's own two call sites. The
+// caller has ALREADY computed its own honest succeeded/failed response
+// body from the domain outcome by this point; this function's only job is
+// deciding whether that body may actually be reported, per the task's own
+// required algorithm:
+//   1. transition applied durably -> { kind: 'applied' }, caller reports
+//      its own already-computed body.
+//   2. transition proven not to apply (reliable negative) -> fall back to
+//      recordUncertainOutcome (never re-attempt THIS transition).
+//   3. transition transport-ambiguous -> ONE readback:
+//      a. row already says toStatus -> accept that durable truth,
+//         { kind: 'applied' } (never re-derive the body from the row --
+//         the caller's own outcome data is what actually happened).
+//      b. row already says 'uncertain' -> report that authoritative
+//         uncertain outcome.
+//      c. anything else (still 'executing', or the readback itself could
+//         not establish anything) -> fall back to recordUncertainOutcome.
+// Never retries the domain mutation, and never retries this same
+// transition -- only ever a single readback, then (at most) a single,
+// distinct fallback transition attempt (uncertain).
+type TerminalSettlement =
+  | { kind: 'applied' }
+  | { kind: 'uncertain'; body: Record<string, unknown> }
+
+async function settleTerminalTransition(
+  env: Env,
+  executionId: string,
+  toStatus: 'succeeded' | 'failed',
+  patch: Record<string, unknown>,
+  now: Date,
+): Promise<TerminalSettlement> {
+  const attempt = await attemptTransition(env, executionId, 'executing', toStatus, patch)
+  if (attempt === 'applied') return { kind: 'applied' }
+
+  if (attempt === 'transport_unknown') {
+    const reread = await loadExecutionRow(env, executionId)
+    if (reread?.status === toStatus) return { kind: 'applied' }
+    if (reread?.status === 'uncertain') return { kind: 'uncertain', body: { ...UNCERTAIN_BODY, executionId } }
+  }
+
+  // 'not_applied' (reliable negative), or 'transport_unknown' with a
+  // readback that could not confirm toStatus (or 'uncertain') either --
+  // the smallest honest fallback: attempt the SEPARATE, distinct
+  // executing -> uncertain transition, itself fully transport-safe.
+  return { kind: 'uncertain', body: await recordUncertainOutcome(env, executionId, now) }
 }
 
 interface ApprovalResult {
@@ -512,15 +625,16 @@ async function approveAndExecute(env: Env, userId: string, executionId: string, 
   }
 
   if (outcome.status === 'executed') {
-    const recorded = await transitionStatus(env, executionId, 'executing', 'succeeded', {
+    // LIFECYCLE TRANSPORT CORRECTION: settleTerminalTransition decides
+    // ONLY whether this already-computed, honest response body (built
+    // from the domain write's own result, never re-derived from a
+    // readback) may actually be reported -- see its own comment.
+    const settled = await settleTerminalTransition(env, executionId, 'succeeded', {
       completed_at: now.toISOString(),
       target_type: outcome.targetType ?? null,
       target_id: outcome.targetId ?? row.target_id ?? null,
-    })
-    // The domain write DID succeed (outcome.status === 'executed'), but the
-    // durable succeeded transition itself could not be recorded -- never
-    // report authoritative success when the row does not durably agree.
-    if (!recorded) return { httpStatus: 200, body: await recordUncertainOutcome(env, executionId, now) }
+    }, now)
+    if (settled.kind === 'uncertain') return { httpStatus: 200, body: settled.body }
     if (outcome.undoId) await correlateUndoRecordWithExecution(env, outcome.undoId, executionId)
     return {
       httpStatus: 200,
@@ -541,8 +655,8 @@ async function approveAndExecute(env: Env, userId: string, executionId: string, 
   }
 
   const errorCode = errorCodeForOutcome(outcome)
-  const recordedFailure = await transitionStatus(env, executionId, 'executing', 'failed', { completed_at: now.toISOString(), error_code: errorCode })
-  if (!recordedFailure) return { httpStatus: 200, body: await recordUncertainOutcome(env, executionId, now) }
+  const settledFailure = await settleTerminalTransition(env, executionId, 'failed', { completed_at: now.toISOString(), error_code: errorCode }, now)
+  if (settledFailure.kind === 'uncertain') return { httpStatus: 200, body: settledFailure.body }
   return { httpStatus: 200, body: { status: 'failed', executionId, reply: outcome.reply, errorCode } }
 }
 

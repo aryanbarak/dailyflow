@@ -88,13 +88,31 @@ class FakeExecutionsTable {
   // record -- conditionalUpdate still MATCHES the row (proving the
   // transition would otherwise have been valid) but returns no rows anyway,
   // simulating "the write to agent_tool_executions itself failed" after the
-  // domain executor's own result was already known.
+  // domain executor's own result was already known. This is a RELIABLE
+  // negative -- a normal response that proves zero rows matched.
   blockTransitionTo = new Set<string>()
+
+  // LIFECYCLE TRANSPORT CORRECTION test support: statuses whose lifecycle
+  // PATCH request itself THROWS (simulates a network rejection or a lost
+  // response) rather than resolving normally -- the genuinely ambiguous
+  // case, unlike blockTransitionTo above. `commitBeforeThrow` controls
+  // whether the underlying row is actually mutated before the throw: a
+  // lost response is consistent with the database having committed before
+  // the connection dropped (commitBeforeThrow) OR the request never having
+  // reached it at all (the default) -- both are real possibilities, and
+  // the tests below exercise both, proving a readback is what tells them
+  // apart, never an assumption either way.
+  throwTransitionTo = new Set<string>()
+  commitBeforeThrow = new Set<string>()
 
   conditionalUpdate(id: string, expectedStatus: string, patch: Partial<Row>): Row[] {
     const row = this.rows.find((r) => r.id === id && r.status === expectedStatus)
     if (!row) return []
     if (patch.status && this.blockTransitionTo.has(patch.status)) return []
+    if (patch.status && this.throwTransitionTo.has(patch.status)) {
+      if (this.commitBeforeThrow.has(patch.status)) Object.assign(row, patch)
+      throw new Error('simulated transport failure on lifecycle transition')
+    }
     Object.assign(row, patch)
     return [row]
   }
@@ -930,6 +948,123 @@ describe('Chat V2 Slice 2A -- server-owned tool execution lifecycle', () => {
       const body = await response.json() as { status: string }
       expect(body.status).not.toBe('succeeded')
       expect(body.status).toBe('uncertain')
+    })
+  })
+
+  // LIFECYCLE TRANSPORT CORRECTION: transitionStatus's underlying PostgREST
+  // call can itself THROW (network rejection, non-2xx response), not just
+  // resolve with zero matched rows -- a genuinely different, more ambiguous
+  // failure mode than BLOCKER 4's blockTransitionTo tests above (which
+  // simulate a normal response that reliably proves nothing matched). A
+  // thrown transition means the database's real state is UNKNOWN from the
+  // response alone -- these tests prove a readback (never a retry of the
+  // domain mutation, never a retry of the same transition) is what
+  // resolves that ambiguity, in both directions.
+  describe('LIFECYCLE TRANSPORT CORRECTION: ambiguous transitions (transport throws, not just blocked)', () => {
+    it('A. domain succeeds, the succeeded-transition request throws, but the row actually committed -- a readback confirms it and the caller still gets an authoritative succeeded response, with no domain retry', async () => {
+      const table = new FakeExecutionsTable()
+      table.throwTransitionTo.add('succeeded')
+      table.commitBeforeThrow.add('succeeded')
+      table.insert({
+        user_id: USER_ID, domain: 'tasks', action: 'create', tool_id: 'tasks.create',
+        request_id: 'req-transport-a', intent_id: 'intent:transport-a', canonical_hash: 'transport-a', normalized_arguments: { title: 'Call Ahmad' },
+        status: 'approved', approval_requested_at: new Date().toISOString(), approved_at: new Date().toISOString(),
+      })
+      const { fetchMock, calls } = buildFetchMock({ table, policyMode: 'ask' })
+      const response = await withFetch(fetchMock, () => handleAgentToolExecutionApprove(authRequest('/agent/execution/approve', { executionId: table.rows[0].id }), mockEnv()))
+      expect(response.status).toBe(200)
+      const body = await response.json() as { status: string; executionId: string }
+      expect(body.status).toBe('succeeded')
+      expect(body.executionId).toBe(table.rows[0].id)
+      expect(table.rows[0].status).toBe('succeeded')
+      // tasks.create writes via POST, not PATCH.
+      const taskWriteAttempts = calls.filter((c) => c.method === 'POST' && c.url.includes('/rest/v1/tasks'))
+      expect(taskWriteAttempts).toHaveLength(1)
+    })
+
+    it('B. domain succeeds, the succeeded-transition request throws and did NOT commit -- a readback shows the row still executing, the uncertain fallback transition succeeds, and the row/response are both uncertain', async () => {
+      const table = new FakeExecutionsTable()
+      table.throwTransitionTo.add('succeeded')
+      table.insert({
+        user_id: USER_ID, domain: 'tasks', action: 'create', tool_id: 'tasks.create',
+        request_id: 'req-transport-b', intent_id: 'intent:transport-b', canonical_hash: 'transport-b', normalized_arguments: { title: 'Call Ahmad' },
+        status: 'approved', approval_requested_at: new Date().toISOString(), approved_at: new Date().toISOString(),
+      })
+      const { fetchMock, calls } = buildFetchMock({ table, policyMode: 'ask' })
+      const response = await withFetch(fetchMock, () => handleAgentToolExecutionApprove(authRequest('/agent/execution/approve', { executionId: table.rows[0].id }), mockEnv()))
+      expect(response.status).toBe(200)
+      const body = await response.json() as { status: string; errorCode: string }
+      expect(body.status).toBe('uncertain')
+      expect(body.errorCode).toBe('EXECUTION_OUTCOME_UNKNOWN')
+      expect(table.rows[0].status).toBe('uncertain')
+      // tasks.create writes via POST, not PATCH.
+      const taskWriteAttempts = calls.filter((c) => c.method === 'POST' && c.url.includes('/rest/v1/tasks'))
+      expect(taskWriteAttempts).toHaveLength(1)
+    })
+
+    it('C. a proven domain failure, the failed-transition request throws and did NOT commit -- a readback shows the row still executing, the uncertain fallback transition succeeds, and the row is uncertain', async () => {
+      const table = new FakeExecutionsTable()
+      table.throwTransitionTo.add('failed')
+      table.insert({
+        user_id: USER_ID, domain: 'tasks', action: 'update', tool_id: 'tasks.update',
+        request_id: 'req-transport-c', intent_id: 'intent:transport-c', canonical_hash: 'transport-c', normalized_arguments: { title: 'New' }, target_id: 'task-1',
+        status: 'approved', approval_requested_at: new Date().toISOString(), approved_at: new Date().toISOString(),
+      })
+      const { fetchMock, calls } = buildFetchMock({ table, policyMode: 'ask', failDomainWrite: true })
+      const response = await withFetch(fetchMock, () => handleAgentToolExecutionApprove(authRequest('/agent/execution/approve', { executionId: table.rows[0].id }), mockEnv()))
+      expect(response.status).toBe(200)
+      const body = await response.json() as { status: string; errorCode: string }
+      expect(body.status).toBe('uncertain')
+      expect(body.errorCode).toBe('EXECUTION_OUTCOME_UNKNOWN')
+      expect(table.rows[0].status).toBe('uncertain')
+      const taskWriteAttempts = calls.filter((c) => c.method === 'PATCH' && c.url.includes('/rest/v1/tasks'))
+      expect(taskWriteAttempts).toHaveLength(1)
+    })
+
+    it('D. the domain executor itself throws, and the uncertain-transition request ALSO throws without committing -- a readback still shows executing, so this resolves to the distinct bounded EXECUTION_LIFECYCLE_PERSISTENCE_FAILED outcome, never a fabricated uncertain claim, with no domain retry', async () => {
+      const table = new FakeExecutionsTable()
+      table.throwTransitionTo.add('uncertain')
+      table.insert({
+        user_id: USER_ID, domain: 'tasks', action: 'update', tool_id: 'tasks.update',
+        request_id: 'req-transport-d', intent_id: 'intent:transport-d', canonical_hash: 'transport-d', normalized_arguments: { title: 'New' }, target_id: 'task-1',
+        status: 'approved', approval_requested_at: new Date().toISOString(), approved_at: new Date().toISOString(),
+      })
+      const { fetchMock, calls } = buildFetchMock({ table, policyMode: 'ask', throwOnDomainWrite: true })
+      const response = await withFetch(fetchMock, () => handleAgentToolExecutionApprove(authRequest('/agent/execution/approve', { executionId: table.rows[0].id }), mockEnv()))
+      expect(response.status).toBe(200)
+      const body = await response.json() as { status: string; errorCode: string }
+      expect(body.status).toBe('uncertain')
+      expect(body.errorCode).toBe('EXECUTION_LIFECYCLE_PERSISTENCE_FAILED')
+      // The row's real status is whatever it already was -- still
+      // 'executing' -- since the uncertain transition never actually
+      // committed, proving this path never silently reports "recorded"
+      // when it wasn't.
+      expect(table.rows[0].status).toBe('executing')
+      // Exactly the one attempt throwOnDomainWrite simulates -- never a
+      // second, automatic retry of the domain mutation.
+      const taskWriteAttempts = calls.filter((c) => c.method === 'PATCH' && c.url.includes('/rest/v1/tasks'))
+      expect(taskWriteAttempts).toHaveLength(1)
+    })
+
+    it('E. the symmetric case of A for a proven domain failure: the failed-transition request throws but actually committed -- a readback confirms the row already says failed, not uncertain, and the caller gets the authoritative failed response', async () => {
+      const table = new FakeExecutionsTable()
+      table.throwTransitionTo.add('failed')
+      table.commitBeforeThrow.add('failed')
+      table.insert({
+        user_id: USER_ID, domain: 'tasks', action: 'update', tool_id: 'tasks.update',
+        request_id: 'req-transport-e', intent_id: 'intent:transport-e', canonical_hash: 'transport-e', normalized_arguments: { title: 'New' }, target_id: 'task-1',
+        status: 'approved', approval_requested_at: new Date().toISOString(), approved_at: new Date().toISOString(),
+      })
+      const { fetchMock, calls } = buildFetchMock({ table, policyMode: 'ask', failDomainWrite: true })
+      const response = await withFetch(fetchMock, () => handleAgentToolExecutionApprove(authRequest('/agent/execution/approve', { executionId: table.rows[0].id }), mockEnv()))
+      expect(response.status).toBe(200)
+      const body = await response.json() as { status: string; executionId: string; errorCode: string }
+      expect(body.status).toBe('failed')
+      expect(body.status).not.toBe('uncertain')
+      expect(body.executionId).toBe(table.rows[0].id)
+      expect(table.rows[0].status).toBe('failed')
+      const taskWriteAttempts = calls.filter((c) => c.method === 'PATCH' && c.url.includes('/rest/v1/tasks'))
+      expect(taskWriteAttempts).toHaveLength(1)
     })
   })
 })
