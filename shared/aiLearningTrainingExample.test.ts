@@ -81,6 +81,40 @@ describe("AiTrainingExampleV1 validation", () => {
       expect(collectAiTrainingExampleErrors(VALID_EXAMPLE)).toEqual([]);
     });
   });
+
+  // ARCHITECTURAL REVIEW CORRECTION (round 4): AiTrainingExampleV1 is a
+  // CLOSED top-level shape -- exactly the ten declared keys are allowed;
+  // any other top-level field is rejected, mirroring
+  // shared/aiLearning.ts's own IntentRoutingLearningPayloadV1 correction.
+  describe("closed-schema enforcement (no unknown top-level keys)", () => {
+    // 1. access_token extra field rejected.
+    it("1: rejects a valid example carrying an extra access_token field", () => {
+      const errors = collectAiTrainingExampleErrors({ ...VALID_EXAMPLE, access_token: "leaked-value" });
+      expect(errors.length).toBeGreaterThan(0);
+      expect(errors.some((e) => e.includes("access_token"))).toBe(true);
+    });
+
+    // 2. arbitrary metadata extra field rejected.
+    it("2: rejects a valid example carrying an extra rawMetadata field", () => {
+      const errors = collectAiTrainingExampleErrors({ ...VALID_EXAMPLE, rawMetadata: { anything: "goes here" } });
+      expect(errors.length).toBeGreaterThan(0);
+      expect(errors.some((e) => e.includes("rawMetadata"))).toBe(true);
+    });
+
+    it("rejects a valid example carrying an arbitrary nested field under an unrecognized top-level key", () => {
+      const errors = collectAiTrainingExampleErrors({ ...VALID_EXAMPLE, debugContext: { nested: { deeply: "irrelevant" } } });
+      expect(errors.length).toBeGreaterThan(0);
+      expect(errors.some((e) => e.includes("debugContext"))).toBe(true);
+    });
+
+    // 4. exact valid example remains exportable/valid.
+    it("4: still accepts an example with exactly the ten allowed keys and nothing else", () => {
+      expect(collectAiTrainingExampleErrors(VALID_EXAMPLE)).toEqual([]);
+      expect(Object.keys(VALID_EXAMPLE).sort()).toEqual(
+        ["confidence", "createdAt", "exampleId", "expectedOutput", "input", "language", "learningTask", "privacyStatus", "schemaVersion", "source"].sort(),
+      );
+    });
+  });
 });
 
 // ARCHITECTURAL REVIEW CORRECTION (round 3): isExportableForTraining now
@@ -202,6 +236,30 @@ describe("isExportableForTraining", () => {
       expect(() => isExportableForTraining(null)).not.toThrow();
       expect(() => isExportableForTraining(undefined)).not.toThrow();
       expect(() => isExportableForTraining(42)).not.toThrow();
+    });
+  });
+
+  // ARCHITECTURAL REVIEW CORRECTION (round 4), isExportableForTraining
+  // consequence of the closed-schema correction above: since
+  // isExportableForTraining calls collectAiTrainingExampleErrors first
+  // (via isValidAiTrainingExample), an otherwise-valid, otherwise
+  // maximally-exportable example carrying an unrecognized extra field is
+  // NOT exportable either.
+  describe("closed-schema violations are never exportable, even with maximal privacy/confidence", () => {
+    const maximallyExportable = { ...VALID_EXAMPLE, source: "synthetic" as const, confidence: "validated" as const, privacyStatus: "cleared_for_export" as const };
+
+    // 3 (first half): access_token extra field -> not exportable.
+    it("3a: an otherwise-valid example carrying access_token is NOT exportable", () => {
+      expect(isExportableForTraining({ ...maximallyExportable, access_token: "leaked-value" })).toBe(false);
+    });
+
+    // 3 (second half): rawMetadata extra field -> not exportable.
+    it("3b: an otherwise-valid example carrying rawMetadata is NOT exportable", () => {
+      expect(isExportableForTraining({ ...maximallyExportable, rawMetadata: { anything: "goes here" } })).toBe(false);
+    });
+
+    it("4: the exact valid example (no extra fields) remains exportable", () => {
+      expect(isExportableForTraining(maximallyExportable)).toBe(true);
     });
   });
 

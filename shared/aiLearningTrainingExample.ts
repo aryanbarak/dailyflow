@@ -109,6 +109,35 @@ export function collectAiTrainingExampleErrors(value: unknown): string[] {
   if (!isNonEmptyString(value.createdAt) || Number.isNaN(Date.parse(value.createdAt as string))) {
     errors.push('createdAt must be a valid ISO-8601 timestamp string')
   }
+  // ARCHITECTURAL REVIEW CORRECTION (round 4): AiTrainingExampleV1 is a
+  // CLOSED top-level shape, mirroring shared/aiLearning.ts's own
+  // IntentRoutingLearningPayloadV1 closed-schema correction exactly --
+  // exactly the ten declared keys are ever allowed, and any other
+  // top-level key (a stray access_token, a rawMetadata blob, an
+  // arbitrary nested object under an unrecognized key) is rejected. A
+  // malformed/leaky example with an extra field was previously accepted
+  // as long as its ten known fields all validated -- isExportableForTraining
+  // calls collectAiTrainingExampleErrors first, so this also closes the
+  // same class of gap there: an example carrying credentials or untracked
+  // metadata can never become training-exportable merely because its
+  // known fields happened to be well-formed.
+  const allowedKeys = new Set([
+    'exampleId',
+    'schemaVersion',
+    'learningTask',
+    'source',
+    'language',
+    'input',
+    'expectedOutput',
+    'confidence',
+    'privacyStatus',
+    'createdAt',
+  ])
+  for (const key of Object.keys(value)) {
+    if (!allowedKeys.has(key)) {
+      errors.push(`training example must not contain an unrecognized field "${key}" (AiTrainingExampleV1 is a closed shape -- only ${Array.from(allowedKeys).join(', ')} are allowed)`)
+    }
+  }
   return errors
 }
 

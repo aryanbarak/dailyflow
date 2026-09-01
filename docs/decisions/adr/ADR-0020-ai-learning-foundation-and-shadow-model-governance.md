@@ -168,7 +168,12 @@ Three concrete gaps this slice closes:
    also validates the full example contract itself first (accepts
    `unknown`, not a pre-typed value) so a malformed runtime object can
    never become exportable merely because a caller bypassed TypeScript's
-   static typing, and separately requires `example.language` to match
+   static typing -- `AiTrainingExampleV1` is itself a CLOSED top-level
+   shape (exactly its ten declared fields; an unrecognized extra field
+   such as a stray `access_token` or an untracked metadata blob is
+   rejected outright, the same closed-shape discipline
+   `IntentRoutingLearningPayloadV1` already applies to a ledger event's
+   payload) -- and separately requires `example.language` to match
    `example.expectedOutput.language` (an example cannot be categorized as
    one language while teaching the model to output another). No exporter
    that reads real chat data and automatically produces training examples

@@ -17,7 +17,12 @@ this codebase that promotes an eval case into a training example, and
 none should be added without a fresh ADR decision — see
 `ai/evals/intent-routing-v1/README.md`'s own warning.
 
-Every training example carries explicit provenance:
+Every training example carries explicit provenance. `AiTrainingExampleV1`
+is a **CLOSED top-level shape** — the ten fields below are the entire
+allowed field set; an unrecognized extra field (a stray `access_token`, an
+untracked `rawMetadata` blob, anything else) is rejected outright, the
+same closed-shape discipline `IntentRoutingLearningPayloadV1`
+(`shared/aiLearning.ts`) already applies to a ledger event's payload:
 
 | Field | Meaning |
 |---|---|
@@ -32,7 +37,7 @@ Every training example carries explicit provenance:
 | `privacyStatus` | `unreviewed` \| `sanitized` \| `cleared_for_export` |
 | `createdAt` | ISO-8601 timestamp |
 
-### `isExportableForTraining` — two separate gates, both required
+### `isExportableForTraining` — three separate gates, all required
 
 `isExportableForTraining(value)` accepts `unknown` and combines **three**
 independent checks, all of which must pass — a caller cannot skip any of
@@ -41,7 +46,10 @@ them by asserting a type or by satisfying only one:
 1. **Structural validity.** The full `AiTrainingExampleV1` contract
    (`collectAiTrainingExampleErrors`) must pass — a malformed runtime
    object is never exportable merely because TypeScript typing was
-   bypassed. This also enforces `example.language === example.expectedOutput.language`:
+   bypassed. This includes the closed-shape check above (an otherwise
+   well-formed example carrying an extra unrecognized field is invalid,
+   and therefore never exportable, even with maximal privacy/confidence)
+   and enforces `example.language === example.expectedOutput.language`:
    an example cannot be categorized as one language while teaching the
    model to output another.
 2. **Privacy.** `source: 'synthetic'` examples (no real user data
