@@ -60,6 +60,15 @@ import { handleAgentToolExecutionApprove, handleAgentToolExecutionRequest } from
 import type { WriteIntentType } from '../../shared/writeIntentRegistry'
 import { parseBankStatement } from '../../shared/bankStatementParser'
 import { buildBatchImportPreview, selectImportableRows } from '../../shared/bankImportBatchPreview'
+// ALF-1A (ADR-0021): live learning capture -- fire-and-forget only, always
+// via ctx.waitUntil, always AFTER the deterministic production decision at
+// each capture point below is already known. See each call site's own
+// comment for exactly which outcome it describes and why. Zero runtime
+// authority: nothing imported here is ever read back into a write/policy/
+// approval decision in this file.
+import { captureProductionRoutingTurn, type CaptureProductionRoutingTurnParams } from './ai-learning/live-capture'
+import { resolveLiveCaptureConfig, type LiveCaptureConfig } from './ai-learning/live-capture-config'
+import { requiresClarificationForWriteExecutionStatus } from './ai-learning/write-execution-label'
 
 // ADR-0010 Product Owner Resolution Q4: always-on background extraction
 // into user_context is DISABLED by this decision (SUPERSEDE per Q3 --
@@ -713,13 +722,60 @@ async function respondToWriteExecution(
     | { status: 'provider_unavailable'; reply: string }
     | { status: 'not_found' },
   outcomeContext: WriteExecutionOutcomeContext,
+  // ALF-1A (ADR-0021): the pre-generated, durable id this turn's user
+  // message row will be inserted with below (section 8) -- the exact
+  // value ai_learning_events.source_message_id must reference, with no
+  // second lookup.
+  sourceMessageId: string,
+  liveCaptureConfig: LiveCaptureConfig,
 ): Promise<Response | null> {
   if (execution.status !== 'executed' && execution.status !== 'clarify' && execution.status !== 'failed' && execution.status !== 'provider_unavailable') return null
-  await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'user', content: message })
+  await supabasePost(env, 'agent_chat_messages', { id: sourceMessageId, user_id: userId, session_id: sessionId, role: 'user', content: message })
   await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: execution.reply })
   const undo = execution.status === 'executed'
     ? { id: execution.undoId, label: language === 'de' ? 'Rückgängig' : language === 'fa' ? 'برگرداندن' : 'Undo', expiresAt: execution.undoExpiresAt }
     : undefined
+  const identity = writeIntentOutcomeIdentity(outcomeContext.kind)
+  // ALF-1A (ADR-0021) capture point: an auto-mode write intent that
+  // reached a deterministic outcome here. requiresApproval is always
+  // false -- 'auto' mode means the user's standing permission already
+  // authorized this, no approval flow was ever shown, regardless of
+  // whether the write itself succeeded, failed, or paused for
+  // clarification. requiresClarification is delegated to
+  // requiresClarificationForWriteExecutionStatus (ALF-1A correction item
+  // 5): only 'clarify' is a genuine production clarification outcome --
+  // 'provider_unavailable' means the AI provider was unreachable while
+  // resolving a title, which produced an honest unavailability reply, not
+  // a clarifying question, and must never be mislabeled as one. `language`
+  // is 'unknown' (ALF-1A correction item 6): SmartFlow has no existing
+  // deterministic classifier for the LANGUAGE OF THIS MESSAGE (the
+  // `language` variable in scope here is the user's own response-language
+  // PREFERENCE, not a classification of what language they just typed) --
+  // see ADR-0021's own note on this limitation. This insert already
+  // happened successfully above (item 2: capture only ever follows a
+  // durable source-message insert) -- if it had thrown, execution would
+  // never reach this line. Fire-and-forget via ctx.waitUntil, exactly
+  // like recordProposalOutcome below -- never awaited, never able to
+  // delay or fail this response.
+  if (identity && liveCaptureConfig.captureEnabled) {
+    ctx.waitUntil(captureProductionRoutingTurn({
+      env,
+      config: liveCaptureConfig,
+      userId,
+      sessionId,
+      sourceMessageId,
+      rawMessage: message,
+      label: {
+        language: 'unknown',
+        interactionClass: 'write',
+        domain,
+        intentType: identity.intentType,
+        toolId: identity.toolId,
+        requiresClarification: requiresClarificationForWriteExecutionStatus(execution.status),
+        requiresApproval: false,
+      },
+    }))
+  }
   // Task 40: 'executed'/'failed' are the only auto-lane states that
   // represent an actual attempted write -- 'clarify' means the deterministic
   // parser never reached a well-formed proposal in the first place (nothing
@@ -729,7 +785,6 @@ async function respondToWriteExecution(
   // the user's chat reply wait on it; recordProposalOutcome itself never
   // throws, so a failure here can never surface as a chat/write failure.
   if (execution.status === 'executed' || execution.status === 'failed') {
-    const identity = writeIntentOutcomeIdentity(outcomeContext.kind)
     if (identity) {
       ctx.waitUntil(recordProposalOutcome(env, {
         userId,
@@ -1150,6 +1205,27 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
 
     let pendingWritePolicy: { domain: 'tasks' | 'calendar' | 'finance'; action: 'create' | 'update'; mode: 'ask' } | undefined
 
+    // ALF-1A (ADR-0021), section 8: pre-generate this turn's user-message
+    // id BEFORE any INSERT into agent_chat_messages below, so every
+    // possible outcome branch can supply it as `id` in that insert's body
+    // (a plain client-supplied override of the column's own `default
+    // gen_random_uuid()` -- the exact same pattern already used in
+    // github-integration.ts) and reuse the SAME id as
+    // ai_learning_events.source_message_id. This is what makes the
+    // capture calls below never need a second lookup, a find-by-content/
+    // timestamp match (both concurrency-unsafe), or a duplicate insert.
+    const userMessageId = crypto.randomUUID()
+    // ALF-1A (ADR-0021), section 4: resolved ONCE per turn (not
+    // per-branch) -- every capture call site below shares this SAME
+    // fail-closed config rather than each re-parsing env vars.
+    const liveCaptureConfig: LiveCaptureConfig = resolveLiveCaptureConfig(env)
+    // ALF-1A correction item 2: the pending-ask-mode capture (staged
+    // further below) cannot fire until this turn's user message is
+    // durably inserted, which for that branch happens later than the
+    // capture decision itself -- see scheduleStagedLearningCapture's own
+    // comment at its declaration.
+    let stagedLearningCapture: CaptureProductionRoutingTurnParams | null = null
+
     // Task 22 / Slice 2B.1.1 -- routing: a request naming a calendar
     // concept is calendar business regardless of whether a time was
     // given. PO decision (SUPERSEDES Slice 2B.1's "LOCKED DOMAIN RULE"):
@@ -1173,8 +1249,33 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
         : language === 'fa'
           ? 'رویداد تقویم بسازم یا تسک؟'
           : 'Should I create a calendar event or a task?'
-      await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'user', content: message })
+      await supabasePost(env, 'agent_chat_messages', { id: userMessageId, user_id: userId, session_id: sessionId, role: 'user', content: message })
       await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: reply })
+      // ALF-1A (ADR-0021) capture point: two conflicting domain nouns
+      // (e.g. both a task noun and a calendar noun) in one message --
+      // production code genuinely cannot resolve a single domain here,
+      // so the truthful label is clarification/unknown, matching ALF-0's
+      // own "ambiguous" eval-fixture category exactly.
+      if (liveCaptureConfig.captureEnabled) {
+        ctx.waitUntil(captureProductionRoutingTurn({
+          env,
+          config: liveCaptureConfig,
+          userId,
+          sessionId,
+          sourceMessageId: userMessageId,
+          rawMessage: message,
+          label: {
+            // ALF-1A correction item 6: 'unknown', not the user's own
+            // response-language preference -- see the identical note at
+            // respondToWriteExecution's own capture point.
+            language: 'unknown',
+            interactionClass: 'clarification',
+            domain: 'unknown',
+            requiresClarification: true,
+            requiresApproval: false,
+          },
+        }))
+      }
       return json({ reply }, 200, origin)
     }
 
@@ -1202,7 +1303,13 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
 
     if (taskWriteIntent || calendarWriteIntent || financeWriteIntent) {
       const domain: 'tasks' | 'calendar' | 'finance' = taskWriteIntent ? 'tasks' : calendarWriteIntent ? 'calendar' : 'finance'
-      const action: 'create' | 'update' = (taskWriteIntent?.kind ?? calendarWriteIntent?.kind ?? financeWriteIntent!.kind).startsWith('create') ? 'create' : 'update'
+      // ALF-1A (ADR-0021): the exact same WriteIntentType production code
+      // itself uses to compute `action` just below -- reused (not
+      // recomputed) for writeIntentOutcomeIdentity at each capture point
+      // in this block, so the label's intentType/toolId can never drift
+      // from what `action` itself was derived from.
+      const kind: WriteIntentType = taskWriteIntent?.kind ?? calendarWriteIntent?.kind ?? financeWriteIntent!.kind
+      const action: 'create' | 'update' = kind.startsWith('create') ? 'create' : 'update'
       const mode = await resolveServerFlowWriteMode(env, userId, domain, action)
       if (mode === 'off') {
         const reply = language === 'de'
@@ -1210,8 +1317,33 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
           : language === 'fa'
             ? 'این اقدام Flow AI در تنظیمات شما خاموش است.'
             : 'This Flow AI action is switched off in your settings.'
-        await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'user', content: message })
+        await supabasePost(env, 'agent_chat_messages', { id: userMessageId, user_id: userId, session_id: sessionId, role: 'user', content: message })
         await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: reply })
+        // ALF-1A (ADR-0021) capture point: a real write intent was
+        // deterministically detected, but the domain+action is switched
+        // off in this user's own settings -- requiresApproval is false
+        // because no approval flow will ever be shown; nothing is pending.
+        const offIdentity = writeIntentOutcomeIdentity(kind)
+        if (offIdentity && liveCaptureConfig.captureEnabled) {
+          ctx.waitUntil(captureProductionRoutingTurn({
+            env,
+            config: liveCaptureConfig,
+            userId,
+            sessionId,
+            sourceMessageId: userMessageId,
+            rawMessage: message,
+            label: {
+              // ALF-1A correction item 6.
+              language: 'unknown',
+              interactionClass: 'write',
+              domain,
+              intentType: offIdentity.intentType,
+              toolId: offIdentity.toolId,
+              requiresClarification: false,
+              requiresApproval: false,
+            },
+          }))
+        }
         return json({ reply, writePolicy: { domain, action, mode } }, 200, origin)
       }
       if (mode === 'auto') {
@@ -1243,7 +1375,7 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
           const execution = providerUnavailable
             ? { status: 'provider_unavailable' as const, reply: PROVIDER_UNAVAILABLE_WRITE_REPLY[language] }
             : await executeAutoTaskWrite({ env, userId, language, intent: taskWriteIntent, now: new Date(), timeZone })
-          const response = await respondToWriteExecution(env, ctx, userId, sessionId, origin, message, language, domain, action, mode, execution, { kind: taskWriteIntent.kind, targetFields: taskIntentTargetFields(taskWriteIntent) })
+          const response = await respondToWriteExecution(env, ctx, userId, sessionId, origin, message, language, domain, action, mode, execution, { kind: taskWriteIntent.kind, targetFields: taskIntentTargetFields(taskWriteIntent) }, userMessageId, liveCaptureConfig)
           if (response) return response
         } else if (calendarWriteIntent) {
           // Task 22: same model-title-resolution treatment as tasks above.
@@ -1267,7 +1399,7 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
           const execution = providerUnavailable
             ? { status: 'provider_unavailable' as const, reply: PROVIDER_UNAVAILABLE_WRITE_REPLY[language] }
             : await executeAutoCalendarWrite({ env, userId, language, intent: calendarWriteIntent, now: new Date(), timeZone })
-          const response = await respondToWriteExecution(env, ctx, userId, sessionId, origin, message, language, domain, action, mode, execution, { kind: calendarWriteIntent.kind, targetFields: calendarIntentTargetFields(calendarWriteIntent) })
+          const response = await respondToWriteExecution(env, ctx, userId, sessionId, origin, message, language, domain, action, mode, execution, { kind: calendarWriteIntent.kind, targetFields: calendarIntentTargetFields(calendarWriteIntent) }, userMessageId, liveCaptureConfig)
           if (response) return response
         } else if (financeWriteIntent) {
           // Task 28: unreachable in production today -- resolveServerFlowWriteMode
@@ -1278,11 +1410,74 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
           // branches above, per this task's own instruction to build the
           // full triad -- see the task 28 report.
           const execution = await executeAutoFinanceWrite({ env, userId, language, intent: financeWriteIntent, now: new Date() })
-          const response = await respondToWriteExecution(env, ctx, userId, sessionId, origin, message, language, domain, action, mode, execution, { kind: financeWriteIntent.kind, targetFields: financeIntentTargetFields(financeWriteIntent) })
+          const response = await respondToWriteExecution(env, ctx, userId, sessionId, origin, message, language, domain, action, mode, execution, { kind: financeWriteIntent.kind, targetFields: financeIntentTargetFields(financeWriteIntent) }, userMessageId, liveCaptureConfig)
           if (response) return response
         }
       }
       pendingWritePolicy = { domain, action, mode: 'ask' }
+      // ALF-1A (ADR-0021) capture point: this branch is reached either by
+      // a genuinely resolved mode==='ask', OR by mode==='auto' whose
+      // execution outcome was 'not_found' (respondToWriteExecution
+      // returned null above, so nothing captured there -- see that
+      // function's own header comment). Either way, `pendingWritePolicy`
+      // above is the literal, real value about to be sent back to the
+      // frontend in this response's JSON -- requiresApproval=true here is
+      // not an inference, it is exactly what that field already says.
+      //
+      // ALF-1A correction item 2: this turn's `agent_chat_messages` user
+      // row has NOT been inserted yet at this point in this branch -- it
+      // is inserted later, after the plain-chat model call succeeds (or
+      // one of the two error branches below it), all using this SAME
+      // `userMessageId`. Capture must never be scheduled before that
+      // durable insert actually lands, so it is only STAGED here; whichever
+      // of the three insert sites below actually runs for this turn calls
+      // scheduleStagedLearningCapture() right after its own insert
+      // succeeds. If that insert throws instead, execution never reaches
+      // that call, and this turn gets zero learning event -- exactly per
+      // item 2's own requirement.
+      const askIdentity = writeIntentOutcomeIdentity(kind)
+      if (askIdentity && liveCaptureConfig.captureEnabled) {
+        stagedLearningCapture = {
+          env,
+          config: liveCaptureConfig,
+          userId,
+          sessionId,
+          sourceMessageId: userMessageId,
+          rawMessage: message,
+          label: {
+            // ALF-1A correction item 6.
+            language: 'unknown',
+            interactionClass: 'write',
+            domain,
+            intentType: askIdentity.intentType,
+            toolId: askIdentity.toolId,
+            requiresClarification: false,
+            requiresApproval: true,
+          },
+        }
+      }
+    }
+    // ALF-1A correction item 1: a plain conversational/read turn
+    // (writeDomainSignal === 'none') is deliberately NEVER captured here.
+    // SmartFlow's current /chat handler has no deterministic classifier
+    // that distinguishes ordinary conversation from a read of tasks,
+    // calendar, github, or any other domain for such a turn -- only the
+    // ABSENCE of a matched write trigger is known, which is not the same
+    // thing as a validated 'conversation'/'none' (or any other) label. A
+    // partial, truthful ledger beats a complete, fabricated one (ADR-0021
+    // Decision 13): this slice captures only the five outcome points where
+    // production code's own decision is genuinely known. A real
+    // non-write/read classifier is deferred to a future, separately
+    // reviewed slice -- see ADR-0021's own note on this correction.
+    //
+    // The staged ask-mode capture set above (if any) fires once this
+    // turn's message is durably inserted, whichever of the branches below
+    // actually runs for this turn.
+    const scheduleStagedLearningCapture = () => {
+      if (stagedLearningCapture) {
+        ctx.waitUntil(captureProductionRoutingTurn(stagedLearningCapture))
+        stagedLearningCapture = null
+      }
     }
 
     // Task 19: resolve the optional attachment for THIS turn only. Nothing
@@ -1347,7 +1542,8 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
       if (err instanceof AttachmentsUnsupportedError) {
         console.error('[Chat] attachment provider error:', err)
         const reply = ATTACHMENT_UNSUPPORTED_CHAT_REPLY[language]
-        await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'user', content: message })
+        await supabasePost(env, 'agent_chat_messages', { id: userMessageId, user_id: userId, session_id: sessionId, role: 'user', content: message })
+        scheduleStagedLearningCapture()
         await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: reply })
         return json({ reply }, 200, origin)
       }
@@ -1359,7 +1555,8 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
       // identifies it.
       console.error(`[UnavailableCause] cause=WORKER_PROVIDER_UNAVAILABLE_CHAT httpStatus=${err.status ?? 'none'}`, err)
       const reply = PROVIDER_UNAVAILABLE_CHAT_REPLY[language]
-      await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'user', content: message })
+      await supabasePost(env, 'agent_chat_messages', { id: userMessageId, user_id: userId, session_id: sessionId, role: 'user', content: message })
+      scheduleStagedLearningCapture()
       await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: reply })
       return json({ reply }, 200, origin)
     }
@@ -1375,8 +1572,13 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
     }
     const reply = claimCheck.text
 
-    // Persist both after a successful Gemini call so no orphaned turns are saved on error
-    await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'user', content: message })
+    // Persist both after a successful Gemini call so no orphaned turns are saved on error.
+    // ALF-1A (ADR-0021): `id: userMessageId` here is the SAME id the
+    // staged pendingWritePolicy 'ask'/'not_found' capture (if any) above
+    // was built against -- this is the actual row that id refers to, and
+    // (item 2) capture is only ever scheduled AFTER this insert succeeds.
+    await supabasePost(env, 'agent_chat_messages', { id: userMessageId, user_id: userId, session_id: sessionId, role: 'user', content: message })
+    scheduleStagedLearningCapture()
     await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: reply })
 
     // Bump session's updated_at so sidebar sorts by most recently active

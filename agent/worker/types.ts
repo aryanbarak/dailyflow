@@ -31,6 +31,20 @@ export interface Env {
   // not a logged-in user, so this is the sole authentication mechanism for
   // GET /engineering-tasks/pending and POST /engineering-tasks/:id/report.
   ENGINEERING_TASKS_COMPANION_TOKEN?: string
+  // ALF-1A (ADR-0021): server-owned, fail-closed live-learning-capture
+  // config. All six are plain wrangler [vars] strings (Workers AI needs no
+  // browser-exposed secret) -- see
+  // agent/worker/ai-learning/live-capture-config.ts's resolveLiveCaptureConfig
+  // for the exact parsing/validation rules. Absent or malformed in ANY of
+  // these means capture and/or shadow prediction stay OFF; there is no
+  // "best guess" default. None of these are set to an enabling value in
+  // this slice.
+  AI_LEARNING_CAPTURE_ENABLED?: string
+  AI_SHADOW_ENABLED?: string
+  AI_SHADOW_PROVIDER?: string
+  AI_SHADOW_MODEL_ID?: string
+  AI_SHADOW_MODEL_VERSION?: string
+  AI_SHADOW_SAMPLE_RATE?: string
 }
 
 export type Language = 'en' | 'de' | 'fa'

@@ -1,8 +1,12 @@
 # ADR-0020: AI Learning Foundation and Shadow Model Governance
 
-- **Status:** Proposed. Newly authored/planned for this slice (ALF-0) --
-  not yet implemented as a runtime behavior. Nothing in this ADR is
-  accepted architecture until a Product Owner review lands it.
+- **Status:** Accepted - Product Owner reviewed and approved ALF-0 (PR #204,
+  merged). The `ai_learning_events` migration this ADR describes has since
+  been applied to production, after explicit Product Owner authorization
+  (see the migration's own header comment and
+  ADR-0021-live-learning-capture-and-shadow-runtime.md's operational note
+  for the production migration record). Every invariant recorded below
+  remains current architecture; ADR-0021 builds directly on it.
 - **Date:** 2026-09-01
 - **Decision Makers:** Product Owner (Aryan Barakzai) - decision; Claude Code - drafting.
 - **Supersedes:** None
