@@ -24,10 +24,19 @@ node scripts/ai-learning/score-eval.mjs <gold.jsonl> <predictions.jsonl>
 Prints a JSON metrics object to stdout: `totalCases`,
 `invalidPredictionCount`, `intentAccuracy`, `domainAccuracy`,
 `toolAccuracy`, `clarificationAccuracy`, `approvalAccuracy`,
-`exactMatchAccuracy`, and `perLanguageAccuracy` (exact-match rate per
-language). A missing or structurally invalid prediction for a gold case
-counts toward `invalidPredictionCount` and is never scored as a match on
-any metric.
+`languageAccuracy`, `exactMatchAccuracy`, and `perLanguageAccuracy`. A
+missing or structurally invalid prediction for a gold case counts toward
+`invalidPredictionCount` and is never scored as a match on any metric.
+
+`exactMatchAccuracy` requires EVERY field -- including `language` -- to
+match; a prediction that gets every routing field right but predicts the
+wrong `language` is not an exact match. `languageAccuracy` is the plain
+per-field accuracy of the `language` field alone (parallel to
+`domainAccuracy`/`toolAccuracy`/etc.). `perLanguageAccuracy` is different
+from both: it is exact-match accuracy (which itself now requires a
+correct `language` prediction) BUCKETED BY each gold case's OWN language
+-- i.e. "of the FA cases, what fraction did the model get exactly right,"
+not "did the model predict language=fa correctly."
 
 This is the permanent benchmark for comparing a base model, LoRA v0.1,
 LoRA v0.2, etc. against the same fixed gold standard.

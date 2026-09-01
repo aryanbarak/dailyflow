@@ -66,8 +66,14 @@ function fieldsMatch(expected, predicted, field) {
   return (expected[field] ?? undefined) === (predicted[field] ?? undefined)
 }
 
+// ARCHITECTURAL REVIEW CORRECTION: `language` was missing from this list
+// -- a model predicting language=en for every FA/DE case could previously
+// still register as an "exact match" on every other field. `language` is
+// part of IntentRoutingLearningPayloadV1 exactly like domain/
+// interactionClass/etc.; there is no reason "exact" should exclude it.
 function isExactMatch(expected, predicted) {
   return (
+    fieldsMatch(expected, predicted, 'language') &&
     fieldsMatch(expected, predicted, 'domain') &&
     fieldsMatch(expected, predicted, 'interactionClass') &&
     fieldsMatch(expected, predicted, 'intentType') &&
@@ -101,6 +107,7 @@ export function scoreEval(goldCases, predictionRecords) {
   let toolMatches = 0
   let clarificationMatches = 0
   let approvalMatches = 0
+  let languageMatches = 0
   let exactMatches = 0
 
   for (const goldCase of goldCases) {
@@ -122,6 +129,7 @@ export function scoreEval(goldCases, predictionRecords) {
     if (fieldsMatch(expected, predicted, 'toolId')) toolMatches += 1
     if (fieldsMatch(expected, predicted, 'requiresClarification')) clarificationMatches += 1
     if (fieldsMatch(expected, predicted, 'requiresApproval')) approvalMatches += 1
+    if (fieldsMatch(expected, predicted, 'language')) languageMatches += 1
     if (isExactMatch(expected, predicted)) {
       exactMatches += 1
       perLanguage[goldCase.language].exactMatches += 1
@@ -144,7 +152,17 @@ export function scoreEval(goldCases, predictionRecords) {
     toolAccuracy: rate(toolMatches),
     clarificationAccuracy: rate(clarificationMatches),
     approvalAccuracy: rate(approvalMatches),
+    // Whether the predicted `language` field itself matched the gold
+    // case's language -- distinct from perLanguageAccuracy below, which
+    // is routing exact-match accuracy BUCKETED BY gold language, not a
+    // measure of whether the model got the language field right.
+    languageAccuracy: rate(languageMatches),
     exactMatchAccuracy: rate(exactMatches),
+    // Routing exact-match accuracy (isExactMatch, which itself now
+    // includes language -- see that function's own comment), bucketed by
+    // each gold case's OWN language. A model predicting the wrong
+    // language for an FA case no longer counts as an exact match in the
+    // fa bucket, or anywhere else.
     perLanguageAccuracy,
   }
 }

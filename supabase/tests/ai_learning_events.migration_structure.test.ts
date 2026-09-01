@@ -22,7 +22,7 @@ describe("ai_learning_events migration structure", () => {
       "session_id uuid",
       "source_message_id uuid",
       "correlation_id text not null",
-      "idempotency_key text not null unique",
+      "idempotency_key text not null",
       "learning_task text not null",
       "schema_version text not null",
       "event_kind text not null",
@@ -62,8 +62,17 @@ describe("ai_learning_events migration structure", () => {
     expect(sql).toContain("jsonb_typeof(payload) = 'object'");
   });
 
-  it("idempotency_key is unique (application-level idempotent append)", () => {
-    expect(sql).toContain("idempotency_key text not null unique");
+  it("idempotency_key uniqueness is scoped to (user_id, idempotency_key), never globally unique on its own (architectural review correction)", () => {
+    // idempotency_key itself is NOT column-level unique -- global
+    // uniqueness would let one user's caller-supplied key collide with
+    // an unrelated user's. Assert the bare column definition carries no
+    // `unique` keyword...
+    expect(sql).toContain("idempotency_key text not null,");
+    expect(sql).not.toMatch(/idempotency_key text not null unique/);
+    // ...and that uniqueness is instead a named composite constraint
+    // scoped by user_id, matching agent_tool_executions'
+    // (user_id, request_id) idempotency convention.
+    expect(sql).toContain("constraint ai_learning_events_user_idempotency_key_unique unique (user_id, idempotency_key)");
   });
 
   it("indexes user_id+created_at, correlation_id, and the task/kind timeline query shape", () => {

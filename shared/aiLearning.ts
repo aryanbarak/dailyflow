@@ -216,14 +216,30 @@ export function collectIntentRoutingLearningPayloadErrors(value: unknown): strin
   if (typeof value.requiresApproval !== 'boolean') {
     errors.push('requiresApproval must be a boolean')
   }
-  // No authenticated identity or secrets belong in a model-facing payload
-  // (ADR-0020 Decision). userId/sessionId/tokens live as their own ledger
-  // columns, never inside payload -- guarded here so a future field
-  // addition to this shape trips this check instead of shipping silently.
-  const forbiddenKeys = ['userId', 'user_id', 'token', 'accessToken', 'access_token', 'password', 'secret', 'apiKey', 'api_key']
-  for (const key of forbiddenKeys) {
-    if (key in value) {
-      errors.push(`payload must not contain a "${key}" field (identity/secrets never belong in a model-facing payload)`)
+  // CLOSED SHAPE (architectural review correction): a blacklist of a few
+  // named secret-shaped keys is insufficient -- it lets ANY other unknown
+  // field through uninspected (rawText, message, content, nested
+  // arbitrary metadata, a future secret-shaped key nobody thought to
+  // blacklist yet). IntentRoutingLearningPayloadV1 instead declares
+  // itself CLOSED: exactly the eight keys above are ever allowed, and any
+  // other top-level key -- whether it looks like a credential or not --
+  // is rejected. This is what actually backs ADR-0020's "no authenticated
+  // identity or secrets in a model-facing payload" claim; a fixed
+  // allowlist can never silently start admitting a new field the way a
+  // blacklist can.
+  const allowedKeys = new Set([
+    'schemaVersion',
+    'language',
+    'interactionClass',
+    'domain',
+    'intentType',
+    'toolId',
+    'requiresClarification',
+    'requiresApproval',
+  ])
+  for (const key of Object.keys(value)) {
+    if (!allowedKeys.has(key)) {
+      errors.push(`payload must not contain an unrecognized field "${key}" (IntentRoutingLearningPayloadV1 is a closed shape -- only ${Array.from(allowedKeys).join(', ')} are allowed)`)
     }
   }
   return errors
@@ -260,6 +276,28 @@ export interface AiLearningEventInput {
   readonly labelConfidence?: AiLearningLabelConfidence | null
   readonly sourceHash?: string | null
   readonly payload: Record<string, unknown>
+}
+
+// ARCHITECTURAL REVIEW CORRECTION: the canonical, CLOSED
+// eventKind -> (producerType, labelConfidence) mapping for ALF-0's only
+// learning task. "A model prediction is never truth" (ADR-0020) is
+// enforced HERE, not just documented: a shadow_prediction event can never
+// carry 'validated'/'user_confirmed'/'execution_verified' confidence
+// because shadow_prediction's only legal producerType/labelConfidence
+// pair is (shadow_model, candidate) -- no combination of eventKind/
+// producerType/labelConfidence values outside this table's five rows
+// passes validation, so a shadow model's output cannot become training
+// truth merely by malformed or careless construction code claiming a
+// different producerType/labelConfidence for the same eventKind (that
+// combination simply isn't one of the five valid rows). A future second
+// learning task with genuinely different semantics gets its own mapping
+// entry, not a loosening of this one.
+const EVENT_KIND_SEMANTICS: Record<AiLearningEventKind, { producerType: AiLearningProducerType; labelConfidence: AiLearningLabelConfidence | null }> = {
+  turn_observed: { producerType: 'deterministic_policy', labelConfidence: null },
+  production_label: { producerType: 'deterministic_policy', labelConfidence: 'validated' },
+  shadow_prediction: { producerType: 'shadow_model', labelConfidence: 'candidate' },
+  user_feedback: { producerType: 'user', labelConfidence: 'user_confirmed' },
+  execution_outcome: { producerType: 'execution_verifier', labelConfidence: 'execution_verified' },
 }
 
 export function collectAiLearningEventInputErrors(value: unknown): string[] {
@@ -299,7 +337,49 @@ export function collectAiLearningEventInputErrors(value: unknown): string[] {
   if (value.sourceHash !== undefined && value.sourceHash !== null && !isNonEmptyString(value.sourceHash)) {
     errors.push('sourceHash, when present, must be a non-empty string or null')
   }
-  if (!isRecord(value.payload)) errors.push('payload must be a plain object')
+
+  // ARCHITECTURAL REVIEW CORRECTION: eventKind/producerType/labelConfidence
+  // cross-check against EVENT_KIND_SEMANTICS above -- only meaningful once
+  // eventKind and producerType are each individually valid enum values
+  // (their own errors are already reported above otherwise).
+  if (isAiLearningEventKind(value.eventKind) && isAiLearningProducerType(value.producerType)) {
+    const semantics = EVENT_KIND_SEMANTICS[value.eventKind]
+    if (value.producerType !== semantics.producerType) {
+      errors.push(`producerType for eventKind "${value.eventKind}" must be "${semantics.producerType}" (got ${JSON.stringify(value.producerType)}) -- see EVENT_KIND_SEMANTICS`)
+    }
+    const normalizedConfidence = value.labelConfidence ?? null
+    if (normalizedConfidence !== semantics.labelConfidence) {
+      errors.push(`labelConfidence for eventKind "${value.eventKind}" must be ${JSON.stringify(semantics.labelConfidence)} (got ${JSON.stringify(normalizedConfidence)}) -- a shadow model's prediction can never carry a confidence stronger than 'candidate' (ADR-0020: a model prediction is never truth)`)
+    }
+
+    // shadow_prediction rows must be traceable to the exact model that
+    // produced them -- "a shadow prediction can never become training
+    // truth" is only meaningful if a reader can also tell WHICH model
+    // produced a given candidate prediction.
+    if (value.eventKind === 'shadow_prediction') {
+      if (!isNonEmptyString(value.providerId)) errors.push('providerId must be a non-empty string for a shadow_prediction event (model provenance is required, not optional, for a candidate prediction)')
+      if (!isNonEmptyString(value.modelId)) errors.push('modelId must be a non-empty string for a shadow_prediction event (model provenance is required, not optional, for a candidate prediction)')
+      if (!isNonEmptyString(value.modelVersion)) errors.push('modelVersion must be a non-empty string for a shadow_prediction event (model provenance is required, not optional, for a candidate prediction)')
+    }
+  }
+
+  // ARCHITECTURAL REVIEW CORRECTION: for ALF-0's only learning task, the
+  // payload must pass the ACTUAL closed intent-routing-v1 contract, not
+  // merely "is a plain object" -- a permissive payload check contradicted
+  // ADR-0020's own privacy/schema claims (rawText, message, content, or a
+  // credential-shaped field could previously reach the ledger uninspected
+  // as long as the rest of the envelope was valid).
+  if (value.learningTask === 'intent_routing_v1' && value.schemaVersion === 'intent-routing-v1') {
+    for (const error of collectIntentRoutingLearningPayloadErrors(value.payload)) {
+      errors.push(`payload: ${error}`)
+    }
+  } else if (!isRecord(value.payload)) {
+    // Any other (future) learningTask/schemaVersion combination has no
+    // registered payload contract yet -- fall back to the structural
+    // minimum every payload must satisfy regardless of task.
+    errors.push('payload must be a plain object')
+  }
+
   return errors
 }
 

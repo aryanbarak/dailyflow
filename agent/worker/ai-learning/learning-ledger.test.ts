@@ -99,7 +99,7 @@ describe('appendAiLearningEvent', () => {
     }))
 
     await appendAiLearningEvent(testEnv(), validInput({ idempotencyKey: 'idem-2' }))
-    await appendAiLearningEvent(testEnv(), validInput({ idempotencyKey: 'idem-3', eventKind: 'user_feedback', producerType: 'user' }))
+    await appendAiLearningEvent(testEnv(), validInput({ idempotencyKey: 'idem-3', eventKind: 'user_feedback', producerType: 'user', labelConfidence: 'user_confirmed' }))
 
     expect(methods).toEqual(['POST', 'POST'])
   })
@@ -128,21 +128,6 @@ describe('appendAiLearningEvent', () => {
     }
     expect(fetchSpy).not.toHaveBeenCalled()
     expect(logger.error).toHaveBeenCalledTimes(1)
-  })
-
-  it('treats a duplicate idempotency_key (Postgres 23505) as an idempotent success, not a failure', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(
-      JSON.stringify({ code: '23505', message: 'duplicate key value violates unique constraint "ai_learning_events_idempotency_key_key"' }),
-      { status: 409 },
-    )))
-    const logger = { error: vi.fn() }
-
-    const result = await appendAiLearningEvent(testEnv(), validInput(), { logger })
-
-    expect(result).toEqual({ ok: true, duplicate: true })
-    // A duplicate append landing successfully is not an error worth
-    // logging -- see the module's own header comment.
-    expect(logger.error).not.toHaveBeenCalled()
   })
 
   it('never throws on a genuine persistence failure -- reports { ok: false } instead (learning failure != production failure)', async () => {
@@ -174,6 +159,163 @@ describe('appendAiLearningEvent', () => {
     const result = await appendAiLearningEvent(testEnv(), validInput())
 
     expect(result.ok).toBe(false)
+  })
+})
+
+// ARCHITECTURAL REVIEW CORRECTION: a 23505 unique-conflict on the initial
+// insert is never automatically "duplicate success" -- appendAiLearningEvent
+// reads the conflicting row back by (user_id, idempotency_key) and
+// compares its content against the request before deciding. These tests
+// exercise the reconciliation path directly, per the review's own
+// lettered test list (A-E).
+describe('appendAiLearningEvent idempotency reconciliation', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  const UNIQUE_VIOLATION_BODY = JSON.stringify({
+    code: '23505',
+    message: 'duplicate key value violates unique constraint "ai_learning_events_user_idempotency_key_unique"',
+  })
+
+  function existingRowFor(input: AiLearningEventInput, overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'existing-row-id',
+      user_id: input.userId,
+      session_id: input.sessionId ?? null,
+      source_message_id: input.sourceMessageId ?? null,
+      correlation_id: input.correlationId,
+      idempotency_key: input.idempotencyKey,
+      learning_task: input.learningTask,
+      schema_version: input.schemaVersion,
+      event_kind: input.eventKind,
+      producer_type: input.producerType,
+      provider_id: input.providerId ?? null,
+      model_id: input.modelId ?? null,
+      model_version: input.modelVersion ?? null,
+      label_confidence: input.labelConfidence ?? null,
+      source_hash: input.sourceHash ?? null,
+      payload: input.payload,
+      ...overrides,
+    }
+  }
+
+  // Sequential fetch mock: first call is the POST (returns
+  // postResponseInit), every subsequent call is the reconciliation GET
+  // (returns the given rows as a 200 JSON array).
+  function stubPostThenGet(postResponseInit: { status: number; body: string }, getRows: unknown[]) {
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    let callIndex = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), init })
+      callIndex += 1
+      if (callIndex === 1) {
+        return new Response(postResponseInit.body, { status: postResponseInit.status })
+      }
+      return new Response(JSON.stringify(getRows), { status: 200 })
+    }))
+    return calls
+  }
+
+  // A. same user + same key + same event -> duplicate success.
+  it('A: same user + same idempotencyKey + identical content -> duplicate success', async () => {
+    const input = validInput()
+    const calls = stubPostThenGet({ status: 409, body: UNIQUE_VIOLATION_BODY }, [existingRowFor(input)])
+    const logger = { error: vi.fn() }
+
+    const result = await appendAiLearningEvent(testEnv(), input, { logger })
+
+    expect(result).toEqual({ ok: true, duplicate: true })
+    expect(logger.error).not.toHaveBeenCalled()
+    // The reconciliation read is scoped by BOTH user_id and idempotency_key.
+    expect(calls).toHaveLength(2);
+    expect(calls[1].url).toContain('user_id=eq.user-1')
+    expect(calls[1].url).toContain('idempotency_key=eq.idem-1')
+  })
+
+  // B. same user + same key + different payload -> IDEMPOTENCY_CONFLICT.
+  it('B: same user + same idempotencyKey + different payload -> IDEMPOTENCY_CONFLICT, never overwritten', async () => {
+    const input = validInput()
+    const differentPayload = { ...input.payload, domain: 'tasks', interactionClass: 'write' as const, requiresApproval: true }
+    stubPostThenGet({ status: 409, body: UNIQUE_VIOLATION_BODY }, [existingRowFor(input, { payload: differentPayload })])
+    const logger = { error: vi.fn() }
+
+    const result = await appendAiLearningEvent(testEnv(), input, { logger })
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toBe('IDEMPOTENCY_CONFLICT')
+    expect(logger.error).toHaveBeenCalledTimes(1)
+  })
+
+  // C. same user + same key + different eventKind -> IDEMPOTENCY_CONFLICT.
+  it('C: same user + same idempotencyKey + different eventKind -> IDEMPOTENCY_CONFLICT', async () => {
+    const input = validInput({ eventKind: 'production_label', producerType: 'deterministic_policy', labelConfidence: 'validated' })
+    stubPostThenGet({ status: 409, body: UNIQUE_VIOLATION_BODY }, [existingRowFor(input, { event_kind: 'turn_observed', label_confidence: null })])
+    const logger = { error: vi.fn() }
+
+    const result = await appendAiLearningEvent(testEnv(), input, { logger })
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toBe('IDEMPOTENCY_CONFLICT')
+  })
+
+  // D. two different users may use the same idempotencyKey independently
+  // -- the reconciliation read is always scoped by (user_id,
+  // idempotency_key) TOGETHER, so it can never surface a different
+  // user's row as a false conflict for this user's identical key.
+  it('D: two different users using the identical idempotencyKey never conflict with each other', async () => {
+    const userA = validInput({ userId: 'user-a', idempotencyKey: 'shared-key' })
+    const userB = validInput({ userId: 'user-b', idempotencyKey: 'shared-key' })
+
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 201 })))
+    const resultA = await appendAiLearningEvent(testEnv(), userA)
+    const resultB = await appendAiLearningEvent(testEnv(), userB)
+    expect(resultA).toEqual({ ok: true, duplicate: false })
+    expect(resultB).toEqual({ ok: true, duplicate: false })
+    vi.unstubAllGlobals()
+
+    // Even in the conflict path, a lookup scoped to user-a's own id can
+    // only ever match user-a's own row -- user-b's row (different
+    // user_id, same idempotency_key) is never treated as user-a's
+    // duplicate. Simulate: the POST for user-a conflicts, but the only
+    // existing row the reconciliation GET could find belongs to user-b
+    // (the query is scoped by user_id, so a correct implementation would
+    // never actually receive this row for a user-a lookup -- but even if
+    // it somehow did, content comparison must still fail on user_id).
+    stubPostThenGet({ status: 409, body: UNIQUE_VIOLATION_BODY }, [existingRowFor(userB)])
+    const logger = { error: vi.fn() }
+    const conflictResult = await appendAiLearningEvent(testEnv(), userA, { logger })
+    expect(conflictResult.ok).toBe(false)
+    if (!conflictResult.ok) expect(conflictResult.error).toBe('IDEMPOTENCY_CONFLICT')
+  })
+
+  // E. a generic unrelated 23505 must not be blindly treated as duplicate
+  // success -- if the reconciliation read finds NO matching
+  // (user_id, idempotency_key) row at all, this was some other conflict
+  // entirely, and must be reported as a failure, never as { ok: true }.
+  it('E: a 23505 that does not resolve to a matching row is reported as a failure, never as duplicate success', async () => {
+    const input = validInput()
+    stubPostThenGet({ status: 409, body: UNIQUE_VIOLATION_BODY }, [])
+    const logger = { error: vi.fn() }
+
+    const result = await appendAiLearningEvent(testEnv(), input, { logger })
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toBe('PERSISTENCE_FAILED')
+    expect(logger.error).toHaveBeenCalledTimes(1)
+  })
+
+  it('never overwrites the existing row -- no PATCH/PUT call happens during reconciliation, in any of the above scenarios', async () => {
+    const input = validInput();
+    const calls = stubPostThenGet({ status: 409, body: UNIQUE_VIOLATION_BODY }, [existingRowFor(input, { payload: { ...input.payload, domain: 'tasks' } })])
+
+    await appendAiLearningEvent(testEnv(), input)
+
+    for (const call of calls) {
+      expect(call.init?.method).not.toBe('PATCH')
+      expect(call.init?.method).not.toBe('PUT')
+      expect(call.init?.method).not.toBe('DELETE')
+    }
   })
 })
 

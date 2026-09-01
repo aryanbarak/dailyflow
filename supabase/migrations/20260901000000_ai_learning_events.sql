@@ -40,7 +40,25 @@
 -- is deliberately shape-only (see shared/aiLearning.ts's
 -- IntentRoutingLearningPayloadV1) -- classification labels, not message
 -- content, and never identity/secrets (guarded again at the application
--- layer by shared/aiLearning.ts's forbidden-key check).
+-- layer by shared/aiLearning.ts's closed-schema check).
+--
+-- IDEMPOTENCY SCOPE (ARCHITECTURAL REVIEW CORRECTION): idempotency_key's
+-- uniqueness is scoped to (user_id, idempotency_key), never globally
+-- unique on its own -- matching agent_tool_executions' own
+-- (user_id, request_id) idempotency convention
+-- (agent_tool_executions_user_request_unique,
+-- supabase/migrations/20260831120000_agent_tool_executions.sql). A
+-- globally unique idempotency_key would let one user's caller-supplied
+-- key collide with a completely unrelated user's, forcing either an
+-- artificially-widened key format or (worse) a false-duplicate rejection
+-- across users who never coordinated with each other. See
+-- agent/worker/ai-learning/learning-ledger.ts's own header comment for
+-- how a (user_id, idempotency_key) conflict is reconciled at the
+-- application layer -- a duplicate append is only ever treated as an
+-- idempotent success when the conflicting row's own immutable content
+-- actually matches; a same-key-different-content conflict is a distinct,
+-- reported failure (IDEMPOTENCY_CONFLICT), never silently accepted or
+-- silently overwritten.
 
 create table if not exists public.ai_learning_events (
   id uuid primary key default gen_random_uuid(),
@@ -48,7 +66,7 @@ create table if not exists public.ai_learning_events (
   session_id uuid,
   source_message_id uuid,
   correlation_id text not null,
-  idempotency_key text not null unique,
+  idempotency_key text not null,
   learning_task text not null,
   schema_version text not null,
   event_kind text not null,
@@ -75,7 +93,11 @@ create table if not exists public.ai_learning_events (
   constraint ai_learning_events_correlation_id_not_blank check (char_length(correlation_id) between 1 and 200),
   constraint ai_learning_events_idempotency_key_not_blank check (char_length(idempotency_key) between 1 and 200),
   constraint ai_learning_events_schema_version_not_blank check (char_length(schema_version) between 1 and 100),
-  constraint ai_learning_events_payload_object_check check (jsonb_typeof(payload) = 'object')
+  constraint ai_learning_events_payload_object_check check (jsonb_typeof(payload) = 'object'),
+  -- USER-SCOPED, not globally unique -- see this migration's own
+  -- IDEMPOTENCY SCOPE header comment above. Two different users may
+  -- legitimately use the same idempotencyKey independently.
+  constraint ai_learning_events_user_idempotency_key_unique unique (user_id, idempotency_key)
 );
 
 create index if not exists ai_learning_events_user_created_idx

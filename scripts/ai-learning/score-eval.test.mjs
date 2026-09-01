@@ -69,6 +69,7 @@ describe("scoreEval", () => {
     assert.equal(metrics.toolAccuracy, 1);
     assert.equal(metrics.clarificationAccuracy, 1);
     assert.equal(metrics.approvalAccuracy, 1);
+    assert.equal(metrics.languageAccuracy, 1);
     assert.equal(metrics.exactMatchAccuracy, 1);
     assert.equal(metrics.perLanguageAccuracy.en, 1);
     assert.equal(metrics.perLanguageAccuracy.de, 1);
@@ -135,5 +136,48 @@ describe("scoreEval", () => {
 
     assert.equal(metrics.perLanguageAccuracy.en, 0.5);
     assert.equal(metrics.perLanguageAccuracy.de, 1);
+  });
+
+  // ARCHITECTURAL REVIEW CORRECTION regression tests: `language` was
+  // missing from isExactMatch -- a model predicting language=en for a
+  // FA/DE case could previously still register as an exact match on
+  // every other field.
+  it("a prediction with every routing field correct but the wrong language is NOT an exact match", () => {
+    const gold = [goldCase("fa-1", "fa", { language: "fa" })];
+    // Every field matches the gold case's `expected` EXCEPT language.
+    const predicted = expected({ language: "en" });
+
+    const metrics = scoreEval(gold, [{ caseId: "fa-1", predicted }]);
+
+    assert.equal(metrics.exactMatchAccuracy, 0);
+    assert.equal(metrics.languageAccuracy, 0);
+    // The gold case's own language bucket (fa) must not count this as an
+    // exact match, even though domain/interactionClass/intentType/toolId/
+    // requiresClarification/requiresApproval are all correct.
+    assert.equal(metrics.perLanguageAccuracy.fa, 0);
+    // Every non-language field still independently reports correct.
+    assert.equal(metrics.domainAccuracy, 1);
+    assert.equal(metrics.intentAccuracy, 1);
+    assert.equal(metrics.toolAccuracy, 1);
+    assert.equal(metrics.clarificationAccuracy, 1);
+    assert.equal(metrics.approvalAccuracy, 1);
+  });
+
+  it("a perfect prediction set (language included) still scores 100% on every metric, including languageAccuracy", () => {
+    const gold = [goldCase("en-1", "en"), goldCase("de-1", "de", { language: "de" }), goldCase("fa-1", "fa", { language: "fa" })];
+    const predictions = gold.map((c) => ({ caseId: c.caseId, predicted: c.expected }));
+
+    const metrics = scoreEval(gold, predictions);
+
+    assert.equal(metrics.exactMatchAccuracy, 1);
+    assert.equal(metrics.languageAccuracy, 1);
+    assert.equal(metrics.domainAccuracy, 1);
+    assert.equal(metrics.intentAccuracy, 1);
+    assert.equal(metrics.toolAccuracy, 1);
+    assert.equal(metrics.clarificationAccuracy, 1);
+    assert.equal(metrics.approvalAccuracy, 1);
+    assert.equal(metrics.perLanguageAccuracy.en, 1);
+    assert.equal(metrics.perLanguageAccuracy.de, 1);
+    assert.equal(metrics.perLanguageAccuracy.fa, 1);
   });
 });

@@ -88,12 +88,31 @@ Three concrete gaps this slice closes:
    Only `deterministic_policy`, `user`, and `execution_verifier` producer
    types can ever attach `validated`, `user_confirmed`, or
    `execution_verified` confidence; `shadow_model` output is permanently
-   ceilinged at `candidate`. Enforced today as a documented convention in
-   `shared/aiLearning.ts` and the Worker's construction path
-   (`agent/worker/ai-learning/learning-ledger.ts`); a database-level
-   cross-column CHECK tying producer_type to label_confidence was
-   considered and deferred (see Alternatives Considered) rather than
-   built into this migration.
+   ceilinged at `candidate`. **This is application-ENFORCED, not merely a
+   documented convention**: `shared/aiLearning.ts`'s
+   `collectAiLearningEventInputErrors` validates every event's
+   `(eventKind, producerType, labelConfidence)` triple against a single
+   closed table, `EVENT_KIND_SEMANTICS` — ALF-0's five valid rows
+   (`turn_observed`/`deterministic_policy`/`null`,
+   `production_label`/`deterministic_policy`/`validated`,
+   `shadow_prediction`/`shadow_model`/`candidate`,
+   `user_feedback`/`user`/`user_confirmed`,
+   `execution_outcome`/`execution_verifier`/`execution_verified`) and
+   nothing else. No combination outside this table — including
+   `producerType: 'shadow_model'` paired with any confidence stronger than
+   `candidate`, under any `eventKind` — passes validation, and
+   `appendAiLearningEvent` (`agent/worker/ai-learning/learning-ledger.ts`)
+   runs this check before any network call, so a malformed or careless
+   caller cannot get a shadow prediction persisted as training truth. A
+   `shadow_prediction` event additionally requires non-empty
+   `providerId`/`modelId`/`modelVersion` — a `candidate` label is only
+   useful if a reader can tell which model produced it. See
+   `shared/aiLearning.test.ts`'s "eventKind / producerType /
+   labelConfidence semantics" suite for the enforced regression set. A
+   database-level cross-column CHECK tying `producer_type` to
+   `label_confidence` was considered and deferred (see Alternatives
+   Considered) rather than built into this migration, now that the
+   application-level validator is authoritative and tested.
 3. **The learning ledger is append-only.** `ai_learning_events` rows are
    never UPDATEd to rewrite history -- a later fact about an already-
    observed turn (a shadow prediction, a user correction, a verified

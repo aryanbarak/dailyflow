@@ -34,20 +34,36 @@
 //     earlier one.
 //   - idempotent append: idempotency_key is caller-supplied and
 //     deterministic (never generated here -- see
-//     shared/aiLearning.ts's AiLearningEventInput.idempotencyKey comment).
-//     A duplicate append (the same idempotency_key posted twice -- e.g. a
-//     retried request after a network timeout whose first attempt actually
-//     landed) hits the migration's `unique (idempotency_key)` constraint
-//     and is treated as an idempotent no-op success (`{ ok: true,
-//     duplicate: true }`), never as a failure a caller needs to react to.
+//     shared/aiLearning.ts's AiLearningEventInput.idempotencyKey comment),
+//     UNIQUE-SCOPED BY (user_id, idempotency_key) at the database level
+//     (never idempotency_key alone -- see the migration's own IDEMPOTENCY
+//     SCOPE header comment), so two different users may independently use
+//     the identical idempotencyKey with no collision. A duplicate append
+//     (the same (user_id, idempotency_key) posted twice -- e.g. a retried
+//     request after a network timeout whose first attempt actually
+//     landed) hits that composite unique constraint. ARCHITECTURAL REVIEW
+//     CORRECTION: a 23505 is NEVER automatically treated as "duplicate
+//     success" -- this module reads the existing row back
+//     (findEventByUserAndIdempotencyKey) and compares every meaningful
+//     immutable field against the request that just failed
+//     (isSameEventContent). Only a genuine content match is reported as
+//     `{ ok: true, duplicate: true }`; a same-key-different-content
+//     conflict is reported as a distinct, bounded failure
+//     (`IDEMPOTENCY_CONFLICT`) -- NEVER silently accepted, and the
+//     existing row is NEVER overwritten (this module has no PATCH/PUT
+//     primitive at all -- see the append-only bullet above). A 23505
+//     that does not resolve to a matching (user_id, idempotency_key) row
+//     (a generic/unrelated conflict, or the reconciliation read itself
+//     failing) is reported as a plain PERSISTENCE_FAILED, never blindly
+//     treated as a duplicate.
 
-import { supabasePost } from '../context-builder'
+import { supabaseGet, supabasePost } from '../context-builder'
 import type { Env } from '../types'
 import {
   collectAiLearningEventInputErrors,
   type AiLearningEventInput,
 } from '../../../shared/aiLearning'
-import { sha256Hex } from '../../../shared/executionCanonicalization'
+import { sha256Hex, stableSerialize } from '../../../shared/executionCanonicalization'
 
 export interface AiLearningLedgerDependencies {
   logger?: Pick<Console, 'error'>
@@ -56,24 +72,88 @@ export interface AiLearningLedgerDependencies {
 export type AppendAiLearningEventResult =
   | { ok: true; duplicate: boolean }
   | { ok: false; error: 'INVALID_INPUT'; details: string[] }
+  | { ok: false; error: 'IDEMPOTENCY_CONFLICT'; details: string }
   | { ok: false; error: 'PERSISTENCE_FAILED'; details: string }
 
 // PostgREST surfaces the underlying Postgres error code in its JSON error
 // body (e.g. `{"code":"23505","message":"duplicate key value violates
-// unique constraint \"ai_learning_events_idempotency_key_key\""}`), and
-// supabasePost's own error path (context-builder.ts) embeds that raw body
-// text verbatim into the Error it throws -- so matching on the stable
-// Postgres unique_violation code '23505' here is robust to the exact
-// constraint name, matching agent-tool-execution.ts's own
-// REQUEST_ID_CONFLICT reconciliation convention (comparing against the
-// existing row) for the same class of problem, simplified here because
-// ai_learning_events rows are immutable once appended -- there is nothing
-// to reconcile a duplicate idempotency_key against beyond "it already
-// exists," which is exactly what 23505 already tells us.
+// unique constraint \"ai_learning_events_user_idempotency_key_unique\""}`),
+// and supabasePost's own error path (context-builder.ts) embeds that raw
+// body text verbatim into the Error it throws -- so matching on the
+// stable Postgres unique_violation code '23505' here is robust to the
+// exact constraint name. This ONLY decides whether to attempt
+// reconciliation (below) -- it does not by itself decide duplicate vs.
+// conflict vs. failure.
 const POSTGRES_UNIQUE_VIOLATION_CODE = '23505'
 
-function isDuplicateIdempotencyKeyError(error: unknown): boolean {
+function isUniqueViolationError(error: unknown): boolean {
   return error instanceof Error && error.message.includes(POSTGRES_UNIQUE_VIOLATION_CODE)
+}
+
+// Mirrors the migration's column set exactly (see
+// supabase/migrations/20260901000000_ai_learning_events.sql).
+interface AiLearningEventRow {
+  id: string
+  user_id: string
+  session_id: string | null
+  source_message_id: string | null
+  correlation_id: string
+  idempotency_key: string
+  learning_task: string
+  schema_version: string
+  event_kind: string
+  producer_type: string
+  provider_id: string | null
+  model_id: string | null
+  model_version: string | null
+  label_confidence: string | null
+  source_hash: string | null
+  payload: Record<string, unknown>
+}
+
+const ROW_SELECT = 'id,user_id,session_id,source_message_id,correlation_id,idempotency_key,learning_task,schema_version,event_kind,producer_type,provider_id,model_id,model_version,label_confidence,source_hash,payload'
+
+function esc(value: string): string {
+  return encodeURIComponent(value)
+}
+
+async function findEventByUserAndIdempotencyKey(
+  env: Env,
+  userId: string,
+  idempotencyKey: string,
+): Promise<AiLearningEventRow | undefined> {
+  const rows = await supabaseGet<AiLearningEventRow[]>(
+    env,
+    `ai_learning_events?user_id=eq.${esc(userId)}&idempotency_key=eq.${esc(idempotencyKey)}&select=${ROW_SELECT}`,
+  )
+  return rows[0]
+}
+
+// Compares every meaningful immutable field of an already-persisted row
+// against the request that just hit the unique-conflict -- payload
+// compared via stableSerialize (shared/executionCanonicalization.ts,
+// the same key-sorted-JSON primitive agent_tool_executions' own
+// canonical hash relies on) so key ORDER never causes a false conflict.
+// `id` and `created_at` are deliberately excluded -- they are the two
+// columns a fresh append could never supply in advance, not part of "is
+// this the same requested event."
+function isSameEventContent(existing: AiLearningEventRow, input: AiLearningEventInput): boolean {
+  return (
+    existing.user_id === input.userId &&
+    (existing.session_id ?? null) === (input.sessionId ?? null) &&
+    (existing.source_message_id ?? null) === (input.sourceMessageId ?? null) &&
+    existing.correlation_id === input.correlationId &&
+    existing.learning_task === input.learningTask &&
+    existing.schema_version === input.schemaVersion &&
+    existing.event_kind === input.eventKind &&
+    existing.producer_type === input.producerType &&
+    (existing.provider_id ?? null) === (input.providerId ?? null) &&
+    (existing.model_id ?? null) === (input.modelId ?? null) &&
+    (existing.model_version ?? null) === (input.modelVersion ?? null) &&
+    (existing.label_confidence ?? null) === (input.labelConfidence ?? null) &&
+    (existing.source_hash ?? null) === (input.sourceHash ?? null) &&
+    stableSerialize(existing.payload) === stableSerialize(input.payload)
+  )
 }
 
 // Never throws. Returns a result describing exactly what happened --
@@ -112,15 +192,54 @@ export async function appendAiLearningEvent(
     })
     return { ok: true, duplicate: false }
   } catch (error) {
-    if (isDuplicateIdempotencyKeyError(error)) {
-      // Not an error worth logging: an idempotent retry landing on an
-      // event that was already durably appended is the expected,
-      // successful outcome of retrying after an ambiguous prior attempt.
-      return { ok: true, duplicate: true }
+    if (isUniqueViolationError(error)) {
+      return await reconcileUniqueViolation(env, input, logger)
     }
     const message = error instanceof Error ? error.message : String(error)
     logger.error('[AiLearningLedger] failed to append learning event (learning failure, not a production failure):', message)
     return { ok: false, error: 'PERSISTENCE_FAILED', details: message }
+  }
+}
+
+// Only ever called after a 23505 on the initial insert. Reads the row
+// back by (user_id, idempotency_key) and decides which of three outcomes
+// applies -- see this module's own header comment for the full contract.
+// Never overwrites, never retries the insert.
+async function reconcileUniqueViolation(
+  env: Env,
+  input: AiLearningEventInput,
+  logger: Pick<Console, 'error'>,
+): Promise<AppendAiLearningEventResult> {
+  let existing: AiLearningEventRow | undefined
+  try {
+    existing = await findEventByUserAndIdempotencyKey(env, input.userId, input.idempotencyKey)
+  } catch (readError) {
+    const message = readError instanceof Error ? readError.message : String(readError)
+    logger.error('[AiLearningLedger] a unique-conflict occurred but the reconciliation read itself failed -- reporting as a persistence failure, never as a blind duplicate:', message)
+    return { ok: false, error: 'PERSISTENCE_FAILED', details: message }
+  }
+
+  if (!existing) {
+    // A 23505 fired, but no row exists for this exact (user_id,
+    // idempotency_key) -- a generic/unrelated unique-constraint conflict.
+    // Never blindly treated as duplicate success.
+    logger.error('[AiLearningLedger] received a unique-violation but found no matching (user_id, idempotency_key) row to reconcile against -- not treating as duplicate success:', input.idempotencyKey)
+    return { ok: false, error: 'PERSISTENCE_FAILED', details: 'Unique-constraint conflict did not resolve to a matching (user_id, idempotency_key) row.' }
+  }
+
+  if (isSameEventContent(existing, input)) {
+    // Not an error worth logging: an idempotent retry landing on an
+    // event that was already durably appended, with identical content,
+    // is the expected, successful outcome of retrying after an
+    // ambiguous prior attempt.
+    return { ok: true, duplicate: true }
+  }
+
+  logger.error('[AiLearningLedger] idempotency conflict: (user_id, idempotency_key) already exists with different content -- refusing to overwrite:', input.idempotencyKey)
+  return {
+    ok: false,
+    error: 'IDEMPOTENCY_CONFLICT',
+    details: `An event already exists for user "${input.userId}" with idempotencyKey "${input.idempotencyKey}" but different content. The existing row is never overwritten.`,
   }
 }
 
