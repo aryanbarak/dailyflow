@@ -5,6 +5,7 @@ import {
   AI_LEARNING_INTERACTION_CLASSES,
   AI_LEARNING_LABEL_CONFIDENCES,
   AI_LEARNING_PRODUCER_TYPES,
+  AI_LEARNING_TASK_SCHEMA_VERSIONS,
   AI_LEARNING_TASKS,
   collectAiLearningEventInputErrors,
   collectAiModelManifestErrors,
@@ -267,6 +268,80 @@ describe("AiLearningEventInput validation", () => {
     it("a genuinely valid routing payload still validates with zero errors", () => {
       expect(collectAiLearningEventInputErrors(VALID_EVENT_INPUT)).toEqual([]);
     });
+  });
+});
+
+// ARCHITECTURAL REVIEW CORRECTION (round 2): a registered learningTask has
+// EXACTLY ONE valid schemaVersion (AI_LEARNING_TASK_SCHEMA_VERSIONS).
+// Before this correction, learningTask='intent_routing_v1' paired with an
+// UNREGISTERED schemaVersion (e.g. 'intent-routing-v2') fell through to a
+// generic "payload must be a plain object" check that accepted an
+// arbitrary object -- a validation bypass. There is now no generic/
+// untyped payload route for ANY learningTask, registered or not.
+describe("learningTask/schemaVersion binding (no generic fallback payload route)", () => {
+  it("the authoritative mapping has exactly one entry for ALF-0's one registered task", () => {
+    expect(AI_LEARNING_TASK_SCHEMA_VERSIONS).toEqual({ intent_routing_v1: "intent-routing-v1" });
+  });
+
+  // A. intent_routing_v1 + intent-routing-v2 -> invalid.
+  it("A: a registered learningTask with an unregistered schemaVersion is rejected", () => {
+    const errors = collectAiLearningEventInputErrors({ ...VALID_EVENT_INPUT, schemaVersion: "intent-routing-v2" });
+    expect(errors.length).toBeGreaterThan(0);
+    expect(errors.some((e) => e.includes("schemaVersion") && e.includes("intent_routing_v1"))).toBe(true);
+  });
+
+  // B. intent_routing_v1 + wrong schema + rawText -> invalid before network
+  // (proven at the pure-function level here; learning-ledger.test.ts's
+  // own "without making any network call" test proves the "before
+  // network" half for the Worker call site).
+  it("B: a wrong schemaVersion is rejected even when payload additionally carries rawText -- the malformed payload never gets a free pass via the wrong-schema path either", () => {
+    const errors = collectAiLearningEventInputErrors({
+      ...VALID_EVENT_INPUT,
+      schemaVersion: "intent-routing-v2",
+      payload: { ...VALID_PAYLOAD, rawText: "the user's actual message" },
+    });
+    expect(errors.length).toBeGreaterThan(0);
+    // Specifically: NOT validated as a generic plain object that happens
+    // to also carry rawText unflagged -- the schemaVersion mismatch
+    // itself is what's reported, since no payload contract runs at all
+    // for an unregistered schemaVersion.
+    expect(errors.some((e) => e.includes("schemaVersion"))).toBe(true);
+  });
+
+  // C. intent_routing_v1 + correct schema + valid payload -> valid.
+  it("C: a registered learningTask with its exact required schemaVersion and a valid payload passes", () => {
+    expect(collectAiLearningEventInputErrors(VALID_EVENT_INPUT)).toEqual([]);
+  });
+
+  // D. unknown learningTask -> invalid, never generic fallback.
+  it("D: an unknown learningTask is rejected, and its payload is never validated via any generic fallback route", () => {
+    const errors = collectAiLearningEventInputErrors({
+      ...VALID_EVENT_INPUT,
+      learningTask: "some_future_unregistered_task",
+      // A payload that would fail EVERY known contract (arbitrary shape,
+      // secrets, wrong types) -- if a generic fallback route existed, it
+      // might still accept this as "a plain object." It must not.
+      payload: { anything: "goes", access_token: "leaked" },
+    });
+    expect(errors.length).toBeGreaterThan(0);
+    expect(errors.some((e) => e.includes("learningTask"))).toBe(true);
+  });
+
+  it("there is no registered task whose payload validation silently accepts an arbitrary object", () => {
+    // Every registered task in AI_LEARNING_TASK_SCHEMA_VERSIONS must
+    // reject a payload carrying an unrecognized field -- guards against a
+    // future second task being registered without also wiring its own
+    // dedicated payload validator into collectAiLearningEventInputErrors.
+    for (const learningTask of Object.keys(AI_LEARNING_TASK_SCHEMA_VERSIONS) as Array<keyof typeof AI_LEARNING_TASK_SCHEMA_VERSIONS>) {
+      const schemaVersion = AI_LEARNING_TASK_SCHEMA_VERSIONS[learningTask];
+      const errors = collectAiLearningEventInputErrors({
+        ...VALID_EVENT_INPUT,
+        learningTask,
+        schemaVersion,
+        payload: { ...VALID_PAYLOAD, definitelyNotARealField: true },
+      });
+      expect(errors.length, `learningTask ${learningTask} accepted an unrecognized payload field`).toBeGreaterThan(0);
+    }
   });
 });
 

@@ -42,6 +42,17 @@ describe("ai_learning_events migration structure", () => {
     expect(sql).toMatch(/learning_task in \('intent_routing_v1'\)/);
   });
 
+  it("binds learning_task to its exact required schema_version via an explicit CHECK, closing the fallback that let an unregistered schema_version through (architectural review correction, round 2)", () => {
+    expect(sql).toContain("constraint ai_learning_events_task_schema_version_check check (");
+    expect(sql).toContain("when 'intent_routing_v1' then schema_version = 'intent-routing-v1'");
+    // The `case` must fail closed for anything outside its known
+    // when-branches -- an `else true` (or no else at all, which in SQL's
+    // `case` defaults to NULL and would NOT reliably fail the CHECK)
+    // would silently let a future unrecognized learning_task value's
+    // schema_version through unconstrained.
+    expect(sql).toMatch(/else false\s*\n\s*end/);
+  });
+
   it("closes the event_kind enum to exactly the five append-only lifecycle kinds, in order", () => {
     expect(sql).toMatch(
       /event_kind in \('turn_observed', 'production_label', 'shadow_prediction', 'user_feedback', 'execution_outcome'\)/,

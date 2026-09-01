@@ -45,6 +45,26 @@ export function isAiLearningTask(value: unknown): value is AiLearningTask {
   return typeof value === 'string' && (AI_LEARNING_TASKS as readonly string[]).includes(value)
 }
 
+// ARCHITECTURAL REVIEW CORRECTION: the single authoritative
+// learningTask -> schemaVersion mapping. Before this correction, a
+// registered learningTask paired with an UNREGISTERED schemaVersion
+// (e.g. 'intent_routing_v1' + 'intent-routing-v2') fell through to the
+// generic "payload must be a plain object" check in
+// collectAiLearningEventInputErrors -- a validation bypass, since that
+// generic check accepts an arbitrary object (rawText, credentials,
+// anything) as long as `learningTask` itself was spelled correctly. This
+// table closes that gap: a registered learningTask has EXACTLY ONE valid
+// schemaVersion, and any other schemaVersion paired with it is rejected
+// outright -- there is no generic/untyped payload route for a registered
+// task. ALF-0 has no second registered task, so today this table has one
+// entry; a future intent-routing-v2 (or a second learning task entirely)
+// is added here deliberately, as its own reviewed contract change, never
+// something a caller can silently opt into by supplying an
+// unrecognized-but-plausible-looking schemaVersion string.
+export const AI_LEARNING_TASK_SCHEMA_VERSIONS: Record<AiLearningTask, string> = {
+  intent_routing_v1: 'intent-routing-v1',
+}
+
 // ---------------------------------------------------------------------
 // Section 2: ledger event kinds, producers, and label confidence
 // ---------------------------------------------------------------------
@@ -363,22 +383,34 @@ export function collectAiLearningEventInputErrors(value: unknown): string[] {
     }
   }
 
-  // ARCHITECTURAL REVIEW CORRECTION: for ALF-0's only learning task, the
-  // payload must pass the ACTUAL closed intent-routing-v1 contract, not
-  // merely "is a plain object" -- a permissive payload check contradicted
-  // ADR-0020's own privacy/schema claims (rawText, message, content, or a
-  // credential-shaped field could previously reach the ledger uninspected
-  // as long as the rest of the envelope was valid).
-  if (value.learningTask === 'intent_routing_v1' && value.schemaVersion === 'intent-routing-v1') {
-    for (const error of collectIntentRoutingLearningPayloadErrors(value.payload)) {
-      errors.push(`payload: ${error}`)
+  // ARCHITECTURAL REVIEW CORRECTION (round 2): a registered learningTask
+  // has EXACTLY ONE valid schemaVersion (AI_LEARNING_TASK_SCHEMA_VERSIONS
+  // above). Before this correction, a caller could supply
+  // learningTask='intent_routing_v1' with an UNREGISTERED schemaVersion
+  // (e.g. 'intent-routing-v2') and fall through to a generic "payload
+  // must be a plain object" check that accepted an arbitrary object --
+  // rawText, credentials, anything -- as long as learningTask itself was
+  // spelled correctly. That fallback route is now GONE ENTIRELY: there is
+  // no generic/untyped payload validation path for any learningTask,
+  // registered or not.
+  if (isAiLearningTask(value.learningTask)) {
+    const requiredSchemaVersion = AI_LEARNING_TASK_SCHEMA_VERSIONS[value.learningTask]
+    if (value.schemaVersion !== requiredSchemaVersion) {
+      errors.push(`schemaVersion for learningTask "${value.learningTask}" must be exactly ${JSON.stringify(requiredSchemaVersion)} (got ${JSON.stringify(value.schemaVersion)}) -- see AI_LEARNING_TASK_SCHEMA_VERSIONS; there is no generic/untyped payload route for a registered task`)
+    } else if (value.learningTask === 'intent_routing_v1') {
+      for (const error of collectIntentRoutingLearningPayloadErrors(value.payload)) {
+        errors.push(`payload: ${error}`)
+      }
     }
-  } else if (!isRecord(value.payload)) {
-    // Any other (future) learningTask/schemaVersion combination has no
-    // registered payload contract yet -- fall back to the structural
-    // minimum every payload must satisfy regardless of task.
-    errors.push('payload must be a plain object')
+    // A future second registered task adds its own
+    // `else if (value.learningTask === '...')` branch with its own
+    // dedicated payload validator here -- never a generic fallback.
   }
+  // else: learningTask is itself not a registered AiLearningTask, already
+  // reported by the `!isAiLearningTask(value.learningTask)` check above.
+  // No payload validation route exists for an unrecognized task either --
+  // an invalid learningTask never earns payload a free pass via a
+  // generic "is a plain object" fallback.
 
   return errors
 }

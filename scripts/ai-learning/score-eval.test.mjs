@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
-import { isValidRoutingPayload, parseJsonl, scoreEval } from "./score-eval.mjs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+import { ALLOWED_PAYLOAD_KEYS, isValidRoutingPayload, parseJsonl, scoreEval } from "./score-eval.mjs";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 function expected(overrides = {}) {
   return {
@@ -50,6 +55,40 @@ describe("isValidRoutingPayload", () => {
     assert.equal(isValidRoutingPayload({ ...expected(), requiresClarification: "no" }), false);
     assert.equal(isValidRoutingPayload({ ...expected(), requiresApproval: 1 }), false);
   });
+
+  // ARCHITECTURAL REVIEW CORRECTION (round 2): the scorer's definition of
+  // a valid payload must not be weaker than shared/aiLearning.ts's closed
+  // IntentRoutingLearningPayloadV1 contract -- the benchmark must never
+  // call something "valid" that the canonical shared contract rejects.
+  describe("closed-contract parity with shared/aiLearning.ts", () => {
+    // A. unknown field -> invalidPredictionCount +1 (proven at the
+    // isValidRoutingPayload level here; the scoreEval-level assertion is
+    // below).
+    it("A: rejects a payload carrying an unrecognized field", () => {
+      assert.equal(isValidRoutingPayload({ ...expected(), debugTrace: "anything" }), false);
+    });
+
+    // B. rawText field -> invalid.
+    it("B: rejects a payload carrying rawText", () => {
+      assert.equal(isValidRoutingPayload({ ...expected(), rawText: "the user's actual message" }), false);
+    });
+
+    // C. intentType="" -> invalid.
+    it('C: rejects an empty-string intentType', () => {
+      assert.equal(isValidRoutingPayload({ ...expected(), intentType: "" }), false);
+    });
+
+    // D. toolId="" -> invalid.
+    it('D: rejects an empty-string toolId', () => {
+      assert.equal(isValidRoutingPayload({ ...expected(), toolId: "" }), false);
+    });
+
+    it("still accepts a payload with exactly the eight allowed keys and nothing else", () => {
+      assert.equal(isValidRoutingPayload(expected()), true);
+      const { intentType, toolId, ...withoutOptionalFields } = expected();
+      assert.equal(isValidRoutingPayload(withoutOptionalFields), true);
+    });
+  });
 });
 
 describe("scoreEval", () => {
@@ -83,6 +122,56 @@ describe("scoreEval", () => {
     assert.equal(metrics.exactMatchAccuracy, 0);
     assert.equal(metrics.domainAccuracy, 0);
   });
+
+  // ARCHITECTURAL REVIEW CORRECTION (round 2), end-to-end through
+  // scoreEval itself (not just isValidRoutingPayload in isolation).
+  describe("closed-contract violations count as invalid predictions end-to-end", () => {
+    it("A: an unrecognized field in a prediction increments invalidPredictionCount", () => {
+      const gold = [goldCase("c1", "en")];
+      const predictions = [{ caseId: "c1", predicted: { ...expected({ language: "en" }), debugTrace: "anything" } }];
+
+      const metrics = scoreEval(gold, predictions);
+
+      assert.equal(metrics.invalidPredictionCount, 1);
+      assert.equal(metrics.exactMatchAccuracy, 0);
+    });
+
+    it("B: a rawText field in a prediction increments invalidPredictionCount", () => {
+      const gold = [goldCase("c1", "en")];
+      const predictions = [{ caseId: "c1", predicted: { ...expected({ language: "en" }), rawText: "the user's actual message" } }];
+
+      const metrics = scoreEval(gold, predictions);
+
+      assert.equal(metrics.invalidPredictionCount, 1);
+    });
+
+    it('C: an empty-string intentType increments invalidPredictionCount', () => {
+      const gold = [goldCase("c1", "en")];
+      const predictions = [{ caseId: "c1", predicted: expected({ language: "en", intentType: "" }) }];
+
+      const metrics = scoreEval(gold, predictions);
+
+      assert.equal(metrics.invalidPredictionCount, 1);
+    });
+
+    it('D: an empty-string toolId increments invalidPredictionCount', () => {
+      const gold = [goldCase("c1", "en")];
+      const predictions = [{ caseId: "c1", predicted: expected({ language: "en", toolId: "" }) }];
+
+      const metrics = scoreEval(gold, predictions);
+
+      assert.equal(metrics.invalidPredictionCount, 1);
+    });
+  });
+
+  // E. perfect valid prediction remains 100% -- see "scores a perfect
+  // prediction set as 100% across every metric" above, and "a perfect
+  // prediction set (language included) still scores 100% on every
+  // metric, including languageAccuracy" below.
+
+  // F. wrong language remains non-exact and lowers languageAccuracy --
+  // see "a prediction with every routing field correct but the wrong
+  // language is NOT an exact match" below.
 
   it("counts a structurally invalid prediction as invalid, never as a match", () => {
     const gold = [goldCase("c1", "en")];
@@ -179,5 +268,36 @@ describe("scoreEval", () => {
     assert.equal(metrics.perLanguageAccuracy.en, 1);
     assert.equal(metrics.perLanguageAccuracy.de, 1);
     assert.equal(metrics.perLanguageAccuracy.fa, 1);
+  });
+});
+
+// ARCHITECTURAL REVIEW CORRECTION (round 2): guards ALLOWED_PAYLOAD_KEYS
+// above against silently drifting out of sync with
+// shared/aiLearning.ts's own IntentRoutingLearningPayloadV1 allowlist.
+// Reads that .ts file as plain TEXT (no TS loader/build dependency,
+// matching this repo's own supabase/tests/*.migration_structure.test.ts
+// convention of asserting structure against source text) and extracts
+// every `readonly <fieldName>` declared inside the interface body.
+describe("ALLOWED_PAYLOAD_KEYS parity with shared/aiLearning.ts's IntentRoutingLearningPayloadV1", () => {
+  function extractIntentRoutingLearningPayloadV1Keys() {
+    const sharedSourcePath = path.join(__dirname, "..", "..", "shared", "aiLearning.ts");
+    const source = readFileSync(sharedSourcePath, "utf8");
+    const interfaceMatch = source.match(/export interface IntentRoutingLearningPayloadV1 \{([\s\S]*?)\n\}/);
+    assert.ok(interfaceMatch, "could not locate IntentRoutingLearningPayloadV1's interface body in shared/aiLearning.ts -- has it been renamed or restructured?");
+    const body = interfaceMatch[1];
+    const keys = [...body.matchAll(/readonly (\w+)\??:/g)].map((m) => m[1]);
+    assert.ok(keys.length > 0, "extracted zero fields from IntentRoutingLearningPayloadV1 -- the extraction regex likely no longer matches the interface's current shape");
+    return new Set(keys);
+  }
+
+  it("ALLOWED_PAYLOAD_KEYS contains exactly the same 8 keys as shared/aiLearning.ts's IntentRoutingLearningPayloadV1, no more and no fewer", () => {
+    const sharedKeys = extractIntentRoutingLearningPayloadV1Keys();
+    const scorerKeys = ALLOWED_PAYLOAD_KEYS;
+
+    const missingFromScorer = [...sharedKeys].filter((k) => !scorerKeys.has(k));
+    const extraInScorer = [...scorerKeys].filter((k) => !sharedKeys.has(k));
+
+    assert.deepEqual(missingFromScorer, [], `shared/aiLearning.ts declared field(s) missing from the scorer's ALLOWED_PAYLOAD_KEYS: ${missingFromScorer.join(", ")}`);
+    assert.deepEqual(extraInScorer, [], `scorer's ALLOWED_PAYLOAD_KEYS has field(s) shared/aiLearning.ts does not declare: ${extraInScorer.join(", ")}`);
   });
 });

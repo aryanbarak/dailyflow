@@ -21,6 +21,17 @@ node scripts/ai-learning/score-eval.mjs <gold.jsonl> <predictions.jsonl>
   ran a candidate model/policy against the gold fixture's `utterance`
   values — this script does not run inference itself.
 
+A `predicted` payload is validated against the SAME closed 8-key contract
+as `shared/aiLearning.ts`'s `IntentRoutingLearningPayloadV1` — exactly
+`schemaVersion`, `language`, `interactionClass`, `domain`, `intentType`,
+`toolId`, `requiresClarification`, `requiresApproval`, nothing else. Any
+unrecognized field (a stray `rawText`, `debugTrace`, etc.), an empty-string
+`intentType`/`toolId`, or an invalid enum value makes the prediction
+invalid for that case — see `isValidRoutingPayload` in `score-eval.mjs`.
+`score-eval.test.mjs` includes a parity test that reads
+`shared/aiLearning.ts` as text and fails if the scorer's allowed-key list
+ever drifts out of sync with the shared contract's own.
+
 Prints a JSON metrics object to stdout: `totalCases`,
 `invalidPredictionCount`, `intentAccuracy`, `domainAccuracy`,
 `toolAccuracy`, `clarificationAccuracy`, `approvalAccuracy`,

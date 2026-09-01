@@ -81,6 +81,25 @@ create table if not exists public.ai_learning_events (
   constraint ai_learning_events_learning_task_check check (
     learning_task in ('intent_routing_v1')
   ),
+  -- ARCHITECTURAL REVIEW CORRECTION (round 2): the database vocabulary
+  -- must not accept an arbitrary schema_version string for a registered
+  -- learning_task. Mirrors shared/aiLearning.ts's authoritative
+  -- AI_LEARNING_TASK_SCHEMA_VERSIONS mapping (a registered learningTask
+  -- has EXACTLY ONE valid schemaVersion) as an explicit `case` pairing --
+  -- not merely `schema_version <> ''` -- so a stray/unregistered
+  -- schema_version (e.g. 'intent-routing-v2', typo'd, or blank-but-
+  -- nonblank noise) can never be inserted even by a caller that bypassed
+  -- the application-level check. A future intent-routing-v2 (or a second
+  -- learning_task) requires adding its own `when` branch here, in the
+  -- SAME reviewed migration/version-contract change that adds it to
+  -- AI_LEARNING_TASK_SCHEMA_VERSIONS -- never something that silently
+  -- fits through a bare non-blank-string check.
+  constraint ai_learning_events_task_schema_version_check check (
+    case learning_task
+      when 'intent_routing_v1' then schema_version = 'intent-routing-v1'
+      else false
+    end
+  ),
   constraint ai_learning_events_event_kind_check check (
     event_kind in ('turn_observed', 'production_label', 'shadow_prediction', 'user_feedback', 'execution_outcome')
   ),

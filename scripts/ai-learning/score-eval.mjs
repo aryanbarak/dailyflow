@@ -27,6 +27,22 @@ const VALID_INTERACTION_CLASSES = new Set(['conversation', 'read', 'write', 'cla
 const VALID_DOMAINS = new Set([
   'tasks', 'calendar', 'finance', 'github', 'workspace', 'learning', 'memory', 'documents', 'none', 'unknown',
 ])
+// ARCHITECTURAL REVIEW CORRECTION (round 2): the exact closed key set --
+// mirrors shared/aiLearning.ts's IntentRoutingLearningPayloadV1 allowlist
+// exactly (same 8 keys, same order). This benchmark must never call a
+// prediction "valid" that the canonical shared contract would reject --
+// see the parity test in score-eval.test.mjs guarding this list against
+// drift from shared/aiLearning.ts's own allowlist.
+export const ALLOWED_PAYLOAD_KEYS = new Set([
+  'schemaVersion',
+  'language',
+  'interactionClass',
+  'domain',
+  'intentType',
+  'toolId',
+  'requiresClarification',
+  'requiresApproval',
+])
 
 export function parseJsonl(text) {
   return text
@@ -44,19 +60,28 @@ function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
+function isNonEmptyString(value) {
+  return typeof value === 'string' && value.length > 0
+}
+
 // Structural validity of a `predicted` (or `expected`) payload -- mirrors
 // shared/aiLearning.ts's collectIntentRoutingLearningPayloadErrors, kept
 // intentionally minimal since this script only needs to decide "usable
 // for scoring" vs. "invalid," not produce the same error-message detail
-// the shared TS module does.
+// the shared TS module does. CLOSED SHAPE: any key outside
+// ALLOWED_PAYLOAD_KEYS is rejected -- the benchmark must never call
+// something "valid" that the canonical shared contract would reject.
 export function isValidRoutingPayload(payload) {
   if (!isPlainObject(payload)) return false
+  for (const key of Object.keys(payload)) {
+    if (!ALLOWED_PAYLOAD_KEYS.has(key)) return false
+  }
   if (payload.schemaVersion !== 'intent-routing-v1') return false
   if (!VALID_LANGUAGES.has(payload.language)) return false
   if (!VALID_INTERACTION_CLASSES.has(payload.interactionClass)) return false
   if (!VALID_DOMAINS.has(payload.domain)) return false
-  if (payload.intentType !== undefined && typeof payload.intentType !== 'string') return false
-  if (payload.toolId !== undefined && typeof payload.toolId !== 'string') return false
+  if (payload.intentType !== undefined && !isNonEmptyString(payload.intentType)) return false
+  if (payload.toolId !== undefined && !isNonEmptyString(payload.toolId)) return false
   if (typeof payload.requiresClarification !== 'boolean') return false
   if (typeof payload.requiresApproval !== 'boolean') return false
   return true
