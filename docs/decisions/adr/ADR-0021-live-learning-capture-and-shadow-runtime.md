@@ -26,6 +26,63 @@ own implementation, the correct response is to STOP and report it, not to
 author/apply a new migration silently -- no such gap was found; this ADR
 records none.
 
+## Correction (round 1)
+
+An architectural review of the first ALF-1A implementation found six truth
+boundaries that needed tightening before this design is sound. The
+Decision items below already reflect the corrected design; this note
+records what changed and why, for anyone comparing against the original
+implementation:
+
+1. **Removed the non-write/read production-label capture point.**
+   The original design captured `interactionClass: 'conversation',
+   domain: 'none'` whenever no write trigger matched. This was found to be
+   a false claim of truth: production `/chat` has no deterministic
+   classifier that distinguishes ordinary conversation from a read of
+   tasks, calendar, GitHub, or any other domain for such a turn -- only
+   the ABSENCE of a matched write trigger is actually known. That is not
+   the same thing as a validated label. This capture point is REMOVED
+   entirely (no replacement heuristic, no `read/unknown` catch-all) --
+   see Decision item 13. The original acceptance examples M ("سلام" ->
+   conversation/none) and P (informational time-mention -> no false
+   write) are SUPERSEDED and deferred until SmartFlow has a real
+   deterministic non-write/read classifier, built and reviewed as its own
+   slice.
+2. **Durable-insert-before-capture ordering, enforced structurally.** Every
+   capture must follow a successful `agent_chat_messages` insert for the
+   exact `sourceMessageId` it references -- never the reverse, and never
+   in parallel. The four early/terminal capture points already had this
+   order naturally (a synchronous `await` insert precedes the capture
+   line; if the insert throws, execution never reaches the capture code).
+   The pending-ask-mode capture (`pendingWritePolicy: 'ask'`) did NOT: its
+   insert happens later, after the plain-chat model call, in one of three
+   different branches. It is now STAGED (in a local variable) at decision
+   time and only actually scheduled via `ctx.waitUntil` immediately after
+   whichever of those three inserts succeeds -- see
+   `scheduleStagedLearningCapture` in `agent/worker/index.ts`.
+3. **`source_hash` is now populated on every ledger row this module
+   writes**, computed once per `captureProductionRoutingTurn` invocation
+   via ALF-0's existing `computeSourceHash` and reused identically for
+   both the `production_label` and (when it fires) the `shadow_prediction`
+   row belonging to the same turn -- never two independently-computed
+   hashes for one turn, and never the raw message itself.
+4. **The top-level catch in `captureProductionRoutingTurn` no longer logs
+   `error.message`/`String(error)`.** An unexpected failure at that level
+   could originate from any dependency in the call chain, including one
+   whose own thrown `Error` happens to embed request content -- the only
+   safe thing to log unconditionally is a fixed, bounded, content-free
+   line (`status=failed reason=unexpected_error`).
+5. **`provider_unavailable` is no longer captured as a clarification
+   outcome.** It means the AI provider used to resolve a title was
+   unreachable -- production returns an honest unavailability reply, not
+   a clarifying question, so `requiresClarification` must be `false` for
+   it. Only `'clarify'` (the deterministic parser's own follow-up
+   question) is a genuine clarification outcome. See
+   `agent/worker/ai-learning/write-execution-label.ts`'s
+   `requiresClarificationForWriteExecutionStatus`.
+6. **Production-label `language` is now always `'unknown'`.** See Decision
+   item 15 below.
+
 ## Context
 
 ADR-0020 built the foundation (the ledger, the contracts, the eval fixture,
@@ -150,9 +207,12 @@ prevent:
    a `ShadowModelProvider` because a prediction requires input, and
    nowhere else. It is never included in an `ai_learning_events.payload`,
    never logged, never part of a provider-provenance field, never part of
-   an error string. The ledger continues to store only
-   `source_message_id` + `source_hash` (never a text duplicate) --
-   unchanged from ADR-0020.
+   an error string. The ledger stores only `source_message_id` +
+   `source_hash` (never a text duplicate) -- the hash primitive itself is
+   unchanged from ADR-0020's `computeSourceHash`, and (per the round-1
+   correction) is now actually computed and populated on every row this
+   module writes, once per turn, identically on the `production_label` and
+   any `shadow_prediction` row for that same turn.
 10. **Exact durable source-message correlation, no lookup.** The Worker
     now pre-generates the user message's row id (`crypto.randomUUID()`,
     the same established pattern already used in `github-integration.ts`
@@ -202,21 +262,46 @@ prevent:
     ALF-1A persists only `production_label` and `shadow_prediction`
     events -- `turn_observed` is NOT fabricated merely to make a turn's
     timeline look complete, and is not written by this slice at all.
-    Capture happens at exactly five deterministic outcome points inside
-    `handleChat` (see `agent/worker/index.ts`'s own comment at each): the
+    Capture happens at exactly FOUR deterministic outcome points inside
+    `handleChat` where production code's own decision is genuinely known
+    (see `agent/worker/index.ts`'s own comment at each): the
     ambiguous-domain early return, the mode==='off' early return, each
     terminal outcome inside `respondToWriteExecution` (executed/clarify/
-    failed/provider_unavailable), the pendingWritePolicy('ask') assignment,
-    and the no-write-trigger-at-all (`writeDomainSignal==='none'`)
-    conversational path. A turn whose write-domain signal matched but
-    whose fuller intent assembly then declined (a narrow edge case) is
-    deliberately left uncaptured rather than mislabeled either way --
-    see this slice's own architecture research for why.
+    failed/provider_unavailable), and the pendingWritePolicy('ask')
+    assignment. A plain conversational/read turn (`writeDomainSignal ===
+    'none'`) is DELIBERATELY NOT CAPTURED (round-1 correction, see the
+    Correction note above): production `/chat` has no deterministic
+    classifier for what such a turn actually is (ordinary conversation? a
+    read of tasks? of calendar? of something else?) -- only the absence of
+    a matched write trigger is known, and that absence is not itself a
+    validated label. A real non-write/read classifier, once built and
+    reviewed as its own slice, can add a truthful capture point for this
+    case; until then, capturing nothing is more honest than capturing a
+    guess. A turn whose write-domain signal matched but whose fuller
+    intent assembly then declined (a narrower, separate edge case) remains
+    deliberately uncaptured too, for the same reason.
 14. **`user_feedback` and `execution_outcome` are explicitly out of
     scope for ALF-1A.** They require designing correlation with the
     approval/execution surfaces this slice does not touch, and will follow
     once that correlation is explicitly designed -- not bolted on here as
     a fabricated placeholder.
+15. **Production-label `language` is always `'unknown'`.** SmartFlow has
+    no existing deterministic classifier for the LANGUAGE OF THE CURRENT
+    MESSAGE. `handleChat`'s own `language` variable (from
+    `fetchUserLanguage`) is the user's stored RESPONSE-LANGUAGE preference
+    -- a setting, not a per-message classification -- and using it as if it
+    were the message's language would silently mislabel every turn where a
+    user types in a language other than their configured preference (e.g.
+    an English-preference user typing a Persian message). Every production
+    label this slice writes therefore sets
+    `IntentRoutingLearningPayloadV1.language = 'unknown'`, deliberately,
+    rather than borrowing a value that is not actually message-language
+    truth. This is a real capability gap, not an oversight: a future,
+    separately reviewed deterministic (non-LLM) message-language
+    classifier can fill it in later. The shadow model's OWN predicted
+    `language` field is unaffected by this -- it is the model's own
+    inference from the message text, independent of the production label
+    (see `shadow-model-provider.ts`'s own comment on `languageHint`).
 
 ## What This ADR Deliberately Does NOT Do
 
@@ -256,15 +341,19 @@ succession, or a retried request, can each observe or match the wrong
 row), and neither was ever seriously pursued once the pre-generated-id
 approach was confirmed feasible.
 
-**Skip production-label capture for non-write (conversational/read) turns
-entirely, only capture write-shaped turns.** Considered, and this slice's
-actual design lands close to it: `writeDomainSignal==='none'` DOES get a
-production label (interactionClass='conversation', domain='none'),
-because that IS what production code's own absence of domain-specific
-handling truthfully represents (see Decision item 12/13's own reasoning).
-What is genuinely skipped is the narrower edge case where a write trigger
-matched but intent assembly declined -- deliberately left uncaptured
-rather than force-fit into either shape.
+**Capture a production label for `writeDomainSignal==='none'` as
+`interactionClass: 'conversation', domain: 'none'`.** This was the
+original ALF-1A design, on the reasoning that the absence of
+domain-specific handling truthfully represents ordinary conversation.
+Round-1 review rejected this: the absence of a matched write trigger only
+proves "no write trigger matched" -- it does NOT prove the turn was
+ordinary conversation rather than, say, a read of tasks or calendar that
+SmartFlow's `/chat` handler has no deterministic code to distinguish
+today. Asserting `conversation`/`none` as a `validated`-confidence label
+would be asserting more than production code actually knows. This
+capture point is REMOVED (see Decision item 13 and the Correction note
+above) rather than replaced with a weaker label like `read`/`unknown`,
+which would still be a guess dressed up as validated truth.
 
 **Always run shadow prediction (rate 1, no config gate) whenever capture
 is enabled.** Rejected: shadow prediction has real cost (an inference call
@@ -285,11 +374,16 @@ same shared validator regardless.
 
 ## Consequences
 
-- Five new call sites inside `agent/worker/index.ts`'s `handleChat` (and
-  one new parameter pair threaded through `respondToWriteExecution`),
-  each fire-and-forget via `ctx.waitUntil`, each additive and gated on
-  `liveCaptureConfig.captureEnabled` before `ctx.waitUntil` is even
-  called (so a disabled deployment schedules zero extra work of any kind).
+- Four capture-decision points inside `agent/worker/index.ts`'s
+  `handleChat` (and one new parameter pair threaded through
+  `respondToWriteExecution`), each additive and gated on
+  `liveCaptureConfig.captureEnabled`. Three of the four schedule capture
+  immediately via `ctx.waitUntil` right after their own durable message
+  insert; the fourth (`pendingWritePolicy: 'ask'`) stages its capture and
+  schedules it via `ctx.waitUntil` only once the turn's message insert
+  actually lands, at whichever of three later insert sites runs for that
+  turn (`scheduleStagedLearningCapture`) -- so a disabled deployment, or
+  an insert that itself fails, schedules zero extra work.
 - Every `agent_chat_messages` INSERT for the user's own message across
   every branch of `handleChat` now supplies an explicit, pre-generated
   `id` -- the row's identity is unchanged in shape (still a `uuid`), only

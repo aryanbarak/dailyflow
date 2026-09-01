@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { captureProductionRoutingTurn } from './live-capture'
+import { computeSourceHash } from './learning-ledger'
 import type { LiveCaptureConfig } from './live-capture-config'
 import type { Env } from '../types'
 
@@ -307,5 +308,78 @@ describe('captureProductionRoutingTurn', () => {
     }))
 
     expect(shadowInserts).toHaveLength(0)
+  })
+
+  // Item 3 (ALF-1A correction): source_hash is computed once per
+  // invocation and reused identically across every event this call
+  // produces.
+  describe('source_hash (item 3)', () => {
+    it('is present, non-empty, and identical on both the production_label and shadow_prediction rows for the same turn', async () => {
+      const bodies: Record<string, unknown>[] = []
+      vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        bodies.push(init?.body ? JSON.parse(String(init.body)) : {})
+        return new Response(null, { status: 201 })
+      }))
+      const aiRun = vi.fn(async () => ({ choices: [{ message: { content: JSON.stringify(VALID_SHADOW_PAYLOAD) } }] }))
+
+      await captureProductionRoutingTurn(baseParams({
+        config: shadowConfig(),
+        env: testEnv({ AI: { run: aiRun } as unknown as Env['AI'] }),
+      }))
+
+      const productionCall = bodies.find((b) => b.event_kind === 'production_label')
+      const shadowCall = bodies.find((b) => b.event_kind === 'shadow_prediction')
+      expect(typeof productionCall?.source_hash).toBe('string')
+      expect((productionCall?.source_hash as string).length).toBeGreaterThan(0)
+      expect(productionCall?.source_hash).toBe(shadowCall?.source_hash)
+    })
+
+    it('matches computeSourceHash(rawMessage) and never equals the raw message text itself', async () => {
+      const bodies: Record<string, unknown>[] = []
+      vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        bodies.push(init?.body ? JSON.parse(String(init.body)) : {})
+        return new Response(null, { status: 201 })
+      }))
+
+      await captureProductionRoutingTurn(baseParams({ config: captureOnlyConfig() }))
+
+      const expectedHash = await computeSourceHash(RAW_MESSAGE)
+      const productionCall = bodies.find((b) => b.event_kind === 'production_label')
+      expect(productionCall?.source_hash).toBe(expectedHash)
+      expect(productionCall?.source_hash).not.toBe(RAW_MESSAGE)
+    })
+  })
+
+  // Item 4 (ALF-1A correction): the top-level catch must never log
+  // error.message/String(error)/stack/raw message -- only a fixed, bounded
+  // reason string.
+  it('item 4: an unexpected throw from a dependency (a logger call, standing in for "any dependency can throw") whose own Error message embeds the raw user message never leaks that message through any logger call', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 201 })))
+    const logCalls: unknown[][] = []
+    const errorCalls: unknown[][] = []
+    const logger = {
+      log: vi.fn((...args: unknown[]) => {
+        logCalls.push(args)
+        // Simulates an unexpected dependency failure whose own thrown
+        // Error happens to embed the raw message -- e.g. a logging
+        // transport, a future instrumentation hook, or any other
+        // dependency this module calls without its own try/catch.
+        throw new Error(`failure: ${RAW_MESSAGE}`)
+      }),
+      error: vi.fn((...args: unknown[]) => { errorCalls.push(args) }),
+    }
+
+    await expect(captureProductionRoutingTurn(baseParams({ config: captureOnlyConfig() }), { logger })).resolves.toBeUndefined()
+
+    const allCallsText = [...logCalls, ...errorCalls].map((args) => args.join(' ')).join('\n')
+    expect(allCallsText).not.toContain('SECRET_MARKER_DO_NOT_LEAK')
+    expect(allCallsText).not.toContain(RAW_MESSAGE)
+    // The bounded, fixed fallback line must actually have been emitted.
+    expect(errorCalls.some((args) => String(args[0]).includes('status=failed') && String(args[0]).includes('reason=unexpected_error'))).toBe(true)
+    // And it must never carry error.message/String(error)/stack content --
+    // only the fixed line itself.
+    for (const args of errorCalls) {
+      expect(args).toHaveLength(1)
+    }
   })
 })

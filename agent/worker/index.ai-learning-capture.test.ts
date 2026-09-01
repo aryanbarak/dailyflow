@@ -14,6 +14,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import worker from './index'
 import type { Env } from './types'
+// Item 7 (ALF-1A correction): the conversational-path test below needs
+// the plain-chat model call to succeed without hitting a real Gemini
+// endpoint -- mocked at the SAME interface boundary index.test.ts's own
+// harness uses (see that file's identical top-of-file setup), not at
+// Gemini's wire format.
+import { StubTextGenerationProvider, stubProviders } from './providers/testing/stubProviders'
+import type { Providers } from './providers/createProviders'
+
+let currentProviders: Providers = stubProviders()
+vi.mock('./providers/createProviders', () => ({
+  createProviders: (..._args: unknown[]) => currentProviders,
+}))
 
 const SUPABASE_URL = 'https://supa.test'
 const USER_ID = 'user-1'
@@ -117,6 +129,7 @@ function makeCtx() {
 describe('ALF-1A live-capture wiring inside /chat', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
+    currentProviders = stubProviders()
   })
 
   // A. capture disabled -> zero learning writes, zero shadow calls.
@@ -225,6 +238,15 @@ describe('ALF-1A live-capture wiring inside /chat', () => {
     // aiRun call) at the moment the response was already sent.
     const registeredCall = (ctx.waitUntil as ReturnType<typeof vi.fn>).mock.calls[0][0]
     expect(registeredCall).toBeInstanceOf(Promise)
+
+    // The overall registered promise never settles (by design -- aiRun
+    // never resolves), but its EARLIER production_label append does settle
+    // on its own, independently of the permanently-stuck shadow step. Give
+    // it a moment to finish here, while THIS test's own router/mocks are
+    // still installed, so that side effect can't leak into whichever test
+    // runs next (a real, if rare, test-isolation hazard with any
+    // deliberately-abandoned fire-and-forget promise).
+    await new Promise((resolve) => setTimeout(resolve, 10))
   })
 
   // T. exact durable source message ID is used -> no latest-message/
@@ -241,7 +263,12 @@ describe('ALF-1A live-capture wiring inside /chat', () => {
     await Promise.all(promises())
 
     const userMessageInsert = requests.find((r) => r.method === 'POST' && r.url.includes('agent_chat_messages') && r.body?.role === 'user')
-    const learningWrite = requests.find((r) => r.method === 'POST' && r.url.includes('ai_learning_events'))
+    // Matched by source_message_id, not just "the first ai_learning_events
+    // POST this test's array happened to receive" -- this is what the
+    // test actually claims to prove, and stays correct even if an
+    // unrelated background write (e.g. a prior test's deliberately
+    // abandoned fire-and-forget promise, see test G) ever lands here too.
+    const learningWrite = requests.find((r) => r.method === 'POST' && r.url.includes('ai_learning_events') && r.body?.source_message_id === userMessageInsert?.body?.id)
     expect(userMessageInsert?.body?.id).toBeDefined()
     expect(typeof userMessageInsert?.body?.id).toBe('string')
     expect(learningWrite?.body?.source_message_id).toBe(userMessageInsert?.body?.id)
@@ -269,5 +296,78 @@ describe('ALF-1A live-capture wiring inside /chat', () => {
 
     const learningWrite = requests.find((r) => r.method === 'POST' && r.url.includes('ai_learning_events'))
     expect(learningWrite?.body?.source_message_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)
+  })
+
+  // Item 7 (ALF-1A correction): real integration coverage using the
+  // ACTUAL deterministic routing path (detectWriteDomainSignal ->
+  // assembleTaskWriteIntent/assembleCalendarWriteIntent), not the label
+  // assembler called directly with hand-supplied fields. mode='off' is
+  // used deliberately (per the correction's own instruction) -- it
+  // exercises the real parse-and-classify path while guaranteeing zero
+  // consequential mutation (no task/event is actually created).
+  describe('section 7: real Persian routing integration', () => {
+    it('A: an exact-clock-time Persian task-noun message captures write/calendar/create_calendar_event/calendar.create_event', async () => {
+      const { requests, aiRunSpy } = installRouter({ flowWriteMode: 'off' })
+      const { ctx, promises } = makeCtx()
+      const env = testEnv({
+        AI: { run: aiRunSpy } as unknown as Env['AI'],
+        AI_LEARNING_CAPTURE_ENABLED: 'true',
+      })
+      const message = 'برای فردا ساعت ۱۰ یک تسک بساز که به احمد زنگ بزنم'
+
+      const response = await worker.fetch(chatRequest({ message }), env, ctx)
+      expect(response.status).toBe(200)
+      await Promise.all(promises())
+
+      const learningWrite = requests.find((r) => r.method === 'POST' && r.url.includes('ai_learning_events'))
+      expect(learningWrite?.body?.event_kind).toBe('production_label')
+      const payload = learningWrite?.body?.payload as Record<string, unknown> | undefined
+      expect(payload?.domain).toBe('calendar')
+      expect(payload?.intentType).toBe('create_calendar_event')
+      expect(payload?.toolId).toBe('calendar.create_event')
+      // Item 6: production label language is always 'unknown' -- never the
+      // user's response-language preference.
+      expect(payload?.language).toBe('unknown')
+    })
+
+    it('B: a date-only (no clock time) Persian task-noun message captures write/tasks/create_task/tasks.create', async () => {
+      const { requests, aiRunSpy } = installRouter({ flowWriteMode: 'off' })
+      const { ctx, promises } = makeCtx()
+      const env = testEnv({
+        AI: { run: aiRunSpy } as unknown as Env['AI'],
+        AI_LEARNING_CAPTURE_ENABLED: 'true',
+      })
+      const message = 'برای فردا یک تسک بساز که به احمد زنگ بزنم'
+
+      const response = await worker.fetch(chatRequest({ message }), env, ctx)
+      expect(response.status).toBe(200)
+      await Promise.all(promises())
+
+      const learningWrite = requests.find((r) => r.method === 'POST' && r.url.includes('ai_learning_events'))
+      expect(learningWrite?.body?.event_kind).toBe('production_label')
+      const payload = learningWrite?.body?.payload as Record<string, unknown> | undefined
+      expect(payload?.domain).toBe('tasks')
+      expect(payload?.intentType).toBe('create_task')
+      expect(payload?.toolId).toBe('tasks.create')
+    })
+
+    it('a normal read/non-write turn never gets a fabricated production_label (item 1: capture point removed)', async () => {
+      currentProviders = stubProviders({
+        text: new StubTextGenerationProvider(async () => ({ text: 'I am doing well, thanks for asking!', finishReason: 'stop' })),
+      })
+      const { requests, aiRunSpy } = installRouter()
+      const { ctx, promises } = makeCtx()
+      const env = testEnv({
+        AI: { run: aiRunSpy } as unknown as Env['AI'],
+        AI_LEARNING_CAPTURE_ENABLED: 'true',
+      })
+
+      const response = await worker.fetch(chatRequest({ message: 'Hello, how are you today?' }), env, ctx)
+      expect(response.status).toBe(200)
+      await Promise.all(promises())
+
+      expect(aiRunSpy).not.toHaveBeenCalled()
+      expect(requests.some((r) => r.url.includes('ai_learning_events'))).toBe(false)
+    })
   })
 })

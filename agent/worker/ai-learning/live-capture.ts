@@ -1,6 +1,8 @@
 // ALF-1A (ADR-0021): the single orchestration entry point index.ts calls
-// via `ctx.waitUntil(...)` for each of its five deterministic capture
-// points (see index.ts's own comments at each call site). Ties together:
+// via `ctx.waitUntil(...)` for each of its four deterministic capture
+// points (see index.ts's own comments at each call site -- a plain
+// non-write/read turn is deliberately never captured, see ADR-0021's
+// round-1 correction note). Ties together:
 // correlation/idempotency (correlation.ts), the production-label builder
 // (production-routing-label.ts), the append-only ledger
 // (agent/worker/ai-learning/learning-ledger.ts, unchanged from ALF-0), and
@@ -28,7 +30,7 @@
 
 import type { Env } from '../types'
 import type { AiLearningLanguage } from '../../../shared/aiLearning'
-import { appendAiLearningEvent } from './learning-ledger'
+import { appendAiLearningEvent, computeSourceHash } from './learning-ledger'
 import {
   buildLearningCorrelationId,
   buildProductionLabelIdempotencyKey,
@@ -85,6 +87,7 @@ function boundedForLog(value: string, maxLength = 200): string {
 async function appendProductionLabel(
   params: CaptureProductionRoutingTurnParams,
   correlationId: string,
+  sourceHash: string,
   logger: Pick<Console, 'log' | 'error'>,
 ): Promise<void> {
   const built = buildProductionRoutingLabel(params.label)
@@ -106,6 +109,7 @@ async function appendProductionLabel(
     eventKind: 'production_label',
     producerType: 'deterministic_policy',
     labelConfidence: 'validated',
+    sourceHash,
     payload: { ...built.payload },
   }, { logger })
 
@@ -119,6 +123,7 @@ async function appendProductionLabel(
 async function runShadowPrediction(
   params: CaptureProductionRoutingTurnParams,
   correlationId: string,
+  sourceHash: string,
   logger: Pick<Console, 'log' | 'error'>,
 ): Promise<void> {
   if (!params.config.shadow) {
@@ -176,6 +181,7 @@ async function runShadowPrediction(
     // -- this is the value this module will ever construct, not merely
     // the value the shared validator happens to allow.
     labelConfidence: 'candidate',
+    sourceHash,
     payload: { ...result.payload },
   }, { logger })
 
@@ -198,10 +204,20 @@ export async function captureProductionRoutingTurn(
 
   try {
     const correlationId = buildLearningCorrelationId(params.sourceMessageId)
-    await appendProductionLabel(params, correlationId, logger)
-    await runShadowPrediction(params, correlationId, logger)
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    logger.error('[AiLearning] captureProductionRoutingTurn failed unexpectedly (learning failure, not a production failure):', message)
+    // Item 3 (ALF-1A correction): computed ONCE per invocation and reused
+    // for both events belonging to this turn -- a production_label and a
+    // shadow_prediction for the SAME turn must fingerprint the SAME raw
+    // text, never two independently-computed hashes.
+    const sourceHash = await computeSourceHash(params.rawMessage)
+    await appendProductionLabel(params, correlationId, sourceHash, logger)
+    await runShadowPrediction(params, correlationId, sourceHash, logger)
+  } catch {
+    // Item 4 (ALF-1A correction): NEVER log error.message/String(error)/
+    // stack/provider response/raw message here. An unexpected failure at
+    // this level could originate from almost anywhere in the call chain
+    // (including a dependency whose own thrown Error happens to embed
+    // request content) -- only a fixed, bounded, content-free line is
+    // safe to emit unconditionally.
+    logger.error('[AiLearning] status=failed reason=unexpected_error')
   }
 }

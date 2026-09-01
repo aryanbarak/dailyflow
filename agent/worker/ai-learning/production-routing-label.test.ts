@@ -55,8 +55,15 @@ describe('buildProductionRoutingLabel', () => {
     if (!result.ok) expect(result.errors.length).toBeGreaterThan(0)
   })
 
-  // M. "سلام" -> conversation / domain none / no tool / requiresApproval false.
-  it('M: an ordinary greeting production-label shape ("سلام") is conversation/none/no-tool/no-approval', () => {
+  // M. SUPERSEDED (ALF-1A correction round 1, item 1): production code has
+  // no deterministic classifier for a non-write turn's actual
+  // conversation-vs-read-vs-domain shape, so index.ts no longer calls this
+  // builder for that case at all -- there is no live capture point this
+  // test corresponds to anymore. Retained ONLY as a builder-level unit
+  // test proving buildProductionRoutingLabel itself can still assemble
+  // this shape if a future, deterministic non-write/read classifier ever
+  // supplies it (a separate, reviewed slice).
+  it('M (superseded -- builder-level only, no live capture point): an ordinary greeting shape ("سلام") is conversation/none/no-tool/no-approval', () => {
     const result = buildProductionRoutingLabel({
       language: 'fa',
       interactionClass: 'conversation',
@@ -114,13 +121,13 @@ describe('buildProductionRoutingLabel', () => {
     }
   })
 
-  // P. informational time mention -> no false write (mirrors section 10's
-  // "جلسه من فردا ساعت ۱۰ است؟" example -- a question mentioning a time is
-  // NOT a write merely because a clock time exists; production code's own
-  // deterministic write detection never triggers for it, so the ONLY
-  // truthful label this turn can carry is the plain conversation shape --
-  // see index.ts's own writeDomainSignal==='none' capture point).
-  it('P: an informational time-mention question never gets a write-shaped label', () => {
+  // P. SUPERSEDED (ALF-1A correction round 1, item 1): see M's own note
+  // above. An informational time-mention question ("جلسه من فردا ساعت ۱۰
+  // است؟") is genuinely never write-shaped, but index.ts no longer
+  // captures a label for it at all -- there is no live
+  // writeDomainSignal==='none' capture point anymore. Retained
+  // builder-level only.
+  it('P (superseded -- builder-level only, no live capture point): an informational time-mention question never gets a write-shaped label', () => {
     const result = buildProductionRoutingLabel({
       language: 'fa',
       interactionClass: 'conversation',

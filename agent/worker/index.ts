@@ -66,8 +66,9 @@ import { buildBatchImportPreview, selectImportableRows } from '../../shared/bank
 // comment for exactly which outcome it describes and why. Zero runtime
 // authority: nothing imported here is ever read back into a write/policy/
 // approval decision in this file.
-import { captureProductionRoutingTurn } from './ai-learning/live-capture'
+import { captureProductionRoutingTurn, type CaptureProductionRoutingTurnParams } from './ai-learning/live-capture'
 import { resolveLiveCaptureConfig, type LiveCaptureConfig } from './ai-learning/live-capture-config'
+import { requiresClarificationForWriteExecutionStatus } from './ai-learning/write-execution-label'
 
 // ADR-0010 Product Owner Resolution Q4: always-on background extraction
 // into user_context is DISABLED by this decision (SUPERSEDE per Q3 --
@@ -740,12 +741,22 @@ async function respondToWriteExecution(
   // false -- 'auto' mode means the user's standing permission already
   // authorized this, no approval flow was ever shown, regardless of
   // whether the write itself succeeded, failed, or paused for
-  // clarification. requiresClarification is true only for 'clarify'/
-  // 'provider_unavailable' -- the two statuses where the deterministic
-  // parser never reached a fully-formed write proposal in the first
-  // place (see this function's own header comment). Fire-and-forget via
-  // ctx.waitUntil, exactly like recordProposalOutcome below -- never
-  // awaited, never able to delay or fail this response.
+  // clarification. requiresClarification is delegated to
+  // requiresClarificationForWriteExecutionStatus (ALF-1A correction item
+  // 5): only 'clarify' is a genuine production clarification outcome --
+  // 'provider_unavailable' means the AI provider was unreachable while
+  // resolving a title, which produced an honest unavailability reply, not
+  // a clarifying question, and must never be mislabeled as one. `language`
+  // is 'unknown' (ALF-1A correction item 6): SmartFlow has no existing
+  // deterministic classifier for the LANGUAGE OF THIS MESSAGE (the
+  // `language` variable in scope here is the user's own response-language
+  // PREFERENCE, not a classification of what language they just typed) --
+  // see ADR-0021's own note on this limitation. This insert already
+  // happened successfully above (item 2: capture only ever follows a
+  // durable source-message insert) -- if it had thrown, execution would
+  // never reach this line. Fire-and-forget via ctx.waitUntil, exactly
+  // like recordProposalOutcome below -- never awaited, never able to
+  // delay or fail this response.
   if (identity && liveCaptureConfig.captureEnabled) {
     ctx.waitUntil(captureProductionRoutingTurn({
       env,
@@ -755,12 +766,12 @@ async function respondToWriteExecution(
       sourceMessageId,
       rawMessage: message,
       label: {
-        language,
+        language: 'unknown',
         interactionClass: 'write',
         domain,
         intentType: identity.intentType,
         toolId: identity.toolId,
-        requiresClarification: execution.status === 'clarify' || execution.status === 'provider_unavailable',
+        requiresClarification: requiresClarificationForWriteExecutionStatus(execution.status),
         requiresApproval: false,
       },
     }))
@@ -1208,6 +1219,12 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
     // per-branch) -- every capture call site below shares this SAME
     // fail-closed config rather than each re-parsing env vars.
     const liveCaptureConfig: LiveCaptureConfig = resolveLiveCaptureConfig(env)
+    // ALF-1A correction item 2: the pending-ask-mode capture (staged
+    // further below) cannot fire until this turn's user message is
+    // durably inserted, which for that branch happens later than the
+    // capture decision itself -- see scheduleStagedLearningCapture's own
+    // comment at its declaration.
+    let stagedLearningCapture: CaptureProductionRoutingTurnParams | null = null
 
     // Task 22 / Slice 2B.1.1 -- routing: a request naming a calendar
     // concept is calendar business regardless of whether a time was
@@ -1248,7 +1265,10 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
           sourceMessageId: userMessageId,
           rawMessage: message,
           label: {
-            language,
+            // ALF-1A correction item 6: 'unknown', not the user's own
+            // response-language preference -- see the identical note at
+            // respondToWriteExecution's own capture point.
+            language: 'unknown',
             interactionClass: 'clarification',
             domain: 'unknown',
             requiresClarification: true,
@@ -1313,7 +1333,8 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
             sourceMessageId: userMessageId,
             rawMessage: message,
             label: {
-              language,
+              // ALF-1A correction item 6.
+              language: 'unknown',
               interactionClass: 'write',
               domain,
               intentType: offIdentity.intentType,
@@ -1402,9 +1423,21 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
       // above is the literal, real value about to be sent back to the
       // frontend in this response's JSON -- requiresApproval=true here is
       // not an inference, it is exactly what that field already says.
+      //
+      // ALF-1A correction item 2: this turn's `agent_chat_messages` user
+      // row has NOT been inserted yet at this point in this branch -- it
+      // is inserted later, after the plain-chat model call succeeds (or
+      // one of the two error branches below it), all using this SAME
+      // `userMessageId`. Capture must never be scheduled before that
+      // durable insert actually lands, so it is only STAGED here; whichever
+      // of the three insert sites below actually runs for this turn calls
+      // scheduleStagedLearningCapture() right after its own insert
+      // succeeds. If that insert throws instead, execution never reaches
+      // that call, and this turn gets zero learning event -- exactly per
+      // item 2's own requirement.
       const askIdentity = writeIntentOutcomeIdentity(kind)
       if (askIdentity && liveCaptureConfig.captureEnabled) {
-        ctx.waitUntil(captureProductionRoutingTurn({
+        stagedLearningCapture = {
           env,
           config: liveCaptureConfig,
           userId,
@@ -1412,7 +1445,8 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
           sourceMessageId: userMessageId,
           rawMessage: message,
           label: {
-            language,
+            // ALF-1A correction item 6.
+            language: 'unknown',
             interactionClass: 'write',
             domain,
             intentType: askIdentity.intentType,
@@ -1420,36 +1454,29 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
             requiresClarification: false,
             requiresApproval: true,
           },
-        }))
+        }
       }
-    } else if (writeDomainSignal === 'none') {
-      // ALF-1A (ADR-0021) capture point: no deterministic write trigger
-      // matched anywhere in this message -- production code's own
-      // handling for this case is to treat it as ordinary conversation
-      // (build a system prompt, call the text-generation provider, return
-      // its reply -- see the plain chat flow just below), with zero
-      // domain-specific handling of any kind. That absence of special
-      // handling IS the truthful label: interactionClass='conversation',
-      // domain='none'. Captured here, decoupled from whether the model
-      // call further below succeeds or fails, since writeDomainSignal
-      // itself is already final at this point regardless of what happens
-      // next.
-      if (liveCaptureConfig.captureEnabled) {
-        ctx.waitUntil(captureProductionRoutingTurn({
-          env,
-          config: liveCaptureConfig,
-          userId,
-          sessionId,
-          sourceMessageId: userMessageId,
-          rawMessage: message,
-          label: {
-            language,
-            interactionClass: 'conversation',
-            domain: 'none',
-            requiresClarification: false,
-            requiresApproval: false,
-          },
-        }))
+    }
+    // ALF-1A correction item 1: a plain conversational/read turn
+    // (writeDomainSignal === 'none') is deliberately NEVER captured here.
+    // SmartFlow's current /chat handler has no deterministic classifier
+    // that distinguishes ordinary conversation from a read of tasks,
+    // calendar, github, or any other domain for such a turn -- only the
+    // ABSENCE of a matched write trigger is known, which is not the same
+    // thing as a validated 'conversation'/'none' (or any other) label. A
+    // partial, truthful ledger beats a complete, fabricated one (ADR-0021
+    // Decision 13): this slice captures only the five outcome points where
+    // production code's own decision is genuinely known. A real
+    // non-write/read classifier is deferred to a future, separately
+    // reviewed slice -- see ADR-0021's own note on this correction.
+    //
+    // The staged ask-mode capture set above (if any) fires once this
+    // turn's message is durably inserted, whichever of the branches below
+    // actually runs for this turn.
+    const scheduleStagedLearningCapture = () => {
+      if (stagedLearningCapture) {
+        ctx.waitUntil(captureProductionRoutingTurn(stagedLearningCapture))
+        stagedLearningCapture = null
       }
     }
 
@@ -1516,6 +1543,7 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
         console.error('[Chat] attachment provider error:', err)
         const reply = ATTACHMENT_UNSUPPORTED_CHAT_REPLY[language]
         await supabasePost(env, 'agent_chat_messages', { id: userMessageId, user_id: userId, session_id: sessionId, role: 'user', content: message })
+        scheduleStagedLearningCapture()
         await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: reply })
         return json({ reply }, 200, origin)
       }
@@ -1528,6 +1556,7 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
       console.error(`[UnavailableCause] cause=WORKER_PROVIDER_UNAVAILABLE_CHAT httpStatus=${err.status ?? 'none'}`, err)
       const reply = PROVIDER_UNAVAILABLE_CHAT_REPLY[language]
       await supabasePost(env, 'agent_chat_messages', { id: userMessageId, user_id: userId, session_id: sessionId, role: 'user', content: message })
+      scheduleStagedLearningCapture()
       await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: reply })
       return json({ reply }, 200, origin)
     }
@@ -1544,12 +1573,12 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
     const reply = claimCheck.text
 
     // Persist both after a successful Gemini call so no orphaned turns are saved on error.
-    // ALF-1A (ADR-0021): `id: userMessageId` here is the SAME id any
-    // capture point above already used as ai_learning_events
-    // .source_message_id for this turn (writeDomainSignal==='none', or
-    // the pendingWritePolicy 'ask'/'not_found' fallthrough) -- this is
-    // the actual row that id refers to.
+    // ALF-1A (ADR-0021): `id: userMessageId` here is the SAME id the
+    // staged pendingWritePolicy 'ask'/'not_found' capture (if any) above
+    // was built against -- this is the actual row that id refers to, and
+    // (item 2) capture is only ever scheduled AFTER this insert succeeds.
     await supabasePost(env, 'agent_chat_messages', { id: userMessageId, user_id: userId, session_id: sessionId, role: 'user', content: message })
+    scheduleStagedLearningCapture()
     await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: reply })
 
     // Bump session's updated_at so sidebar sorts by most recently active
