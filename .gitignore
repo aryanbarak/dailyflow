@@ -49,3 +49,14 @@ agent/worker/.dev.vars.*
 .github-qa-pids
 .codex/*
 !.codex/config.toml
+
+# ALF-0: SmartFlow AI Learning Foundation (ADR-0020) -- model weights and
+# training checkpoints are never committed; the datasets/manifests/configs
+# that describe them ARE committed (ai/evals/, ai/training/*.md and config
+# files, ai/manifests/) and must NOT be added here.
+*.safetensors
+*.gguf
+ai/training/checkpoints/
+ai/training/runs/
+*.ckpt
+*.bin.index.json
