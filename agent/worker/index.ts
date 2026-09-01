@@ -1150,13 +1150,21 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
 
     let pendingWritePolicy: { domain: 'tasks' | 'calendar' | 'finance'; action: 'create' | 'update'; mode: 'ask' } | undefined
 
-    // Task 22 -- routing: a request naming a calendar concept, or a
-    // task-shaped request that ALSO carries a resolved time-of-day
-    // (tasks have no time-of-day column), is calendar business; a
-    // date-only task-shaped request is unchanged from today. Both noun
-    // classes matching is genuinely ambiguous -- ask once, don't loop:
-    // no pending state is stored, so the very next message is evaluated
-    // fresh and resolves on its own once it names either domain.
+    // Task 22 / Slice 2B.1 -- routing (LOCKED DOMAIN RULE): a request
+    // naming a calendar concept is calendar business regardless of
+    // whether a time was given. A request naming an EXPLICIT task noun
+    // that ALSO carries a resolved time-of-day (tasks have no time-of-day
+    // column) is a genuine ambiguity to ask about, not silently
+    // reclassified into calendar -- see detectWriteDomainSignal's own
+    // comment on 'task_time_ambiguous' vs 'ambiguous'. Only a task write
+    // with NO explicit noun at all (a bare personal statement like "I
+    // have a dentist appointment tomorrow at 3pm") still silently
+    // resolves to calendar when a time is present -- unchanged. A
+    // date-only task-shaped request is unchanged from today. Two
+    // DIFFERENT domain nouns both matching is genuinely ambiguous -- ask
+    // once, don't loop: no pending state is stored, so the very next
+    // message is evaluated fresh and resolves on its own once it names
+    // either domain.
     const writeDomainSignal = detectWriteDomainSignal(message, new Date(), timeZone)
     if (writeDomainSignal === 'ambiguous') {
       const reply = language === 'de'
@@ -1164,6 +1172,16 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
         : language === 'fa'
           ? 'رویداد تقویم بسازم یا تسک؟'
           : 'Should I create a calendar event or a task?'
+      await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'user', content: message })
+      await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: reply })
+      return json({ reply }, 200, origin)
+    }
+    if (writeDomainSignal === 'task_time_ambiguous') {
+      const reply = language === 'de'
+        ? 'Aufgaben unterstützen noch keine Uhrzeit. Soll ich sie als Aufgabe ohne Uhrzeit anlegen, oder als Kalendertermin zur genannten Uhrzeit?'
+        : language === 'fa'
+          ? 'تسک‌ها فعلاً ساعت مشخص ندارند. آن را به‌عنوان Task بدون ساعت بسازم، یا به‌عنوان یک Calendar Event در همان ساعت؟'
+          : "Tasks don't support a specific time yet. Should I create it as a Task without a time, or as a Calendar Event at that time?"
       await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'user', content: message })
       await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: reply })
       return json({ reply }, 200, origin)

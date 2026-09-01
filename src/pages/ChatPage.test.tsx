@@ -17,6 +17,7 @@ import {
   CHAT_REQUEST_TIMEOUT_MS,
   ChatBubble,
   classifyMessageIntentSignal,
+  classifyTaskCalendarFollowUp,
   getAmbiguousOfferHint,
   getAmbiguousOfferText,
   isAutoExecutableReadOnlyProposal,
@@ -34,7 +35,7 @@ import {
   shouldUseReasoningForMessage,
 } from "./ChatPage";
 import { shouldAutoRunReadOnlyOverlay } from "@/features/chat/autoReadOverlayGate";
-import { ENGINEERING_TASK_NOT_PROPOSED_REASON_MARKER, getStrongReadDomainEvidence, getToolById, isAutoExecutableReadOnlyToolId, PROVIDER_UNAVAILABLE_REASON_MARKER, withTimeout } from "@/features/agent";
+import { ENGINEERING_TASK_NOT_PROPOSED_REASON_MARKER, TASK_TIME_CLARIFICATION_REASON_MARKER, getStrongReadDomainEvidence, getToolById, isAutoExecutableReadOnlyToolId, PROVIDER_UNAVAILABLE_REASON_MARKER, withTimeout } from "@/features/agent";
 import type {
   AgentReasoningResult,
   ReadOnlyRuntimeResult,
@@ -812,6 +813,97 @@ describe("ChatPage LLM reasoning UX boundary", () => {
     expect(uncertainHtml).not.toContain("Review approval");
     expect(uncertainHtml).not.toContain(">Complete task</button>");
     expect(uncertainHtml).toContain("We could not confirm whether this action completed");
+  });
+
+  // Chat V2 Slice 2B.1: TASK_TIME_CLARIFICATION_REASON_MARKER proposals are
+  // ordinary ask_clarification results -- proposalToState/stepForReasoning's
+  // own pre-existing, blanket rule ("!proposal.toolId || proposal.type ===
+  // 'ask_clarification' || proposal.type === 'unsupported' -> null step")
+  // already applies to them like every other clarification, with no new
+  // mechanism needed. This is what makes items 15-17 of the slice's own
+  // test matrix true: proposal.step === null is what
+  // requestWriteExecution's ChatPage.tsx effect gates on (it only fires
+  // "if (!proposal.step || ...) continue"), so no execution request, no
+  // approval_pending row, and no executable approval are even reachable
+  // for this proposal -- proven here structurally, not by mocking the
+  // Worker and hoping it's never called.
+  describe("Slice 2B.1: task-time clarification never produces an actionable step (no execution request, no approval_pending row, no executable approval)", () => {
+    const clarificationResult: AgentReasoningResult = {
+      proposal: {
+        id: "intent:ask_clarification:task-time-1",
+        type: "ask_clarification",
+        confidence: "medium",
+        userMessage: "Create a task for tomorrow at 3pm to call Ahmad",
+        target: { title: "Call Ahmad" },
+        requestedDomain: undefined,
+        requiresTool: false,
+        requiresApproval: false,
+        clarificationQuestion: "Tasks don't support a specific time yet. Should I create it as a Task without a time, or as a Calendar Event at that time?",
+        reasons: [TASK_TIME_CLARIFICATION_REASON_MARKER, "Explicit task request named a time-of-day, which tasks do not support -- clarification required before any execution intent."],
+        language: "en",
+        generatedAt: now,
+        schemaVersion: 1,
+      },
+      validationReasons: ["Explicit task request named a time-of-day, which tasks do not support -- clarification required before any execution intent."],
+      responseLanguage: "en",
+      promptPreview: {
+        containsTaskNotes: false,
+        containsRawMemory: false,
+        containsAuditPolicy: false,
+        containsUserId: false,
+      },
+    };
+
+    it("proposalToState resolves no step at all for it", () => {
+      const t = (key: string) => key;
+      const state = proposalToState(clarificationResult, t);
+      expect(state.step).toBeNull();
+      expect(state.approval).toBeNull();
+    });
+
+    it("renders no actionable card content -- only the clarification text, via ReasoningProposalCard's existing 'no runtime action' branch", () => {
+      const t = (key: string) => key;
+      const state = proposalToState(clarificationResult, t);
+      const html = renderToString(
+        <ReasoningProposalCard
+          proposal={state}
+          onRunReadOnly={vi.fn()}
+          onReviewApproval={vi.fn()}
+          onRunWrite={vi.fn()}
+          onConfirmAndRunWrite={vi.fn()}
+        />,
+      );
+      expect(html).not.toContain("<button");
+    });
+  });
+
+  // Chat V2 Slice 2B.1: classifyTaskCalendarFollowUp -- the narrow,
+  // deterministic follow-up-reply classifier ChatPage.tsx's bounded
+  // single-turn continuation uses. "Do NOT infer this consent from
+  // silence": a bare "task" or "10am" reply, with no explicit "without
+  // time"/domain-noun phrase, must match neither branch.
+  describe("classifyTaskCalendarFollowUp (Slice 2B.1 bounded continuation)", () => {
+    it("recognizes an explicit task-without-time answer in EN/DE/FA", () => {
+      expect(classifyTaskCalendarFollowUp("task without time")).toBe("task_without_time");
+      expect(classifyTaskCalendarFollowUp("Make it a task, no time")).toBe("task_without_time");
+      expect(classifyTaskCalendarFollowUp("Aufgabe ohne Uhrzeit")).toBe("task_without_time");
+      expect(classifyTaskCalendarFollowUp("تسک بدون ساعت")).toBe("task_without_time");
+    });
+
+    it("recognizes an explicit calendar answer in EN/DE/FA", () => {
+      expect(classifyTaskCalendarFollowUp("calendar")).toBe("calendar_with_time");
+      expect(classifyTaskCalendarFollowUp("as an event at 10")).toBe("calendar_with_time");
+      expect(classifyTaskCalendarFollowUp("Kalender")).toBe("calendar_with_time");
+      expect(classifyTaskCalendarFollowUp("کلندر ساعت ۱۰")).toBe("calendar_with_time");
+      expect(classifyTaskCalendarFollowUp("تقویم")).toBe("calendar_with_time");
+    });
+
+    it("never infers consent from silence -- a bare answer with no explicit domain word/phrase matches neither branch", () => {
+      expect(classifyTaskCalendarFollowUp("task")).toBeNull();
+      expect(classifyTaskCalendarFollowUp("10am")).toBeNull();
+      expect(classifyTaskCalendarFollowUp("yes")).toBeNull();
+      expect(classifyTaskCalendarFollowUp("بله")).toBeNull();
+    });
   });
 
   it("formats supported runtime results through context synthesis and the response composer", () => {

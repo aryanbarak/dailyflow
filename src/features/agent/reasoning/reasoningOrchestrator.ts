@@ -8,10 +8,12 @@ import { buildReasoningPrompt } from "./reasoningPrompt";
 import {
   AGENT_INTENT_SCHEMA_VERSION,
   type AgentIntentProposal,
+  type AgentIntentTarget,
   type AgentLlmReasoningCaller,
   type AgentLlmReasoningResponse,
   type AgentReasoningInput,
   type AgentReasoningResult,
+  type AgentReasoningSafeContext,
   type AgentReasoningValidationResult,
 } from "./reasoningTypes";
 
@@ -42,6 +44,46 @@ function toAgentReasoningResult(
 
 export interface ReasonAboutUserMessageDependencies {
   callLlmReasoning: AgentLlmReasoningCaller;
+}
+
+// Slice 2B.1: resolves the bounded, single-turn "task without a
+// supported time, or calendar at that time?" continuation -- see
+// intentValidator.ts's TASK_TIME_CLARIFICATION_REASON_MARKER and
+// ChatPage.tsx's own single-turn pending-clarification ref for the full
+// contract (ChatPage arms it only when the immediately preceding overlay
+// result carried that marker, and consumes it on the very next user turn
+// only -- never inferred from silence, never applied to any other turn).
+//
+// Deliberately skips the LLM round-trip entirely: the domain is already
+// known (the user just chose it), so the only thing left to do is re-run
+// the SAME deterministic field extraction (date/time; title/notes come
+// from `capturedTarget`, the model's own guess from the turn that asked
+// the question) validateAgentIntentProposal already applies to any
+// create_task/create_calendar_event proposal. This is a narrow, single-
+// purpose function, not a general re-reasoning entry point -- it always
+// resolves the ORIGINAL triggering message (never the follow-up reply
+// text itself), and always as a create (see ChatPage.tsx's own comment on
+// why the update_task/update_calendar_event siblings are out of this
+// continuation's scope).
+export function resolveTaskCalendarClarificationFollowUp(input: {
+  originalUserMessage: string;
+  resolvedAs: "task_without_time" | "calendar_with_time";
+  capturedTarget: AgentIntentTarget | undefined;
+  safeContext: AgentReasoningSafeContext;
+  language: SupportedAiResponseLanguage;
+  now?: Date;
+  timeZone?: string;
+}): AgentReasoningResult {
+  const validation = validateAgentIntentProposal({
+    rawProposal: { type: "create_task", target: input.capturedTarget },
+    userMessage: input.originalUserMessage,
+    safeContext: input.safeContext,
+    language: input.language,
+    now: input.now,
+    timeZone: input.timeZone,
+    resolvedTaskTimeAmbiguityAs: input.resolvedAs,
+  });
+  return toAgentReasoningResult(validation, input.language);
 }
 
 function fallbackRawProposal(

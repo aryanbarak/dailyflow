@@ -63,7 +63,9 @@ import {
   PROVIDER_UNAVAILABLE_REASON_MARKER,
   MODEL_RESPONSE_INCOMPLETE_REASON_MARKER,
   ENGINEERING_TASK_NOT_PROPOSED_REASON_MARKER,
+  TASK_TIME_CLARIFICATION_REASON_MARKER,
   reasonAboutUserMessage,
+  resolveTaskCalendarClarificationFollowUp,
   resolveAgentReasoningTransport,
   resolveToolForStep,
   runReadOnlyTool,
@@ -74,6 +76,7 @@ import {
   withTimeout,
   type AgentReasoningResult,
   type AgentReasoningGitHubInventory,
+  type AgentIntentTarget,
   type ReadOnlyRuntimeResult,
   type WriteRuntimeResult,
   type ApprovalInteractionResult,
@@ -798,6 +801,33 @@ export function proposalMessage(result: AgentReasoningResult) {
   if (result.proposal.clarificationQuestion) return result.proposal.clarificationQuestion
   const responseT = responseLanguageTranslator(result.responseLanguage)
   return `${responseT('agent_intent_proposed')}: ${intentTitle(result.proposal.type, responseT)}. ${responseT('agent_intent_run_hint')}`
+}
+
+// Chat V2 Slice 2B.1: the ONLY thing this classifies is which side of the
+// TASK_TIME_CLARIFICATION_REASON_MARKER question the user's IMMEDIATE next
+// reply picked -- deliberately narrow (a handful of hand-written phrases
+// per language), never a general intent classifier. Returns null for
+// anything that doesn't clearly match either side, which the caller
+// (handleSend) treats as "no consent given" -- the pending clarification is
+// still consumed (single-turn only, per the contract), but the message
+// falls through to ordinary processing instead of being force-interpreted.
+// This is the concrete embodiment of "do NOT infer this consent from
+// silence": a bare "task" or "10am" reply, with no explicit "without time"/
+// domain-noun phrase, does not match either branch below.
+export function classifyTaskCalendarFollowUp(message: string): 'task_without_time' | 'calendar_with_time' | null {
+  const taskWithoutTime =
+    (/\btask\b/i.test(message) && /\bwithout\s+(?:a\s+)?time\b|\bno\s+time\b/i.test(message)) ||
+    (/\baufgabe\b/i.test(message) && /\bohne\s+uhrzeit\b/i.test(message)) ||
+    (/(تسک|وظیفه)/.test(message) && /بدون\s*(?:ساعت|زمان)/.test(message))
+  if (taskWithoutTime) return 'task_without_time'
+
+  const calendarWithTime =
+    /\bcalendar\b|\bevent\b/i.test(message) ||
+    /\bkalender\b|\btermin\b/i.test(message) ||
+    /کلندر|تقویم|رویداد/.test(message)
+  if (calendarWithTime) return 'calendar_with_time'
+
+  return null
 }
 
 function stepForReasoning(result: AgentReasoningResult, t: Translate): WorkspacePlanStep | null {
@@ -2297,6 +2327,23 @@ export default function ChatPage() {
   const isMemoryOfferEligible = (mimeType: string | null) =>
     mimeType === 'application/pdf' || mimeType === 'text/plain'
 
+  // Chat V2 Slice 2B.1: the bounded, single-turn continuation for
+  // TASK_TIME_CLARIFICATION_REASON_MARKER -- see
+  // resolveTaskCalendarClarificationFollowUp's own comment for the full
+  // contract. Armed only when the immediately preceding overlay result
+  // carried that marker (see the arming site further down in handleSend);
+  // ALWAYS consumed (read once, then cleared) at the top of the very next
+  // handleSend call, matched or not -- so a stale clarification can never
+  // leak into a later, unrelated turn. This is deliberately the ONLY
+  // piece of cross-turn state this correction introduces -- not a general
+  // conversation-history mechanism (see ENG-06h's own deferral note in
+  // intentValidator.ts for why that stays out of scope here).
+  const pendingTaskCalendarClarificationRef = useRef<{
+    originalUserMessage: string
+    capturedTarget: AgentIntentTarget | undefined
+    language: SupportedAiResponseLanguage
+  } | null>(null)
+
   const handleSend = useCallback(async (overrideText?: string) => {
     const text = (overrideText ?? draft).trim()
     if (text === '' || sending) return
@@ -2321,6 +2368,14 @@ export default function ChatPage() {
     // outcome, so it is never silently re-sent on a later, unrelated turn.
     const sentDocument = attachedDocument
 
+    // Chat V2 Slice 2B.1: consumed here, unconditionally, before anything
+    // else -- single-turn only (see the ref's own comment). Whether or
+    // not this message actually resolves the pending clarification, it is
+    // never carried forward to a THIRD turn.
+    const pendingClarification = pendingTaskCalendarClarificationRef.current
+    pendingTaskCalendarClarificationRef.current = null
+    const clarificationResolution = pendingClarification ? classifyTaskCalendarFollowUp(text) : null
+
     let sessionId = activeSessionId
 
     try {
@@ -2329,6 +2384,46 @@ export default function ChatPage() {
         if (!newId) throw new Error('Failed to create session')
         sessionId = newId
         setActiveSessionId(newId)
+      }
+
+      // SHORTCUT PATH: the user's immediately preceding turn asked the
+      // TASK_TIME_CLARIFICATION_REASON_MARKER question and this message
+      // explicitly answered it -- the domain is already known, so this
+      // skips the /chat call and the normal reasoning overlay entirely
+      // (no LLM round-trip; see resolveTaskCalendarClarificationFollowUp's
+      // own comment on why that's safe here). Falls through to ordinary
+      // processing below when pendingClarification was armed but this
+      // message did NOT clearly pick a side -- never force-interpreted.
+      if (pendingClarification && clarificationResolution) {
+        const result = resolveTaskCalendarClarificationFollowUp({
+          originalUserMessage: pendingClarification.originalUserMessage,
+          resolvedAs: clarificationResolution,
+          capturedTarget: pendingClarification.capturedTarget,
+          safeContext: {
+            tasks: liveTaskReasoningContext({
+              tasks,
+              isLoading: tasksLoading,
+              error: tasksError,
+            }),
+            events: workspace.agentContext.events,
+            learningProgress: workspace.agentContext.learningProgress,
+            workspace: {
+              goal: workspace.goal,
+              plan: workspace.plan,
+              signalFeed: workspace.signalFeed,
+            },
+            githubRepositoryInventory,
+          },
+          language: pendingClarification.language,
+          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        })
+        setReasoningProposal(proposalsToStates(result, t))
+        setMessages(prev => [
+          ...prev,
+          { id: `u-${Date.now()}`, role: 'user', content: text },
+          { id: `a-${Date.now() + 1}`, role: 'assistant', content: proposalMessage(result), language: result.responseLanguage },
+        ])
+        return
       }
 
       const { data: { session } } = await supabase.auth.getSession()
@@ -2449,6 +2544,20 @@ export default function ChatPage() {
       }
 
       const [{ reply, writePolicy, writeExecution, undo }, overlayResult] = await Promise.all([chatCallPromise, overlayPromise])
+
+      // Chat V2 Slice 2B.1: arms the bounded, single-turn continuation
+      // ONLY when this exact turn's overlay carried
+      // TASK_TIME_CLARIFICATION_REASON_MARKER -- see the ref's own
+      // comment. Captures the ORIGINAL message text and the model's own
+      // captured target (title/notes) so the shortcut path above can
+      // resume without re-deriving them.
+      if (overlayResult?.proposal.reasons.includes(TASK_TIME_CLARIFICATION_REASON_MARKER)) {
+        pendingTaskCalendarClarificationRef.current = {
+          originalUserMessage: text,
+          capturedTarget: overlayResult.proposal.target,
+          language: responseLanguage,
+        }
+      }
 
       // Task 11d (auto-execute read-only tools): a supported, actionable,
       // non-write, non-disambiguated read proposal whose resolved tool is

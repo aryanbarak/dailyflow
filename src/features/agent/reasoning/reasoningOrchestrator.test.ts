@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { MODEL_RESPONSE_INCOMPLETE_REASON_MARKER, PROVIDER_UNAVAILABLE_REASON_MARKER, reasonAboutUserMessage } from "./reasoningOrchestrator";
+import { MODEL_RESPONSE_INCOMPLETE_REASON_MARKER, PROVIDER_UNAVAILABLE_REASON_MARKER, reasonAboutUserMessage, resolveTaskCalendarClarificationFollowUp } from "./reasoningOrchestrator";
 import { buildReasoningPrompt } from "./reasoningPrompt";
 import type { AgentLlmReasoningCaller, AgentReasoningSafeContext } from "./reasoningTypes";
 
@@ -623,5 +623,74 @@ describe("reasoningOrchestrator disambiguation", () => {
 
     expect(result.proposal.type).toBe("inspect_tasks");
     expect(result.disambiguationCandidates).toBeUndefined();
+  });
+});
+
+// Chat V2 Slice 2B.1: resolveTaskCalendarClarificationFollowUp -- the
+// bounded, single-turn continuation ChatPage.tsx uses once the user's
+// immediately preceding turn asked TASK_TIME_CLARIFICATION_REASON_MARKER's
+// own question and this call resolves it. Deliberately never calls the
+// LLM (no AgentLlmReasoningCaller involved anywhere below) -- proving the
+// follow-up resolution is fully deterministic, matching the function's
+// own header comment.
+describe("resolveTaskCalendarClarificationFollowUp (Slice 2B.1 bounded continuation)", () => {
+  it("'task_without_time' resolves to create_task, preserving the title and date, discarding the time -- no execution row possible before this point since the domain was never settled until now", () => {
+    const result = resolveTaskCalendarClarificationFollowUp({
+      originalUserMessage: "Create a task for tomorrow at 3pm to call the dentist",
+      resolvedAs: "task_without_time",
+      capturedTarget: { title: "Call the dentist" },
+      safeContext,
+      language: "en",
+      now,
+      timeZone: "UTC",
+    });
+    expect(result.proposal.type).toBe("create_task");
+    expect(result.proposal.target?.title).toBe("Call the dentist");
+    expect(result.proposal.target?.dueDate).toBe("2026-07-16");
+  });
+
+  it("'calendar_with_time' resolves to create_calendar_event, preserving the title, date, AND time -- bridging the task-shaped title field", () => {
+    const result = resolveTaskCalendarClarificationFollowUp({
+      originalUserMessage: "Create a task for tomorrow at 3pm to call the dentist",
+      resolvedAs: "calendar_with_time",
+      capturedTarget: { title: "Call the dentist" },
+      safeContext,
+      language: "en",
+      now,
+      timeZone: "UTC",
+    });
+    expect(result.proposal.type).toBe("create_calendar_event");
+    expect(result.proposal.target?.eventTitle).toBe("Call the dentist");
+    expect(result.proposal.target?.start).toBe("2026-07-16T15:00:00.000Z");
+  });
+
+  it("the exact Persian acceptance case: 'task without time' follow-up preserves dueDate, discards the time, never silently becomes calendar", () => {
+    const result = resolveTaskCalendarClarificationFollowUp({
+      originalUserMessage: "برای فردا ساعت ۱۰ یک تسک بساز که به احمد زنگ بزنم",
+      resolvedAs: "task_without_time",
+      capturedTarget: { title: "به احمد زنگ بزنم" },
+      safeContext,
+      language: "fa",
+      now,
+      timeZone: "UTC",
+    });
+    expect(result.proposal.type).toBe("create_task");
+    expect(result.proposal.type).not.toBe("create_calendar_event");
+    expect(result.proposal.target?.dueDate).toBe("2026-07-16");
+  });
+
+  it("the exact Persian acceptance case: 'calendar at 10' follow-up preserves date/time/title", () => {
+    const result = resolveTaskCalendarClarificationFollowUp({
+      originalUserMessage: "برای فردا ساعت ۱۰ یک تسک بساز که به احمد زنگ بزنم",
+      resolvedAs: "calendar_with_time",
+      capturedTarget: { title: "به احمد زنگ بزنم" },
+      safeContext,
+      language: "fa",
+      now,
+      timeZone: "UTC",
+    });
+    expect(result.proposal.type).toBe("create_calendar_event");
+    expect(result.proposal.target?.eventTitle).toBe("به احمد زنگ بزنم");
+    expect(result.proposal.target?.start).toBe("2026-07-16T10:00:00.000Z");
   });
 });
