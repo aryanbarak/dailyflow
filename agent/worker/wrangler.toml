@@ -41,3 +41,8 @@ AI_TEXT_FALLBACK = "on"
 # Secrets — با wrangler secret put تنظیم کن:
 # wrangler secret put SUPABASE_SERVICE_KEY
 # wrangler secret put GEMINI_API_KEY
+# ALF-1A production observation only.
+AI_LEARNING_CAPTURE_ENABLED = "true"
+
+# Shadow remains explicitly disabled until ALF-1B review.
+AI_SHADOW_ENABLED = "false"
