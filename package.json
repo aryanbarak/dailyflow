@@ -27,7 +27,8 @@
     "smartflow:refresh-project": "vite-node scripts/smartflow-refresh-project.ts",
     "smartflow:refresh-project:json": "vite-node scripts/smartflow-refresh-project.ts --json",
     "smartflow:create-project": "vite-node scripts/smartflow-create-project.ts",
-    "provider-contract-smoke": "vite-node scripts/provider-contract-smoke.ts"
+    "provider-contract-smoke": "vite-node scripts/provider-contract-smoke.ts",
+    "ai-learning:live-eval-report": "vite-node scripts/ai-learning/live-eval-report.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

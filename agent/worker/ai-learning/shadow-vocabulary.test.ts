@@ -12,11 +12,31 @@ describe('shadow-only vocabulary (ALF-1A correction round 2, item 1)', () => {
     expect(isAllowedShadowToolId('totally.made_up')).toBe(false)
   })
 
-  it('accepts every real WriteIntentType/WriteIntentToolId from shared/writeIntentRegistry.ts', () => {
-    for (const entry of writeIntentRegistry) {
+  it('accepts every chat-exposed WriteIntentType/WriteIntentToolId from shared/writeIntentRegistry.ts', () => {
+    for (const entry of writeIntentRegistry.filter((e) => e.exposure === 'chat')) {
       expect(isAllowedShadowIntentType(entry.intentType), `intentType=${entry.intentType}`).toBe(true)
       expect(isAllowedShadowToolId(entry.toolId), `toolId=${entry.toolId}`).toBe(true)
     }
+  })
+
+  // ALF-1B decision (resolves a prior non-blocking concern): Shadow Chat
+  // routing vocabulary must NOT accept ui-only registry entries -- a live
+  // chat message can never legitimately route to one, so a Shadow
+  // prediction naming one is never a plausible-but-wrong guess, it is
+  // necessarily wrong by construction. This test fails loudly if a future
+  // registry change ever adds a second ui-only entry without updating
+  // this expectation.
+  it('rejects every ui-only WriteIntentType/WriteIntentToolId from shared/writeIntentRegistry.ts', () => {
+    const uiOnlyEntries = writeIntentRegistry.filter((e) => e.exposure === 'ui-only')
+    expect(uiOnlyEntries.length).toBeGreaterThan(0)
+    for (const entry of uiOnlyEntries) {
+      expect(isAllowedShadowIntentType(entry.intentType), `intentType=${entry.intentType}`).toBe(false)
+      expect(isAllowedShadowToolId(entry.toolId), `toolId=${entry.toolId}`).toBe(false)
+    }
+    // Pin the exact known ui-only intent today, so this test documents
+    // WHICH entry is excluded, not just that some entry is.
+    expect(isAllowedShadowIntentType('import_bank_statement')).toBe(false)
+    expect(isAllowedShadowToolId('finance.import_bank_statement')).toBe(false)
   })
 
   // Parity guard against silent drift, mirroring the offline scorer's own

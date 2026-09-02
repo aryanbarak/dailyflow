@@ -135,6 +135,20 @@ Workers AI catalog compatibility, found four further issues:
    round changes ALF-1A's own scope: the limitations are recorded, not
    solved, here.
 
+## Amendment (ALF-1B)
+
+[ADR-0022](ADR-0022-live-routing-evaluation-and-comparison-semantics.md)
+builds the live-eval comparison layer this ADR's own "Live-Eval
+Limitations" section deferred, and resolves a prior non-blocking concern
+about `shadow-vocabulary.ts`: its allowlist is now scoped to
+`shared/writeIntentRegistry.ts` entries with `exposure === 'chat'` only --
+a ui-only entry (`import_bank_statement`) is no longer a legal Shadow
+prediction, since a live chat message can never legitimately route to one
+in the first place. See ADR-0022 Decision item 11 for the full reasoning.
+This has zero production effect at merge time (`AI_SHADOW_ENABLED=false`,
+no shadow model configured) -- it only narrows what a future, explicitly
+enabled Shadow model would be permitted to predict.
+
 ## Context
 
 ADR-0020 built the foundation (the ledger, the contracts, the eval fixture,

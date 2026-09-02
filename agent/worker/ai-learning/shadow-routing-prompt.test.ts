@@ -7,6 +7,7 @@ import {
   parseShadowRoutingOutput,
 } from './shadow-routing-prompt'
 import { SHADOW_ALLOWED_INTENT_TYPES, SHADOW_ALLOWED_TOOL_IDS } from './shadow-vocabulary'
+import { writeIntentRegistry } from '../../../shared/writeIntentRegistry'
 
 const VALID_JSON = JSON.stringify({
   schemaVersion: 'intent-routing-v1',
@@ -128,22 +129,76 @@ describe('parseShadowRoutingOutput: shadow-only vocabulary gate (round 2, item 1
     }
   })
 
-  it('E: every audited write intentType/toolId from shared/writeIntentRegistry.ts is still accepted end-to-end', () => {
-    for (const intentType of SHADOW_ALLOWED_INTENT_TYPES) {
-      const result = parseShadowRoutingOutput(payloadWith({ intentType }))
-      expect(result.ok, `intentType=${intentType}`).toBe(true)
+  // ALF-1B added a SECOND gate (semantic consistency) after this one --
+  // these payloads must be internally self-consistent (correct domain +
+  // toolId for the intentType under test), or ALF-1B's own gate would
+  // reject them for a completely different reason than the one this test
+  // exists to prove. See shadow-semantic-consistency.test.ts for that
+  // gate's own dedicated coverage.
+  it('E: every audited write (domain, intentType, toolId) combination from shared/writeIntentRegistry.ts is still accepted end-to-end', () => {
+    for (const entry of writeIntentRegistry.filter((e) => e.exposure === 'chat')) {
+      const result = parseShadowRoutingOutput(payloadWith({ domain: entry.domain, intentType: entry.intentType, toolId: entry.toolId }))
+      expect(result.ok, `intentType=${entry.intentType}`).toBe(true)
     }
-    for (const toolId of SHADOW_ALLOWED_TOOL_IDS) {
-      const result = parseShadowRoutingOutput(payloadWith({ toolId }))
-      expect(result.ok, `toolId=${toolId}`).toBe(true)
+    expect(SHADOW_ALLOWED_INTENT_TYPES.length).toBeGreaterThan(0)
+    expect(SHADOW_ALLOWED_TOOL_IDS.length).toBeGreaterThan(0)
+  })
+
+  it('E: every audited non-write (domain, intentType, no toolId) combination is still accepted end-to-end', () => {
+    const nonWriteCases: Array<{ intentType: string; domain: string; interactionClass: string }> = [
+      { intentType: 'read_tasks', domain: 'tasks', interactionClass: 'read' },
+      { intentType: 'read_calendar', domain: 'calendar', interactionClass: 'read' },
+      { intentType: 'read_finance_summary', domain: 'finance', interactionClass: 'read' },
+      { intentType: 'read_github', domain: 'github', interactionClass: 'read' },
+      { intentType: 'unsupported_request', domain: 'none', interactionClass: 'conversation' },
+    ]
+    for (const c of nonWriteCases) {
+      const result = parseShadowRoutingOutput(payloadWith({ domain: c.domain, interactionClass: c.interactionClass, intentType: c.intentType, toolId: undefined }))
+      expect(result.ok, `intentType=${c.intentType}`).toBe(true)
     }
   })
 
-  it('an omitted intentType/toolId (e.g. a conversation/clarification turn) is still accepted -- the gate only constrains a PRESENT value', () => {
+  // ALF-1B correction 1, item 3: an omitted intentType/toolId is accepted
+  // ONLY for the closed, fixture-audited intentless combinations
+  // (conversation/none, clarification/unknown) -- not for every
+  // interactionClass/domain pairing. A write/read turn with no intentType
+  // at all is not itself a recognized routing outcome, so it is now
+  // correctly rejected by the same gate. See
+  // shadow-semantic-consistency.test.ts for that gate's own dedicated
+  // positive/negative coverage.
+  it('an omitted intentType/toolId is accepted for a genuine conversation/clarification turn', () => {
+    const conversation = payloadWith({ interactionClass: 'conversation', domain: 'none', intentType: undefined, toolId: undefined })
+    expect(parseShadowRoutingOutput(conversation).ok).toBe(true)
+
+    const clarification = payloadWith({ interactionClass: 'clarification', domain: 'unknown', intentType: undefined, toolId: undefined })
+    expect(parseShadowRoutingOutput(clarification).ok).toBe(true)
+  })
+
+  it('an omitted intentType/toolId on a write turn (e.g. domain=calendar, interactionClass=write) is rejected -- not every interactionClass/domain pairing is a recognized intentless combination', () => {
     const withoutEither = JSON.parse(VALID_JSON)
     delete withoutEither.intentType
     delete withoutEither.toolId
     const result = parseShadowRoutingOutput(JSON.stringify(withoutEither))
-    expect(result.ok).toBe(true)
+    expect(result).toEqual({ ok: false, reason: 'schema_invalid' })
+  })
+})
+
+// ALF-1B: the semantic CONSISTENCY gate (distinct from the vocabulary
+// ALLOWLIST gate above) -- every individual field can be a known, audited
+// value while the COMBINATION is still impossible.
+describe('parseShadowRoutingOutput: shadow-only semantic consistency gate (ALF-1B)', () => {
+  it('H: domain=tasks + intentType=create_calendar_event + toolId=calendar.create_event is rejected even though every individual value is independently allowlisted', () => {
+    const result = parseShadowRoutingOutput(payloadWith({ domain: 'tasks', intentType: 'create_calendar_event', toolId: 'calendar.create_event' }))
+    expect(result).toEqual({ ok: false, reason: 'schema_invalid' })
+  })
+
+  it('H: domain=finance + intentType=create_task + toolId=tasks.create is rejected', () => {
+    const result = parseShadowRoutingOutput(payloadWith({ domain: 'finance', intentType: 'create_task', toolId: 'tasks.create' }))
+    expect(result).toEqual({ ok: false, reason: 'schema_invalid' })
+  })
+
+  it('rejects a ui-only intent even though it is a real shared/writeIntentRegistry.ts entry', () => {
+    const result = parseShadowRoutingOutput(payloadWith({ domain: 'finance', intentType: 'import_bank_statement', toolId: 'finance.import_bank_statement' }))
+    expect(result).toEqual({ ok: false, reason: 'schema_invalid' })
   })
 })
