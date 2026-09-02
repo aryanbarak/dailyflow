@@ -39,7 +39,7 @@ import {
   twoActionPendingPreviewLines,
 } from "./ChatPage";
 import { shouldAutoRunReadOnlyOverlay } from "@/features/chat/autoReadOverlayGate";
-import { ENGINEERING_TASK_NOT_PROPOSED_REASON_MARKER, getStrongReadDomainEvidence, getToolById, isAutoExecutableReadOnlyToolId, PROVIDER_UNAVAILABLE_REASON_MARKER, withTimeout } from "@/features/agent";
+import { ENGINEERING_TASK_NOT_PROPOSED_REASON_MARKER, getStrongReadDomainEvidence, getToolById, isAutoExecutableReadOnlyToolId, PROVIDER_UNAVAILABLE_REASON_MARKER, reasonAboutUserMessage, withTimeout } from "@/features/agent";
 import type {
   AgentReasoningResult,
   ReadOnlyRuntimeResult,
@@ -2277,6 +2277,18 @@ describe("Chat V2 Slice 2B.2 correction 2, BLOCKER 1: twoActionPendingPreviewLin
     expect(lines).toContain("agent_intent_preview_due: 2027-01-03");
   });
 
+  it("stabilization patch 1, reminder test 4: a 2B.2 task pending action carrying timeOfDay exposes the exact reminder time before approval, shown verbatim", () => {
+    const taskWithReminder = { ...taskPending, arguments: { title: "Dentist appointment", dueDate: "2026-09-04", timeOfDay: "09:00" } };
+    const lines = twoActionPendingPreviewLines(taskWithReminder, t);
+    expect(lines).toContain("family_reminder: 09:00");
+    expect(lines).toContain("agent_intent_preview_due: 2026-09-04");
+  });
+
+  it("no reminder line is shown when timeOfDay is absent (unaffected baseline)", () => {
+    const lines = twoActionPendingPreviewLines(taskPending, t);
+    expect(lines.some((line) => line.startsWith("family_reminder:"))).toBe(false);
+  });
+
   it("3. sibling A/B previews cannot mix arguments -- each is derived only from its own entry's own arguments", () => {
     const calendarLines = twoActionPendingPreviewLines(calendarPending, t);
     const taskLines = twoActionPendingPreviewLines(taskPending, t);
@@ -2323,5 +2335,184 @@ describe("Chat V2 Slice 2B.2 correction 2, BLOCKER 1: twoActionPendingPreviewLin
     const taskLines = twoActionPendingPreviewLines(noTitleTask, t);
     expect(taskLines.some((line) => line.startsWith("agent_intent_preview_title:"))).toBe(false);
     expect(taskLines.join("\n")).not.toContain(noTitleTask.previewText);
+  });
+});
+
+describe("Production stabilization patch 1, follow-up: real ask-mode reminder continuation (turn 2 wiring)", () => {
+  // Turn 1: the exact production message. Under INC-02 (Task writes clamped
+  // to 'ask'), FIX A1 makes the Worker return a clarification directly --
+  // no writePolicy, no task/alarm write -- already proven end to end in
+  // flow-write-policy.test.ts and index.test.ts. Not re-proven here.
+  const TURN1_MESSAGE = "برای فردا یک تسک بساز که یادآوری کند داکتر دندان دارم";
+  // Turn 2: the user supplies only the missing reminder time.
+  const TURN2_MESSAGE = "ساعت ۹";
+
+  // This composes the REAL functions the real path uses, in the real
+  // order handleSend uses them (reasonAboutUserMessage -> the real
+  // parseLlmIntentJson/validateAgentIntentProposal it calls internally ->
+  // resolveChatTurnOutcome), with only the one edge that can never run in
+  // a test mocked out: the network call to the model itself.
+  it("turn 2 alone reaches the client reasoning overlay with zero memory of turn 1, so no approvable create_task proposal -- and therefore no approval card -- can ever form for the real single-action ask-mode path", async () => {
+    let capturedPrompt = "";
+    // The most generous case for the current architecture: even if the
+    // model tries its best to construct a create_task proposal from
+    // "ساعت ۹" alone (rather than the more realistic ask_clarification/
+    // unsupported response an isolated, referent-less message like this
+    // would actually earn), the only field it could possibly supply from
+    // this message is timeOfDay -- it was never shown turn 1's title or
+    // due date, so it cannot invent them.
+    const callLlmReasoning = vi.fn(async (request: { prompt: string }) => {
+      capturedPrompt = request.prompt;
+      return {
+        rawText: JSON.stringify({
+          id: "intent:test:turn2",
+          type: "create_task",
+          confidence: "high",
+          userMessage: TURN2_MESSAGE,
+          requestedDomain: "tasks",
+          toolId: "tasks.create",
+          target: { timeOfDay: "09:00" },
+          requiresTool: true,
+          requiresApproval: true,
+          reasons: ["Best-effort guess from an isolated time-only message."],
+          language: "en",
+          generatedAt: now,
+          schemaVersion: 1,
+        }),
+      };
+    });
+
+    const result = await reasonAboutUserMessage(
+      {
+        userMessage: TURN2_MESSAGE,
+        configuredResponseLanguage: "en",
+        safeContext: { tasks: [], events: [], learningProgress: null, workspace: null },
+        sessionId: "session-reminder-continuation",
+        timeZone: "Europe/Berlin",
+      },
+      { callLlmReasoning },
+    );
+
+    // ROOT CAUSE: buildReasoningPrompt (reasoningPrompt.ts) has no chat-
+    // history parameter at all -- AgentReasoningInput carries only the
+    // single current userMessage plus live app state (safeContext), never
+    // prior turns (see reasoningTypes.ts's AgentReasoningInput and
+    // ChatPage.tsx's own "KNOWN DEAD END" comment above
+    // resolveChatTurnOutcome, task 42, already documenting this exact
+    // limitation for a different domain). The prompt actually sent to the
+    // model for turn 2 contains no trace of turn 1's content.
+    expect(capturedPrompt).not.toContain("دندان");
+    expect(capturedPrompt).not.toContain(TURN1_MESSAGE);
+
+    // CONSEQUENCE: intentValidator.ts's own pre-existing, unmodified
+    // "create_task requires a title" gate (never trust the model further
+    // than it can actually know) rejects this proposal outright --
+    // deterministically, regardless of what the real model would have
+    // guessed -- because no title could possibly have survived from turn 1.
+    expect(result.proposal.type).toBe("ask_clarification");
+    expect(result.proposal.target?.title).toBeUndefined();
+
+    // Feeding this real result into the real turn-outcome decision
+    // function, exactly as handleSend does, with the server's own
+    // ask-mode signal (FIX A2's pendingWritePolicy) present:
+    const t = (key: string) => key;
+    const outcome = resolveChatTurnOutcome(
+      {
+        intentSignal: "explicit",
+        message: TURN2_MESSAGE,
+        responseLanguage: "en",
+        reply: "This action requires your explicit approval before it runs.",
+        overlayResult: result,
+        serverWritePolicyMode: "ask",
+      },
+      t,
+    );
+
+    // No approval card ever forms FROM THE OVERLAY ALONE. This is the
+    // root-cause proof Option B (see the follow-up describe block below)
+    // is built on: the client reasoning overlay can never complete this
+    // continuation by itself, so the fix does not try to make it -- it
+    // instead has the Worker (which DOES have history, via
+    // assembleTaskWriteIntent) send an already-resolved pendingAction the
+    // client renders directly, bypassing this overlay path entirely for a
+    // turn where the server already resolved the write.
+    expect(outcome.reasoningStates).toBeNull();
+  });
+});
+
+describe("Production stabilization patch 1 follow-up: server-resolved pendingAction wiring (Option B)", () => {
+  const pendingActionFromServer = {
+    // Deliberately no `reply` field -- ChatWorkerPendingAction is
+    // Omit<ChatWorkerActionPending, 'reply'>; this fixture proves
+    // buildTwoActionPendingStates accepts that narrower shape structurally,
+    // not just the 2B.2 ChatWorkerActionPending shape which always has one.
+    kind: "pending" as const,
+    writePolicy: { domain: "tasks" as const, action: "create" as const, mode: "ask" as const },
+    toolId: "tasks.create" as const,
+    requestId: "single:msg-1",
+    chatMessageId: "msg-1",
+    arguments: { title: "یادآوری کند داکتر دندان", dueDate: "2026-09-02", timeOfDay: "09:00" },
+    previewText: "یادآوری کند داکتر دندان",
+  };
+
+  it("buildTwoActionPendingStates renders a server pendingAction (no `reply` field) as one 'requesting' card, carrying its exact arguments verbatim", () => {
+    const states = buildTwoActionPendingStates([pendingActionFromServer]);
+    expect(states).toHaveLength(1);
+    expect(states[0]).toMatchObject({
+      requestId: "single:msg-1",
+      toolId: "tasks.create",
+      domain: "tasks",
+      chatMessageId: "msg-1",
+      status: "requesting",
+      arguments: pendingActionFromServer.arguments,
+    });
+  });
+
+  it("the resulting card's own preview lines expose the exact reminder time before approval, same as the 2B.2 preview path", () => {
+    const t = (key: string) => key;
+    const [state] = buildTwoActionPendingStates([pendingActionFromServer]);
+    const lines = twoActionPendingPreviewLines(state, t);
+    expect(lines).toContain("family_reminder: 09:00");
+    expect(lines).toContain("agent_intent_preview_due: 2026-09-02");
+  });
+
+  it("resolveChatTurnOutcome suppresses the overlay's own competing write card whenever hasServerPendingAction is true, even when the overlay independently found an actionable create_task proposal", () => {
+    const t = (key: string) => key;
+    const overlayResult = reasoningResult("create_task", "tasks.create");
+    const outcome = resolveChatTurnOutcome(
+      {
+        intentSignal: "explicit",
+        message: "ساعت ۹",
+        responseLanguage: "en",
+        reply: "Sure -- let me know if there is anything else.",
+        overlayResult,
+        serverWritePolicyMode: "ask",
+        hasServerPendingAction: true,
+      },
+      t,
+    );
+    // No panel from the overlay -- the server's own pendingAction is the
+    // only card for this turn (set separately, via
+    // buildTwoActionPendingStates, in handleSend's own pendingAction
+    // branch). The ordinary conversational reply still shows normally.
+    expect(outcome.reasoningStates).toBeNull();
+    expect(outcome.content).toBe("Sure -- let me know if there is anything else.");
+  });
+
+  it("regression: without hasServerPendingAction, an 'ask'-mode turn with a genuine actionable overlay proposal is unaffected -- still shows its own panel", () => {
+    const t = (key: string) => key;
+    const overlayResult = reasoningResult("create_task", "tasks.create");
+    const outcome = resolveChatTurnOutcome(
+      {
+        intentSignal: "explicit",
+        message: "Create a task to buy milk",
+        responseLanguage: "en",
+        reply: "Sure.",
+        overlayResult,
+        serverWritePolicyMode: "ask",
+      },
+      t,
+    );
+    expect(outcome.reasoningStates).not.toBeNull();
   });
 });

@@ -4,6 +4,7 @@ import path from 'node:path'
 import worker from './index'
 import type { Env } from './types'
 import { writeIntentRegistry } from '../../shared/writeIntentRegistry'
+import { zonedDateTimeToUtcIso } from './flow-write-policy'
 import { buildReasoningResponseSchema } from './reasoning-endpoint'
 import { ProviderRequestError, ProviderUnavailableError } from './provider-errors'
 // ADR-0018 S4: every model call (text-gen: briefing/plain chat/attachment
@@ -16,6 +17,7 @@ import { ProviderRequestError, ProviderUnavailableError } from './provider-error
 // reconstructed wire body) so the many existing count/content assertions
 // throughout this file keep working with minimal, mechanical changes.
 import { StubStructuredGenerationProvider, StubTextGenerationProvider, stubProviders } from './providers/testing/stubProviders'
+import { handleAgentToolExecutionApprove, handleAgentToolExecutionRequest } from './agent-tool-execution'
 import { AttachmentsUnsupportedError } from './providers/workers-ai/WorkersAITextGenerationProvider'
 import type { Providers } from './providers/createProviders'
 import type { NeutralArraySchema, NeutralObjectSchema, NeutralSchema, NeutralStringSchema } from './providers/schema/neutralSchema'
@@ -1613,7 +1615,12 @@ describe('ADR-0012 server-side task write policy', () => {
     expect(body.writePolicy?.mode).toBe('ask')
     expect(body.reply).toBe('Write action requires explicit approval.')
     expect(log.taskWrites.length).toBe(0)
-    expect(log.geminiCalls.length).toBe(1)
+    // Stabilization patch 1 follow-up CORRECTION: 2, not 1 -- the
+    // single-action pendingAction descriptor now resolves its title
+    // through the same resolveCreateTaskTitle call the 'auto' branch and
+    // respondToTwoActionWrite already use, in addition to the plain chat
+    // reply call.
+    expect(log.geminiCalls.length).toBe(2)
   })
 
   it('policy read failure fails closed to ask and does not execute a write', async () => {
@@ -1629,7 +1636,9 @@ describe('ADR-0012 server-side task write policy', () => {
     expect(body.writePolicy?.mode).toBe('ask')
     expect(body.reply).toBe('Write action requires explicit approval.')
     expect(log.taskWrites.length).toBe(0)
-    expect(log.geminiCalls.length).toBe(1)
+    // Stabilization patch 1 follow-up CORRECTION: see the sibling test
+    // above -- the pendingAction title resolution call adds one more.
+    expect(log.geminiCalls.length).toBe(2)
   })
 
   // Chat V2 Slice 2B.1.1: the OLD version of this test (Slice 2B.1)
@@ -1813,12 +1822,14 @@ describe('Chat V2 Slice 1: requested lane never bypasses server write policy', (
     // no task was created merely because the client asked for the fast lane.
     expect(log.taskWrites.length).toBe(0)
 
-    // Proof 3: exactly one text-generation call happened (the plain chat
-    // reply -- title-extraction never runs in the 'ask' branch, matching
-    // the pre-existing test's own count), and it did NOT request Gemini as
-    // primary. If effectiveChatLane had wrongly stayed 'fast', this call's
-    // createProviders options would carry { preferTextProvider: 'gemini' }.
-    expect(log.geminiCalls.length).toBe(1)
+    // Proof 3: exactly two text-generation calls happened -- the
+    // pendingAction title-resolution call (resolveCreateTaskTitle, same as
+    // the 'auto' branch/respondToTwoActionWrite already use) plus the
+    // plain chat reply -- and the LAST one (the plain chat call) did NOT
+    // request Gemini as primary. If effectiveChatLane had wrongly stayed
+    // 'fast', that call's createProviders options would carry
+    // { preferTextProvider: 'gemini' }.
+    expect(log.geminiCalls.length).toBe(2)
     const chatProvidersCall = createProvidersCalls.at(-1)
     expect((chatProvidersCall?.options as { preferTextProvider?: string } | undefined)?.preferTextProvider).toBeUndefined()
   })
@@ -2114,35 +2125,52 @@ describe('Chat V2 Slice 2B.2: two independent actions in one message', () => {
     // action. Mocked here (matching this test's own AUTO-mode sibling
     // above) so this test keeps exercising the ask-mode PENDING path it is
     // actually named for.
-    const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], 'Report')
-    const response = await worker.fetch(chatRequest({
-      message: 'فردا ساعت ۹ با احمد یک قرار ملاقات بساز و برای جمعه یک تسک گزارش بساز',
-      timeZone: 'Europe/Berlin',
-    }), testEnv(), fakeExecutionContext())
-    const body = await response.json() as {
-      actions?: Array<{ kind?: string; writePolicy?: { domain?: string; action?: string; mode?: string }; toolId?: string; requestId?: string; chatMessageId?: string; arguments?: Record<string, unknown> }>
-      reply?: string
-    }
+    //
+    // PRE-PR TEST STABILIZATION: this test hardcodes absolute expected
+    // dates ("2026-09-03"/"2026-09-04") for "فردا"/"جمعه" (tomorrow/Friday)
+    // relative to the REAL system clock -- with no fake timer, it only ever
+    // passed while "today" was really 2026-09-02 (a Wednesday, so
+    // tomorrow=09-03 and Friday=09-04) and was bound to start failing the
+    // moment real time moved past that day, exactly as happened here (see
+    // the file's own task 22-fix comment above for the identical, already
+    // pre-existing pattern of this bug in another describe block). Pinning
+    // the clock to that same anchor date makes it deterministic forever
+    // instead of re-breaking on the next calendar day.
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-02T09:00:00.000Z'))
+    try {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], 'Report')
+      const response = await worker.fetch(chatRequest({
+        message: 'فردا ساعت ۹ با احمد یک قرار ملاقات بساز و برای جمعه یک تسک گزارش بساز',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as {
+        actions?: Array<{ kind?: string; writePolicy?: { domain?: string; action?: string; mode?: string }; toolId?: string; requestId?: string; chatMessageId?: string; arguments?: Record<string, unknown> }>
+        reply?: string
+      }
 
-    expect(response.status).toBe(200)
-    expect(body.reply).toBeUndefined()
-    expect(body.actions).toHaveLength(2)
-    expect(body.actions![0]).toMatchObject({
-      kind: 'pending',
-      writePolicy: { domain: 'calendar', action: 'create', mode: 'ask' },
-      toolId: 'calendar.create_event',
-    })
-    expect(body.actions![0].arguments?.dateTimeStart).toBe('2026-09-03T07:00:00.000Z')
-    expect(body.actions![1]).toMatchObject({
-      kind: 'pending',
-      writePolicy: { domain: 'tasks', action: 'create', mode: 'ask' },
-      toolId: 'tasks.create',
-    })
-    expect(body.actions![1].arguments?.dueDate).toBe('2026-09-04')
-    // No agent_tool_executions row is ever created by /chat itself -- that
-    // is the client's own subsequent requestExecution() call.
-    expect(log.calendarWrites.length).toBe(0)
-    expect(log.taskWrites.length).toBe(0)
+      expect(response.status).toBe(200)
+      expect(body.reply).toBeUndefined()
+      expect(body.actions).toHaveLength(2)
+      expect(body.actions![0]).toMatchObject({
+        kind: 'pending',
+        writePolicy: { domain: 'calendar', action: 'create', mode: 'ask' },
+        toolId: 'calendar.create_event',
+      })
+      expect(body.actions![0].arguments?.dateTimeStart).toBe('2026-09-03T07:00:00.000Z')
+      expect(body.actions![1]).toMatchObject({
+        kind: 'pending',
+        writePolicy: { domain: 'tasks', action: 'create', mode: 'ask' },
+        toolId: 'tasks.create',
+      })
+      expect(body.actions![1].arguments?.dueDate).toBe('2026-09-04')
+      // No agent_tool_executions row is ever created by /chat itself -- that
+      // is the client's own subsequent requestExecution() call.
+      expect(log.calendarWrites.length).toBe(0)
+      expect(log.taskWrites.length).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('CORRECTION 1 -- item 2: Task + Task, both resolve ask, produces two independent pending actions', async () => {
@@ -2442,6 +2470,489 @@ describe('Chat V2 Slice 2B.2: two independent actions in one message', () => {
     expect(body.actions!.every(a => a.kind === 'pending')).toBe(true)
     expect(body.actions![0].arguments?.title).toBeTruthy()
     expect(body.actions![1].arguments?.title).toBeTruthy()
+  })
+})
+
+describe('Production stabilization patch 1', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  describe('FIX A: reminder must survive (or block, honestly, before it can be lost)', () => {
+    it('reminder test 1: the exact production message with no reminder time never produces a task approval -- clarification only, no task write, no alarm write', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'ask')
+      const response = await worker.fetch(chatRequest({
+        message: 'برای فردا یک تسک بساز که یادآوری کند داکتر دندان دارم',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { reply?: string; writePolicy?: unknown }
+
+      expect(response.status).toBe(200)
+      expect(body.writePolicy).toBeUndefined()
+      expect(body.reply).toBeTruthy()
+      expect(log.taskWrites.length).toBe(0)
+      expect(log.alarmWrites.length).toBe(0)
+    })
+
+    it('reminder test 2: turn 2 supplies the missing time -- the merged intent retains dueDate AND resolves timeOfDay through to a real alarm', async () => {
+      const turn1 = 'برای فردا یک تسک بساز که یادآوری کند داکتر دندان دارم'
+      const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [{ role: 'user', content: turn1 }], 'Dentist reminder')
+      const response = await worker.fetch(chatRequest({
+        message: 'بله ساعت ۹',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writeExecution?: string; writePolicy?: { domain?: string; mode?: string } }
+
+      expect(response.status).toBe(200)
+      expect(body.writePolicy).toMatchObject({ domain: 'tasks', mode: 'auto' })
+      expect(body.writeExecution).toBe('executed')
+      expect(log.taskWrites.filter(w => w.method === 'POST')).toHaveLength(1)
+      const dueDate = log.taskWrites[0].body?.due_date as string
+      expect(dueDate).toBeTruthy()
+      expect(log.alarmWrites.filter(w => w.method === 'POST')).toHaveLength(1)
+      expect(log.alarmWrites[0].body?.trigger_at).toBe(zonedDateTimeToUtcIso(dueDate, '09:00', 'Europe/Berlin'))
+    })
+  })
+
+  describe('FIX B: action/work verb routing at the full /chat level', () => {
+    it('routing test 5: "call Ahmad tomorrow at 10" auto-executes as a calendar write', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'Call Ahmad')
+      const response = await worker.fetch(chatRequest({
+        message: 'فردا ساعت ۱۰ به احمد زنگ بزن',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writePolicy?: { domain?: string; mode?: string }; writeExecution?: string }
+
+      expect(response.status).toBe(200)
+      expect(body.writePolicy).toMatchObject({ domain: 'calendar', mode: 'auto' })
+      expect(body.writeExecution).toBe('executed')
+      expect(log.calendarWrites.filter(w => w.method === 'POST')).toHaveLength(1)
+    })
+
+    it('routing test 6: "call Ahmad tomorrow" (no time) auto-executes as a task write', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'Call Ahmad')
+      const response = await worker.fetch(chatRequest({
+        message: 'فردا به احمد زنگ بزن',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writePolicy?: { domain?: string; mode?: string }; writeExecution?: string }
+
+      expect(response.status).toBe(200)
+      expect(body.writePolicy).toMatchObject({ domain: 'tasks', mode: 'auto' })
+      expect(body.writeExecution).toBe('executed')
+      expect(log.taskWrites.filter(w => w.method === 'POST')).toHaveLength(1)
+    })
+
+    it('routing test 7: the exact production compound input now decomposes into TWO independent ask-mode pending actions -- calendar first, task second -- with no dependency on the conversational callGeminiChat call succeeding', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], 'Call Ahmad')
+      const response = await worker.fetch(chatRequest({
+        message: 'فردا ساعت ۱۰ به احمد زنگ بزن و برای جمعه یک تسک گزارش بساز',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { actions?: Array<{ kind?: string; writePolicy?: { domain?: string; mode?: string } }> }
+
+      expect(response.status).toBe(200)
+      expect(body.actions).toHaveLength(2)
+      expect(body.actions!.every(a => a.kind === 'pending')).toBe(true)
+      expect(body.actions![0].writePolicy).toMatchObject({ domain: 'calendar', mode: 'ask' })
+      expect(body.actions![1].writePolicy).toMatchObject({ domain: 'tasks', mode: 'ask' })
+      expect(log.calendarWrites.length).toBe(0)
+      expect(log.taskWrites.length).toBe(0)
+    })
+  })
+
+  describe('FIX C: a conversational-reply provider failure must not erase an already-resolved ask policy', () => {
+    it('provider fallback test 8: pendingWritePolicy survives a callGeminiChat ProviderUnavailableError -- never a bare provider-unavailable reply that loses the action', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], null, null, false, false, 429)
+      const response = await worker.fetch(chatRequest({
+        message: "Create task 'Review invoices' for tomorrow",
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { reply?: string; writePolicy?: { domain?: string; action?: string; mode?: string } }
+
+      expect(response.status).toBe(200)
+      expect(body.writePolicy).toMatchObject({ domain: 'tasks', action: 'create', mode: 'ask' })
+      expect(body.reply).toBeTruthy()
+      expect(body.reply).not.toContain('temporarily unavailable')
+      expect(log.taskWrites.length).toBe(0)
+    })
+
+    it('a genuine provider failure with NO resolved write policy still reports the honest provider-unavailable reply, unchanged', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], null, null, false, false, 429)
+      const response = await worker.fetch(chatRequest({
+        message: 'What tasks do I have today?',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { reply?: string; writePolicy?: unknown }
+
+      expect(response.status).toBe(200)
+      expect(body.writePolicy).toBeUndefined()
+      expect(body.reply).toContain('temporarily unavailable')
+      void log
+    })
+  })
+
+  describe('regression: locked Task/Calendar semantics are unaffected by FIX B', () => {
+    it('"فردا تسک تماس با احمد را بساز" (explicit task noun, no time) still resolves task', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'Call Ahmad')
+      const response = await worker.fetch(chatRequest({
+        message: 'فردا تسک تماس با احمد را بساز',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writePolicy?: { domain?: string } }
+
+      expect(response.status).toBe(200)
+      expect(body.writePolicy).toMatchObject({ domain: 'tasks' })
+      void log
+    })
+
+    it('"فردا ساعت ۱۰ یک تسک بساز که به احمد زنگ بزنم" (explicit task noun + exact time) still resolves calendar', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'Call Ahmad')
+      const response = await worker.fetch(chatRequest({
+        message: 'فردا ساعت ۱۰ یک تسک بساز که به احمد زنگ بزنم',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writePolicy?: { domain?: string } }
+
+      expect(response.status).toBe(200)
+      expect(body.writePolicy).toMatchObject({ domain: 'calendar' })
+      void log
+    })
+  })
+})
+
+describe('Production stabilization patch 1 follow-up: server-resolved single-action pendingAction (Option B)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  // A small in-memory agent_tool_executions table -- just enough to drive
+  // ONE request/approve cycle end to end (this test's own scope). NOT a
+  // re-implementation of agent-tool-execution.test.ts's own
+  // FakeExecutionsTable -- that file's race-condition/idempotency coverage
+  // is untouched and completely unaffected by this follow-up.
+  interface ExecRow {
+    id: string
+    status: string
+    [key: string]: unknown
+  }
+
+  // Covers BOTH what /chat needs (auth, user_settings, personal_memory_records,
+  // flow_write_permissions, agent_chat_messages, chat_sessions) AND what
+  // agent-tool-execution.ts's real request/approve handlers need
+  // (agent_tool_executions, tasks, alarms, flow_write_undo_records) --
+  // deliberately its own small mock, not a reuse/extension of the existing
+  // installFetchMock (which has no agent_tool_executions support at all)
+  // or agent-tool-execution.test.ts's buildFetchMock (which has no /chat
+  // support at all), so neither file's existing coverage is put at risk.
+  function installReminderContinuationFetchMock(chatRows: Array<{ role: string; content: string }>) {
+    let nextExecId = 1
+    const execRows: ExecRow[] = []
+    const taskWrites: Array<{ method: string; body?: Record<string, unknown> }> = []
+    const alarmWrites: Array<{ method: string; body?: Record<string, unknown> }> = []
+
+    const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      const method = init?.method ?? 'GET'
+      const bodyText = init?.body ? String(init.body) : undefined
+      const parsedBody = bodyText ? (JSON.parse(bodyText) as Record<string, unknown>) : undefined
+
+      if (url === `${SUPABASE_URL}/auth/v1/user`) {
+        return new Response(JSON.stringify({ id: 'user-1' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/user_settings`)) {
+        return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_records`)) {
+        return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/flow_write_permissions`)) {
+        return new Response(JSON.stringify([{ mode: 'ask' }]), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/agent_chat_messages`) && method === 'GET') {
+        return new Response(JSON.stringify([...chatRows].reverse()), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/agent_chat_messages`) && method === 'POST') {
+        chatRows.push({ role: String(parsedBody?.role), content: String(parsedBody?.content) })
+        return new Response(null, { status: 201 })
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/chat_sessions`) && method === 'PATCH') {
+        return new Response(null, { status: 204 })
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/agent_tool_executions`)) {
+        if (method === 'POST') {
+          const row: ExecRow = {
+            id: `exec-${nextExecId++}`,
+            status: 'approval_pending',
+            approval_requested_at: new Date().toISOString(),
+            ...parsedBody,
+          }
+          execRows.push(row)
+          return new Response(JSON.stringify([row]), { status: 201 })
+        }
+        if (method === 'GET') {
+          const parsed = new URL(url)
+          const idMatch = parsed.searchParams.get('id')?.replace(/^eq\./, '')
+          const requestIdMatch = parsed.searchParams.get('request_id')?.replace(/^eq\./, '')
+          const userMatch = parsed.searchParams.get('user_id')?.replace(/^eq\./, '')
+          if (idMatch) return new Response(JSON.stringify(execRows.filter(r => r.id === idMatch)), { status: 200 })
+          if (requestIdMatch && userMatch) {
+            return new Response(JSON.stringify(execRows.filter(r => r.request_id === requestIdMatch && r.user_id === userMatch)), { status: 200 })
+          }
+          return new Response(JSON.stringify([]), { status: 200 })
+        }
+        if (method === 'PATCH') {
+          const parsed = new URL(url)
+          const id = parsed.searchParams.get('id')?.replace(/^eq\./, '')
+          const expected = parsed.searchParams.get('status')?.replace(/^eq\./, '')
+          const row = execRows.find(r => r.id === id && r.status === expected)
+          if (!row) return new Response(JSON.stringify([]), { status: 200 })
+          Object.assign(row, parsedBody)
+          return new Response(JSON.stringify([row]), { status: 200 })
+        }
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/tasks`) && method === 'POST') {
+        taskWrites.push({ method, body: parsedBody })
+        return new Response(JSON.stringify([{
+          id: 'task-reminder-1', user_id: 'user-1', title: parsedBody?.title, notes: parsedBody?.notes ?? null,
+          due_date: parsedBody?.due_date ?? null, completed: false,
+          created_at: '2026-09-01T10:00:00.000Z', updated_at: '2026-09-01T10:00:00.000Z',
+        }]), { status: 200 })
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/flow_write_undo_records`)) {
+        return new Response(method === 'GET' ? JSON.stringify([]) : null, { status: method === 'POST' ? 201 : 200 })
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/alarms`) && method === 'POST') {
+        alarmWrites.push({ method, body: parsedBody })
+        return new Response(JSON.stringify([{ id: 'alarm-1', source_id: parsedBody?.source_id, trigger_at: parsedBody?.trigger_at }]), { status: 200 })
+      }
+      throw new Error(`Unexpected fetch in reminder-continuation test: ${method} ${url}`)
+    })
+
+    currentProviders = stubProviders({
+      text: new StubTextGenerationProvider(() => ({ text: 'Sure -- let me know if there is anything else.', finishReason: 'stop' })),
+      structured: new StubStructuredGenerationProvider(() => ({ rawText: '{}', finishReason: 'stop' })),
+    })
+
+    vi.stubGlobal('fetch', mock)
+    return { taskWrites, alarmWrites }
+  }
+
+  it('production reminder continuation: turn 1 clarifies (no pendingAction), turn 2 ("ساعت ۹" alone) returns a pendingAction carrying the authoritative title/dueDate/timeOfDay from the REAL Worker continuation, and the REAL request/approve lifecycle creates the task and its alarm', async () => {
+    const chatRows: Array<{ role: string; content: string }> = []
+    const { taskWrites, alarmWrites } = installReminderContinuationFetchMock(chatRows)
+
+    const turn1Response = await worker.fetch(chatRequest({
+      message: 'برای فردا یک تسک بساز که یادآوری کند داکتر دندان دارم',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const turn1Body = await turn1Response.json() as { reply?: string; writePolicy?: unknown; pendingAction?: unknown }
+    expect(turn1Response.status).toBe(200)
+    expect(turn1Body.writePolicy).toBeUndefined()
+    expect(turn1Body.pendingAction).toBeUndefined()
+    expect(turn1Body.reply).toBeTruthy()
+    expect(taskWrites).toHaveLength(0)
+
+    const turn2Response = await worker.fetch(chatRequest({
+      message: 'ساعت ۹',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const turn2Body = await turn2Response.json() as {
+      reply?: string
+      writePolicy?: { domain?: string; action?: string; mode?: string }
+      pendingAction?: { toolId?: string; requestId?: string; chatMessageId?: string; arguments?: Record<string, unknown>; previewText?: string }
+    }
+    expect(turn2Response.status).toBe(200)
+    expect(turn2Body.writePolicy).toMatchObject({ domain: 'tasks', action: 'create', mode: 'ask' })
+    expect(turn2Body.pendingAction).toBeTruthy()
+    expect(turn2Body.pendingAction!.toolId).toBe('tasks.create')
+    expect(turn2Body.pendingAction!.requestId).toBeTruthy()
+    expect(turn2Body.pendingAction!.chatMessageId).toBeTruthy()
+
+    // The exact, real, Worker-computed continuation intent -- never
+    // hardcoded here.
+    const args = turn2Body.pendingAction!.arguments!
+    expect(args.title).toBeTruthy()
+    expect(args.dueDate).toBeTruthy()
+    expect(args.timeOfDay).toBe('09:00')
+    expect(taskWrites).toHaveLength(0) // still nothing written -- approval has not happened yet
+
+    // Exercise the REAL execution lifecycle with these exact arguments --
+    // never manually constructed.
+    const requestResponse = await handleAgentToolExecutionRequest(
+      new Request('https://worker.test/agent/execution/request', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer user-token' },
+        body: JSON.stringify({
+          toolId: turn2Body.pendingAction!.toolId,
+          arguments: args,
+          requestId: turn2Body.pendingAction!.requestId,
+          chatMessageId: turn2Body.pendingAction!.chatMessageId,
+          timeZone: 'Europe/Berlin',
+        }),
+      }),
+      testEnv(),
+    )
+    expect(requestResponse.status).toBe(200)
+    const requestBody = await requestResponse.json() as { executionId?: string; status?: string }
+    expect(requestBody.status).toBe('approval_pending')
+    expect(taskWrites).toHaveLength(0) // requested, not yet approved
+
+    const approveResponse = await handleAgentToolExecutionApprove(
+      new Request('https://worker.test/agent/execution/approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer user-token' },
+        body: JSON.stringify({ executionId: requestBody.executionId }),
+      }),
+      testEnv(),
+    )
+    expect(approveResponse.status).toBe(200)
+    const approveBody = await approveResponse.json() as { status?: string }
+    expect(approveBody.status).toBe('succeeded')
+
+    expect(taskWrites).toHaveLength(1)
+    expect(taskWrites[0].body?.due_date).toBe(args.dueDate)
+    expect(alarmWrites).toHaveLength(1)
+    expect(alarmWrites[0].body?.source_id).toBe('task-reminder-1')
+    expect(alarmWrites[0].body?.trigger_at).toBe(zonedDateTimeToUtcIso(args.dueDate as string, '09:00', 'Europe/Berlin'))
+  })
+
+  describe('regression: ordinary single-turn ask-mode creates still produce a pendingAction', () => {
+    it('1. an ordinary single-action ask create_task turn produces exactly one pendingAction, carrying the title-resolution model result (resolveCreateTaskTitle), not blindly the parser candidate', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], 'Send the report')
+      const response = await worker.fetch(chatRequest({
+        message: 'فردا یک تسک بساز که گزارش را ارسال کنم',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writePolicy?: { domain?: string; mode?: string }; pendingAction?: { toolId?: string; arguments?: Record<string, unknown> } }
+
+      expect(response.status).toBe(200)
+      expect(body.writePolicy).toMatchObject({ domain: 'tasks', mode: 'ask' })
+      expect(body.pendingAction?.toolId).toBe('tasks.create')
+      expect(body.pendingAction?.arguments?.title).toBe('Send the report')
+      expect(log.taskWrites).toHaveLength(0)
+    })
+
+    it('2. an ordinary single-action ask create_calendar_event turn produces exactly one pendingAction, carrying the title-resolution model result (resolveCreateEventTitle), not blindly the parser candidate', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], 'Team sync')
+      const response = await worker.fetch(chatRequest({
+        message: 'Add an event for next Tuesday at 9am',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writePolicy?: { domain?: string; mode?: string }; pendingAction?: { toolId?: string; arguments?: Record<string, unknown> } }
+
+      expect(response.status).toBe(200)
+      expect(body.writePolicy).toMatchObject({ domain: 'calendar', mode: 'ask' })
+      expect(body.pendingAction?.toolId).toBe('calendar.create_event')
+      expect(body.pendingAction?.arguments?.title).toBe('Team sync')
+      expect(body.pendingAction?.arguments?.dateTimeStart).toBeTruthy()
+      expect(log.calendarWrites).toHaveLength(0)
+    })
+  })
+
+  describe('title-resolution CORRECTION: pendingAction reuses the existing resolveCreateTaskTitle/resolveCreateEventTitle discipline, fail-closed', () => {
+    it('3. provider failure with a valid deterministic pattern fallback still produces a pendingAction, carrying that fallback title', async () => {
+      // geminiStatus 429 forces resolveCreateTaskTitle's own model call to
+      // fail -- resolveCreateTitle's EXISTING, unmodified contract then
+      // falls back to the pattern-extracted title as long as it validates
+      // (validateCandidateTitle). This message's pattern title ("Send
+      // invoice") is short and distinct from the raw message, so it
+      // survives that check.
+      const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], null, null, false, false, 429)
+      const response = await worker.fetch(chatRequest({
+        message: "Create a task called 'Send invoice' for tomorrow",
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writePolicy?: { domain?: string; mode?: string }; pendingAction?: { toolId?: string; arguments?: Record<string, unknown> } }
+
+      expect(response.status).toBe(200)
+      expect(body.writePolicy).toMatchObject({ domain: 'tasks', mode: 'ask' })
+      expect(body.pendingAction?.toolId).toBe('tasks.create')
+      expect(body.pendingAction?.arguments?.title).toBe('Send invoice')
+      expect(log.taskWrites).toHaveLength(0)
+    })
+
+    it('4. no valid title resolves (model finds nothing AND the pattern candidate fails validateCandidateTitle) -> no pendingAction is emitted, never an approvable intent with an unresolved title', async () => {
+      // No taskTitleResult override (model returns nothing) and this
+      // message's own pattern title overlaps too much with the raw
+      // request to pass validateCandidateTitle's own quality gate (see
+      // resolveCreateTitle in flow-write-policy.ts) -- resolveCreateTitle
+      // therefore resolves to undefined, exactly like it already does for
+      // every OTHER existing caller (the 'auto' branch, respondToTwoActionWrite).
+      const log = installFetchMock([], null, 'Gemini should not be called', 'ask')
+      const response = await worker.fetch(chatRequest({
+        message: 'فردا یک تسک بساز که گزارش را ارسال کنم',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writePolicy?: { domain?: string; mode?: string }; pendingAction?: unknown; reply?: string }
+
+      expect(response.status).toBe(200)
+      // writePolicy is still reported honestly (unchanged from before this
+      // correction) -- only the immutable, approvable pendingAction is
+      // withheld.
+      expect(body.writePolicy).toMatchObject({ domain: 'tasks', mode: 'ask' })
+      expect(body.pendingAction).toBeUndefined()
+      expect(body.reply).toBeTruthy()
+      expect(log.taskWrites).toHaveLength(0)
+    })
+
+    it('5. FAIL-CLOSED BUG FIX (tasks.create): provider unavailable AND the parser candidate is truthy but invalid (rejected by validateCandidateTitle) -> pendingAction must be undefined, never built from the original unresolved intent.title', async () => {
+      // Before this fix: the ProviderUnavailableError catch left
+      // taskWriteIntent.title untouched at its ORIGINAL (truthy but
+      // invalid -- rejected inside resolveCreateTitle's own
+      // validateCandidateTitle call, which never mutates intent.title
+      // itself) value, so the truthy check downstream incorrectly still
+      // built a pendingAction from it. This message's pattern title
+      // ("فردا که گزارش را ارسال کنم") is truthy but overlaps too much
+      // with the raw request to pass validateCandidateTitle -- exactly
+      // the shape that must now resolve to no pendingAction at all.
+      const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], null, null, false, false, 429)
+      const response = await worker.fetch(chatRequest({
+        message: 'فردا یک تسک بساز که گزارش را ارسال کنم',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writePolicy?: { domain?: string; mode?: string }; pendingAction?: unknown; reply?: string }
+
+      expect(response.status).toBe(200)
+      expect(body.writePolicy).toMatchObject({ domain: 'tasks', mode: 'ask' })
+      expect(body.pendingAction).toBeUndefined()
+      expect(body.reply).toBeTruthy()
+      expect(log.taskWrites).toHaveLength(0)
+    })
+
+    it('6. FAIL-CLOSED BUG FIX (calendar.create_event): provider unavailable AND the parser candidate is truthy but invalid -> pendingAction must be undefined', async () => {
+      // Same shape as test 5, calendar side: this message's pattern title
+      // is a near-verbatim restatement of the raw request, long enough to
+      // be rejected by validateCandidateTitle -- before this fix, the
+      // ORIGINAL truthy-but-invalid calendarWriteIntent.title would have
+      // survived the ProviderUnavailableError catch untouched.
+      const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], null, null, false, false, 429)
+      const response = await worker.fetch(chatRequest({
+        message: 'Schedule a meeting tomorrow at 3pm to review the quarterly budget with finance',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writePolicy?: { domain?: string; mode?: string }; pendingAction?: unknown; reply?: string }
+
+      expect(response.status).toBe(200)
+      expect(body.writePolicy).toMatchObject({ domain: 'calendar', mode: 'ask' })
+      expect(body.pendingAction).toBeUndefined()
+      expect(body.reply).toBeTruthy()
+      expect(log.calendarWrites).toHaveLength(0)
+    })
+  })
+
+  it('3. 2B.2 two-action decomposition is unaffected -- no pendingAction field, actions array unchanged', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], 'Call Ahmad')
+    const response = await worker.fetch(chatRequest({
+      message: 'فردا ساعت ۱۰ به احمد زنگ بزن و برای جمعه یک تسک گزارش بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: unknown[]; pendingAction?: unknown }
+
+    expect(response.status).toBe(200)
+    expect(body.actions).toHaveLength(2)
+    expect(body.pendingAction).toBeUndefined()
+    void log
   })
 })
 

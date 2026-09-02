@@ -154,6 +154,10 @@ export interface WriteIntentPreviewLabels {
   readonly category: string
   readonly description: string
   readonly iban: string
+  // Stabilization patch 1, FIX A2: create_task's own reminder-time preview
+  // line label. Reuses the existing "Reminder" translation (family_reminder
+  // -- already present in en/de/fa) rather than adding a new i18n key.
+  readonly reminder: string
 }
 
 // Task 30, mirroring 4995b29 (agent/worker/flow-write-policy.ts's own
@@ -287,6 +291,10 @@ export const writeIntentRegistry: readonly WriteIntentDescriptor[] = [
     previewLines: (target, labels) => [
       `${labels.title}: ${target?.title as string | undefined}`,
       target?.dueDate ? `${labels.due}: ${target.dueDate as string}` : null,
+      // Stabilization patch 1, FIX A2: shown VERBATIM, same as dueDate above
+      // -- reminder time is a consequential, immutable execution argument
+      // and must be visible before approval.
+      target?.timeOfDay ? `${labels.reminder}: ${target.timeOfDay as string}` : null,
       target?.notes ? `${labels.notes}: ${target.notes as string}` : null,
     ],
     buildHandlerInput: ({ actorId, target }) => ({
@@ -294,6 +302,10 @@ export const writeIntentRegistry: readonly WriteIntentDescriptor[] = [
       title: target.title,
       notes: target.notes,
       dueDate: target.dueDate ?? null,
+      // Stabilization patch 1, FIX A2: previously dropped entirely -- see
+      // agent-tool-execution.ts's buildTaskIntent, the reconstruction that
+      // needs this to survive into createTaskAlarmIfNeeded.
+      ...(target.timeOfDay !== undefined ? { timeOfDay: target.timeOfDay } : {}),
     }),
   },
   {

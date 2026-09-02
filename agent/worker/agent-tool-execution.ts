@@ -332,8 +332,16 @@ function buildTaskIntent(toolId: SupportedExecutionToolId, args: Record<string, 
   const title = typeof args.title === 'string' ? args.title : undefined
   const notes = typeof args.notes === 'string' ? args.notes : undefined
   const dueDate = args.dueDate === null ? null : typeof args.dueDate === 'string' ? args.dueDate : undefined
-  if (toolId === 'tasks.create') return { kind: 'create_task', title, notes, dueDate }
-  return { kind: 'update_task', title, notes, dueDate, targetId: targetId ?? undefined }
+  // Stabilization patch 1, FIX A2: previously dropped entirely -- this
+  // reconstruction runs on the ONLY reachable execution path for a real
+  // task write (INC-02 clamps every domain to 'ask'), and
+  // createTaskAlarmIfNeeded requires exactly this field to create an
+  // alarm. `normalized_arguments` already carries whatever the caller sent
+  // verbatim (parseRequestBody stores body.arguments as-is) -- reading it
+  // back here needed no new column, no schema change.
+  const timeOfDay = typeof args.timeOfDay === 'string' ? args.timeOfDay : undefined
+  if (toolId === 'tasks.create') return { kind: 'create_task', title, notes, dueDate, timeOfDay }
+  return { kind: 'update_task', title, notes, dueDate, timeOfDay, targetId: targetId ?? undefined }
 }
 
 // calendarCreateEventHandler.ts/calendarUpdateEventHandler.ts (and

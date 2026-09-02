@@ -63,6 +63,12 @@ export interface AgentIntentTarget {
   title?: string;
   notes?: string;
   dueDate?: string | null;
+  // Stabilization patch 1, FIX A2: create_task's reminder time --
+  // deterministically re-derived from the raw message and injected by
+  // intentValidator.ts, the same way dueDate above already is; never
+  // trusted from the model's own output (create_task has no promptInstruction
+  // asking for it at all).
+  timeOfDay?: string;
   // Task 22 (calendar write slice): kept distinct from title/dueDate above
   // (rather than reused) so a create_task and a create_calendar_event
   // proposal in the same flat interface can never be confused about which

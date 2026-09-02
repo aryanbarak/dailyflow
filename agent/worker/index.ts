@@ -714,6 +714,31 @@ const WRITE_OFF_REPLY: Record<Language, string> = {
   en: 'This Flow AI action is switched off in your settings.',
 }
 
+// Stabilization patch 1, FIX A1: the single-domain sibling of
+// respondToTwoActionWrite's own reminderTimeClarificationNeeded bail --
+// this domain's dispatch builds no concrete arguments at all (that is the
+// client reasoning overlay's job for a single-action turn), so there is no
+// pending descriptor to withhold here; this is simply the honest question
+// itself, same shape as the existing 'ambiguous'-domain clarification reply.
+const REMINDER_TIME_CLARIFICATION_REPLY: Record<Language, string> = {
+  de: 'Um wie viel Uhr soll ich dich erinnern?',
+  fa: 'چه ساعتی یادآوری کنم؟',
+  en: 'What time should I remind you?',
+}
+
+// Stabilization patch 1, FIX C: the plain-chat reply's own dedicated
+// provider-unavailable text (PROVIDER_UNAVAILABLE_CHAT_REPLY, below) is
+// wrong once a real, deterministic write policy has already been resolved
+// -- it describes an ordinary conversational failure, not an action
+// waiting on the user's approval. This is the bounded, deterministic
+// approval-oriented reply that response uses instead in that specific
+// case; never a substitute for actually calling the model successfully.
+const WRITE_APPROVAL_REQUIRED_REPLY: Record<Language, string> = {
+  de: 'Diese Aktion erfordert deine ausdrückliche Zustimmung, bevor sie ausgeführt wird.',
+  fa: 'این اقدام پیش از اجرا نیاز به تایید صریح شما دارد.',
+  en: 'This action requires your explicit approval before it runs.',
+}
+
 async function respondToWriteExecution(
   env: Env,
   ctx: ExecutionContext,
@@ -899,6 +924,14 @@ interface TwoActionPending {
 
 type TwoActionResult = TwoActionResolved | TwoActionPending
 
+// Stabilization patch 1 follow-up (Option B): the single-action sibling of
+// TwoActionPending above -- same shape minus `reply` (the single-domain
+// dispatch already has its own top-level `reply`, from the ordinary
+// conversational model call/FIX C's fallback; this descriptor never
+// carries a second one). Reused, not duplicated, by the client for
+// rendering/lifecycle -- see ChatPage.tsx's own pendingAction handling.
+type SingleActionPending = Omit<TwoActionPending, 'reply'>
+
 const TWO_ACTION_NOT_FOUND_REPLY: Record<Language, string> = {
   de: 'Ich konnte das nicht finden, was aktualisiert werden soll.',
   fa: 'چیزی که خواستید به‌روزرسانی کنم را پیدا نکردم.',
@@ -1002,6 +1035,13 @@ async function respondToTwoActionWrite(
   // it would submit the unresolved guess as fact. Same scope boundary as
   // the UPDATE-kind check above, for the same underlying reason.
   if (resolved.some(r => r.mode === 'ask' && r.calendarIntent?.sourceTaskReference !== undefined)) return null
+  // Stabilization patch 1, FIX A1: an ask-mode task that explicitly
+  // requested a reminder with no resolved time must never reach a pending
+  // descriptor -- same scope-boundary discipline as the checks above.
+  // 'auto'-mode actions are unaffected: executeAutoTaskWrite's own
+  // reminderTimeClarificationNeeded check (flow-write-policy.ts) already
+  // reports this honestly as a normal per-action 'clarify' outcome.
+  if (resolved.some(r => r.mode === 'ask' && r.taskIntent?.reminderTimeClarificationNeeded)) return null
 
   // CORRECTION 3: title resolution is a PRE-PASS over every action, run to
   // completion for ALL of them BEFORE the commit loop below touches
@@ -1069,7 +1109,11 @@ async function respondToTwoActionWrite(
           toolId: 'tasks.create',
           requestId: `2b2:${userMessageId}:${index}`,
           chatMessageId: userMessageId,
-          arguments: { title: r.taskIntent.title, notes: r.taskIntent.notes, dueDate: r.taskIntent.dueDate ?? null },
+          // FIX A2: reminderTimeClarificationNeeded already guarantees no
+          // reminder was requested without a time (the bail above), so
+          // r.taskIntent.timeOfDay here is either a real time or genuinely
+          // absent (no reminder ever requested) -- never dropped either way.
+          arguments: { title: r.taskIntent.title, notes: r.taskIntent.notes, dueDate: r.taskIntent.dueDate ?? null, ...(r.taskIntent.timeOfDay ? { timeOfDay: r.taskIntent.timeOfDay } : {}) },
           previewText,
         })
       }
@@ -1555,6 +1599,10 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
       .reverse()
 
     let pendingWritePolicy: { domain: 'tasks' | 'calendar' | 'finance'; action: 'create' | 'update'; mode: 'ask' } | undefined
+    // Stabilization patch 1 follow-up (Option B): populated alongside
+    // pendingWritePolicy below, for a single-action ask-mode tasks.create/
+    // calendar.create_event write only -- see that assignment's own comment.
+    let pendingAction: SingleActionPending | undefined
 
     // ALF-1A (ADR-0021), section 8: pre-generate this turn's user-message
     // id BEFORE any INSERT into agent_chat_messages below, so every
@@ -1709,6 +1757,22 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
         }
         return json({ reply, writePolicy: { domain, action, mode } }, 200, origin)
       }
+      // Stabilization patch 1, FIX A1: an explicit reminder request with no
+      // resolved time must never reach either 'auto' execution or the
+      // 'ask'-mode pendingWritePolicy fallback below -- both would let a
+      // task get created (or approved) with no alarm, silently discarding
+      // exactly what the user asked for. Checked after 'off' (nothing to
+      // clarify for a write that will not happen anyway) and before
+      // 'auto'/'ask', so it applies uniformly to both. No ALF capture here
+      // -- a genuinely new, narrow clarification case; per ALF-1A's own
+      // "a partial, truthful ledger beats a complete, fabricated one",
+      // omitting capture is always the safe choice.
+      if (taskWriteIntent?.reminderTimeClarificationNeeded) {
+        const reply = REMINDER_TIME_CLARIFICATION_REPLY[language]
+        await supabasePost(env, 'agent_chat_messages', { id: userMessageId, user_id: userId, session_id: sessionId, role: 'user', content: message })
+        await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: reply })
+        return json({ reply }, 200, origin)
+      }
       if (mode === 'auto') {
         if (taskWriteIntent) {
           // Task 21-fix6: resolve the create_task title through the model
@@ -1778,6 +1842,123 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
         }
       }
       pendingWritePolicy = { domain, action, mode: 'ask' }
+      // Stabilization patch 1 follow-up (Option B): the server already has
+      // the authoritative, continuation-aware intent right here --
+      // taskWriteIntent/calendarWriteIntent, resolved above by
+      // assembleTaskWriteIntent/assembleCalendarWriteIntent, the SAME
+      // functions the 'auto' branch above and respondToTwoActionWrite both
+      // already trust as-is. For a single-action create write with every
+      // required field already resolved, build ONE pending descriptor
+      // directly from that intent's own fields. The client then renders
+      // this descriptor as-is instead of asking the reasoning overlay --
+      // which has no chat history at all (see reasoningTypes.ts's
+      // AgentReasoningInput and the diagnostic test in ChatPage.test.tsx)
+      // -- to reconstruct the same intent a second time. Only
+      // tasks.create/calendar.create_event are covered; update/complete/
+      // finance/github stay on the existing overlay-only path, unchanged.
+      if (domain === 'tasks' && taskWriteIntent && taskWriteIntent.kind === 'create_task' && !taskWriteIntent.dateClarificationNeeded) {
+        // CORRECTION: the parser's own title (assembleTaskWriteIntent's
+        // output) is a fallback candidate, not necessarily the final
+        // authoritative create title -- reuse the EXACT SAME
+        // resolveCreateTaskTitle discipline the 'auto' branch above and
+        // respondToTwoActionWrite's own pre-pass already use, rather than
+        // trusting the pattern-extracted title directly. Never called for
+        // an explicit user title correction (titleSource === 'correction')
+        // -- that title already IS exact user intent.
+        //
+        // FAIL-CLOSED CORRECTION: resolved into its OWN local, never back
+        // onto taskWriteIntent.title. resolveCreateTitle only THROWS
+        // ProviderUnavailableError when its own patternFallback was
+        // ALREADY invalid/undefined (see its own contract in
+        // flow-write-policy.ts) -- so on that throw, the ORIGINAL
+        // taskWriteIntent.title can still be a truthy but INVALID
+        // candidate (exactly what the provider-unavailable path exists to
+        // reject). Leaving that original value in place and gating on it
+        // would let an invalid title survive into pendingAction. This
+        // local starts unresolved and is set ONLY by a genuine outcome
+        // (the correction, or a successful/fallback-successful resolver
+        // call) -- pendingAction is built ONLY from it, never from
+        // taskWriteIntent.title again.
+        let resolvedTaskTitle: string | undefined
+        if (taskWriteIntent.titleSource === 'correction') {
+          resolvedTaskTitle = taskWriteIntent.title
+        } else {
+          try {
+            resolvedTaskTitle = await resolveCreateTaskTitle(env, taskWriteIntent, message)
+          } catch (err) {
+            if (!(err instanceof ProviderUnavailableError)) throw err
+            resolvedTaskTitle = undefined
+          }
+        }
+        if (resolvedTaskTitle) {
+          pendingAction = {
+            kind: 'pending',
+            writePolicy: { domain: 'tasks', action: 'create', mode: 'ask' },
+            toolId: 'tasks.create',
+            requestId: `single:${userMessageId}`,
+            chatMessageId: userMessageId,
+            arguments: {
+              title: resolvedTaskTitle,
+              notes: taskWriteIntent.notes,
+              dueDate: taskWriteIntent.dueDate ?? null,
+              ...(taskWriteIntent.timeOfDay ? { timeOfDay: taskWriteIntent.timeOfDay } : {}),
+            },
+            previewText: resolvedTaskTitle,
+          }
+        }
+      } else if (
+        domain === 'calendar' &&
+        calendarWriteIntent &&
+        calendarWriteIntent.kind === 'create_calendar_event' &&
+        !calendarWriteIntent.dateClarificationNeeded &&
+        calendarWriteIntent.startDate &&
+        calendarWriteIntent.startTime &&
+        // Same scope boundary respondToTwoActionWrite's own SCOPE BOUNDARY
+        // bail uses: a task-reschedule-worded reference to an EXISTING task
+        // carries only a last-resort pattern guess as `title`, resolved
+        // properly only via a DB lookup this dispatch does not perform.
+        calendarWriteIntent.sourceTaskReference === undefined
+      ) {
+        // CORRECTION: same title-resolution discipline as tasks.create
+        // above, reusing the EXACT SAME resolveCreateEventTitle
+        // respondToTwoActionWrite's own pre-pass already calls.
+        //
+        // FAIL-CLOSED CORRECTION: same own-local discipline as
+        // resolvedTaskTitle above -- never written back onto
+        // calendarWriteIntent.title, and pendingAction is built ONLY from
+        // this local.
+        let resolvedEventTitle: string | undefined
+        if (calendarWriteIntent.titleSource === 'correction') {
+          resolvedEventTitle = calendarWriteIntent.title
+        } else {
+          try {
+            resolvedEventTitle = await resolveCreateEventTitle(env, calendarWriteIntent, message)
+          } catch (err) {
+            if (!(err instanceof ProviderUnavailableError)) throw err
+            resolvedEventTitle = undefined
+          }
+        }
+        if (resolvedEventTitle) {
+          const dateTimeStart = zonedDateTimeToUtcIso(calendarWriteIntent.startDate!, calendarWriteIntent.startTime!, timeZone)
+          const dateTimeEnd = calendarWriteIntent.endTime
+            ? zonedDateTimeToUtcIso(calendarWriteIntent.startDate!, calendarWriteIntent.endTime, timeZone)
+            : undefined
+          pendingAction = {
+            kind: 'pending',
+            writePolicy: { domain: 'calendar', action: 'create', mode: 'ask' },
+            toolId: 'calendar.create_event',
+            requestId: `single:${userMessageId}`,
+            chatMessageId: userMessageId,
+            arguments: {
+              title: resolvedEventTitle,
+              notes: calendarWriteIntent.notes,
+              dateTimeStart,
+              ...(dateTimeEnd ? { dateTimeEnd } : {}),
+            },
+            previewText: resolvedEventTitle,
+          }
+        }
+      }
       // ALF-1A (ADR-0021) capture point: this branch is reached either by
       // a genuinely resolved mode==='ask', OR by mode==='auto' whose
       // execution outcome was 'not_found' (respondToWriteExecution
@@ -1917,11 +2098,22 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
       // so in a tail with no status code to go on, only this tag
       // identifies it.
       console.error(`[UnavailableCause] cause=WORKER_PROVIDER_UNAVAILABLE_CHAT httpStatus=${err.status ?? 'none'}`, err)
-      const reply = PROVIDER_UNAVAILABLE_CHAT_REPLY[language]
+      // Stabilization patch 1, FIX C: if a real, deterministic write policy
+      // was already resolved above (pendingWritePolicy set), this provider
+      // failure is ONLY in the unrelated, purely conversational reply --
+      // the write itself was never attempted and nothing about it was
+      // invalidated. Losing pendingWritePolicy here would silently erase
+      // an already-correct, already-approvable action and leave the user
+      // with nothing but "try again," even though the Worker already knew
+      // exactly what to do. Response preservation only -- no execution
+      // happens here, no approval is granted or weakened; the client still
+      // goes through the exact same requestExecution()/approveExecution()
+      // flow it always does.
+      const reply = pendingWritePolicy ? WRITE_APPROVAL_REQUIRED_REPLY[language] : PROVIDER_UNAVAILABLE_CHAT_REPLY[language]
       await supabasePost(env, 'agent_chat_messages', { id: userMessageId, user_id: userId, session_id: sessionId, role: 'user', content: message })
       scheduleStagedLearningCapture()
       await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: reply })
-      return json({ reply }, 200, origin)
+      return json(pendingWritePolicy ? { reply, writePolicy: pendingWritePolicy, ...(pendingAction ? { pendingAction } : {}) } : { reply }, 200, origin)
     }
 
     // Task 20, Part A2: deterministic post-check -- see
@@ -1965,7 +2157,7 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
       )
     }
 
-    return json(pendingWritePolicy ? { reply, writePolicy: pendingWritePolicy } : { reply }, 200, origin)
+    return json(pendingWritePolicy ? { reply, writePolicy: pendingWritePolicy, ...(pendingAction ? { pendingAction } : {}) } : { reply }, 200, origin)
   } catch (err) {
     console.error('[Chat] Error:', err)
     // Task 22-fix2 (D2): defense-in-depth for any turn failure this

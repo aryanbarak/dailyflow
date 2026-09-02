@@ -1181,3 +1181,53 @@ describe('Chat V2 Slice 2B.2 correction 1: two independently decomposed actions 
     expect(calendarWrites).toHaveLength(1)
   })
 })
+
+// Production stabilization patch 1, FIX A2: proves the reminder time
+// survives the ONLY reachable execution path for a real task write
+// (INC-02 clamps every domain to 'ask') -- reminder test 3 from that
+// patch's own required test list. Reuses this module's existing,
+// unmodified request/approve lifecycle end to end; only buildTaskIntent's
+// own field-reading changed.
+const TASK_CREATE_WITH_REMINDER_BODY = {
+  toolId: 'tasks.create',
+  arguments: { title: 'Dentist appointment', dueDate: '2026-09-01', timeOfDay: '09:00' },
+  requestId: 'req-reminder-1',
+  timeZone: 'Europe/Berlin',
+}
+
+describe('Production stabilization patch 1, FIX A2: reminder time survives the real ask-mode request/approve lifecycle', () => {
+  it('requestExecution carries the exact timeOfDay through to approveExecution, which creates both the task row and a matching alarm row', async () => {
+    const table = new FakeExecutionsTable()
+    const { fetchMock, calls } = buildFetchMock({ table, policyMode: 'ask', taskRow: { id: 'task-reminder-1', title: 'Dentist appointment', due_date: '2026-09-01' } })
+    const requestResponse = await withFetch(fetchMock, () => handleAgentToolExecutionRequest(authRequest('/agent/execution/request', TASK_CREATE_WITH_REMINDER_BODY), mockEnv()))
+    expect(requestResponse.status).toBe(200)
+    const { executionId } = await requestResponse.json() as { executionId: string }
+
+    // The durable row itself carries timeOfDay verbatim, exactly as sent --
+    // agent_tool_executions.normalized_arguments needed no schema change.
+    expect(table.selectById(executionId)[0]?.normalized_arguments.timeOfDay).toBe('09:00')
+
+    const approveResponse = await withFetch(fetchMock, () => handleAgentToolExecutionApprove(authRequest('/agent/execution/approve', { executionId }), mockEnv()))
+    expect(approveResponse.status).toBe(200)
+    expect((await approveResponse.json() as { status: string }).status).toBe('succeeded')
+
+    const taskWrites = calls.filter((c) => c.method === 'POST' && c.url.includes('/rest/v1/tasks'))
+    expect(taskWrites).toHaveLength(1)
+    const alarmWrites = calls.filter((c) => c.url.includes('/rest/v1/alarms'))
+    expect(alarmWrites).toHaveLength(1)
+    expect((alarmWrites[0].body as Record<string, unknown>).source_type).toBe('task')
+    expect((alarmWrites[0].body as Record<string, unknown>).source_id).toBe('task-reminder-1')
+    // 09:00 Europe/Berlin on 2026-09-01 (CEST, UTC+2) = 07:00 UTC.
+    expect((alarmWrites[0].body as Record<string, unknown>).trigger_at).toBe('2026-09-01T07:00:00.000Z')
+  })
+
+  it('when no reminder time is sent, no alarm is created (unaffected baseline)', async () => {
+    const table = new FakeExecutionsTable()
+    const { fetchMock, calls } = buildFetchMock({ table, policyMode: 'ask', taskRow: { id: 'task-no-reminder', title: 'Call Ahmad', due_date: '2026-09-01' } })
+    const requestResponse = await withFetch(fetchMock, () => handleAgentToolExecutionRequest(authRequest('/agent/execution/request', TASK_CREATE_REQUEST_BODY), mockEnv()))
+    const { executionId } = await requestResponse.json() as { executionId: string }
+    await withFetch(fetchMock, () => handleAgentToolExecutionApprove(authRequest('/agent/execution/approve', { executionId }), mockEnv()))
+
+    expect(calls.filter((c) => c.url.includes('/rest/v1/alarms'))).toHaveLength(0)
+  })
+})

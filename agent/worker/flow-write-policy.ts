@@ -18,6 +18,13 @@ export interface ParsedTaskWriteIntent {
   dueDate?: string | null
   timeOfDay?: string
   dateClarificationNeeded?: boolean
+  // Stabilization patch 1, FIX A1: set only for create_task, when the
+  // message explicitly asked for a reminder (isExplicitReminderRequest)
+  // but no timeOfDay resolved. Deliberately a SEPARATE field from
+  // dateClarificationNeeded -- the two ask fundamentally different
+  // questions (which date vs. what time) and collapsing them would make a
+  // caller's `reply` text wrong for one of the two cases.
+  reminderTimeClarificationNeeded?: boolean
   // Task 21-fix6: set only when `title` came from an explicit user
   // correction ("name the task X" / parseTitleCorrection below), never
   // from pattern-derived subject extraction. resolveCreateTaskTitle below
@@ -1133,6 +1140,36 @@ function isImplicitScheduleStatement(message: string): boolean {
     /\b(?:dass|weil)?\s*ich\s+(?:habe|muss)\b/i.test(text)        // "ich habe"/"ich muss"
 }
 
+// Stabilization patch 1, FIX B: a narrow, observed action/work-verb signal
+// -- "call Ahmad tomorrow at 10" carries no تسک/task noun and no "I
+// have"/"دارم" personal-statement shape (isImplicitScheduleStatement's own
+// vocabulary), so it never registered as ANY write trigger at all before
+// this. Deliberately NOT added to isCalendarWriteTrigger -- an action verb
+// alone must NOT force calendar; only combined with a resolved date/time
+// signal (via the SAME implicitCreate gate isImplicitScheduleStatement
+// already uses below) does resolvesToCalendarDomain's own scheduling-domain
+// rule decide Task (no exact time) vs Calendar (exact time) -- that
+// precedence logic is completely unchanged, this only widens what counts as
+// "an implicit write worth resolving a domain for" in the first place.
+// Narrow, observed vocabulary only -- no generic verb/intent grammar.
+function isActionOrWorkVerb(message: string): boolean {
+  const text = normalizeDigits(message)
+  return /زنگ\s*بزن|تماس\s*بگیر/.test(text) ||                    // "زنگ بزن"/"تماس بگیر" (call)
+    /\b(?:call|phone)\b/i.test(text)
+}
+
+// Stabilization patch 1, FIX A1: a narrow, observed reminder-request signal
+// -- "یادآوری کن"/"یادآوری کند"/"remind me"/"reminder". No German
+// equivalent: there is no existing, already-established matching pattern
+// for it elsewhere in this file to mirror (unlike isImplicitScheduleStatement's
+// "ich habe"/"ich muss", which already existed before this change), and
+// this patch does not introduce new-language coverage on its own. Narrow,
+// observed vocabulary only -- no generic reminder/NLP grammar.
+function isExplicitReminderRequest(message: string): boolean {
+  const text = normalizeDigits(message)
+  return /یادآوری/.test(text) || /\bremind(?:er)?\b/i.test(text)
+}
+
 function hasResolvedDateOrTimeSignal(message: string, now: Date, timeZone: string): boolean {
   if (parseDeterministicTimeOfDay(message)) return true
   const date = parseDeterministicDueDate(message, now, timeZone)
@@ -1164,7 +1201,7 @@ export function parseTaskWriteIntent(message: string, now: Date, timeZone: strin
   // as a task write at all (taskTrigger stayed false).
   const update = /\b(update|edit|change|move|reschedule|aktualisiere|bearbeite|verschiebe)\b.{0,60}\b(task|todo|aufgabe)\b/i.test(message)
   const implicitCreate = !create && !cleanPersianCreate && !cleanMixedPersianCreate && !update && !cleanPersianUpdate &&
-    isImplicitScheduleStatement(message) && hasResolvedDateOrTimeSignal(message, now, timeZone)
+    (isImplicitScheduleStatement(message) || isActionOrWorkVerb(message)) && hasResolvedDateOrTimeSignal(message, now, timeZone)
   if (!create && !cleanPersianCreate && !cleanMixedPersianCreate && !update && !cleanPersianUpdate && !implicitCreate) return null
 
   const date = parseDeterministicDueDate(message, now, timeZone)
@@ -1172,7 +1209,19 @@ export function parseTaskWriteIntent(message: string, now: Date, timeZone: strin
   const quoted = message.match(/["'Â«â€œ](.+?)["'Â»â€]/)?.[1]?.trim()
   if (create || cleanPersianCreate || cleanMixedPersianCreate || implicitCreate) {
     const title = extractTaskTitle(message)
-    return { kind: 'create_task', title: title || undefined, notes: createTaskNotes(message, timeOfDay), dueDate: date.value, timeOfDay, dateClarificationNeeded: date.clarificationNeeded }
+    return {
+      kind: 'create_task',
+      title: title || undefined,
+      notes: createTaskNotes(message, timeOfDay),
+      dueDate: date.value,
+      timeOfDay,
+      dateClarificationNeeded: date.clarificationNeeded,
+      // FIX A1: a reminder was explicitly requested but no time resolved --
+      // must never silently become an alarm-less task (see this field's own
+      // interface comment and its two call sites: executeAutoTaskWrite and
+      // index.ts's single-domain 'ask'/'auto' dispatch).
+      reminderTimeClarificationNeeded: isExplicitReminderRequest(message) && !timeOfDay,
+    }
   }
   return { kind: 'update_task', taskReference: quoted, dueDate: date.value, timeOfDay, dateClarificationNeeded: date.clarificationNeeded }
 }
@@ -1243,6 +1292,14 @@ function mergeTaskIntent(base: ParsedTaskWriteIntent, message: string, now: Date
     dueDate,
     timeOfDay,
     dateClarificationNeeded: direct?.dateClarificationNeeded ?? base.dateClarificationNeeded,
+    // FIX A1: carried across the continuation the same way
+    // title/dateClarificationNeeded already are. `base.reminderTimeClarificationNeeded`
+    // being true is itself proof a reminder was requested on an earlier
+    // turn (it is only ever set alongside "no timeOfDay yet") -- reusing it
+    // as that signal, rather than re-deriving "was a reminder ever
+    // requested" from raw history text, needs no new field. Once `timeOfDay`
+    // resolves (this turn or an earlier merge), it clears.
+    reminderTimeClarificationNeeded: (base.reminderTimeClarificationNeeded || isExplicitReminderRequest(message)) && !timeOfDay,
   }
 }
 
@@ -1250,19 +1307,32 @@ export function assembleTaskWriteIntent(message: string, recentTurns: RecentChat
   const direct = parseTaskWriteIntent(message, now, timeZone)
   if (direct) return direct
   if (looksLikeSubjectChange(message)) return null
-  if (!isAffirmativeWriteContinuation(message) && !parseTitleCorrection(message)) return null
+
+  const recentUserTurnsForContinuation = recentTurns
+    .filter(turn => turn.role === 'user')
+    .slice(-6)
+    .reverse()
+  const previousForContinuation = recentUserTurnsForContinuation
+    .map(turn => parseTaskWriteIntent(turn.content, turnNow(turn, now), timeZone))
+    .find((intent): intent is ParsedTaskWriteIntent => Boolean(intent && intent.kind === 'create_task'))
+
+  // Stabilization patch 1 follow-up: a bare reply that resolves a time of
+  // day ("9am"/"ساعت ۹") only counts as a continuation when the SPECIFIC
+  // prior intent it would complete actually asked for one
+  // (reminderTimeClarificationNeeded) -- narrower than
+  // isAffirmativeWriteContinuation's own "yes"/"confirm" vocabulary below,
+  // and deliberately NOT a general "any bare time continues any task" rule
+  // (that would risk folding an unrelated later time mention into a stale,
+  // unrelated earlier task). Completes FIX A1's own reminder-clarification
+  // flow rather than opening a new one.
+  const resolvesPendingReminderTime = Boolean(previousForContinuation?.reminderTimeClarificationNeeded) && Boolean(parseDeterministicTimeOfDay(message))
+
+  if (!isAffirmativeWriteContinuation(message) && !parseTitleCorrection(message) && !resolvesPendingReminderTime) return null
   if (recentTurns.slice(-4).some(turn => turn.role === 'assistant' && /✓ .*(Task created|Task updated|Aufgabe .*erstellt|Aufgabe .*aktualisiert|\u0648\u0638\u06cc\u0641\u0647 .*(?:\u0627\u06cc\u062c\u0627\u062f \u0634\u062f|\u0628\u0647\u200c\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06cc \u0634\u062f))/.test(turn.content))) {
     return null
   }
 
-  const recentUserTurns = recentTurns
-    .filter(turn => turn.role === 'user')
-    .slice(-6)
-    .reverse()
-  const previous = recentUserTurns
-    .map(turn => parseTaskWriteIntent(turn.content, turnNow(turn, now), timeZone))
-    .find((intent): intent is ParsedTaskWriteIntent => Boolean(intent && intent.kind === 'create_task'))
-  return previous ? mergeTaskIntent(previous, message, now, timeZone) : null
+  return previousForContinuation ? mergeTaskIntent(previousForContinuation, message, now, timeZone) : null
 }
 
 // ---------------------------------------------------------------------------
@@ -1745,6 +1815,10 @@ export async function executeAutoTaskWrite(input: {
 > {
   const { env, userId, intent, language, now, timeZone } = input
   if (intent.dateClarificationNeeded) return { status: 'clarify', reply: 'Which exact due date should I use?' }
+  // FIX A1: an explicit reminder request with no resolved time must never
+  // silently proceed to a bare, alarm-less task -- same clarify shape as
+  // the due-date check above, never a fabricated default reminder time.
+  if (intent.reminderTimeClarificationNeeded) return { status: 'clarify', reply: 'What time should I remind you?' }
   if (intent.kind === 'create_task') {
     if (!intent.title) return { status: 'clarify', reply: 'What should the task be called?' }
     const rows = await supabaseWriteReturning<TaskRow[]>(env, 'POST', 'tasks?select=id,user_id,title,notes,due_date,completed,created_at,updated_at', {
