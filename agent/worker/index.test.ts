@@ -17,6 +17,7 @@ import { ProviderRequestError, ProviderUnavailableError } from './provider-error
 // reconstructed wire body) so the many existing count/content assertions
 // throughout this file keep working with minimal, mechanical changes.
 import { StubStructuredGenerationProvider, StubTextGenerationProvider, stubProviders } from './providers/testing/stubProviders'
+import { handleAgentToolExecutionApprove, handleAgentToolExecutionRequest } from './agent-tool-execution'
 import { AttachmentsUnsupportedError } from './providers/workers-ai/WorkersAITextGenerationProvider'
 import type { Providers } from './providers/createProviders'
 import type { NeutralArraySchema, NeutralObjectSchema, NeutralSchema, NeutralStringSchema } from './providers/schema/neutralSchema'
@@ -2591,6 +2592,250 @@ describe('Production stabilization patch 1', () => {
       expect(body.writePolicy).toMatchObject({ domain: 'calendar' })
       void log
     })
+  })
+})
+
+describe('Production stabilization patch 1 follow-up: server-resolved single-action pendingAction (Option B)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  // A small in-memory agent_tool_executions table -- just enough to drive
+  // ONE request/approve cycle end to end (this test's own scope). NOT a
+  // re-implementation of agent-tool-execution.test.ts's own
+  // FakeExecutionsTable -- that file's race-condition/idempotency coverage
+  // is untouched and completely unaffected by this follow-up.
+  interface ExecRow {
+    id: string
+    status: string
+    [key: string]: unknown
+  }
+
+  // Covers BOTH what /chat needs (auth, user_settings, personal_memory_records,
+  // flow_write_permissions, agent_chat_messages, chat_sessions) AND what
+  // agent-tool-execution.ts's real request/approve handlers need
+  // (agent_tool_executions, tasks, alarms, flow_write_undo_records) --
+  // deliberately its own small mock, not a reuse/extension of the existing
+  // installFetchMock (which has no agent_tool_executions support at all)
+  // or agent-tool-execution.test.ts's buildFetchMock (which has no /chat
+  // support at all), so neither file's existing coverage is put at risk.
+  function installReminderContinuationFetchMock(chatRows: Array<{ role: string; content: string }>) {
+    let nextExecId = 1
+    const execRows: ExecRow[] = []
+    const taskWrites: Array<{ method: string; body?: Record<string, unknown> }> = []
+    const alarmWrites: Array<{ method: string; body?: Record<string, unknown> }> = []
+
+    const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      const method = init?.method ?? 'GET'
+      const bodyText = init?.body ? String(init.body) : undefined
+      const parsedBody = bodyText ? (JSON.parse(bodyText) as Record<string, unknown>) : undefined
+
+      if (url === `${SUPABASE_URL}/auth/v1/user`) {
+        return new Response(JSON.stringify({ id: 'user-1' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/user_settings`)) {
+        return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_records`)) {
+        return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/flow_write_permissions`)) {
+        return new Response(JSON.stringify([{ mode: 'ask' }]), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/agent_chat_messages`) && method === 'GET') {
+        return new Response(JSON.stringify([...chatRows].reverse()), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/agent_chat_messages`) && method === 'POST') {
+        chatRows.push({ role: String(parsedBody?.role), content: String(parsedBody?.content) })
+        return new Response(null, { status: 201 })
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/chat_sessions`) && method === 'PATCH') {
+        return new Response(null, { status: 204 })
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/agent_tool_executions`)) {
+        if (method === 'POST') {
+          const row: ExecRow = {
+            id: `exec-${nextExecId++}`,
+            status: 'approval_pending',
+            approval_requested_at: new Date().toISOString(),
+            ...parsedBody,
+          }
+          execRows.push(row)
+          return new Response(JSON.stringify([row]), { status: 201 })
+        }
+        if (method === 'GET') {
+          const parsed = new URL(url)
+          const idMatch = parsed.searchParams.get('id')?.replace(/^eq\./, '')
+          const requestIdMatch = parsed.searchParams.get('request_id')?.replace(/^eq\./, '')
+          const userMatch = parsed.searchParams.get('user_id')?.replace(/^eq\./, '')
+          if (idMatch) return new Response(JSON.stringify(execRows.filter(r => r.id === idMatch)), { status: 200 })
+          if (requestIdMatch && userMatch) {
+            return new Response(JSON.stringify(execRows.filter(r => r.request_id === requestIdMatch && r.user_id === userMatch)), { status: 200 })
+          }
+          return new Response(JSON.stringify([]), { status: 200 })
+        }
+        if (method === 'PATCH') {
+          const parsed = new URL(url)
+          const id = parsed.searchParams.get('id')?.replace(/^eq\./, '')
+          const expected = parsed.searchParams.get('status')?.replace(/^eq\./, '')
+          const row = execRows.find(r => r.id === id && r.status === expected)
+          if (!row) return new Response(JSON.stringify([]), { status: 200 })
+          Object.assign(row, parsedBody)
+          return new Response(JSON.stringify([row]), { status: 200 })
+        }
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/tasks`) && method === 'POST') {
+        taskWrites.push({ method, body: parsedBody })
+        return new Response(JSON.stringify([{
+          id: 'task-reminder-1', user_id: 'user-1', title: parsedBody?.title, notes: parsedBody?.notes ?? null,
+          due_date: parsedBody?.due_date ?? null, completed: false,
+          created_at: '2026-09-01T10:00:00.000Z', updated_at: '2026-09-01T10:00:00.000Z',
+        }]), { status: 200 })
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/flow_write_undo_records`)) {
+        return new Response(method === 'GET' ? JSON.stringify([]) : null, { status: method === 'POST' ? 201 : 200 })
+      }
+      if (url.startsWith(`${SUPABASE_URL}/rest/v1/alarms`) && method === 'POST') {
+        alarmWrites.push({ method, body: parsedBody })
+        return new Response(JSON.stringify([{ id: 'alarm-1', source_id: parsedBody?.source_id, trigger_at: parsedBody?.trigger_at }]), { status: 200 })
+      }
+      throw new Error(`Unexpected fetch in reminder-continuation test: ${method} ${url}`)
+    })
+
+    currentProviders = stubProviders({
+      text: new StubTextGenerationProvider(() => ({ text: 'Sure -- let me know if there is anything else.', finishReason: 'stop' })),
+      structured: new StubStructuredGenerationProvider(() => ({ rawText: '{}', finishReason: 'stop' })),
+    })
+
+    vi.stubGlobal('fetch', mock)
+    return { taskWrites, alarmWrites }
+  }
+
+  it('production reminder continuation: turn 1 clarifies (no pendingAction), turn 2 ("ساعت ۹" alone) returns a pendingAction carrying the authoritative title/dueDate/timeOfDay from the REAL Worker continuation, and the REAL request/approve lifecycle creates the task and its alarm', async () => {
+    const chatRows: Array<{ role: string; content: string }> = []
+    const { taskWrites, alarmWrites } = installReminderContinuationFetchMock(chatRows)
+
+    const turn1Response = await worker.fetch(chatRequest({
+      message: 'برای فردا یک تسک بساز که یادآوری کند داکتر دندان دارم',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const turn1Body = await turn1Response.json() as { reply?: string; writePolicy?: unknown; pendingAction?: unknown }
+    expect(turn1Response.status).toBe(200)
+    expect(turn1Body.writePolicy).toBeUndefined()
+    expect(turn1Body.pendingAction).toBeUndefined()
+    expect(turn1Body.reply).toBeTruthy()
+    expect(taskWrites).toHaveLength(0)
+
+    const turn2Response = await worker.fetch(chatRequest({
+      message: 'ساعت ۹',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const turn2Body = await turn2Response.json() as {
+      reply?: string
+      writePolicy?: { domain?: string; action?: string; mode?: string }
+      pendingAction?: { toolId?: string; requestId?: string; chatMessageId?: string; arguments?: Record<string, unknown>; previewText?: string }
+    }
+    expect(turn2Response.status).toBe(200)
+    expect(turn2Body.writePolicy).toMatchObject({ domain: 'tasks', action: 'create', mode: 'ask' })
+    expect(turn2Body.pendingAction).toBeTruthy()
+    expect(turn2Body.pendingAction!.toolId).toBe('tasks.create')
+    expect(turn2Body.pendingAction!.requestId).toBeTruthy()
+    expect(turn2Body.pendingAction!.chatMessageId).toBeTruthy()
+
+    // The exact, real, Worker-computed continuation intent -- never
+    // hardcoded here.
+    const args = turn2Body.pendingAction!.arguments!
+    expect(args.title).toBeTruthy()
+    expect(args.dueDate).toBeTruthy()
+    expect(args.timeOfDay).toBe('09:00')
+    expect(taskWrites).toHaveLength(0) // still nothing written -- approval has not happened yet
+
+    // Exercise the REAL execution lifecycle with these exact arguments --
+    // never manually constructed.
+    const requestResponse = await handleAgentToolExecutionRequest(
+      new Request('https://worker.test/agent/execution/request', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer user-token' },
+        body: JSON.stringify({
+          toolId: turn2Body.pendingAction!.toolId,
+          arguments: args,
+          requestId: turn2Body.pendingAction!.requestId,
+          chatMessageId: turn2Body.pendingAction!.chatMessageId,
+          timeZone: 'Europe/Berlin',
+        }),
+      }),
+      testEnv(),
+    )
+    expect(requestResponse.status).toBe(200)
+    const requestBody = await requestResponse.json() as { executionId?: string; status?: string }
+    expect(requestBody.status).toBe('approval_pending')
+    expect(taskWrites).toHaveLength(0) // requested, not yet approved
+
+    const approveResponse = await handleAgentToolExecutionApprove(
+      new Request('https://worker.test/agent/execution/approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer user-token' },
+        body: JSON.stringify({ executionId: requestBody.executionId }),
+      }),
+      testEnv(),
+    )
+    expect(approveResponse.status).toBe(200)
+    const approveBody = await approveResponse.json() as { status?: string }
+    expect(approveBody.status).toBe('succeeded')
+
+    expect(taskWrites).toHaveLength(1)
+    expect(taskWrites[0].body?.due_date).toBe(args.dueDate)
+    expect(alarmWrites).toHaveLength(1)
+    expect(alarmWrites[0].body?.source_id).toBe('task-reminder-1')
+    expect(alarmWrites[0].body?.trigger_at).toBe(zonedDateTimeToUtcIso(args.dueDate as string, '09:00', 'Europe/Berlin'))
+  })
+
+  describe('regression: ordinary single-turn ask-mode creates still produce a pendingAction', () => {
+    it('1. an ordinary single-action ask create_task turn produces exactly one pendingAction', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'ask')
+      const response = await worker.fetch(chatRequest({
+        message: 'فردا یک تسک بساز که گزارش را ارسال کنم',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writePolicy?: { domain?: string; mode?: string }; pendingAction?: { toolId?: string; arguments?: Record<string, unknown> } }
+
+      expect(response.status).toBe(200)
+      expect(body.writePolicy).toMatchObject({ domain: 'tasks', mode: 'ask' })
+      expect(body.pendingAction?.toolId).toBe('tasks.create')
+      expect(body.pendingAction?.arguments?.title).toBeTruthy()
+      expect(log.taskWrites).toHaveLength(0)
+    })
+
+    it('2. an ordinary single-action ask create_calendar_event turn produces exactly one pendingAction', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'ask')
+      const response = await worker.fetch(chatRequest({
+        message: 'Add an event for next Tuesday at 9am',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writePolicy?: { domain?: string; mode?: string }; pendingAction?: { toolId?: string; arguments?: Record<string, unknown> } }
+
+      expect(response.status).toBe(200)
+      expect(body.writePolicy).toMatchObject({ domain: 'calendar', mode: 'ask' })
+      expect(body.pendingAction?.toolId).toBe('calendar.create_event')
+      expect(body.pendingAction?.arguments?.title).toBeTruthy()
+      expect(body.pendingAction?.arguments?.dateTimeStart).toBeTruthy()
+      expect(log.calendarWrites).toHaveLength(0)
+    })
+  })
+
+  it('3. 2B.2 two-action decomposition is unaffected -- no pendingAction field, actions array unchanged', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], 'Call Ahmad')
+    const response = await worker.fetch(chatRequest({
+      message: 'فردا ساعت ۱۰ به احمد زنگ بزن و برای جمعه یک تسک گزارش بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: unknown[]; pendingAction?: unknown }
+
+    expect(response.status).toBe(200)
+    expect(body.actions).toHaveLength(2)
+    expect(body.pendingAction).toBeUndefined()
+    void log
   })
 })
 

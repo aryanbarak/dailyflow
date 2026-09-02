@@ -349,12 +349,24 @@ interface ChatWorkerActionPending {
 
 type ChatWorkerAction = ChatWorkerActionResolved | ChatWorkerActionPending
 
+// Stabilization patch 1 follow-up (Option B): the single-action sibling of
+// ChatWorkerActionPending above -- same shape minus `reply` (this turn's
+// top-level `reply` below already carries the ordinary conversational
+// answer; this descriptor never carries a second one). Sent only for a
+// single-action ask-mode tasks.create/calendar.create_event write whose
+// intent the Worker could already fully resolve server-side (see
+// agent/worker/index.ts's own comment at its construction site) --
+// mutually exclusive with `actions` (2B.2's own, unrelated multi-action
+// shape) in practice, never both set on the same response.
+type ChatWorkerPendingAction = Omit<ChatWorkerActionPending, 'reply'>
+
 interface ChatWorkerResponse {
   reply?: string
   writePolicy?: { mode?: 'auto' | 'ask' | 'off' }
   writeExecution?: string
   undo?: ChatMsg['undo']
   actions?: ChatWorkerAction[]
+  pendingAction?: ChatWorkerPendingAction
 }
 
 // Pure builder for a decomposed multi-action turn's RESOLVED-only message
@@ -412,7 +424,7 @@ export interface TwoActionPendingState {
 // order, BEFORE any requestExecution() call has resolved. The caller
 // (handleSend) is responsible for actually firing those calls and folding
 // their results back in via applyTwoActionRequestResult.
-export function buildTwoActionPendingStates(actions: ChatWorkerActionPending[]): TwoActionPendingState[] {
+export function buildTwoActionPendingStates(actions: Array<Omit<ChatWorkerActionPending, 'reply'>>): TwoActionPendingState[] {
   return actions.map((action) => ({
     requestId: action.requestId,
     toolId: action.toolId,
@@ -1368,6 +1380,16 @@ export interface ChatTurnOverlayInput {
   readonly overlayResult: AgentReasoningResult | null
   readonly serverWritePolicyMode?: 'auto' | 'ask' | 'off'
   readonly serverWriteExecution?: string
+  // Stabilization patch 1 follow-up (Option B): true when this turn's
+  // Worker response already carried a server-resolved pendingAction (see
+  // ChatWorkerPendingAction above) -- that descriptor is authoritative and
+  // already rendered via its own card (handleSend's own pendingAction
+  // branch), so the overlay's own competing, history-blind reconstruction
+  // of the SAME intent must never also surface here. Same suppression
+  // mechanism serverWritePolicyMode==='auto'/'off' already use below
+  // (hasGenuineOverlay), just one more true-making condition -- reasoning
+  // itself is never globally disabled, only this one turn's write card.
+  readonly hasServerPendingAction?: boolean
 }
 
 export interface ChatTurnOutcome {
@@ -1435,7 +1457,7 @@ export interface ChatTurnOutcome {
 // is separate, larger work, out of this task's scope.
 export function resolveChatTurnOutcome(input: ChatTurnOverlayInput, t: Translate): ChatTurnOutcome {
   const overlayResult = input.overlayResult
-  const serverTerminalWrite = input.serverWritePolicyMode === 'auto' || input.serverWritePolicyMode === 'off' || Boolean(input.serverWriteExecution)
+  const serverTerminalWrite = input.serverWritePolicyMode === 'auto' || input.serverWritePolicyMode === 'off' || Boolean(input.serverWriteExecution) || Boolean(input.hasServerPendingAction)
   const hasGenuineOverlay = !serverTerminalWrite && overlayResult !== null && hasSupportedActionableOverlay(overlayResult)
 
   // Task 42, Part A: see outcome (d) above. Gated on the SERVER's own
@@ -2681,7 +2703,7 @@ export default function ChatPage() {
         })
       }
 
-      const [{ reply, writePolicy, writeExecution, undo, actions }, overlayResult] = await Promise.all([chatCallPromise, overlayPromise])
+      const [{ reply, writePolicy, writeExecution, undo, actions, pendingAction }, overlayResult] = await Promise.all([chatCallPromise, overlayPromise])
 
       // Chat V2 Slice 2B.2: two independently decomposed actions -- skip
       // the single-proposal overlay/outcome machinery entirely (see
@@ -2843,7 +2865,7 @@ export default function ChatPage() {
       // countable.
       const outcome = autoReadContent !== null
         ? { content: autoReadContent, reasoningStates: null }
-        : resolveChatTurnOutcome({ intentSignal, message: text, responseLanguage, reply, overlayResult, serverWritePolicyMode: writePolicy?.mode, serverWriteExecution: writeExecution }, t)
+        : resolveChatTurnOutcome({ intentSignal, message: text, responseLanguage, reply, overlayResult, serverWritePolicyMode: writePolicy?.mode, serverWriteExecution: writeExecution, hasServerPendingAction: Boolean(pendingAction) }, t)
       setReasoningProposal(outcome.reasoningStates)
 
       setMessages(prev => [
@@ -2851,6 +2873,47 @@ export default function ChatPage() {
         { id: `u-${Date.now()}`, role: 'user', content: text },
         { id: `a-${Date.now() + 1}`, role: 'assistant', content: outcome.content, language: responseLanguage, undo },
       ])
+
+      // Stabilization patch 1 follow-up (Option B): a server-resolved
+      // single-action pendingAction (agent/worker/index.ts's own comment
+      // at its construction site) renders through the EXACT SAME
+      // TwoActionPendingState lifecycle 2B.2 already uses above -- one
+      // entry instead of two, reusing buildTwoActionPendingStates/
+      // applyTwoActionRequestResult rather than a second, parallel
+      // request/approve state machine. The overlay's own competing write
+      // card is already suppressed for this turn (hasServerPendingAction
+      // above), so this is the ONLY card the user sees for it.
+      if (pendingAction) {
+        setTwoActionPending(buildTwoActionPendingStates([pendingAction]))
+        const turnSessionId = sessionId
+        const turnLanguage = responseLanguage
+        void (async () => {
+          try {
+            const client = createAgentToolExecutionClient({
+              workerBaseUrl: workerUrl,
+              getAccessToken: async () => {
+                const { data: { session: authSession } } = await supabase.auth.getSession()
+                return authSession?.access_token
+              },
+            })
+            const result = await client.requestExecution({
+              toolId: pendingAction.toolId,
+              arguments: pendingAction.arguments,
+              requestId: pendingAction.requestId,
+              sessionId: turnSessionId ?? undefined,
+              chatMessageId: pendingAction.chatMessageId,
+              timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+              language: turnLanguage,
+            })
+            setTwoActionPending(prev => prev ? applyTwoActionRequestResult(prev, pendingAction.requestId, result.status === 'approval_pending'
+              ? { status: 'approval_pending', executionId: result.executionId ?? '' }
+              : { status: result.status, executionId: result.executionId, reply: result.reply }) : prev)
+          } catch (error) {
+            console.error('[ChatPage] stabilization patch 1 follow-up: requestExecution failed for the server-resolved pendingAction:', error)
+            setTwoActionPending(prev => prev ? applyTwoActionRequestResult(prev, pendingAction.requestId, { status: 'error' }) : prev)
+          }
+        })()
+      }
 
       // Task 19: the composer's attachment is turn-scoped -- always cleared
       // after a successful send, whether or not it was actually used. If it

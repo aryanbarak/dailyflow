@@ -1307,19 +1307,32 @@ export function assembleTaskWriteIntent(message: string, recentTurns: RecentChat
   const direct = parseTaskWriteIntent(message, now, timeZone)
   if (direct) return direct
   if (looksLikeSubjectChange(message)) return null
-  if (!isAffirmativeWriteContinuation(message) && !parseTitleCorrection(message)) return null
+
+  const recentUserTurnsForContinuation = recentTurns
+    .filter(turn => turn.role === 'user')
+    .slice(-6)
+    .reverse()
+  const previousForContinuation = recentUserTurnsForContinuation
+    .map(turn => parseTaskWriteIntent(turn.content, turnNow(turn, now), timeZone))
+    .find((intent): intent is ParsedTaskWriteIntent => Boolean(intent && intent.kind === 'create_task'))
+
+  // Stabilization patch 1 follow-up: a bare reply that resolves a time of
+  // day ("9am"/"ساعت ۹") only counts as a continuation when the SPECIFIC
+  // prior intent it would complete actually asked for one
+  // (reminderTimeClarificationNeeded) -- narrower than
+  // isAffirmativeWriteContinuation's own "yes"/"confirm" vocabulary below,
+  // and deliberately NOT a general "any bare time continues any task" rule
+  // (that would risk folding an unrelated later time mention into a stale,
+  // unrelated earlier task). Completes FIX A1's own reminder-clarification
+  // flow rather than opening a new one.
+  const resolvesPendingReminderTime = Boolean(previousForContinuation?.reminderTimeClarificationNeeded) && Boolean(parseDeterministicTimeOfDay(message))
+
+  if (!isAffirmativeWriteContinuation(message) && !parseTitleCorrection(message) && !resolvesPendingReminderTime) return null
   if (recentTurns.slice(-4).some(turn => turn.role === 'assistant' && /✓ .*(Task created|Task updated|Aufgabe .*erstellt|Aufgabe .*aktualisiert|\u0648\u0638\u06cc\u0641\u0647 .*(?:\u0627\u06cc\u062c\u0627\u062f \u0634\u062f|\u0628\u0647\u200c\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06cc \u0634\u062f))/.test(turn.content))) {
     return null
   }
 
-  const recentUserTurns = recentTurns
-    .filter(turn => turn.role === 'user')
-    .slice(-6)
-    .reverse()
-  const previous = recentUserTurns
-    .map(turn => parseTaskWriteIntent(turn.content, turnNow(turn, now), timeZone))
-    .find((intent): intent is ParsedTaskWriteIntent => Boolean(intent && intent.kind === 'create_task'))
-  return previous ? mergeTaskIntent(previous, message, now, timeZone) : null
+  return previousForContinuation ? mergeTaskIntent(previousForContinuation, message, now, timeZone) : null
 }
 
 // ---------------------------------------------------------------------------

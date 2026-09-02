@@ -924,6 +924,14 @@ interface TwoActionPending {
 
 type TwoActionResult = TwoActionResolved | TwoActionPending
 
+// Stabilization patch 1 follow-up (Option B): the single-action sibling of
+// TwoActionPending above -- same shape minus `reply` (the single-domain
+// dispatch already has its own top-level `reply`, from the ordinary
+// conversational model call/FIX C's fallback; this descriptor never
+// carries a second one). Reused, not duplicated, by the client for
+// rendering/lifecycle -- see ChatPage.tsx's own pendingAction handling.
+type SingleActionPending = Omit<TwoActionPending, 'reply'>
+
 const TWO_ACTION_NOT_FOUND_REPLY: Record<Language, string> = {
   de: 'Ich konnte das nicht finden, was aktualisiert werden soll.',
   fa: 'چیزی که خواستید به‌روزرسانی کنم را پیدا نکردم.',
@@ -1591,6 +1599,10 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
       .reverse()
 
     let pendingWritePolicy: { domain: 'tasks' | 'calendar' | 'finance'; action: 'create' | 'update'; mode: 'ask' } | undefined
+    // Stabilization patch 1 follow-up (Option B): populated alongside
+    // pendingWritePolicy below, for a single-action ask-mode tasks.create/
+    // calendar.create_event write only -- see that assignment's own comment.
+    let pendingAction: SingleActionPending | undefined
 
     // ALF-1A (ADR-0021), section 8: pre-generate this turn's user-message
     // id BEFORE any INSERT into agent_chat_messages below, so every
@@ -1830,6 +1842,72 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
         }
       }
       pendingWritePolicy = { domain, action, mode: 'ask' }
+      // Stabilization patch 1 follow-up (Option B): the server already has
+      // the authoritative, continuation-aware intent right here --
+      // taskWriteIntent/calendarWriteIntent, resolved above by
+      // assembleTaskWriteIntent/assembleCalendarWriteIntent, the SAME
+      // functions the 'auto' branch above and respondToTwoActionWrite both
+      // already trust as-is. For a single-action create write with every
+      // required field already resolved, build ONE pending descriptor
+      // directly from that intent's own fields -- no new parsing, no new
+      // title-resolution model call (unlike respondToTwoActionWrite's own
+      // pre-pass): `title` here is used exactly as
+      // assembleTaskWriteIntent/assembleCalendarWriteIntent already
+      // produced it, deterministically. The client then renders this
+      // descriptor as-is instead of asking the reasoning overlay -- which
+      // has no chat history at all (see reasoningTypes.ts's
+      // AgentReasoningInput and the diagnostic test in ChatPage.test.tsx)
+      // -- to reconstruct the same intent a second time. Only
+      // tasks.create/calendar.create_event are covered; update/complete/
+      // finance/github stay on the existing overlay-only path, unchanged.
+      if (domain === 'tasks' && taskWriteIntent && taskWriteIntent.kind === 'create_task' && !taskWriteIntent.dateClarificationNeeded && taskWriteIntent.title) {
+        pendingAction = {
+          kind: 'pending',
+          writePolicy: { domain: 'tasks', action: 'create', mode: 'ask' },
+          toolId: 'tasks.create',
+          requestId: `single:${userMessageId}`,
+          chatMessageId: userMessageId,
+          arguments: {
+            title: taskWriteIntent.title,
+            notes: taskWriteIntent.notes,
+            dueDate: taskWriteIntent.dueDate ?? null,
+            ...(taskWriteIntent.timeOfDay ? { timeOfDay: taskWriteIntent.timeOfDay } : {}),
+          },
+          previewText: taskWriteIntent.title,
+        }
+      } else if (
+        domain === 'calendar' &&
+        calendarWriteIntent &&
+        calendarWriteIntent.kind === 'create_calendar_event' &&
+        !calendarWriteIntent.dateClarificationNeeded &&
+        calendarWriteIntent.startDate &&
+        calendarWriteIntent.startTime &&
+        // Same scope boundary respondToTwoActionWrite's own SCOPE BOUNDARY
+        // bail uses: a task-reschedule-worded reference to an EXISTING task
+        // carries only a last-resort pattern guess as `title`, resolved
+        // properly only via a DB lookup this dispatch does not perform.
+        calendarWriteIntent.sourceTaskReference === undefined &&
+        calendarWriteIntent.title
+      ) {
+        const dateTimeStart = zonedDateTimeToUtcIso(calendarWriteIntent.startDate, calendarWriteIntent.startTime, timeZone)
+        const dateTimeEnd = calendarWriteIntent.endTime
+          ? zonedDateTimeToUtcIso(calendarWriteIntent.startDate, calendarWriteIntent.endTime, timeZone)
+          : undefined
+        pendingAction = {
+          kind: 'pending',
+          writePolicy: { domain: 'calendar', action: 'create', mode: 'ask' },
+          toolId: 'calendar.create_event',
+          requestId: `single:${userMessageId}`,
+          chatMessageId: userMessageId,
+          arguments: {
+            title: calendarWriteIntent.title,
+            notes: calendarWriteIntent.notes,
+            dateTimeStart,
+            ...(dateTimeEnd ? { dateTimeEnd } : {}),
+          },
+          previewText: calendarWriteIntent.title,
+        }
+      }
       // ALF-1A (ADR-0021) capture point: this branch is reached either by
       // a genuinely resolved mode==='ask', OR by mode==='auto' whose
       // execution outcome was 'not_found' (respondToWriteExecution
@@ -1984,7 +2062,7 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
       await supabasePost(env, 'agent_chat_messages', { id: userMessageId, user_id: userId, session_id: sessionId, role: 'user', content: message })
       scheduleStagedLearningCapture()
       await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: reply })
-      return json(pendingWritePolicy ? { reply, writePolicy: pendingWritePolicy } : { reply }, 200, origin)
+      return json(pendingWritePolicy ? { reply, writePolicy: pendingWritePolicy, ...(pendingAction ? { pendingAction } : {}) } : { reply }, 200, origin)
     }
 
     // Task 20, Part A2: deterministic post-check -- see
@@ -2028,7 +2106,7 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
       )
     }
 
-    return json(pendingWritePolicy ? { reply, writePolicy: pendingWritePolicy } : { reply }, 200, origin)
+    return json(pendingWritePolicy ? { reply, writePolicy: pendingWritePolicy, ...(pendingAction ? { pendingAction } : {}) } : { reply }, 200, origin)
   } catch (err) {
     console.error('[Chat] Error:', err)
     // Task 22-fix2 (D2): defense-in-depth for any turn failure this
