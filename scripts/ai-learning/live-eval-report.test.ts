@@ -12,8 +12,14 @@
 //   npx vite-node scripts/ai-learning/live-eval-report.test.ts
 
 import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   formatLiveEvalReport,
+  loadEventsFile,
+  LiveEvalReportError,
+  parseArgs,
   parseJsonl,
   toLiveLearningEventRecord,
 } from './live-eval-report-lib'
@@ -34,9 +40,50 @@ function test(name: string, fn: () => void) {
   }
 }
 
-test('parseJsonl skips blank lines and parses each remaining line as JSON', () => {
+test('parseJsonl skips blank lines and parses each remaining line as JSON, tagged with its 1-based source line number', () => {
   const rows = parseJsonl('{"a":1}\n\n  \n{"a":2}\n')
-  assert.deepEqual(rows, [{ a: 1 }, { a: 2 }])
+  assert.deepEqual(rows, [
+    { line: 1, value: { a: 1 } },
+    { line: 4, value: { a: 2 } },
+  ])
+})
+
+test('parseJsonl throws a fixed LiveEvalReportError (never JSON.parse\'s own message) for an unparsable line', () => {
+  assert.throws(
+    () => parseJsonl('{"a":1}\nnot json\n'),
+    (error: unknown) => {
+      const e = error as LiveEvalReportError
+      assert.ok(e instanceof LiveEvalReportError)
+      assert.equal(e.code, 'MALFORMED_JSON_LINE')
+      assert.equal(e.line, 2)
+      return true
+    },
+  )
+})
+
+test('a secret marker inside an unparsable JSON line can never appear in the thrown error message', () => {
+  const secretMarker = 'SECRET_MARKER_DO_NOT_LEAK'
+  assert.throws(
+    () => parseJsonl(`{"a":1}\nnot json but contains ${secretMarker}\n`),
+    (error: unknown) => {
+      const e = error as Error
+      assert.ok(e instanceof Error)
+      assert.equal(e.message.includes(secretMarker), false)
+      return true
+    },
+  )
+})
+
+test('parseArgs throws a fixed USAGE LiveEvalReportError (never a free-text Error) when no path is given', () => {
+  assert.throws(
+    () => parseArgs([]),
+    (error: unknown) => {
+      const e = error as LiveEvalReportError
+      assert.ok(e instanceof LiveEvalReportError)
+      assert.equal(e.code, 'USAGE')
+      return true
+    },
+  )
 })
 
 test('toLiveLearningEventRecord maps a well-formed snake_case ledger row to the camelCase record shape', () => {
@@ -94,6 +141,71 @@ test('formatLiveEvalReport never prints a raw message -- the report has no such 
   const text = formatLiveEvalReport(report)
   assert.equal(text.includes('rawMessage'), false)
   assert.equal(text.includes('message'), false)
+})
+
+// ALF-1B correction 1, item 4: loadEventsFile is fail-closed -- a single
+// malformed row aborts the WHOLE report (never silently dropped, which
+// could corrupt evaluation metrics with no visible signal).
+function withTempEventsFile(contents: string, fn: (path: string) => void) {
+  const dir = mkdtempSync(join(tmpdir(), 'alf1b-live-eval-'))
+  const path = join(dir, 'events.jsonl')
+  writeFileSync(path, contents, 'utf8')
+  try {
+    fn(path)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+test('loadEventsFile aborts the whole report with a fixed MALFORMED_EVENT_ROW error when any row cannot be normalized', () => {
+  withTempEventsFile('{"id":"evt-1","user_id":"u","correlation_id":"c","learning_task":"t","schema_version":"s","event_kind":"production_label","payload":{}}\n{"id":"evt-2"}\n', (path) => {
+    assert.throws(
+      () => loadEventsFile(path),
+      (error: unknown) => {
+        const e = error as LiveEvalReportError
+        assert.ok(e instanceof LiveEvalReportError)
+        assert.equal(e.code, 'MALFORMED_EVENT_ROW')
+        assert.equal(e.line, 2)
+        return true
+      },
+    )
+  })
+})
+
+test('loadEventsFile aborts with a fixed MALFORMED_JSON_LINE error, never echoing a secret marker in a bad line', () => {
+  const secretMarker = 'SECRET_MARKER_DO_NOT_LEAK'
+  withTempEventsFile(`{"id":"evt-1","user_id":"u","correlation_id":"c","learning_task":"t","schema_version":"s","event_kind":"production_label","payload":{}}\nnot json ${secretMarker}\n`, (path) => {
+    assert.throws(
+      () => loadEventsFile(path),
+      (error: unknown) => {
+        const e = error as Error
+        assert.ok(e instanceof LiveEvalReportError)
+        assert.equal((e as LiveEvalReportError).code, 'MALFORMED_JSON_LINE')
+        assert.equal(e.message.includes(secretMarker), false)
+        return true
+      },
+    )
+  })
+})
+
+test('loadEventsFile succeeds and returns every row when the whole file is well-formed', () => {
+  withTempEventsFile('{"id":"evt-1","user_id":"u","correlation_id":"c","learning_task":"t","schema_version":"s","event_kind":"production_label","payload":{}}\n', (path) => {
+    const records = loadEventsFile(path)
+    assert.equal(records.length, 1)
+    assert.equal(records[0].id, 'evt-1')
+  })
+})
+
+test('loadEventsFile throws a fixed FILE_READ_FAILED error for a missing file', () => {
+  assert.throws(
+    () => loadEventsFile(join(tmpdir(), 'alf1b-live-eval-does-not-exist', 'nope.jsonl')),
+    (error: unknown) => {
+      const e = error as LiveEvalReportError
+      assert.ok(e instanceof LiveEvalReportError)
+      assert.equal(e.code, 'FILE_READ_FAILED')
+      return true
+    },
+  )
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

@@ -13,6 +13,19 @@
 // NO NETWORK CALL. NO SUPABASE CLIENT. NO CREDENTIALS. See
 // live-eval-report.ts's own header for the full privacy/usage contract
 // this module's functions serve.
+//
+// FIXED BOUNDED ERROR MESSAGES ONLY (ALF-1B correction 1, item 2 + 4).
+// Every failure this module can raise is a LiveEvalReportError carrying
+// one of a small closed set of reason codes, plus -- for the two cases
+// where it is useful -- a bounded 1-based line number (a position in the
+// file, never its content). NOTHING derived from row/line CONTENT is ever
+// attached to an error: not JSON.parse's own message (which can echo a
+// fragment of the offending text), not the row's own fields, not any
+// other exception's arbitrary `.message`. This is deliberately
+// fail-closed for malformed input (see loadEventsFile below): a single
+// bad row aborts the WHOLE report rather than being silently dropped,
+// since silently dropping rows could corrupt evaluation metrics without
+// any visible signal that data went missing.
 
 import { readFileSync } from 'node:fs'
 import type {
@@ -20,6 +33,43 @@ import type {
   LiveRoutingEvalReport,
 } from '../../agent/worker/ai-learning/live-routing-comparison'
 import { LIVE_ROUTING_SCORED_FIELDS } from '../../agent/worker/ai-learning/live-routing-comparison'
+
+export type LiveEvalReportErrorCode =
+  | 'USAGE'
+  | 'FILE_READ_FAILED'
+  | 'MALFORMED_JSON_LINE'
+  | 'MALFORMED_EVENT_ROW'
+
+function fixedErrorMessage(code: LiveEvalReportErrorCode, line: number | undefined): string {
+  switch (code) {
+    case 'USAGE':
+      return 'Usage: vite-node scripts/ai-learning/live-eval-report.ts <events.jsonl> [--json]'
+    case 'FILE_READ_FAILED':
+      return 'events file could not be read'
+    case 'MALFORMED_JSON_LINE':
+      return line === undefined ? 'malformed JSON line in events file' : `malformed JSON on line ${line} of events file`
+    case 'MALFORMED_EVENT_ROW':
+      return line === undefined
+        ? 'malformed ledger event row in events file'
+        : `malformed ledger event row on line ${line} of events file`
+  }
+}
+
+// A FIXED, bounded error type -- .message is always one of the templates
+// above (optionally with a bounded line NUMBER interpolated, never row
+// content). Never construct one with a message drawn from another
+// exception or from parsed data.
+export class LiveEvalReportError extends Error {
+  readonly code: LiveEvalReportErrorCode
+  readonly line?: number
+
+  constructor(code: LiveEvalReportErrorCode, line?: number) {
+    super(fixedErrorMessage(code, line))
+    this.name = 'LiveEvalReportError'
+    this.code = code
+    this.line = line
+  }
+}
 
 interface RawLedgerRow {
   id?: unknown
@@ -40,12 +90,32 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0
 }
 
-export function parseJsonl(text: string): unknown[] {
-  return text
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .map((line) => JSON.parse(line))
+export interface ParsedJsonlLine {
+  // 1-based position in the source file -- used only to name WHERE a
+  // later normalization failure occurred, never to carry content.
+  readonly line: number
+  readonly value: unknown
+}
+
+// Throws LiveEvalReportError('MALFORMED_JSON_LINE', line) for an
+// unparsable line -- NEVER JSON.parse's own thrown error (its message can
+// include a fragment of the offending text, which this module's fixed-
+// bounded-error-message contract forbids).
+export function parseJsonl(text: string): ParsedJsonlLine[] {
+  const rawLines = text.split('\n')
+  const parsed: ParsedJsonlLine[] = []
+  for (let i = 0; i < rawLines.length; i += 1) {
+    const trimmed = rawLines[i].trim()
+    if (trimmed.length === 0) continue
+    let value: unknown
+    try {
+      value = JSON.parse(trimmed)
+    } catch {
+      throw new LiveEvalReportError('MALFORMED_JSON_LINE', i + 1)
+    }
+    parsed.push({ line: i + 1, value })
+  }
+  return parsed
 }
 
 // Never throws for a malformed individual row -- returns null, and the
@@ -83,14 +153,27 @@ export function toLiveLearningEventRecord(row: unknown): LiveLearningEventRecord
   }
 }
 
+// Fail-closed (ALF-1B correction 1, item 4): a single row that cannot be
+// normalized aborts the WHOLE report with a fixed, bounded
+// MALFORMED_EVENT_ROW error (code + line number only) rather than being
+// silently dropped -- silently dropping rows could corrupt evaluation
+// metrics (a smaller-than-real denominator) with no visible signal that
+// data went missing. toLiveLearningEventRecord itself stays a pure,
+// never-throwing predicate (row shape validity in isolation, still used
+// directly by tests); this function is the fail-closed boundary around it.
 export function loadEventsFile(path: string): LiveLearningEventRecord[] {
-  const rows = parseJsonl(readFileSync(path, 'utf8'))
-  const records: LiveLearningEventRecord[] = []
-  for (const row of rows) {
-    const record = toLiveLearningEventRecord(row)
-    if (record) records.push(record)
+  let text: string
+  try {
+    text = readFileSync(path, 'utf8')
+  } catch {
+    throw new LiveEvalReportError('FILE_READ_FAILED')
   }
-  return records
+  const parsedLines = parseJsonl(text)
+  return parsedLines.map(({ line, value }) => {
+    const record = toLiveLearningEventRecord(value)
+    if (!record) throw new LiveEvalReportError('MALFORMED_EVENT_ROW', line)
+    return record
+  })
 }
 
 // Human-readable report text. Explicitly states which fields are masked
@@ -125,7 +208,7 @@ export function parseArgs(argv: string[]): { eventsPath: string; json: boolean }
   const json = argv.includes('--json')
   const positional = argv.filter((arg) => arg !== '--json')
   if (positional.length < 1) {
-    throw new Error('Usage: vite-node scripts/ai-learning/live-eval-report.ts <events.jsonl> [--json]')
+    throw new LiveEvalReportError('USAGE')
   }
   return { eventsPath: positional[0], json }
 }

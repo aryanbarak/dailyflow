@@ -158,12 +158,28 @@ describe('parseShadowRoutingOutput: shadow-only vocabulary gate (round 2, item 1
     }
   })
 
-  it('an omitted intentType/toolId (e.g. a conversation/clarification turn) is still accepted -- the gate only constrains a PRESENT value', () => {
+  // ALF-1B correction 1, item 3: an omitted intentType/toolId is accepted
+  // ONLY for the closed, fixture-audited intentless combinations
+  // (conversation/none, clarification/unknown) -- not for every
+  // interactionClass/domain pairing. A write/read turn with no intentType
+  // at all is not itself a recognized routing outcome, so it is now
+  // correctly rejected by the same gate. See
+  // shadow-semantic-consistency.test.ts for that gate's own dedicated
+  // positive/negative coverage.
+  it('an omitted intentType/toolId is accepted for a genuine conversation/clarification turn', () => {
+    const conversation = payloadWith({ interactionClass: 'conversation', domain: 'none', intentType: undefined, toolId: undefined })
+    expect(parseShadowRoutingOutput(conversation).ok).toBe(true)
+
+    const clarification = payloadWith({ interactionClass: 'clarification', domain: 'unknown', intentType: undefined, toolId: undefined })
+    expect(parseShadowRoutingOutput(clarification).ok).toBe(true)
+  })
+
+  it('an omitted intentType/toolId on a write turn (e.g. domain=calendar, interactionClass=write) is rejected -- not every interactionClass/domain pairing is a recognized intentless combination', () => {
     const withoutEither = JSON.parse(VALID_JSON)
     delete withoutEither.intentType
     delete withoutEither.toolId
     const result = parseShadowRoutingOutput(JSON.stringify(withoutEither))
-    expect(result.ok).toBe(true)
+    expect(result).toEqual({ ok: false, reason: 'schema_invalid' })
   })
 })
 

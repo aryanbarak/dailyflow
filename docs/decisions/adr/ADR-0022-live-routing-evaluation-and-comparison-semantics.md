@@ -1,10 +1,19 @@
 # ADR-0022: Live Routing Evaluation and Comparison Semantics
 
 - **Status:** Proposed. Implemented as a read-only, provider-neutral
-  comparison layer with zero runtime authority and zero persistence --
-  nothing here is wired into `/chat`, and nothing here enables Shadow
-  (production still has `AI_SHADOW_ENABLED=false` and no shadow model
-  configured; this slice ships and is reviewed with Shadow still off).
+  comparison layer with zero runtime authority and zero persistence, and
+  nothing here enables Shadow (production still has
+  `AI_SHADOW_ENABLED=false` and no shadow model configured; this slice
+  ships and is reviewed with Shadow still off). The precise `/chat`
+  wiring, corrected from an earlier draft of this ADR (see Decision item
+  8): `live-routing-comparison.ts` and the live-eval CLI have zero
+  `/chat`-adjacent wiring at all -- neither is imported by any production
+  code path. `shadow-semantic-consistency.ts` IS intentionally called
+  from the existing Shadow parsing boundary
+  (`shadow-routing-prompt.ts`), but only to REJECT invalid Shadow model
+  output before it is ever persisted -- that rejection cannot influence
+  the Chat response, routing, or execution, and Shadow itself remains
+  disabled.
 - **Date:** 2026-09-02
 - **Decision Makers:** Product Owner (Aryan Barakzai) - decision; Claude Code - drafting.
 - **Supersedes:** None
@@ -296,8 +305,13 @@ is excluded from the vitest project, matching
 
 - Two new pure, independently-testable modules in
   `agent/worker/ai-learning/`: `shadow-semantic-consistency.ts` and
-  `live-routing-comparison.ts` -- neither imported by any production
-  `/chat` code path.
+  `live-routing-comparison.ts`. `live-routing-comparison.ts` has zero
+  `/chat`-adjacent wiring at all. `shadow-semantic-consistency.ts` IS
+  intentionally imported by `shadow-routing-prompt.ts` -- the existing
+  Shadow parsing boundary a live chat turn's Shadow call passes through --
+  but only to REJECT invalid Shadow model output before persistence; that
+  rejection has no code path back into the Chat response, routing, or
+  execution (see Decision item 8's corrected framing).
 - `shadow-routing-prompt.ts`'s `parseShadowRoutingOutput` gains one more
   rejection gate (semantic consistency), additive to its existing generic
   shape + vocabulary allowlist checks -- no behavior change for any

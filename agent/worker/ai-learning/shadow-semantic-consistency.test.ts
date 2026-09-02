@@ -114,9 +114,28 @@ describe('isSemanticallyConsistentRoutingPayload', () => {
     }
   })
 
-  it('a payload with no intentType at all is always consistent (nothing for this gate to check)', () => {
+  // ALF-1B correction 1, item 3: a payload with no intentType at all is
+  // consistent ONLY for the closed, fixture-audited set of
+  // (interactionClass, domain) pairs -- not for every combination.
+  it('a payload with no intentType is consistent for the two audited intentless combinations', () => {
     expect(isSemanticallyConsistentRoutingPayload({ domain: 'none', interactionClass: 'conversation' })).toBe(true)
     expect(isSemanticallyConsistentRoutingPayload({ domain: 'unknown', interactionClass: 'clarification' })).toBe(true)
+  })
+
+  it('rejects unaudited intentless combinations, e.g. conversation paired with an unrelated domain', () => {
+    expect(isSemanticallyConsistentRoutingPayload({ domain: 'tasks', interactionClass: 'conversation' })).toBe(false)
+    expect(isSemanticallyConsistentRoutingPayload({ domain: 'calendar', interactionClass: 'conversation' })).toBe(false)
+    expect(isSemanticallyConsistentRoutingPayload({ domain: 'unknown', interactionClass: 'conversation' })).toBe(false)
+  })
+
+  it('rejects a bare read or write interactionClass with no intentType at all -- neither appears intentless in the fixture', () => {
+    expect(isSemanticallyConsistentRoutingPayload({ domain: 'tasks', interactionClass: 'read' })).toBe(false)
+    expect(isSemanticallyConsistentRoutingPayload({ domain: 'calendar', interactionClass: 'write' })).toBe(false)
+  })
+
+  it('rejects clarification paired with a domain other than unknown, and conversation paired with a domain other than none', () => {
+    expect(isSemanticallyConsistentRoutingPayload({ domain: 'tasks', interactionClass: 'clarification' })).toBe(false)
+    expect(isSemanticallyConsistentRoutingPayload({ domain: 'none', interactionClass: 'clarification' })).toBe(false)
   })
 
   // Parity guard: every non-write intentType/domain/interactionClass this
@@ -136,6 +155,30 @@ describe('isSemanticallyConsistentRoutingPayload', () => {
       expect(isSemanticallyConsistentRoutingPayload({ domain: domain as never, interactionClass: interactionClass as never, intentType }), `fixture intentType=${intentType}`).toBe(true)
     }
     expect(checkedNonWriteCases).toBeGreaterThan(0)
+  })
+
+  // Parity guard for the INTENTLESS case specifically: every case in the
+  // fixture that names neither an intentType nor a toolId must fall into
+  // exactly the closed two-pair set this module hardcodes -- if a future
+  // fixture case introduces a genuinely new intentless (interactionClass,
+  // domain) pair, this test fails until the mapping is deliberately
+  // updated to match, rather than silently drifting.
+  it('intentless semantics match every "no intentType" case actually present in the fixture', () => {
+    const fixturePath = join(__dirname, '../../../ai/evals/intent-routing-v1/cases.jsonl')
+    const lines = readFileSync(fixturePath, 'utf8').split('\n').filter((line) => line.trim().length > 0)
+
+    let checkedIntentlessCases = 0
+    for (const line of lines) {
+      const record = JSON.parse(line) as { expected: { domain: string; interactionClass: string; intentType?: string } }
+      const { intentType, domain, interactionClass } = record.expected
+      if (intentType) continue
+      checkedIntentlessCases += 1
+      expect(
+        isSemanticallyConsistentRoutingPayload({ domain: domain as never, interactionClass: interactionClass as never }),
+        `fixture intentless combination (${interactionClass}, ${domain})`,
+      ).toBe(true)
+    }
+    expect(checkedIntentlessCases).toBeGreaterThan(0)
   })
 })
 

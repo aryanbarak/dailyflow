@@ -34,13 +34,19 @@
 //
 // PRIVACY: never prints a raw user message (the input JSONL rows
 // themselves must never contain one either -- ai_learning_events has no
-// such column, see ADR-0020). A malformed row is silently excluded
-// (fail-closed), never guessed into shape; this script exits non-zero
-// only on a missing/unreadable file or invalid JSON, never on an
-// individual bad row.
+// such column, see ADR-0020). FAIL-CLOSED on malformed input (ALF-1B
+// correction 1, item 4): a row that cannot be normalized aborts the WHOLE
+// report rather than being silently dropped, since silent drops could
+// corrupt evaluation metrics with no visible signal. Every failure this
+// script can report -- a bad line, a bad row, a missing file, a bad
+// argument, or any other unexpected error -- prints ONLY a fixed, bounded
+// reason code (optionally with a bounded line NUMBER), NEVER JSON.parse's
+// own message, row content, or any other exception's arbitrary
+// `.message`/`String(error)` (see live-eval-report-lib.ts's
+// LiveEvalReportError for the full closed set of codes).
 
 import { compareLiveRoutingEvents } from '../../agent/worker/ai-learning/live-routing-comparison'
-import { formatLiveEvalReport, loadEventsFile, parseArgs } from './live-eval-report-lib'
+import { formatLiveEvalReport, loadEventsFile, LiveEvalReportError, parseArgs } from './live-eval-report-lib'
 
 async function main() {
   const { eventsPath, json } = parseArgs(process.argv.slice(2))
@@ -52,6 +58,14 @@ async function main() {
 try {
   await main()
 } catch (error) {
-  console.error('[LiveEvalReport] failed:', error instanceof Error ? error.message : String(error))
+  // Deliberately never reads error.message / String(error) for anything
+  // other than our own fixed-message LiveEvalReportError -- any other
+  // exception type (a future bug, a library internal) falls through to a
+  // single fixed, content-free code instead of risking an arbitrary
+  // message reaching stderr.
+  const code = error instanceof LiveEvalReportError ? error.code : 'INTERNAL_ERROR'
+  const line = error instanceof LiveEvalReportError ? error.line : undefined
+  const lineSuffix = line === undefined ? '' : ' (line ' + line + ')'
+  console.error('[LiveEvalReport] failed: ' + code + lineSuffix)
   process.exit(1)
 }

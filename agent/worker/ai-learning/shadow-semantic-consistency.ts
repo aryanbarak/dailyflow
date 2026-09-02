@@ -81,6 +81,27 @@ export function isKnownRoutingIntentType(intentType: string): boolean {
   return Object.prototype.hasOwnProperty.call(ROUTING_INTENT_SEMANTICS, intentType)
 }
 
+// ALF-1B correction 1, item 3: a CLOSED set of legitimate
+// (interactionClass, domain) pairs for a payload that names NO intentType
+// at all. Auditing every "no intentType" case actually present in
+// ai/evals/intent-routing-v1/cases.jsonl turns up exactly these two
+// combinations -- ordinary conversation naming no domain, and an
+// unresolved clarification naming no domain yet. 'read' and 'write'
+// NEVER appear without an intentType anywhere in that fixture (a read or
+// write turn always names what it is reading/writing), so this
+// deliberately does NOT invent a broader allowance for them. Parity with
+// the fixture is guarded by this module's own test -- if a future fixture
+// case introduces a genuinely new intentless combination, that test fails
+// until this list is deliberately, visibly updated to match.
+const INTENTLESS_INTERACTION_DOMAIN_PAIRS: ReadonlyArray<readonly [AiLearningInteractionClass, AiLearningDomain]> = [
+  ['conversation', 'none'],
+  ['clarification', 'unknown'],
+]
+
+function isAllowedIntentlessCombination(interactionClass: AiLearningInteractionClass, domain: AiLearningDomain): boolean {
+  return INTENTLESS_INTERACTION_DOMAIN_PAIRS.some(([ic, d]) => ic === interactionClass && d === domain)
+}
+
 export interface RoutingConsistencyInput {
   readonly domain: AiLearningDomain
   readonly interactionClass: AiLearningInteractionClass
@@ -100,13 +121,15 @@ export function isSemanticallyConsistentRoutingPayload(payload: RoutingConsisten
     return false
   }
 
-  // No intentType at all -- nothing left for THIS gate to check. Plain
-  // domain/interactionClass combinations with no named intent (ordinary
-  // conversation, an unresolved clarification, a bare read with no
-  // specific intentType supplied) are validated by the generic shared
-  // contract, not this module.
+  // No intentType at all -- only the closed, fixture-audited set of
+  // (interactionClass, domain) pairs above is a recognized intentless
+  // combination (ALF-1B correction 1, item 3). Anything else -- e.g.
+  // 'conversation' paired with an unrelated domain like 'tasks', or a
+  // bare 'read'/'write' with no intentType at all -- is rejected here,
+  // not left to the generic shared contract (which has no opinion on
+  // domain/interactionClass coherence at all).
   if (intentType === undefined) {
-    return true
+    return isAllowedIntentlessCombination(interactionClass, domain)
   }
 
   const expected = ROUTING_INTENT_SEMANTICS[intentType]

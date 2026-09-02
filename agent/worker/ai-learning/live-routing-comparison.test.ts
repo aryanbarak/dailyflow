@@ -79,7 +79,14 @@ describe('compareLiveRoutingEvents', () => {
   it('B: a domain mismatch alone makes exactRoutingMatch false, and only the domain field is reported as a mismatch', () => {
     const report = compareLiveRoutingEvents([
       productionEvent(),
-      shadowEvent({ payload: { ...VALID_SHADOW_PAYLOAD, domain: 'tasks', intentType: undefined, toolId: undefined } }),
+      // domain differs from production ('calendar'); intentType/toolId/
+      // interactionClass are changed to a DIFFERENT, still semantically
+      // valid combination (read_tasks) rather than just clearing
+      // intentType/toolId, since a bare domain='tasks' with no intentType
+      // is not itself a recognized combination (ALF-1B correction 1,
+      // item 3 -- see shadow-semantic-consistency.ts's closed
+      // INTENTLESS_INTERACTION_DOMAIN_PAIRS mapping).
+      shadowEvent({ payload: { ...VALID_SHADOW_PAYLOAD, interactionClass: 'read', domain: 'tasks', intentType: 'read_tasks', toolId: undefined } }),
     ])
     expect(report.eligiblePairs).toBe(1)
     const comparison = report.comparisons[0]
@@ -104,7 +111,12 @@ describe('compareLiveRoutingEvents', () => {
   it('D: intentType present on production only (shadow omitted) is a mismatch', () => {
     const report = compareLiveRoutingEvents([
       productionEvent(),
-      shadowEvent({ payload: { ...VALID_SHADOW_PAYLOAD, intentType: undefined, toolId: undefined } }),
+      // interactionClass/domain switched to the closed intentless
+      // combination (conversation/none) alongside omitting intentType --
+      // a bare domain='calendar'/interactionClass='write' with no
+      // intentType is not itself a recognized combination (ALF-1B
+      // correction 1, item 3).
+      shadowEvent({ payload: { ...VALID_SHADOW_PAYLOAD, interactionClass: 'conversation', domain: 'none', intentType: undefined, toolId: undefined } }),
     ])
     expect(report.comparisons[0].fieldResults.intentType.match).toBe(false)
     expect(report.comparisons[0].exactRoutingMatch).toBe(false)
@@ -218,7 +230,9 @@ describe('compareLiveRoutingEvents', () => {
   it('L: fieldResults.productionValue always reflects the PRODUCTION payload, never falls back to the shadow value', () => {
     const report = compareLiveRoutingEvents([
       productionEvent({ payload: { ...VALID_PRODUCTION_PAYLOAD, domain: 'calendar' } }),
-      shadowEvent({ payload: { ...VALID_SHADOW_PAYLOAD, domain: 'tasks', intentType: undefined, toolId: undefined } }),
+      // See test B's comment above on why this uses read_tasks rather than
+      // a bare domain='tasks' with no intentType.
+      shadowEvent({ payload: { ...VALID_SHADOW_PAYLOAD, interactionClass: 'read', domain: 'tasks', intentType: 'read_tasks', toolId: undefined } }),
     ])
     expect(report.comparisons[0].fieldResults.domain.productionValue).toBe('calendar')
     expect(report.comparisons[0].fieldResults.domain.shadowValue).toBe('tasks')
