@@ -110,7 +110,7 @@ import {
 } from '@/features/ai/responseLanguage'
 import { findWriteIntentDescriptor, writeIntentRegistry } from '../../shared/writeIntentRegistry'
 import { reportProposalOutcome, writeProposalTargetFields, type ProposalOutcomeDomain } from '@/features/agent/proposalOutcomeReporting'
-import { formatDateLabel, formatDateTime } from '@/lib/date'
+import { formatDateTime } from '@/lib/date'
 
 export interface ChatMsg {
   id: string
@@ -476,11 +476,18 @@ export function applyTwoActionApproveResult(
 // call sends -- never re-parses the original message and never re-runs an
 // LLM. Pure and per-entry, so it structurally cannot mix in a sibling
 // action's fields (there is no sibling in scope here at all). dueDate is a
-// date-only string (flow-write-policy.ts's ParsedTaskWriteIntent.dueDate);
-// dateTimeStart/dateTimeEnd are UTC ISO instants (zonedDateTimeToUtcIso in
-// respondToTwoActionWrite) -- formatDateLabel/formatDateTime (src/lib/date.ts)
-// are the same helpers TasksPage/other approval previews already use for
-// this exact display purpose, reused here rather than re-implemented.
+// date-only string (flow-write-policy.ts's ParsedTaskWriteIntent.dueDate)
+// -- shown VERBATIM, never through `new Date(dueDate)` (CORRECTION 4:
+// Date-parsing a date-only ISO string drops the year via
+// toLocaleDateString's {month,day} formatting and can shift the displayed
+// calendar day in timezones west of UTC -- both wrong at an approval
+// boundary, where the user must see the exact value that will execute; the
+// existing single-action create_task preview already displays dueDate
+// this same verbatim way). dateTimeStart/dateTimeEnd are UTC ISO instants
+// (zonedDateTimeToUtcIso in respondToTwoActionWrite) -- formatDateTime
+// (src/lib/date.ts) is the same helper TasksPage/other approval previews
+// already use for this exact display purpose, reused here rather than
+// re-implemented.
 //
 // CORRECTION 3: the "Title" line is derived ONLY from
 // pending.arguments.title, the immutable execution argument -- never
@@ -498,7 +505,7 @@ export function twoActionPendingPreviewLines(pending: TwoActionPendingState, t: 
     const dueDate = pending.arguments.dueDate as string | null | undefined
     return [
       title ? `${t('agent_intent_preview_title')}: ${title}` : null,
-      dueDate ? `${t('agent_intent_preview_due')}: ${formatDateLabel(dueDate)}` : null,
+      dueDate ? `${t('agent_intent_preview_due')}: ${dueDate}` : null,
       notes ? `${t('agent_intent_preview_notes')}: ${notes}` : null,
     ].filter((line): line is string => Boolean(line))
   }

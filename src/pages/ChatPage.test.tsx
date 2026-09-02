@@ -2261,10 +2261,20 @@ describe("Chat V2 Slice 2B.2 correction 2, BLOCKER 1: twoActionPendingPreviewLin
   });
 
   it("2. a task approval card's preview lines expose the exact due date before approval, derived from the same dueDate sent to requestExecution()", () => {
+    // CORRECTION 4: dueDate is shown VERBATIM, never through `new Date(...)`
+    // -- Date-parsing a date-only ISO string drops the year and can shift
+    // the displayed calendar day in timezones west of UTC, both wrong at
+    // an approval boundary.
     const lines = twoActionPendingPreviewLines(taskPending, t);
-    expect(lines).toContain(`agent_intent_preview_due: ${new Date("2026-09-04").toLocaleDateString(undefined, { month: "short", day: "numeric" })}`);
+    expect(lines).toContain("agent_intent_preview_due: 2026-09-04");
     expect(lines).toContain("agent_intent_preview_title: Report");
     expect(lines).toContain("agent_intent_preview_notes: Quarterly numbers");
+  });
+
+  it("CORRECTION 4: the due-date line preserves the year and applies no locale/timezone conversion at all", () => {
+    const farFutureTask = { ...taskPending, arguments: { title: "Report", dueDate: "2027-01-03" } };
+    const lines = twoActionPendingPreviewLines(farFutureTask, t);
+    expect(lines).toContain("agent_intent_preview_due: 2027-01-03");
   });
 
   it("3. sibling A/B previews cannot mix arguments -- each is derived only from its own entry's own arguments", () => {
