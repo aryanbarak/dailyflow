@@ -1003,6 +1003,49 @@ async function respondToTwoActionWrite(
   // the UPDATE-kind check above, for the same underlying reason.
   if (resolved.some(r => r.mode === 'ask' && r.calendarIntent?.sourceTaskReference !== undefined)) return null
 
+  // CORRECTION 3: title resolution is a PRE-PASS over every action, run to
+  // completion for ALL of them BEFORE the commit loop below touches
+  // anything -- moved out of the old per-action interleaving with
+  // execution/pending-descriptor construction specifically so the
+  // title-completeness bail immediately below can still run before ANY
+  // sibling has committed (an 'auto' action executing a real write, or an
+  // 'ask' action's pending descriptor being handed to the client). A
+  // provider outage degrades to whatever pattern extraction already found
+  // (possibly none) -- never thrown here; the completeness bail after this
+  // loop is what turns "no title" into a decision, uniformly for every
+  // action, rather than only for whichever action happened to hit the
+  // provider call first.
+  for (const r of resolved) {
+    if (r.mode === 'off') continue
+    if (r.taskIntent && r.taskIntent.kind === 'create_task' && !r.taskIntent.dateClarificationNeeded && r.taskIntent.titleSource !== 'correction') {
+      try {
+        r.taskIntent.title = await resolveCreateTaskTitle(env, r.taskIntent, r.clause)
+      } catch (err) {
+        if (!(err instanceof ProviderUnavailableError)) throw err
+      }
+    } else if (r.calendarIntent && r.calendarIntent.kind === 'create_calendar_event' && !r.calendarIntent.dateClarificationNeeded && r.calendarIntent.titleSource !== 'correction' && r.calendarIntent.sourceTaskReference === undefined) {
+      try {
+        r.calendarIntent.title = await resolveCreateEventTitle(env, r.calendarIntent, r.clause)
+      } catch (err) {
+        if (!(err instanceof ProviderUnavailableError)) throw err
+      }
+    }
+  }
+
+  // CORRECTION 3 bail: tasks.create/calendar.create_event both require a
+  // non-empty title -- an 'ask'-mode action that still has none after the
+  // pre-pass above (provider outage with nothing pattern-extractable
+  // either) must never reach a pending descriptor. previewText's own
+  // twoActionFallbackPreview (a bounded fallback built from the raw
+  // clause) exists ONLY for display when a title is otherwise present but
+  // this exact case is exactly what it must never paper over -- a user
+  // must never be asked to approve a create intent with no title at all.
+  // 'auto'-mode actions are unaffected: executeAutoTaskWrite/
+  // executeAutoCalendarWrite already have their own honest `!intent.title`
+  // clarify outcome for this case, unchanged by this correction.
+  if (resolved.some(r => r.mode === 'ask' && r.taskIntent && !r.taskIntent.title)) return null
+  if (resolved.some(r => r.mode === 'ask' && r.calendarIntent && !r.calendarIntent.title)) return null
+
   const results: TwoActionResult[] = []
   for (const [index, r] of resolved.entries()) {
     if (r.mode === 'off') {
@@ -1011,24 +1054,13 @@ async function respondToTwoActionWrite(
     }
 
     if (r.taskIntent) {
-      if (r.taskIntent.kind === 'create_task' && !r.taskIntent.dateClarificationNeeded && r.taskIntent.titleSource !== 'correction') {
-        try {
-          r.taskIntent.title = await resolveCreateTaskTitle(env, r.taskIntent, r.clause)
-        } catch (err) {
-          // A provider outage here degrades to whatever title pattern
-          // extraction already found (possibly none) -- never a reason to
-          // bail, since neither mode has written or promised anything yet:
-          // 'auto' reports it as its own honest provider_unavailable
-          // outcome below; 'ask' simply carries a possibly-empty title
-          // into the pending descriptor, exactly like a single-action
-          // 'auto' write degrades to pattern-only extraction today.
-          if (!(err instanceof ProviderUnavailableError)) throw err
-        }
-      }
       if (r.mode === 'auto') {
         const execution = await executeAutoTaskWrite({ env, userId, language, intent: r.taskIntent, now, timeZone })
         results.push(twoActionResolvedFromExecution('tasks', r.action, execution, language))
       } else {
+        // r.taskIntent.title is guaranteed non-empty by the CORRECTION 3
+        // bail above -- previewText is a separate, display-only value,
+        // never substituted into `arguments`.
         const previewText = r.taskIntent.title ?? twoActionFallbackPreview(r.clause)
         results.push({
           kind: 'pending',
@@ -1042,19 +1074,13 @@ async function respondToTwoActionWrite(
         })
       }
     } else if (r.calendarIntent) {
-      if (r.calendarIntent.kind === 'create_calendar_event' && !r.calendarIntent.dateClarificationNeeded && r.calendarIntent.titleSource !== 'correction' && r.calendarIntent.sourceTaskReference === undefined) {
-        try {
-          r.calendarIntent.title = await resolveCreateEventTitle(env, r.calendarIntent, r.clause)
-        } catch (err) {
-          if (!(err instanceof ProviderUnavailableError)) throw err
-        }
-      }
       if (r.mode === 'auto') {
         const execution = await executeAutoCalendarWrite({ env, userId, language, intent: r.calendarIntent, now, timeZone })
         results.push(twoActionResolvedFromExecution('calendar', r.action, execution, language))
       } else {
         // startDate/startTime are guaranteed present by the SCOPE BOUNDARY
-        // bail above -- never undefined here.
+        // bail above, and title is guaranteed non-empty by the CORRECTION 3
+        // bail above -- never undefined/empty here.
         const dateTimeStart = zonedDateTimeToUtcIso(r.calendarIntent.startDate!, r.calendarIntent.startTime!, timeZone)
         const dateTimeEnd = r.calendarIntent.endTime
           ? zonedDateTimeToUtcIso(r.calendarIntent.startDate!, r.calendarIntent.endTime, timeZone)

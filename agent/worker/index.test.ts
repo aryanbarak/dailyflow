@@ -2105,7 +2105,16 @@ describe('Chat V2 Slice 2B.2: two independent actions in one message', () => {
   })
 
   it('CORRECTION 1 -- item 1: Calendar + Task, both resolve ask, produces TWO independent pending actions, never the old "Calendar or Task?" fallback', async () => {
-    const log = installFetchMock([], null, 'Gemini should not be called', 'ask')
+    // CORRECTION 3: create_task never gets a title at parse time (only via
+    // this model-title-extraction call or resolveCreateEventTitle's own
+    // pattern fallback for calendar) -- an unmocked model response defaults
+    // to '' (see installFetchMock's own taskTitleResult doc comment), which
+    // now correctly triggers the CORRECTION 3 missing-title bail and falls
+    // back to the whole-message path instead of returning a pending
+    // action. Mocked here (matching this test's own AUTO-mode sibling
+    // above) so this test keeps exercising the ask-mode PENDING path it is
+    // actually named for.
+    const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], 'Report')
     const response = await worker.fetch(chatRequest({
       message: 'فردا ساعت ۹ با احمد یک قرار ملاقات بساز و برای جمعه یک تسک گزارش بساز',
       timeZone: 'Europe/Berlin',
@@ -2137,7 +2146,11 @@ describe('Chat V2 Slice 2B.2: two independent actions in one message', () => {
   })
 
   it('CORRECTION 1 -- item 2: Task + Task, both resolve ask, produces two independent pending actions', async () => {
-    const log = installFetchMock([], null, 'Gemini should not be called', 'ask')
+    // CORRECTION 3: see item 1's own comment -- create_task title is
+    // always model-resolved, never present at parse time, so this needs an
+    // explicit mock now that a missing title correctly blocks the pending
+    // path instead of silently returning one with arguments.title undefined.
+    const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], 'Report')
     const response = await worker.fetch(chatRequest({
       message: 'برای امروز یک تسک گزارش بساز و برای جمعه یک تسک گزارش بساز',
       timeZone: 'Europe/Berlin',
@@ -2170,7 +2183,8 @@ describe('Chat V2 Slice 2B.2: two independent actions in one message', () => {
   })
 
   it('CORRECTION 1 -- item 4: the two pending actions always get distinct requestIds', async () => {
-    const log = installFetchMock([], null, 'Gemini should not be called', 'ask')
+    // CORRECTION 3: see item 1's own comment.
+    const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], 'Report')
     const response = await worker.fetch(chatRequest({
       message: 'برای امروز یک تسک گزارش بساز و برای جمعه یک تسک گزارش بساز',
       timeZone: 'Europe/Berlin',
@@ -2267,7 +2281,11 @@ describe('Chat V2 Slice 2B.2: two independent actions in one message', () => {
   })
 
   it('CORRECTION 2, BLOCKER 2, item 5: ask+ask multi-action /chat persists the user message but does NOT persist a "Ready for approval" assistant transcript before any agent_tool_executions row exists', async () => {
-    const log = installFetchMock([], null, 'Gemini should not be called', 'ask')
+    // CORRECTION 3: see 'CORRECTION 1 -- item 1's own comment -- this test
+    // exercises the pending path itself, not the missing-title bail, so the
+    // task action's title needs an explicit mock now that a missing one
+    // correctly falls back instead.
+    const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], 'Report')
     const response = await worker.fetch(chatRequest({
       message: 'فردا ساعت ۹ با احمد یک قرار ملاقات بساز و برای جمعه یک تسک گزارش بساز',
       timeZone: 'Europe/Berlin',
@@ -2290,7 +2308,11 @@ describe('Chat V2 Slice 2B.2: two independent actions in one message', () => {
     // timing race that happens to resolve favorably. Asserting no write
     // anywhere in the log contains the pending reply text proves the claim
     // was never made durable, independent of whatever the client does next.
-    const log = installFetchMock([], null, 'Gemini should not be called', 'ask')
+    // CORRECTION 3: mocked (see item 5's own comment) so this test still
+    // exercises the actual pending path -- otherwise the CORRECTION 3
+    // missing-title bail would make this assertion pass vacuously (no
+    // pending action would be built at all).
+    const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], 'Report')
     await worker.fetch(chatRequest({
       message: 'فردا ساعت ۹ با احمد یک قرار ملاقات بساز و برای جمعه یک تسک گزارش بساز',
       timeZone: 'Europe/Berlin',
@@ -2329,6 +2351,97 @@ describe('Chat V2 Slice 2B.2: two independent actions in one message', () => {
     expect(log.chatMessageWrites[0]).toMatchObject({ role: 'user' })
     expect(log.chatMessageWrites[1].content).toContain('✓ Event created')
     expect(log.chatMessageWrites[2].content).toContain('✓ Task created')
+  })
+
+  it('CORRECTION 3, item 1: an ask-mode task action with no authoritative title never produces a pending approval action -- falls back to the whole-message path instead', async () => {
+    // create_task never has a title at parse time (only via the model-title-
+    // extraction call resolveCreateTaskTitle makes) -- with the default
+    // unmocked model response ('', see installFetchMock's own doc comment)
+    // and a bare clause with nothing pattern-extractable either, title
+    // resolution ends up with no title at all, silently (no throw). Before
+    // this correction, that silently produced a pending action with
+    // arguments.title === undefined; now it must produce no `actions` at
+    // all. The sibling calendar clause has its own, independently valid
+    // pattern-fallback title (unaffected by the missing model mock), so
+    // this proves the bail applies even when only ONE sibling is missing
+    // its title -- neither action reaches the client, per the COMMITMENT
+    // RULE (nothing may be handed out once ANY sibling is incomplete).
+    const log = installFetchMock([], null, 'Gemini should not be called', 'ask')
+    const response = await worker.fetch(chatRequest({
+      message: 'یک رویداد فردا ساعت ۸ بساز و یک تسک بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: unknown }
+
+    expect(response.status).toBe(200)
+    expect(body.actions).toBeUndefined()
+    expect(log.calendarWrites.length).toBe(0)
+    expect(log.taskWrites.length).toBe(0)
+  })
+
+  it('CORRECTION 3, item 2: an ask-mode calendar action with no authoritative title never produces a pending approval action, even though its date/time fully resolved', async () => {
+    // "فردا ساعت ۹ برنامه دارم" ("I have a program tomorrow at 9") resolves
+    // to create_calendar_event with a fully resolved startDate/startTime
+    // (Slice 2B.1.1's implicit-schedule-statement routing) but its own
+    // pattern-extracted title candidate ("فردا برنامه دارم") is rejected by
+    // validateCandidateTitle as substantially the whole clause -- a real,
+    // reachable case where date/time resolves cleanly but title resolution
+    // still ends up empty. The sibling clause has its own independently
+    // valid title, isolating this as specifically a CALENDAR title failure
+    // (not the task-side gap item 1 exercises).
+    const log = installFetchMock([], null, 'Gemini should not be called', 'ask')
+    const response = await worker.fetch(chatRequest({
+      message: 'یک رویداد فردا ساعت ۸ بساز و فردا ساعت ۹ برنامه دارم',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: unknown }
+
+    expect(response.status).toBe(200)
+    expect(body.actions).toBeUndefined()
+    expect(log.calendarWrites.length).toBe(0)
+  })
+
+  it('CORRECTION 3, item 3: a provider outage during title resolution, with nothing pattern-extractable either, does not result in an approvable action with a fabricated/fallback title', async () => {
+    // geminiStatus 429 forces the title-extraction model call itself to
+    // fail (INC-01's own simulated condition) -- for the bare task clause,
+    // resolveCreateTitle's patternFallback is empty too, so it THROWS
+    // ProviderUnavailableError (a different code path than item 1's silent
+    // "model answered but found nothing" case). respondToTwoActionWrite's
+    // pre-pass catches and swallows it, leaving the title empty -- this
+    // proves the CORRECTION 3 bail also covers the thrown-and-swallowed
+    // path, not only the silently-empty one, and that no fallback/
+    // fabricated title (e.g. twoActionFallbackPreview's own bounded clause
+    // text) is ever smuggled into `arguments.title` as a result.
+    const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], null, null, false, false, 429)
+    const response = await worker.fetch(chatRequest({
+      message: 'یک رویداد فردا ساعت ۸ بساز و یک تسک بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: unknown }
+
+    expect(response.status).toBe(200)
+    expect(body.actions).toBeUndefined()
+    expect(log.calendarWrites.length).toBe(0)
+    expect(log.taskWrites.length).toBe(0)
+  })
+
+  it('CORRECTION 3, item 5: an existing valid Task + Calendar ask-mode turn (both titles present) is unaffected by this correction', async () => {
+    // Same shape as 'CORRECTION 1 -- item 1', restated here as this
+    // correction's own explicit regression proof: when every action DOES
+    // have an authoritative title, the bail never fires and both pending
+    // actions are returned exactly as before.
+    const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], 'Report')
+    const response = await worker.fetch(chatRequest({
+      message: 'فردا ساعت ۹ با احمد یک قرار ملاقات بساز و برای جمعه یک تسک گزارش بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: Array<{ kind?: string; arguments?: Record<string, unknown> }> }
+
+    expect(response.status).toBe(200)
+    expect(body.actions).toHaveLength(2)
+    expect(body.actions!.every(a => a.kind === 'pending')).toBe(true)
+    expect(body.actions![0].arguments?.title).toBeTruthy()
+    expect(body.actions![1].arguments?.title).toBeTruthy()
   })
 })
 

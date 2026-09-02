@@ -2296,4 +2296,22 @@ describe("Chat V2 Slice 2B.2 correction 2, BLOCKER 1: twoActionPendingPreviewLin
       "agent_intent_preview_title: Call Ahmad\nagent_intent_preview_due: 2026-07-16\nagent_intent_preview_notes: Follow up",
     );
   });
+
+  it("CORRECTION 3, item 4: never labels previewText as Title when arguments.title is absent -- previewText is a separate, display-only value, never the immutable execution argument", () => {
+    // Defensive: the Worker now never returns a pending descriptor with an
+    // empty arguments.title (respondToTwoActionWrite's own CORRECTION 3
+    // bail), but this function must not paper over that state either if it
+    // ever occurred -- previewText (here deliberately different from any
+    // real title, e.g. a bounded clause fallback) must never leak into the
+    // "Title" line.
+    const noTitleCalendar = { ...calendarPending, arguments: { dateTimeStart: "2026-09-03T07:00:00.000Z" }, previewText: "فردا ساعت ۸ با احمد یک قرار ملاقات بساز" };
+    const lines = twoActionPendingPreviewLines(noTitleCalendar, t);
+    expect(lines.some((line) => line.startsWith("agent_intent_preview_title:"))).toBe(false);
+    expect(lines.join("\n")).not.toContain(noTitleCalendar.previewText);
+
+    const noTitleTask = { ...taskPending, arguments: { dueDate: "2026-09-04" }, previewText: "برای جمعه یک تسک بساز" };
+    const taskLines = twoActionPendingPreviewLines(noTitleTask, t);
+    expect(taskLines.some((line) => line.startsWith("agent_intent_preview_title:"))).toBe(false);
+    expect(taskLines.join("\n")).not.toContain(noTitleTask.previewText);
+  });
 });

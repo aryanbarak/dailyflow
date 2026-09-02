@@ -481,13 +481,23 @@ export function applyTwoActionApproveResult(
 // respondToTwoActionWrite) -- formatDateLabel/formatDateTime (src/lib/date.ts)
 // are the same helpers TasksPage/other approval previews already use for
 // this exact display purpose, reused here rather than re-implemented.
+//
+// CORRECTION 3: the "Title" line is derived ONLY from
+// pending.arguments.title, the immutable execution argument -- never
+// pending.previewText (a separate, display-only, possibly-clause-fallback
+// value; see twoActionFallbackPreview in index.ts). The Worker now never
+// returns a pending descriptor with an empty arguments.title (see
+// respondToTwoActionWrite's own CORRECTION 3 bail), so in practice this is
+// always present here -- but this function does not fall back to
+// previewText even defensively, since doing so would mislabel a
+// display-only fallback as the exact value that will be submitted.
 export function twoActionPendingPreviewLines(pending: TwoActionPendingState, t: Translate): string[] {
-  const title = (pending.arguments.title as string | undefined) || pending.previewText
+  const title = pending.arguments.title as string | undefined
   const notes = pending.arguments.notes as string | undefined
   if (pending.toolId === 'tasks.create') {
     const dueDate = pending.arguments.dueDate as string | null | undefined
     return [
-      `${t('agent_intent_preview_title')}: ${title}`,
+      title ? `${t('agent_intent_preview_title')}: ${title}` : null,
       dueDate ? `${t('agent_intent_preview_due')}: ${formatDateLabel(dueDate)}` : null,
       notes ? `${t('agent_intent_preview_notes')}: ${notes}` : null,
     ].filter((line): line is string => Boolean(line))
@@ -495,7 +505,7 @@ export function twoActionPendingPreviewLines(pending: TwoActionPendingState, t: 
   const dateTimeStart = pending.arguments.dateTimeStart as string | undefined
   const dateTimeEnd = pending.arguments.dateTimeEnd as string | undefined
   return [
-    `${t('agent_intent_preview_title')}: ${title}`,
+    title ? `${t('agent_intent_preview_title')}: ${title}` : null,
     dateTimeStart ? `${t('agent_intent_preview_start')}: ${formatDateTime(dateTimeStart)}` : null,
     dateTimeEnd ? `${t('agent_intent_preview_end')}: ${formatDateTime(dateTimeEnd)}` : null,
     notes ? `${t('agent_intent_preview_notes')}: ${notes}` : null,
