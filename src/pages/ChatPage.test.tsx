@@ -13,7 +13,11 @@ vi.mock("@/integrations/supabase/client", () => ({
 }));
 
 import {
+  applyTwoActionApproveResult,
+  applyTwoActionRequestResult,
   buildChatTimeoutFailureMessages,
+  buildTwoActionMessages,
+  buildTwoActionPendingStates,
   CHAT_REQUEST_TIMEOUT_MS,
   ChatBubble,
   classifyMessageIntentSignal,
@@ -32,6 +36,7 @@ import {
   resultMessage,
   runtimeSummaryMessage,
   shouldUseReasoningForMessage,
+  twoActionPendingPreviewLines,
 } from "./ChatPage";
 import { shouldAutoRunReadOnlyOverlay } from "@/features/chat/autoReadOverlayGate";
 import { ENGINEERING_TASK_NOT_PROPOSED_REASON_MARKER, getStrongReadDomainEvidence, getToolById, isAutoExecutableReadOnlyToolId, PROVIDER_UNAVAILABLE_REASON_MARKER, withTimeout } from "@/features/agent";
@@ -2071,5 +2076,252 @@ ${statement}`);
         expect(result.assistant.content.length).toBeGreaterThan(0);
       }
     });
+  });
+});
+
+describe("Chat V2 Slice 2B.2: buildTwoActionMessages", () => {
+  const calendarAction = {
+    kind: "resolved" as const,
+    reply: "✓ Event created: Meeting with Ahmad",
+    writePolicy: { domain: "calendar" as const, action: "create" as const, mode: "auto" as const },
+    writeExecution: "executed" as const,
+    undo: { id: "undo:cal-1", label: "Undo", expiresAt: "2026-07-15T09:00:00.000Z" },
+  };
+  const taskAction = {
+    kind: "resolved" as const,
+    reply: "✓ Task created: Report",
+    writePolicy: { domain: "tasks" as const, action: "create" as const, mode: "auto" as const },
+    writeExecution: "executed" as const,
+    undo: { id: "undo:task-1", label: "Undo", expiresAt: "2026-07-15T09:00:00.000Z" },
+  };
+
+  it("produces one user message followed by one assistant message PER action, in the server's own order", () => {
+    const messages = buildTwoActionMessages("call Ahmad tomorrow at 10 and make a task report for Friday", [calendarAction, taskAction], "en", 1000);
+
+    expect(messages).toHaveLength(3);
+    expect(messages[0]).toMatchObject({ role: "user", content: "call Ahmad tomorrow at 10 and make a task report for Friday" });
+    expect(messages[1]).toMatchObject({ role: "assistant", content: calendarAction.reply, undo: calendarAction.undo });
+    expect(messages[2]).toMatchObject({ role: "assistant", content: taskAction.reply, undo: taskAction.undo });
+  });
+
+  it("gives every message a distinct, deterministic id derived from the injected clock, never a shared or colliding one", () => {
+    const messages = buildTwoActionMessages("msg", [calendarAction, taskAction], "en", 5000);
+    const ids = messages.map((m) => m.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("carries the turn's responseLanguage onto every assistant message, never the user message", () => {
+    const messages = buildTwoActionMessages("msg", [calendarAction, taskAction], "de", 1000);
+    expect(messages[0].language).toBeUndefined();
+    expect(messages[1].language).toBe("de");
+    expect(messages[2].language).toBe("de");
+  });
+
+  it("an action with no undo (e.g. mode 'off', or a 'clarify'/'not_found' outcome) renders without one -- never fabricates an undo affordance", () => {
+    const offAction = { kind: "resolved" as const, reply: "This Flow AI action is switched off in your settings.", writePolicy: { domain: "tasks" as const, action: "create" as const, mode: "off" as const } };
+    const messages = buildTwoActionMessages("msg", [offAction, calendarAction], "en", 1000);
+    expect(messages[1].undo).toBeUndefined();
+    expect(messages[2].undo).toEqual(calendarAction.undo);
+  });
+
+  it("each action's own undo id stays independently distinct -- approving/undoing one never implies the other", () => {
+    const messages = buildTwoActionMessages("msg", [calendarAction, taskAction], "en", 1000);
+    const undoIds = messages.filter((m) => m.undo).map((m) => m.undo!.id);
+    expect(undoIds).toEqual(["undo:cal-1", "undo:task-1"]);
+    expect(new Set(undoIds).size).toBe(2);
+  });
+});
+
+describe("Chat V2 Slice 2B.2 correction 1: pending-action state helpers", () => {
+  const pendingCalendar = {
+    kind: "pending" as const,
+    reply: "Ready for your approval: Meeting with Ahmad",
+    writePolicy: { domain: "calendar" as const, action: "create" as const, mode: "ask" as const },
+    toolId: "calendar.create_event" as const,
+    requestId: "2b2:msg-1:0",
+    chatMessageId: "msg-1",
+    arguments: { title: "Meeting with Ahmad", dateTimeStart: "2026-09-03T07:00:00.000Z" },
+    previewText: "Meeting with Ahmad",
+  };
+  const pendingTask = {
+    kind: "pending" as const,
+    reply: "Ready for your approval: Report",
+    writePolicy: { domain: "tasks" as const, action: "create" as const, mode: "ask" as const },
+    toolId: "tasks.create" as const,
+    requestId: "2b2:msg-1:1",
+    chatMessageId: "msg-1",
+    arguments: { title: "Report", dueDate: "2026-09-04" },
+    previewText: "Report",
+  };
+
+  describe("buildTwoActionPendingStates", () => {
+    it("builds one 'requesting' entry per pending action, in order, with distinct requestIds", () => {
+      const states = buildTwoActionPendingStates([pendingCalendar, pendingTask]);
+      expect(states).toHaveLength(2);
+      expect(states[0]).toMatchObject({ requestId: "2b2:msg-1:0", toolId: "calendar.create_event", domain: "calendar", status: "requesting" });
+      expect(states[1]).toMatchObject({ requestId: "2b2:msg-1:1", toolId: "tasks.create", domain: "tasks", status: "requesting" });
+      expect(states[0].requestId).not.toBe(states[1].requestId);
+    });
+  });
+
+  describe("applyTwoActionRequestResult", () => {
+    it("moves only the matching entry to approval_pending with its executionId -- the sibling entry is untouched", () => {
+      const initial = buildTwoActionPendingStates([pendingCalendar, pendingTask]);
+      const next = applyTwoActionRequestResult(initial, "2b2:msg-1:0", { status: "approval_pending", executionId: "exec-a" });
+      expect(next[0]).toMatchObject({ requestId: "2b2:msg-1:0", status: "approval_pending", executionId: "exec-a" });
+      expect(next[1]).toEqual(initial[1]);
+    });
+
+    it("a network/auth failure for one action's request marks only that action 'error'", () => {
+      const initial = buildTwoActionPendingStates([pendingCalendar, pendingTask]);
+      const next = applyTwoActionRequestResult(initial, "2b2:msg-1:1", { status: "error" });
+      expect(next[0]).toEqual(initial[0]);
+      expect(next[1].status).toBe("error");
+    });
+  });
+
+  describe("applyTwoActionApproveResult", () => {
+    it("approving action A only ever updates A's own entry -- B's status/executionId are untouched", () => {
+      const afterRequest = applyTwoActionRequestResult(
+        applyTwoActionRequestResult(buildTwoActionPendingStates([pendingCalendar, pendingTask]), "2b2:msg-1:0", { status: "approval_pending", executionId: "exec-a" }),
+        "2b2:msg-1:1",
+        { status: "approval_pending", executionId: "exec-b" },
+      );
+
+      const approving = applyTwoActionApproveResult(afterRequest, "2b2:msg-1:0", { status: "approving" });
+      expect(approving[0].status).toBe("approving");
+      expect(approving[1]).toEqual(afterRequest[1]);
+
+      const succeeded = applyTwoActionApproveResult(approving, "2b2:msg-1:0", { status: "succeeded", reply: "✓ Event created" });
+      expect(succeeded[0]).toMatchObject({ status: "succeeded", resultReply: "✓ Event created" });
+      // B is still exactly where the request phase left it -- never
+      // implicitly approved, never re-executed, never marked succeeded.
+      expect(succeeded[1]).toEqual(afterRequest[1]);
+      expect(succeeded[1].status).toBe("approval_pending");
+    });
+
+    it("subsequently approving B independently succeeds B without altering A's already-terminal state", () => {
+      const afterRequest = applyTwoActionRequestResult(
+        applyTwoActionRequestResult(buildTwoActionPendingStates([pendingCalendar, pendingTask]), "2b2:msg-1:0", { status: "approval_pending", executionId: "exec-a" }),
+        "2b2:msg-1:1",
+        { status: "approval_pending", executionId: "exec-b" },
+      );
+      const aSucceeded = applyTwoActionApproveResult(afterRequest, "2b2:msg-1:0", { status: "succeeded", reply: "✓ Event created" });
+      const bSucceeded = applyTwoActionApproveResult(aSucceeded, "2b2:msg-1:1", { status: "succeeded", reply: "✓ Task created" });
+
+      expect(bSucceeded[0]).toEqual(aSucceeded[0]);
+      expect(bSucceeded[1]).toMatchObject({ status: "succeeded", resultReply: "✓ Task created" });
+    });
+
+    it("a failed or uncertain approval for one action never changes the sibling's own status", () => {
+      const afterRequest = applyTwoActionRequestResult(
+        applyTwoActionRequestResult(buildTwoActionPendingStates([pendingCalendar, pendingTask]), "2b2:msg-1:0", { status: "approval_pending", executionId: "exec-a" }),
+        "2b2:msg-1:1",
+        { status: "approval_pending", executionId: "exec-b" },
+      );
+      const aFailed = applyTwoActionApproveResult(afterRequest, "2b2:msg-1:0", { status: "failed", reply: "Could not create the event." });
+      expect(aFailed[0].status).toBe("failed");
+      expect(aFailed[1]).toEqual(afterRequest[1]);
+    });
+  });
+});
+
+describe("Chat V2 Slice 2B.2 correction 2, BLOCKER 1: twoActionPendingPreviewLines", () => {
+  const t = (key: string) => key;
+
+  const calendarPending = {
+    requestId: "2b2:msg-1:0",
+    toolId: "calendar.create_event" as const,
+    domain: "calendar" as const,
+    chatMessageId: "msg-1",
+    arguments: { title: "Meeting with Ahmad", notes: "Bring the report", dateTimeStart: "2026-09-03T07:00:00.000Z", dateTimeEnd: "2026-09-03T08:00:00.000Z" },
+    previewText: "Meeting with Ahmad",
+    status: "approval_pending" as const,
+  };
+  const taskPending = {
+    requestId: "2b2:msg-1:1",
+    toolId: "tasks.create" as const,
+    domain: "tasks" as const,
+    chatMessageId: "msg-1",
+    arguments: { title: "Report", notes: "Quarterly numbers", dueDate: "2026-09-04" },
+    previewText: "Report",
+    status: "approval_pending" as const,
+  };
+
+  it("1. a calendar approval card's preview lines expose the exact scheduled start and end time before approval, derived from the same UTC instants sent to requestExecution()", () => {
+    // Locale-formatted, not a hardcoded literal -- proves the line is
+    // derived from arguments.dateTimeStart/dateTimeEnd verbatim (same
+    // formatDateTime helper TasksPage/the single-action card already use),
+    // independent of which locale/timezone this test runs under.
+    const lines = twoActionPendingPreviewLines(calendarPending, t);
+    expect(lines).toContain(`agent_intent_preview_start: ${new Date("2026-09-03T07:00:00.000Z").toLocaleString()}`);
+    expect(lines).toContain(`agent_intent_preview_end: ${new Date("2026-09-03T08:00:00.000Z").toLocaleString()}`);
+    expect(lines).toContain("agent_intent_preview_title: Meeting with Ahmad");
+    expect(lines).toContain("agent_intent_preview_notes: Bring the report");
+  });
+
+  it("2. a task approval card's preview lines expose the exact due date before approval, derived from the same dueDate sent to requestExecution()", () => {
+    // CORRECTION 4: dueDate is shown VERBATIM, never through `new Date(...)`
+    // -- Date-parsing a date-only ISO string drops the year and can shift
+    // the displayed calendar day in timezones west of UTC, both wrong at
+    // an approval boundary.
+    const lines = twoActionPendingPreviewLines(taskPending, t);
+    expect(lines).toContain("agent_intent_preview_due: 2026-09-04");
+    expect(lines).toContain("agent_intent_preview_title: Report");
+    expect(lines).toContain("agent_intent_preview_notes: Quarterly numbers");
+  });
+
+  it("CORRECTION 4: the due-date line preserves the year and applies no locale/timezone conversion at all", () => {
+    const farFutureTask = { ...taskPending, arguments: { title: "Report", dueDate: "2027-01-03" } };
+    const lines = twoActionPendingPreviewLines(farFutureTask, t);
+    expect(lines).toContain("agent_intent_preview_due: 2027-01-03");
+  });
+
+  it("3. sibling A/B previews cannot mix arguments -- each is derived only from its own entry's own arguments", () => {
+    const calendarLines = twoActionPendingPreviewLines(calendarPending, t);
+    const taskLines = twoActionPendingPreviewLines(taskPending, t);
+    expect(calendarLines.join("\n")).not.toContain("Report");
+    expect(calendarLines.join("\n")).not.toContain("Quarterly numbers");
+    expect(taskLines.join("\n")).not.toContain("Meeting with Ahmad");
+    expect(taskLines.join("\n")).not.toContain("Bring the report");
+  });
+
+  it("omits due date/notes/end-time lines entirely when the underlying argument is absent, rather than showing a blank or guessed value", () => {
+    const bareTask = { ...taskPending, arguments: { title: "Report", dueDate: null } };
+    const lines = twoActionPendingPreviewLines(bareTask, t);
+    expect(lines).toEqual(["agent_intent_preview_title: Report"]);
+  });
+
+  it("4. existing single-action approval preview (proposalToState/approvalForReasoningStep/writeIntentRegistry) is untouched by this correction", () => {
+    const result: AgentReasoningResult = {
+      ...reasoningResult("create_task", "tasks.create"),
+      proposal: {
+        ...reasoningResult("create_task", "tasks.create").proposal,
+        target: { title: "Call Ahmad", dueDate: "2026-07-16", notes: "Follow up" },
+        requiresApproval: true,
+      },
+    };
+    const state = proposalToState(result, t);
+    expect(state.approval?.previewText).toBe(
+      "agent_intent_preview_title: Call Ahmad\nagent_intent_preview_due: 2026-07-16\nagent_intent_preview_notes: Follow up",
+    );
+  });
+
+  it("CORRECTION 3, item 4: never labels previewText as Title when arguments.title is absent -- previewText is a separate, display-only value, never the immutable execution argument", () => {
+    // Defensive: the Worker now never returns a pending descriptor with an
+    // empty arguments.title (respondToTwoActionWrite's own CORRECTION 3
+    // bail), but this function must not paper over that state either if it
+    // ever occurred -- previewText (here deliberately different from any
+    // real title, e.g. a bounded clause fallback) must never leak into the
+    // "Title" line.
+    const noTitleCalendar = { ...calendarPending, arguments: { dateTimeStart: "2026-09-03T07:00:00.000Z" }, previewText: "فردا ساعت ۸ با احمد یک قرار ملاقات بساز" };
+    const lines = twoActionPendingPreviewLines(noTitleCalendar, t);
+    expect(lines.some((line) => line.startsWith("agent_intent_preview_title:"))).toBe(false);
+    expect(lines.join("\n")).not.toContain(noTitleCalendar.previewText);
+
+    const noTitleTask = { ...taskPending, arguments: { dueDate: "2026-09-04" }, previewText: "برای جمعه یک تسک بساز" };
+    const taskLines = twoActionPendingPreviewLines(noTitleTask, t);
+    expect(taskLines.some((line) => line.startsWith("agent_intent_preview_title:"))).toBe(false);
+    expect(taskLines.join("\n")).not.toContain(noTitleTask.previewText);
   });
 });

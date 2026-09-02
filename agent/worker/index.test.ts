@@ -2021,6 +2021,430 @@ describe('task 22: calendar write policy + routing', () => {
   })
 })
 
+describe('Chat V2 Slice 2B.2: two independent actions in one message', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('Calendar + Task: both execute independently, in message order, when both resolve to auto', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'Meeting with Ahmad')
+    const response = await worker.fetch(chatRequest({
+      message: 'فردا ساعت ۹ با احمد یک قرار ملاقات بساز و برای جمعه یک تسک گزارش بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as {
+      actions?: Array<{ reply?: string; writePolicy?: { domain?: string; action?: string; mode?: string }; writeExecution?: string; undo?: { id?: string } }>
+      reply?: string
+      writePolicy?: unknown
+    }
+
+    expect(response.status).toBe(200)
+    expect(body.writePolicy).toBeUndefined()
+    expect(body.actions).toHaveLength(2)
+    expect(body.actions![0].writePolicy).toMatchObject({ domain: 'calendar', action: 'create', mode: 'auto' })
+    expect(body.actions![0].writeExecution).toBe('executed')
+    expect(body.actions![0].reply).toContain('✓ Event created')
+    expect(body.actions![0].undo?.id).toMatch(/^undo:[0-9a-f-]{36}$/)
+    expect(body.actions![1].writePolicy).toMatchObject({ domain: 'tasks', action: 'create', mode: 'auto' })
+    expect(body.actions![1].writeExecution).toBe('executed')
+    expect(body.actions![1].reply).toContain('✓ Task created')
+    expect(body.actions![1].undo?.id).toMatch(/^undo:[0-9a-f-]{36}$/)
+    expect(log.calendarWrites.some(write => write.method === 'POST')).toBe(true)
+    expect(log.taskWrites.some(write => write.method === 'POST')).toBe(true)
+  })
+
+  it('Task + Task: both execute independently as two separate rows', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'Report')
+    const response = await worker.fetch(chatRequest({
+      message: 'برای امروز یک تسک گزارش بساز و برای جمعه یک تسک گزارش بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: Array<{ writePolicy?: { domain?: string }; writeExecution?: string }> }
+
+    expect(response.status).toBe(200)
+    expect(body.actions).toHaveLength(2)
+    expect(body.actions!.every(a => a.writePolicy?.domain === 'tasks')).toBe(true)
+    expect(body.actions!.every(a => a.writeExecution === 'executed')).toBe(true)
+    expect(log.taskWrites.filter(write => write.method === 'POST')).toHaveLength(2)
+  })
+
+  it('Calendar + Calendar with separate exact times: both execute independently', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto')
+    const response = await worker.fetch(chatRequest({
+      message: 'یک رویداد فردا ساعت ۸ بساز و یک رویداد جمعه ساعت ۹ بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: Array<{ writePolicy?: { domain?: string }; writeExecution?: string }> }
+
+    expect(response.status).toBe(200)
+    expect(body.actions).toHaveLength(2)
+    expect(body.actions!.every(a => a.writePolicy?.domain === 'calendar')).toBe(true)
+    expect(body.actions!.every(a => a.writeExecution === 'executed')).toBe(true)
+    expect(log.calendarWrites.filter(write => write.method === 'POST')).toHaveLength(2)
+  })
+
+  it('one action off, the other auto: each independently reflects its own resolved mode', async () => {
+    // flowWriteMode is applied uniformly by the test harness's mock (both
+    // domain/action lookups resolve the same stored mode) -- 'off' here
+    // exercises the WRITE_OFF_REPLY branch for BOTH decomposed actions,
+    // proving neither one executes and neither ever contacts the DB.
+    const log = installFetchMock([], null, 'Gemini should not be called', 'off')
+    const response = await worker.fetch(chatRequest({
+      message: 'فردا ساعت ۹ با احمد یک قرار ملاقات بساز و برای جمعه یک تسک گزارش بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: Array<{ reply?: string; writePolicy?: { mode?: string }; writeExecution?: string }> }
+
+    expect(response.status).toBe(200)
+    expect(body.actions).toHaveLength(2)
+    expect(body.actions!.every(a => a.writePolicy?.mode === 'off')).toBe(true)
+    expect(body.actions!.every(a => a.writeExecution === undefined)).toBe(true)
+    expect(body.actions!.every(a => a.reply?.includes('switched off'))).toBe(true)
+    expect(log.calendarWrites.length).toBe(0)
+    expect(log.taskWrites.length).toBe(0)
+  })
+
+  it('CORRECTION 1 -- item 1: Calendar + Task, both resolve ask, produces TWO independent pending actions, never the old "Calendar or Task?" fallback', async () => {
+    // CORRECTION 3: create_task never gets a title at parse time (only via
+    // this model-title-extraction call or resolveCreateEventTitle's own
+    // pattern fallback for calendar) -- an unmocked model response defaults
+    // to '' (see installFetchMock's own taskTitleResult doc comment), which
+    // now correctly triggers the CORRECTION 3 missing-title bail and falls
+    // back to the whole-message path instead of returning a pending
+    // action. Mocked here (matching this test's own AUTO-mode sibling
+    // above) so this test keeps exercising the ask-mode PENDING path it is
+    // actually named for.
+    const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], 'Report')
+    const response = await worker.fetch(chatRequest({
+      message: 'فردا ساعت ۹ با احمد یک قرار ملاقات بساز و برای جمعه یک تسک گزارش بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as {
+      actions?: Array<{ kind?: string; writePolicy?: { domain?: string; action?: string; mode?: string }; toolId?: string; requestId?: string; chatMessageId?: string; arguments?: Record<string, unknown> }>
+      reply?: string
+    }
+
+    expect(response.status).toBe(200)
+    expect(body.reply).toBeUndefined()
+    expect(body.actions).toHaveLength(2)
+    expect(body.actions![0]).toMatchObject({
+      kind: 'pending',
+      writePolicy: { domain: 'calendar', action: 'create', mode: 'ask' },
+      toolId: 'calendar.create_event',
+    })
+    expect(body.actions![0].arguments?.dateTimeStart).toBe('2026-09-03T07:00:00.000Z')
+    expect(body.actions![1]).toMatchObject({
+      kind: 'pending',
+      writePolicy: { domain: 'tasks', action: 'create', mode: 'ask' },
+      toolId: 'tasks.create',
+    })
+    expect(body.actions![1].arguments?.dueDate).toBe('2026-09-04')
+    // No agent_tool_executions row is ever created by /chat itself -- that
+    // is the client's own subsequent requestExecution() call.
+    expect(log.calendarWrites.length).toBe(0)
+    expect(log.taskWrites.length).toBe(0)
+  })
+
+  it('CORRECTION 1 -- item 2: Task + Task, both resolve ask, produces two independent pending actions', async () => {
+    // CORRECTION 3: see item 1's own comment -- create_task title is
+    // always model-resolved, never present at parse time, so this needs an
+    // explicit mock now that a missing title correctly blocks the pending
+    // path instead of silently returning one with arguments.title undefined.
+    const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], 'Report')
+    const response = await worker.fetch(chatRequest({
+      message: 'برای امروز یک تسک گزارش بساز و برای جمعه یک تسک گزارش بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: Array<{ kind?: string; writePolicy?: { domain?: string; mode?: string }; toolId?: string; requestId?: string }> }
+
+    expect(response.status).toBe(200)
+    expect(body.actions).toHaveLength(2)
+    expect(body.actions!.every(a => a.kind === 'pending')).toBe(true)
+    expect(body.actions!.every(a => a.writePolicy?.domain === 'tasks' && a.writePolicy?.mode === 'ask')).toBe(true)
+    expect(body.actions!.every(a => a.toolId === 'tasks.create')).toBe(true)
+    expect(log.taskWrites.length).toBe(0)
+  })
+
+  it('CORRECTION 1 -- item 3: Calendar + Calendar with separate exact times, both resolve ask, produces two independent pending actions', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'ask')
+    const response = await worker.fetch(chatRequest({
+      message: 'یک رویداد فردا ساعت ۸ بساز و یک رویداد جمعه ساعت ۹ بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: Array<{ kind?: string; writePolicy?: { domain?: string; mode?: string }; toolId?: string; arguments?: Record<string, unknown> }> }
+
+    expect(response.status).toBe(200)
+    expect(body.actions).toHaveLength(2)
+    expect(body.actions!.every(a => a.kind === 'pending')).toBe(true)
+    expect(body.actions!.every(a => a.writePolicy?.domain === 'calendar' && a.writePolicy?.mode === 'ask')).toBe(true)
+    expect(body.actions!.every(a => a.toolId === 'calendar.create_event')).toBe(true)
+    expect(body.actions![0].arguments?.dateTimeStart).not.toBe(body.actions![1].arguments?.dateTimeStart)
+    expect(log.calendarWrites.length).toBe(0)
+  })
+
+  it('CORRECTION 1 -- item 4: the two pending actions always get distinct requestIds', async () => {
+    // CORRECTION 3: see item 1's own comment.
+    const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], 'Report')
+    const response = await worker.fetch(chatRequest({
+      message: 'برای امروز یک تسک گزارش بساز و برای جمعه یک تسک گزارش بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: Array<{ requestId?: string }> }
+    void log
+
+    expect(body.actions).toHaveLength(2)
+    expect(body.actions![0].requestId).toBeTruthy()
+    expect(body.actions![1].requestId).toBeTruthy()
+    expect(body.actions![0].requestId).not.toBe(body.actions![1].requestId)
+  })
+
+  it('SCOPE BOUNDARY: an ask-mode task-reschedule-routed calendar action (unresolved title guess) falls back to the existing whole-message path -- no pending descriptor, no write, no partial commitment', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'ask')
+    // "move task X to tomorrow at 9" resolves to create_calendar_event via
+    // isExplicitTaskRescheduleRoutedHere (Slice 2B.1.1's own "never update
+    // an existing calendar event from a task reference" rule) -- its title
+    // is only a last-resort pattern guess, discarded by executeAutoCalendarWrite
+    // in favor of the referenced task's own persisted title. Outside this
+    // correction's scope boundary (see respondToTwoActionWrite's own comment).
+    const response = await worker.fetch(chatRequest({
+      message: 'Move the task "Call Ahmad" to tomorrow at 9 and create a task for Friday report',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: unknown; reply?: string }
+
+    expect(response.status).toBe(200)
+    expect(body.actions).toBeUndefined()
+    expect(log.calendarWrites.length).toBe(0)
+    expect(log.taskWrites.length).toBe(0)
+  })
+
+  it('CORRECTION 1 -- item 8: single-action ask behavior is completely unchanged (no actions array, existing pendingWritePolicy shape)', async () => {
+    const log = installFetchMock([], null, 'Write action requires explicit approval.', 'ask')
+    const response = await worker.fetch(chatRequest({
+      message: 'Add an event for next Tuesday at 9am',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: unknown; reply?: string; writePolicy?: { domain?: string; mode?: string } }
+
+    expect(response.status).toBe(200)
+    expect(body.actions).toBeUndefined()
+    expect(body.writePolicy).toMatchObject({ domain: 'calendar', mode: 'ask' })
+    expect(body.reply).toBe('Write action requires explicit approval.')
+    expect(log.calendarWrites.length).toBe(0)
+  })
+
+  it('a conjunction inside a single action is not decomposed -- existing single-action behavior is unchanged', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'Call Ahmad and Sara')
+    const response = await worker.fetch(chatRequest({
+      message: 'Create a task to call Ahmad tomorrow and Sara',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: unknown; writePolicy?: { domain?: string; mode?: string }; writeExecution?: string }
+
+    expect(response.status).toBe(200)
+    expect(body.actions).toBeUndefined()
+    expect(body.writePolicy).toMatchObject({ domain: 'tasks', mode: 'auto' })
+    expect(body.writeExecution).toBe('executed')
+    expect(log.taskWrites.filter(write => write.method === 'POST')).toHaveLength(1)
+  })
+
+  it('a genuinely ambiguous whole message with no conjunction to decompose at is unaffected (existing behavior)', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto')
+    const response = await worker.fetch(chatRequest({
+      message: 'Create a task for the meeting tomorrow',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: unknown; reply?: string }
+
+    expect(response.status).toBe(200)
+    expect(body.actions).toBeUndefined()
+    expect(body.reply).toBe('Should I create a calendar event or a task?')
+    expect(log.calendarWrites.length).toBe(0)
+    expect(log.taskWrites.length).toBe(0)
+  })
+
+  it('two identical decomposed create-task requests do not collide on requestId/idempotency (each gets its own undo)', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'Report')
+    const response = await worker.fetch(chatRequest({
+      message: 'برای امروز یک تسک گزارش بساز و برای فردا یک تسک گزارش بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: Array<{ undo?: { id?: string } }> }
+
+    expect(response.status).toBe(200)
+    expect(body.actions).toHaveLength(2)
+    const ids = body.actions!.map(a => a.undo?.id)
+    expect(ids[0]).toBeTruthy()
+    expect(ids[1]).toBeTruthy()
+    expect(ids[0]).not.toBe(ids[1])
+    expect(log.taskWrites.filter(write => write.method === 'POST')).toHaveLength(2)
+  })
+
+  it('CORRECTION 2, BLOCKER 2, item 5: ask+ask multi-action /chat persists the user message but does NOT persist a "Ready for approval" assistant transcript before any agent_tool_executions row exists', async () => {
+    // CORRECTION 3: see 'CORRECTION 1 -- item 1's own comment -- this test
+    // exercises the pending path itself, not the missing-title bail, so the
+    // task action's title needs an explicit mock now that a missing one
+    // correctly falls back instead.
+    const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], 'Report')
+    const response = await worker.fetch(chatRequest({
+      message: 'فردا ساعت ۹ با احمد یک قرار ملاقات بساز و برای جمعه یک تسک گزارش بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+
+    expect(response.status).toBe(200)
+    // Only the user message is durably persisted from inside /chat itself --
+    // no assistant "Ready for your approval" row exists yet for either
+    // pending action. Both pending actions' own agent_tool_executions rows
+    // (and the client-side chat card that shows them) are created entirely
+    // separately, later, by the client's own requestExecution() calls.
+    expect(log.chatMessageWrites).toHaveLength(1)
+    expect(log.chatMessageWrites[0]).toMatchObject({ role: 'user', content: 'فردا ساعت ۹ با احمد یک قرار ملاقات بساز و برای جمعه یک تسک گزارش بساز' })
+  })
+
+  it('CORRECTION 2, BLOCKER 2, item 6: no durable "ready for approval" claim is ever written for a pending action, so a later requestExecution failure has nothing stale to leave behind', async () => {
+    // /chat has no separate "confirm after requestExecution succeeds" write
+    // path -- the honesty guarantee holds structurally (this function never
+    // calls supabasePost for a 'pending' result at all), not because of a
+    // timing race that happens to resolve favorably. Asserting no write
+    // anywhere in the log contains the pending reply text proves the claim
+    // was never made durable, independent of whatever the client does next.
+    // CORRECTION 3: mocked (see item 5's own comment) so this test still
+    // exercises the actual pending path -- otherwise the CORRECTION 3
+    // missing-title bail would make this assertion pass vacuously (no
+    // pending action would be built at all).
+    const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], 'Report')
+    await worker.fetch(chatRequest({
+      message: 'فردا ساعت ۹ با احمد یک قرار ملاقات بساز و برای جمعه یک تسک گزارش بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+
+    const anyReadyClaimPersisted = log.chatMessageWrites.some(write => String(write.content).includes('Ready for your approval'))
+    expect(anyReadyClaimPersisted).toBe(false)
+  })
+
+  it('CORRECTION 2, BLOCKER 2, item 7: a resolved/off sibling reply still persists honestly even when the other action is pending', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'off')
+    const response = await worker.fetch(chatRequest({
+      message: 'فردا ساعت ۹ با احمد یک قرار ملاقات بساز و برای جمعه یک تسک گزارش بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+
+    expect(response.status).toBe(200)
+    // Both actions resolve 'off' here (uniform mock mode), so both are
+    // 'resolved' kind, already-final outcomes -- both replies persist
+    // immediately, same as before this correction.
+    expect(log.chatMessageWrites).toHaveLength(3)
+    expect(log.chatMessageWrites[0]).toMatchObject({ role: 'user' })
+    expect(log.chatMessageWrites[1]).toMatchObject({ role: 'assistant' })
+    expect(log.chatMessageWrites[2]).toMatchObject({ role: 'assistant' })
+  })
+
+  it('CORRECTION 2, BLOCKER 2, item 8: the successful auto-execution persistence lifecycle is unchanged -- both resolved replies still persist alongside the user message', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'Meeting with Ahmad')
+    const response = await worker.fetch(chatRequest({
+      message: 'فردا ساعت ۹ با احمد یک قرار ملاقات بساز و برای جمعه یک تسک گزارش بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+
+    expect(response.status).toBe(200)
+    expect(log.chatMessageWrites).toHaveLength(3)
+    expect(log.chatMessageWrites[0]).toMatchObject({ role: 'user' })
+    expect(log.chatMessageWrites[1].content).toContain('✓ Event created')
+    expect(log.chatMessageWrites[2].content).toContain('✓ Task created')
+  })
+
+  it('CORRECTION 3, item 1: an ask-mode task action with no authoritative title never produces a pending approval action -- falls back to the whole-message path instead', async () => {
+    // create_task never has a title at parse time (only via the model-title-
+    // extraction call resolveCreateTaskTitle makes) -- with the default
+    // unmocked model response ('', see installFetchMock's own doc comment)
+    // and a bare clause with nothing pattern-extractable either, title
+    // resolution ends up with no title at all, silently (no throw). Before
+    // this correction, that silently produced a pending action with
+    // arguments.title === undefined; now it must produce no `actions` at
+    // all. The sibling calendar clause has its own, independently valid
+    // pattern-fallback title (unaffected by the missing model mock), so
+    // this proves the bail applies even when only ONE sibling is missing
+    // its title -- neither action reaches the client, per the COMMITMENT
+    // RULE (nothing may be handed out once ANY sibling is incomplete).
+    const log = installFetchMock([], null, 'Gemini should not be called', 'ask')
+    const response = await worker.fetch(chatRequest({
+      message: 'یک رویداد فردا ساعت ۸ بساز و یک تسک بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: unknown }
+
+    expect(response.status).toBe(200)
+    expect(body.actions).toBeUndefined()
+    expect(log.calendarWrites.length).toBe(0)
+    expect(log.taskWrites.length).toBe(0)
+  })
+
+  it('CORRECTION 3, item 2: an ask-mode calendar action with no authoritative title never produces a pending approval action, even though its date/time fully resolved', async () => {
+    // "فردا ساعت ۹ برنامه دارم" ("I have a program tomorrow at 9") resolves
+    // to create_calendar_event with a fully resolved startDate/startTime
+    // (Slice 2B.1.1's implicit-schedule-statement routing) but its own
+    // pattern-extracted title candidate ("فردا برنامه دارم") is rejected by
+    // validateCandidateTitle as substantially the whole clause -- a real,
+    // reachable case where date/time resolves cleanly but title resolution
+    // still ends up empty. The sibling clause has its own independently
+    // valid title, isolating this as specifically a CALENDAR title failure
+    // (not the task-side gap item 1 exercises).
+    const log = installFetchMock([], null, 'Gemini should not be called', 'ask')
+    const response = await worker.fetch(chatRequest({
+      message: 'یک رویداد فردا ساعت ۸ بساز و فردا ساعت ۹ برنامه دارم',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: unknown }
+
+    expect(response.status).toBe(200)
+    expect(body.actions).toBeUndefined()
+    expect(log.calendarWrites.length).toBe(0)
+  })
+
+  it('CORRECTION 3, item 3: a provider outage during title resolution, with nothing pattern-extractable either, does not result in an approvable action with a fabricated/fallback title', async () => {
+    // geminiStatus 429 forces the title-extraction model call itself to
+    // fail (INC-01's own simulated condition) -- for the bare task clause,
+    // resolveCreateTitle's patternFallback is empty too, so it THROWS
+    // ProviderUnavailableError (a different code path than item 1's silent
+    // "model answered but found nothing" case). respondToTwoActionWrite's
+    // pre-pass catches and swallows it, leaving the title empty -- this
+    // proves the CORRECTION 3 bail also covers the thrown-and-swallowed
+    // path, not only the silently-empty one, and that no fallback/
+    // fabricated title (e.g. twoActionFallbackPreview's own bounded clause
+    // text) is ever smuggled into `arguments.title` as a result.
+    const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], null, null, false, false, 429)
+    const response = await worker.fetch(chatRequest({
+      message: 'یک رویداد فردا ساعت ۸ بساز و یک تسک بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: unknown }
+
+    expect(response.status).toBe(200)
+    expect(body.actions).toBeUndefined()
+    expect(log.calendarWrites.length).toBe(0)
+    expect(log.taskWrites.length).toBe(0)
+  })
+
+  it('CORRECTION 3, item 5: an existing valid Task + Calendar ask-mode turn (both titles present) is unaffected by this correction', async () => {
+    // Same shape as 'CORRECTION 1 -- item 1', restated here as this
+    // correction's own explicit regression proof: when every action DOES
+    // have an authoritative title, the bail never fires and both pending
+    // actions are returned exactly as before.
+    const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], 'Report')
+    const response = await worker.fetch(chatRequest({
+      message: 'فردا ساعت ۹ با احمد یک قرار ملاقات بساز و برای جمعه یک تسک گزارش بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: Array<{ kind?: string; arguments?: Record<string, unknown> }> }
+
+    expect(response.status).toBe(200)
+    expect(body.actions).toHaveLength(2)
+    expect(body.actions!.every(a => a.kind === 'pending')).toBe(true)
+    expect(body.actions![0].arguments?.title).toBeTruthy()
+    expect(body.actions![1].arguments?.title).toBeTruthy()
+  })
+})
+
 describe('task 22-fix: implicit schedule statements reach the deterministic write pipeline (C1/C2 production root cause)', () => {
   beforeEach(() => {
     vi.useFakeTimers()

@@ -6,6 +6,7 @@ import {
   assembleCalendarWriteIntent,
   assembleFinanceWriteIntent,
   assembleTaskWriteIntent,
+  attemptTwoActionSplit,
   calendarIntentTargetFields,
   checkDuplicateRows,
   cleanTitleEdges,
@@ -1873,5 +1874,86 @@ describe('task 40: writeIntentOutcomeIdentity is registry-derived, not hand-mapp
 
   it('returns null for a kind with no registry entry', () => {
     expect(writeIntentOutcomeIdentity('not_a_real_intent_type' as never)).toBeNull()
+  })
+})
+
+describe('Chat V2 Slice 2B.2: attemptTwoActionSplit', () => {
+  it('splits a Persian Calendar + Task message at the conjunction, preserving order', () => {
+    const result = attemptTwoActionSplit(
+      'فردا ساعت ۱۰ با احمد یک قرار ملاقات بساز و برای جمعه یک تسک گزارش بساز',
+      NOW, TZ,
+    )
+    expect(result).not.toBeNull()
+    expect(result!.first.domain).toBe('calendar')
+    expect(result!.first.clause).toBe('فردا ساعت ۱۰ با احمد یک قرار ملاقات بساز')
+    expect(result!.second.domain).toBe('task')
+    expect(result!.second.clause).toBe('برای جمعه یک تسک گزارش بساز')
+  })
+
+  it('splits a Persian Task + Task message (same domain -- not caught by the ambiguous signal alone)', () => {
+    const result = attemptTwoActionSplit('یک تسک بساز و برای جمعه یک تسک دیگر بساز', NOW, TZ)
+    expect(result).not.toBeNull()
+    expect(result!.first.domain).toBe('task')
+    expect(result!.second.domain).toBe('task')
+  })
+
+  it('splits a Persian Calendar + Calendar message with separate exact times', () => {
+    const result = attemptTwoActionSplit('یک رویداد فردا ساعت ۱۰ بساز و یک رویداد جمعه ساعت ۹ بساز', NOW, TZ)
+    expect(result).not.toBeNull()
+    expect(result!.first.domain).toBe('calendar')
+    expect(result!.second.domain).toBe('calendar')
+  })
+
+  it('splits an English Task + Calendar message', () => {
+    const result = attemptTwoActionSplit(
+      'Create an appointment with Ahmad tomorrow at 10 and create a task to write the report for Friday',
+      NOW, TZ,
+    )
+    expect(result).not.toBeNull()
+    expect(result!.first.domain).toBe('calendar')
+    expect(result!.second.domain).toBe('task')
+  })
+
+  it('splits a German Task + Calendar message', () => {
+    const result = attemptTwoActionSplit(
+      'Erstelle morgen um 10 Uhr einen Termin mit Ahmad und erstelle eine Aufgabe Bericht für Freitag',
+      NOW, TZ,
+    )
+    expect(result).not.toBeNull()
+    expect(result!.first.domain).toBe('calendar')
+    expect(result!.second.domain).toBe('task')
+  })
+
+  it('does NOT split when the conjunction sits inside a single action\'s own content', () => {
+    expect(attemptTwoActionSplit('یک تسک برای تحقیق و نوشتن گزارش بساز', NOW, TZ)).toBeNull()
+    expect(attemptTwoActionSplit('Create a task to research and write the report', NOW, TZ)).toBeNull()
+  })
+
+  it('returns null when the message has no recognized conjunction at all', () => {
+    expect(attemptTwoActionSplit('یک تسک بساز', NOW, TZ)).toBeNull()
+  })
+
+  it('returns null for a valid clause followed by an incomplete/non-write clause (no fallback split accepted)', () => {
+    expect(attemptTwoActionSplit('برای جمعه یک تسک گزارش بساز و یادت باشه', NOW, TZ)).toBeNull()
+  })
+
+  it('returns null when the conjunction trails the message with nothing after it', () => {
+    expect(attemptTwoActionSplit('فردا ساعت ۱۰ با احمد یک قرار ملاقات بساز و', NOW, TZ)).toBeNull()
+  })
+
+  it('returns null when more than one candidate split point is independently valid (3+ actions, out of v1 scope)', () => {
+    expect(attemptTwoActionSplit('یک تسک بساز و یک تسک دیگر بساز و یک تسک سوم بساز', NOW, TZ)).toBeNull()
+  })
+
+  it('returns null for a whole-message genuine ambiguity with no conjunction to decompose at', () => {
+    // Both an explicit task noun+verb and an explicit calendar noun+verb,
+    // with no "و"/"and"/"und" anywhere for attemptTwoActionSplit to try --
+    // falls straight through with zero candidates, exactly like a message
+    // with no write trigger at all.
+    expect(attemptTwoActionSplit('یک تسک رویداد بساز', NOW, TZ)).toBeNull()
+  })
+
+  it('never treats a finance-resolving clause as a valid decomposition side', () => {
+    expect(attemptTwoActionSplit('یک تسک بساز و 20 euro expense record', NOW, TZ)).toBeNull()
   })
 })

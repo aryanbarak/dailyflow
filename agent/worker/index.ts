@@ -20,6 +20,7 @@ import {
   assembleCalendarWriteIntent,
   assembleFinanceWriteIntent,
   assembleTaskWriteIntent,
+  attemptTwoActionSplit,
   calendarIntentTargetFields,
   checkDuplicateRows,
   detectContinuationDomain,
@@ -31,14 +32,18 @@ import {
   financeIntentTargetFields,
   loadImportBatch,
   markImportBatchConsumed,
+  type ParsedCalendarWriteIntent,
+  type ParsedTaskWriteIntent,
   persistImportBatch,
   PROVIDER_UNAVAILABLE_WRITE_REPLY,
   resolveCreateEventTitle,
   resolveCreateTaskTitle,
   resolveServerFlowWriteMode,
   taskIntentTargetFields,
+  type TwoActionSplitResult,
   undoAutoWrite,
   writeIntentOutcomeIdentity,
+  zonedDateTimeToUtcIso,
 } from './flow-write-policy'
 import { ProviderRequestError, ProviderUnavailableError } from './provider-errors'
 import { createProviders } from './providers/createProviders'
@@ -699,6 +704,16 @@ interface WriteExecutionOutcomeContext {
   targetFields: readonly string[]
 }
 
+// Factored out of the single-action mode==='off' branch below (byte-
+// identical text, zero behavior change) so Chat V2 Slice 2B.2's two-action
+// dispatch (respondToTwoActionWrite) can reuse the exact same reply text
+// per decomposed action instead of duplicating the ternary.
+const WRITE_OFF_REPLY: Record<Language, string> = {
+  de: 'Diese Flow-AI-Aktion ist in deinen Einstellungen ausgeschaltet.',
+  fa: 'این اقدام Flow AI در تنظیمات شما خاموش است.',
+  en: 'This Flow AI action is switched off in your settings.',
+}
+
 async function respondToWriteExecution(
   env: Env,
   ctx: ExecutionContext,
@@ -799,6 +814,342 @@ async function respondToWriteExecution(
     }
   }
   return json({ reply: execution.reply, writePolicy: { domain, action, mode }, writeExecution: execution.status, undo }, 200, origin)
+}
+
+// =============================================
+// Chat V2 Slice 2B.2 -- two-action dispatch. Reuses every existing
+// per-action primitive (assembleTaskWriteIntent/assembleCalendarWriteIntent,
+// resolveServerFlowWriteMode, resolveCreateTaskTitle/resolveCreateEventTitle,
+// executeAutoTaskWrite/executeAutoCalendarWrite, writeIntentOutcomeIdentity,
+// recordProposalOutcome) exactly as the single-action mode==='auto'/'off'
+// branches above already do -- this function only calls each of them twice,
+// once per decomposed clause, and never introduces a new execution path.
+//
+// CORRECTION 1: mode==='ask' is the PRIMARY path for real Task/Calendar
+// writes (INC-02 clamps production policy to 'ask'; executeAutoTaskWrite/
+// executeAutoCalendarWrite direct calls below are effectively unreachable
+// in production -- see agent-tool-execution.ts's own header comment). For
+// an 'ask'-mode action this function does NOT execute anything and does NOT
+// fabricate an AgentReasoningResult -- it returns a small, server-confirmed
+// 'pending' descriptor (toolId + concrete arguments + a fresh, per-action
+// requestId) that the CLIENT feeds directly into the EXISTING
+// agentToolExecutionClient.requestExecution()/approveExecution() calls
+// (agent-tool-execution.ts's own request -> approval_pending -> approve ->
+// execute lifecycle, completely unmodified). Each action's requestId is
+// server-minted from userMessageId (a fresh UUID per turn) plus its own
+// clause index, so the two actions can never collide, and the existing
+// (user_id, request_id) idempotency on agent_tool_executions applies to
+// each independently, exactly as it already does for a single action.
+//
+// SCOPE BOUNDARY (see this slice's own report): an 'ask'-mode action is
+// only turned into a pending descriptor when it is a CREATE (create_task /
+// create_calendar_event) with (for calendar) a fully resolved start
+// date/time. An UPDATE-kind action parsed by assembleTaskWriteIntent/
+// assembleCalendarWriteIntent carries a fuzzy taskReference/eventReference,
+// never a resolved row id -- but agent-tool-execution.ts's own
+// buildTaskIntent/buildCalendarIntent only ever reconstruct an intent from
+// a pre-resolved targetId (the same contract the Workspace step-approval
+// flow already relies on). Bridging fuzzy-reference resolution into that
+// endpoint is real, separate work, not silently faked here. When this
+// boundary is hit, this function returns null before touching the
+// database or creating any pending descriptor, and the caller falls back
+// to today's existing whole-message path unchanged.
+//
+// COMMITMENT RULE: every bail point (return null) below happens strictly
+// BEFORE any 'auto'-mode action's executeAutoTaskWrite/executeAutoCalendarWrite
+// call and before any 'ask'-mode pending descriptor is returned to the
+// client -- so the caller is never left free to fall back to the old
+// whole-message path after a decomposed action has already written to the
+// database (which would risk double-processing it under the old
+// single-domain routing) or after a pending descriptor has already been
+// handed to the client (which would leave an orphaned, never-approvable
+// promise on the client's screen). Once past every bail point, this
+// function always returns a real Response, never null. A 'clarify'/
+// 'not_found' outcome from an 'auto'-mode execution is handled as a normal
+// terminal per-action outcome (its own honest reply text), never a reason
+// to bail.
+interface TwoActionResolved {
+  kind: 'resolved'
+  reply: string
+  writePolicy: { domain: 'tasks' | 'calendar'; action: 'create' | 'update'; mode: 'auto' | 'off' }
+  writeExecution?: 'executed' | 'failed' | 'provider_unavailable' | 'clarify' | 'not_found'
+  undo?: { id: string; label: string; expiresAt: string }
+}
+
+// A durable agent_tool_executions row for this action does NOT exist yet --
+// this function never calls handleAgentToolExecutionRequest itself (that
+// would be a second, server-internal write path parallel to the client's
+// own agentToolExecutionClient.requestExecution() call, exactly the kind of
+// "composite execution object" this correction's instructions forbid).
+// `arguments` is the exact, already-server-confirmed payload
+// agent-tool-execution.ts's buildTaskIntent/buildCalendarIntent expect
+// (title/notes/dueDate for tasks.create; title/notes/dateTimeStart[/
+// dateTimeEnd] as UTC ISO instants for calendar.create_event) -- the client
+// never has to (and must not) re-derive or re-guess it.
+interface TwoActionPending {
+  kind: 'pending'
+  reply: string
+  writePolicy: { domain: 'tasks' | 'calendar'; action: 'create'; mode: 'ask' }
+  toolId: 'tasks.create' | 'calendar.create_event'
+  requestId: string
+  chatMessageId: string
+  arguments: Record<string, unknown>
+  previewText: string
+}
+
+type TwoActionResult = TwoActionResolved | TwoActionPending
+
+const TWO_ACTION_NOT_FOUND_REPLY: Record<Language, string> = {
+  de: 'Ich konnte das nicht finden, was aktualisiert werden soll.',
+  fa: 'چیزی که خواستید به‌روزرسانی کنم را پیدا نکردم.',
+  en: 'I could not find what you asked me to update.',
+}
+
+// Last-resort preview when neither the model nor pattern extraction found a
+// title (e.g. a provider outage with nothing pattern-extractable either) --
+// the clause itself, bounded, so the card never shows a blank/undefined
+// preview. Never used for the actual write's `arguments.title` -- only for
+// display; the executor's own `!intent.title` clarify path still applies
+// unchanged when the write is eventually approved.
+function twoActionFallbackPreview(clause: string): string {
+  const trimmed = clause.trim()
+  return trimmed.length > 60 ? `${trimmed.slice(0, 57)}...` : trimmed
+}
+
+function twoActionPendingReadyReply(language: Language, previewText: string): string {
+  if (language === 'de') return `Bereit zur Genehmigung: ${previewText}`
+  if (language === 'fa') return `آماده تایید شما: ${previewText}`
+  return `Ready for your approval: ${previewText}`
+}
+
+interface ResolvedTwoAction {
+  domain: 'tasks' | 'calendar'
+  action: 'create' | 'update'
+  mode: 'auto' | 'ask' | 'off'
+  kind: WriteIntentType
+  targetFields: readonly string[]
+  // The individual decomposed clause, not the original two-action message
+  // -- title resolution below must reason about only THIS action's own
+  // text, never the sibling action's, or it can hallucinate/garble a title
+  // out of the other clause's unrelated content.
+  clause: string
+  taskIntent: ParsedTaskWriteIntent | null
+  calendarIntent: ParsedCalendarWriteIntent | null
+}
+
+function twoActionResolvedFromExecution(
+  domain: 'tasks' | 'calendar',
+  action: 'create' | 'update',
+  execution:
+    | { status: 'executed'; reply: string; undoId: string; undoExpiresAt: string }
+    | { status: 'clarify'; reply: string }
+    | { status: 'failed'; reply: string }
+    | { status: 'provider_unavailable'; reply: string }
+    | { status: 'not_found' },
+  language: Language,
+): TwoActionResolved {
+  const reply = execution.status === 'not_found' ? TWO_ACTION_NOT_FOUND_REPLY[language] : execution.reply
+  const undo = execution.status === 'executed'
+    ? { id: execution.undoId, label: language === 'de' ? 'Rückgängig' : language === 'fa' ? 'برگرداندن' : 'Undo', expiresAt: execution.undoExpiresAt }
+    : undefined
+  return { kind: 'resolved', reply, writePolicy: { domain, action, mode: 'auto' }, writeExecution: execution.status, undo }
+}
+
+async function respondToTwoActionWrite(
+  env: Env,
+  ctx: ExecutionContext,
+  userId: string,
+  sessionId: string,
+  origin: string,
+  message: string,
+  language: Language,
+  history: ChatMessage[],
+  timeZone: string,
+  split: TwoActionSplitResult,
+  userMessageId: string,
+): Promise<Response | null> {
+  const now = new Date()
+
+  const resolved: ResolvedTwoAction[] = []
+  for (const candidate of [split.first, split.second]) {
+    if (candidate.domain === 'task') {
+      const taskIntent = assembleTaskWriteIntent(candidate.clause, history, now, timeZone)
+      if (!taskIntent) return null
+      const action: 'create' | 'update' = taskIntent.kind.startsWith('create') ? 'create' : 'update'
+      const mode = await resolveServerFlowWriteMode(env, userId, 'tasks', action)
+      resolved.push({ domain: 'tasks', action, mode, kind: taskIntent.kind, targetFields: taskIntentTargetFields(taskIntent), clause: candidate.clause, taskIntent, calendarIntent: null })
+    } else {
+      const calendarIntent = assembleCalendarWriteIntent(candidate.clause, history, now, timeZone)
+      if (!calendarIntent) return null
+      const action: 'create' | 'update' = calendarIntent.kind.startsWith('create') ? 'create' : 'update'
+      const mode = await resolveServerFlowWriteMode(env, userId, 'calendar', action)
+      resolved.push({ domain: 'calendar', action, mode, kind: calendarIntent.kind, targetFields: calendarIntentTargetFields(calendarIntent), clause: candidate.clause, taskIntent: null, calendarIntent })
+    }
+  }
+
+  // SCOPE BOUNDARY bail (see this function's own header comment) -- the
+  // ONLY two conditions that reject an 'ask'-mode action outright. Nothing
+  // has been written and no descriptor has been returned to the client yet.
+  if (resolved.some(r => r.mode === 'ask' && r.kind !== 'create_task' && r.kind !== 'create_calendar_event')) return null
+  if (resolved.some(r => r.mode === 'ask' && r.calendarIntent && (r.calendarIntent.dateClarificationNeeded || !r.calendarIntent.startDate || !r.calendarIntent.startTime))) return null
+  // A create_calendar_event routed here by an UPDATE/reschedule-worded
+  // reference to an EXISTING task (Slice 2B.1.1's own
+  // isExplicitTaskRescheduleRoutedHere) carries only a LAST-RESORT pattern
+  // guess as `title` -- executeAutoCalendarWrite normally discards that
+  // guess in favor of the referenced task's own authoritative persisted
+  // title, but agent-tool-execution.ts's buildCalendarIntent has no
+  // sourceTaskReference concept at all, so a pending descriptor built from
+  // it would submit the unresolved guess as fact. Same scope boundary as
+  // the UPDATE-kind check above, for the same underlying reason.
+  if (resolved.some(r => r.mode === 'ask' && r.calendarIntent?.sourceTaskReference !== undefined)) return null
+
+  // CORRECTION 3: title resolution is a PRE-PASS over every action, run to
+  // completion for ALL of them BEFORE the commit loop below touches
+  // anything -- moved out of the old per-action interleaving with
+  // execution/pending-descriptor construction specifically so the
+  // title-completeness bail immediately below can still run before ANY
+  // sibling has committed (an 'auto' action executing a real write, or an
+  // 'ask' action's pending descriptor being handed to the client). A
+  // provider outage degrades to whatever pattern extraction already found
+  // (possibly none) -- never thrown here; the completeness bail after this
+  // loop is what turns "no title" into a decision, uniformly for every
+  // action, rather than only for whichever action happened to hit the
+  // provider call first.
+  for (const r of resolved) {
+    if (r.mode === 'off') continue
+    if (r.taskIntent && r.taskIntent.kind === 'create_task' && !r.taskIntent.dateClarificationNeeded && r.taskIntent.titleSource !== 'correction') {
+      try {
+        r.taskIntent.title = await resolveCreateTaskTitle(env, r.taskIntent, r.clause)
+      } catch (err) {
+        if (!(err instanceof ProviderUnavailableError)) throw err
+      }
+    } else if (r.calendarIntent && r.calendarIntent.kind === 'create_calendar_event' && !r.calendarIntent.dateClarificationNeeded && r.calendarIntent.titleSource !== 'correction' && r.calendarIntent.sourceTaskReference === undefined) {
+      try {
+        r.calendarIntent.title = await resolveCreateEventTitle(env, r.calendarIntent, r.clause)
+      } catch (err) {
+        if (!(err instanceof ProviderUnavailableError)) throw err
+      }
+    }
+  }
+
+  // CORRECTION 3 bail: tasks.create/calendar.create_event both require a
+  // non-empty title -- an 'ask'-mode action that still has none after the
+  // pre-pass above (provider outage with nothing pattern-extractable
+  // either) must never reach a pending descriptor. previewText's own
+  // twoActionFallbackPreview (a bounded fallback built from the raw
+  // clause) exists ONLY for display when a title is otherwise present but
+  // this exact case is exactly what it must never paper over -- a user
+  // must never be asked to approve a create intent with no title at all.
+  // 'auto'-mode actions are unaffected: executeAutoTaskWrite/
+  // executeAutoCalendarWrite already have their own honest `!intent.title`
+  // clarify outcome for this case, unchanged by this correction.
+  if (resolved.some(r => r.mode === 'ask' && r.taskIntent && !r.taskIntent.title)) return null
+  if (resolved.some(r => r.mode === 'ask' && r.calendarIntent && !r.calendarIntent.title)) return null
+
+  const results: TwoActionResult[] = []
+  for (const [index, r] of resolved.entries()) {
+    if (r.mode === 'off') {
+      results.push({ kind: 'resolved', reply: WRITE_OFF_REPLY[language], writePolicy: { domain: r.domain, action: r.action, mode: 'off' } })
+      continue
+    }
+
+    if (r.taskIntent) {
+      if (r.mode === 'auto') {
+        const execution = await executeAutoTaskWrite({ env, userId, language, intent: r.taskIntent, now, timeZone })
+        results.push(twoActionResolvedFromExecution('tasks', r.action, execution, language))
+      } else {
+        // r.taskIntent.title is guaranteed non-empty by the CORRECTION 3
+        // bail above -- previewText is a separate, display-only value,
+        // never substituted into `arguments`.
+        const previewText = r.taskIntent.title ?? twoActionFallbackPreview(r.clause)
+        results.push({
+          kind: 'pending',
+          reply: twoActionPendingReadyReply(language, previewText),
+          writePolicy: { domain: 'tasks', action: 'create', mode: 'ask' },
+          toolId: 'tasks.create',
+          requestId: `2b2:${userMessageId}:${index}`,
+          chatMessageId: userMessageId,
+          arguments: { title: r.taskIntent.title, notes: r.taskIntent.notes, dueDate: r.taskIntent.dueDate ?? null },
+          previewText,
+        })
+      }
+    } else if (r.calendarIntent) {
+      if (r.mode === 'auto') {
+        const execution = await executeAutoCalendarWrite({ env, userId, language, intent: r.calendarIntent, now, timeZone })
+        results.push(twoActionResolvedFromExecution('calendar', r.action, execution, language))
+      } else {
+        // startDate/startTime are guaranteed present by the SCOPE BOUNDARY
+        // bail above, and title is guaranteed non-empty by the CORRECTION 3
+        // bail above -- never undefined/empty here.
+        const dateTimeStart = zonedDateTimeToUtcIso(r.calendarIntent.startDate!, r.calendarIntent.startTime!, timeZone)
+        const dateTimeEnd = r.calendarIntent.endTime
+          ? zonedDateTimeToUtcIso(r.calendarIntent.startDate!, r.calendarIntent.endTime, timeZone)
+          : undefined
+        const previewText = r.calendarIntent.title ?? twoActionFallbackPreview(r.clause)
+        results.push({
+          kind: 'pending',
+          reply: twoActionPendingReadyReply(language, previewText),
+          writePolicy: { domain: 'calendar', action: 'create', mode: 'ask' },
+          toolId: 'calendar.create_event',
+          requestId: `2b2:${userMessageId}:${index}`,
+          chatMessageId: userMessageId,
+          arguments: { title: r.calendarIntent.title, notes: r.calendarIntent.notes, dateTimeStart, ...(dateTimeEnd ? { dateTimeEnd } : {}) },
+          previewText,
+        })
+      }
+    }
+  }
+
+  await supabasePost(env, 'agent_chat_messages', { id: userMessageId, user_id: userId, session_id: sessionId, role: 'user', content: message })
+  // CORRECTION 2, BLOCKER 2: a 'pending' result's reply ("Ready for your
+  // approval: ...") is NOT persisted here. At this exact point no
+  // agent_tool_executions row exists yet for it -- that durable row is only
+  // created later by the CLIENT's own agentToolExecutionClient.requestExecution()
+  // call (see this function's own header comment on why that call is never
+  // made from inside /chat). If that later call fails (network/auth error),
+  // persisting this reply now would leave a durable transcript claiming an
+  // action is "ready for approval" when no durable approval binding was
+  // ever created for it -- an honesty violation the reload/history view has
+  // no way to detect or correct. A 'resolved' result's reply describes an
+  // outcome that has ALREADY happened (or an 'off'/'clarify'/'not_found'
+  // outcome that is already final) by the time this line runs, so it is
+  // always safe to persist immediately, unchanged from before.
+  for (const result of results) {
+    if (result.kind !== 'resolved') continue
+    await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: result.reply })
+  }
+
+  // ALF-1B multi-action guard (this slice's own instruction): intent-
+  // routing-v1's captureProductionRoutingTurn derives its correlationId from
+  // sourceMessageId ALONE -- calling it twice here would not fabricate a
+  // wrong label (live-routing-comparison.ts's own grouping already treats
+  // >1 production rows sharing one source_message_id as an ambiguous group
+  // and excludes it from exactRoutingAccuracy/fieldAccuracy scoring, per
+  // that module's existing, unmodified behavior), but it would silently
+  // make this turn's routing unmeasured rather than correctly scored as
+  // "two actions, both routed correctly." Smallest safe v1 behavior:
+  // deliberately do not call it at all for a successfully decomposed turn.
+  // Single-action capture (respondToWriteExecution/the off-mode branch
+  // above) is entirely unaffected -- this function never touches it.
+
+  resolved.forEach((r, index) => {
+    const result = results[index]
+    if (result.kind !== 'resolved' || (result.writeExecution !== 'executed' && result.writeExecution !== 'failed')) return
+    const identity = writeIntentOutcomeIdentity(r.kind)
+    if (!identity) return
+    ctx.waitUntil(recordProposalOutcome(env, {
+      userId,
+      intentType: identity.intentType,
+      toolId: identity.toolId,
+      domain: r.domain,
+      writeMode: 'auto',
+      outcome: 'auto_executed',
+      succeeded: result.writeExecution === 'executed',
+      targetFields: r.targetFields,
+    }))
+  })
+
+  return json({ actions: results }, 200, origin)
 }
 
 // =============================================
@@ -1242,6 +1593,22 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
     // ask once, don't loop: no pending state is stored, so the very next
     // message is evaluated fresh and resolves on its own once it names
     // either domain.
+    // Chat V2 Slice 2B.2 -- tried unconditionally, BEFORE the single-domain
+    // detectWriteDomainSignal dispatch below, and regardless of what that
+    // whole-message signal itself would resolve to (see
+    // attemptTwoActionSplit's own comment for why: a same-domain two-action
+    // message resolves to a single non-ambiguous signal today, which the
+    // 'ambiguous'-only gate this replaces would have missed entirely).
+    // respondToTwoActionWrite returns null (no side effects yet) when the
+    // split isn't genuinely two independent, safely-resolvable actions --
+    // in that case this falls through to the existing whole-message path
+    // completely unchanged, exactly as before this slice.
+    const twoActionSplit = attemptTwoActionSplit(message, new Date(), timeZone)
+    if (twoActionSplit) {
+      const twoActionResponse = await respondToTwoActionWrite(env, ctx, userId, sessionId, origin, message, language, history, timeZone, twoActionSplit, userMessageId)
+      if (twoActionResponse) return twoActionResponse
+    }
+
     const writeDomainSignal = detectWriteDomainSignal(message, new Date(), timeZone)
     if (writeDomainSignal === 'ambiguous') {
       const reply = language === 'de'
@@ -1312,11 +1679,7 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
       const action: 'create' | 'update' = kind.startsWith('create') ? 'create' : 'update'
       const mode = await resolveServerFlowWriteMode(env, userId, domain, action)
       if (mode === 'off') {
-        const reply = language === 'de'
-          ? 'Diese Flow-AI-Aktion ist in deinen Einstellungen ausgeschaltet.'
-          : language === 'fa'
-            ? 'این اقدام Flow AI در تنظیمات شما خاموش است.'
-            : 'This Flow AI action is switched off in your settings.'
+        const reply = WRITE_OFF_REPLY[language]
         await supabasePost(env, 'agent_chat_messages', { id: userMessageId, user_id: userId, session_id: sessionId, role: 'user', content: message })
         await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: reply })
         // ALF-1A (ADR-0021) capture point: a real write intent was
