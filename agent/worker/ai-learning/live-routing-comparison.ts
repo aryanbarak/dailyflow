@@ -354,15 +354,39 @@ function resolveProductionRow(productionRows: readonly PairableRecord[]): Produc
 // group's production-side outcome (item 4's core fix -- a Shadow
 // prediction's own validity/ambiguity is never contingent on production
 // also being clean).
+//
+// ALF-1B correction 3: callers MUST only pass rows that have ALREADY
+// passed isValidLiveLearningEnvelope('shadow_prediction') -- see
+// compareLiveRoutingEvents below, which partitions envelope-invalid rows
+// out (each counted individually as 'invalid') BEFORE grouping by
+// (providerId, modelId, modelVersion) at all. Grouping envelope-invalid
+// rows by modelKey first was the bug this correction fixes: modelKey
+// normalizes a missing providerId/modelId/modelVersion to '' rather than
+// rejecting it, so two DIFFERENT malformed rows (e.g. both
+// providerId=null, same modelId/modelVersion) could collide into the
+// SAME synthetic key and be misclassified as one ambiguous model slice
+// -- an envelope-invalid row has no legitimate model identity to be
+// "ambiguous" about at all; it is simply invalid, once per row. Ambiguity
+// (this function's own job) is therefore only ever evaluated AFTER that
+// partition, among rows that are already known to carry real provenance.
 type ShadowSliceResolution =
   | { readonly status: 'ambiguous' }
   | { readonly status: 'invalid' }
   | { readonly status: 'row'; readonly row: PairableRecord }
 
-function resolveShadowSlice(modelRows: readonly PairableRecord[]): ShadowSliceResolution {
-  if (modelRows.length > 1) return { status: 'ambiguous' }
-  if (!isValidForComparison(modelRows[0], 'shadow_prediction')) return { status: 'invalid' }
-  return { status: 'row', row: modelRows[0] }
+function resolveShadowSlice(envelopeValidModelRows: readonly PairableRecord[]): ShadowSliceResolution {
+  if (envelopeValidModelRows.length > 1) {
+    // A GENUINE duplicate for an identical, already-provenance-valid
+    // model slice -- never arbitrarily resolved, even if one of the
+    // duplicates happens to also have a semantically valid payload and
+    // another does not (test D in live-routing-comparison.test.ts): the
+    // whole slice stays ambiguous and excluded, exactly like the
+    // production-side M-case duplicate handling.
+    return { status: 'ambiguous' }
+  }
+  const row = envelopeValidModelRows[0]
+  if (!isValidRoutingPayloadForComparison(row.payload)) return { status: 'invalid' }
+  return { status: 'row', row }
 }
 
 // Never throws. Pure: the SAME input array always produces the SAME
@@ -446,6 +470,27 @@ export function compareLiveRoutingEvents(events: readonly LiveLearningEventRecor
       continue
     }
 
+    // ALF-1B correction 3: validate Shadow ENVELOPE/provenance for every
+    // row BEFORE any modelKey grouping -- grouping first was the bug this
+    // correction fixes. modelKey normalizes a missing providerId/modelId/
+    // modelVersion to '' rather than rejecting it, so two DIFFERENT
+    // envelope-invalid rows (e.g. both providerId=null, same modelId/
+    // modelVersion) could previously collide into the SAME synthetic key
+    // and get misclassified as one ambiguous model slice instead of two
+    // independently invalid rows -- an envelope-invalid row has no
+    // legitimate model identity to be "ambiguous" about at all. Each
+    // envelope-invalid row is therefore counted here, individually,
+    // BEFORE grouping; only envelope-VALID rows (guaranteed non-empty
+    // providerId/modelId/modelVersion) ever reach modelKey/byModel below.
+    const envelopeValidShadowRows: PairableRecord[] = []
+    for (const row of shadowRows) {
+      if (isValidLiveLearningEnvelope(row, 'shadow_prediction')) {
+        envelopeValidShadowRows.push(row)
+      } else {
+        invalidShadowPredictionCount += 1
+      }
+    }
+
     // N (ALF-1B): group by (providerId, modelId, modelVersion) -- a
     // different model producing a prediction for the same turn is a
     // genuinely distinct, independently-scored observation (matches
@@ -453,9 +498,13 @@ export function compareLiveRoutingEvents(events: readonly LiveLearningEventRecor
     // collapsed into "pick one." A GENUINE duplicate for the identical
     // model slice (should not occur given the ledger's own idempotency
     // constraint, but exported/replayed data could still contain one) is
-    // its own, separate ambiguity, reported and excluded, never picked.
+    // its own, separate ambiguity, reported and excluded, never picked --
+    // see resolveShadowSlice's own comment on why payload validity for a
+    // duplicate slice is never even checked (an ambiguous slice is
+    // excluded outright, never resolved by picking whichever duplicate's
+    // payload happens to look valid).
     const byModel = new Map<string, PairableRecord[]>()
-    for (const row of shadowRows) {
+    for (const row of envelopeValidShadowRows) {
       const key = modelKey(row)
       const bucket = byModel.get(key)
       if (bucket) bucket.push(row)

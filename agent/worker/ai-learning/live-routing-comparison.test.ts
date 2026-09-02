@@ -406,6 +406,70 @@ describe('compareLiveRoutingEvents', () => {
     })
   })
 
+  // ALF-1B correction 3: Shadow envelope/provenance MUST be validated
+  // BEFORE modelKey grouping -- modelKey normalizes a missing providerId/
+  // modelId/modelVersion to '' rather than rejecting it, so two DIFFERENT
+  // envelope-invalid rows could previously collide into the SAME
+  // synthetic key and be misclassified as one ambiguous model slice
+  // instead of two independently invalid rows.
+  describe('Shadow provenance validated before model-slice grouping (ALF-1B correction 3)', () => {
+    // A) two shadow rows, same turn, BOTH providerId=null, same model/version.
+    it('A: two shadow rows both missing providerId (same modelId/modelVersion) are each counted as their own invalid row, never merged into one ambiguous slice', () => {
+      const report = compareLiveRoutingEvents([
+        shadowEvent({ id: 'shadow-a', providerId: null }),
+        shadowEvent({ id: 'shadow-b', providerId: null }),
+      ])
+      expect(report.invalidShadowPredictionCount).toBe(2)
+      expect(report.ambiguousShadowModelSlices).toBe(0)
+      expect(report.eligiblePairs).toBe(0)
+    })
+
+    // B) one malformed shadow row (providerId=null) plus one fully valid
+    // Shadow row for the same turn.
+    it('B: a malformed shadow row (missing providerId) is counted as invalid and excluded, while a separate fully-valid shadow row still compares against a clean production label', () => {
+      const report = compareLiveRoutingEvents([
+        productionEvent(),
+        shadowEvent({ id: 'shadow-malformed', providerId: null }),
+        shadowEvent({ id: 'shadow-valid' }),
+      ])
+      expect(report.invalidShadowPredictionCount).toBe(1)
+      expect(report.ambiguousShadowModelSlices).toBe(0)
+      expect(report.eligiblePairs).toBe(1)
+      expect(report.comparisons[0].shadowEventId).toBe('shadow-valid')
+    })
+
+    // C) two fully provenance-valid Shadow rows for the exact same
+    // provider/model/version -- preserves the existing duplicate
+    // semantics (matches test N above, re-asserted in this context).
+    it('C: two fully provenance-valid shadow rows for the exact same model slice are reported ambiguous, never arbitrarily picked', () => {
+      const report = compareLiveRoutingEvents([
+        shadowEvent({ id: 'shadow-a' }),
+        shadowEvent({ id: 'shadow-b' }),
+      ])
+      expect(report.ambiguousShadowModelSlices).toBe(1)
+      expect(report.invalidShadowPredictionCount).toBe(0)
+      expect(report.eligiblePairs).toBe(0)
+    })
+
+    // D) two provenance-valid duplicate rows for the same model slice
+    // where one payload is semantically invalid -- the slice stays
+    // ambiguous and excluded; the valid-looking duplicate is never
+    // arbitrarily selected as "the" prediction.
+    it('D: a provenance-valid duplicate model slice stays ambiguous even when only ONE of the two payloads is semantically invalid', () => {
+      const report = compareLiveRoutingEvents([
+        shadowEvent({ id: 'shadow-valid-payload' }),
+        shadowEvent({
+          id: 'shadow-invalid-payload',
+          payload: { ...VALID_SHADOW_PAYLOAD, domain: 'tasks', intentType: 'create_calendar_event', toolId: 'calendar.create_event' },
+        }),
+      ])
+      expect(report.ambiguousShadowModelSlices).toBe(1)
+      expect(report.invalidShadowPredictionCount).toBe(0)
+      expect(report.eligiblePairs).toBe(0)
+      expect(report.comparisons).toHaveLength(0)
+    })
+  })
+
   // I. source_message_id mismatch => never pair.
   it('I: two events with different sourceMessageId are never paired, regardless of matching correlation_id', () => {
     const report = compareLiveRoutingEvents([

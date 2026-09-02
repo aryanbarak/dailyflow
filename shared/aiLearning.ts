@@ -330,8 +330,8 @@ const EVENT_KIND_SEMANTICS: Record<AiLearningEventKind, { producerType: AiLearni
 // contradict this one). Returns a fresh, frozen object per call so a
 // caller can never mutate the canonical table through the returned
 // reference.
-export function eventKindSemantics(eventKind: AiLearningEventKind): { producerType: AiLearningProducerType; labelConfidence: AiLearningLabelConfidence | null } {
-  return { ...EVENT_KIND_SEMANTICS[eventKind] }
+export function eventKindSemantics(eventKind: AiLearningEventKind): Readonly<{ producerType: AiLearningProducerType; labelConfidence: AiLearningLabelConfidence | null }> {
+  return Object.freeze({ ...EVENT_KIND_SEMANTICS[eventKind] })
 }
 
 export function collectAiLearningEventInputErrors(value: unknown): string[] {

@@ -315,6 +315,61 @@ See `agent/worker/ai-learning/live-routing-comparison.test.ts`'s
 `describe` blocks, plus `live-eval-report.test.ts`'s new
 `producer_type`/`source_message_id` coverage, for the full test matrix.
 
+## Amendment (ALF-1B correction 3): Shadow provenance validated before model-slice grouping
+
+Independent review found that `compareLiveRoutingEvents` grouped Shadow
+rows by `(providerId, modelId, modelVersion)` (`modelKey`) BEFORE
+validating that a row's provenance was even present. `modelKey`
+normalizes a missing `providerId`/`modelId`/`modelVersion` to `''` rather
+than rejecting it, so two DIFFERENT envelope-invalid rows (e.g. both
+`providerId=null`, sharing the same `modelId`/`modelVersion`) could
+collide into the SAME synthetic key and be misclassified as one ambiguous
+model slice (`ambiguousShadowModelSlices`) instead of two independently
+invalid rows (`invalidShadowPredictionCount`). An envelope-invalid row has
+no legitimate model identity to be "ambiguous" about at all.
+
+The fixed, exact precedence for a group's Shadow rows is now:
+
+1. **Invalid provenance -> invalid row, cannot define a model slice.**
+   Every Shadow row in the group is first checked against
+   `isValidLiveLearningEnvelope('shadow_prediction')` (eventKind,
+   sourceMessageId, learningTask/schemaVersion, producerType/
+   labelConfidence, AND non-empty providerId/modelId/modelVersion --
+   Decision items 1-2 above) BEFORE any grouping happens. Each row that
+   fails is counted into `invalidShadowPredictionCount` individually, one
+   increment per invalid row, and excluded entirely from the grouping
+   step that follows -- it never reaches `modelKey`.
+2. **Valid provenance + duplicate model slice -> ambiguous slice.** Only
+   the ENVELOPE-VALID rows (guaranteed non-empty provenance) are grouped
+   by `modelKey`. More than one envelope-valid row sharing the same
+   `(providerId, modelId, modelVersion)` is a genuine duplicate --
+   `ambiguousShadowModelSlices` increments ONCE for the whole slice, and
+   the slice is excluded outright. Payload validity is never even
+   consulted for an ambiguous slice: a duplicate is not resolved by
+   picking whichever row's payload happens to look semantically valid
+   (see test D) -- the same "never arbitrarily resolved" rule that
+   already governed duplicate `production_label` rows (Decision item 7)
+   now applies identically here.
+3. **Valid provenance + unique slice + invalid payload -> invalid
+   prediction.** Only once a model slice is confirmed to have EXACTLY one
+   envelope-valid row is its payload checked
+   (`isValidRoutingPayloadForComparison` -- vocabulary allowlist +
+   semantic-consistency gate, Decision item 6). An invalid payload at this
+   point increments `invalidShadowPredictionCount`; a valid payload is
+   eligible for comparison, subject to production also being clean
+   (unchanged from correction 2's own eligibility rule).
+
+Tests A-D in `live-routing-comparison.test.ts`'s "Shadow provenance
+validated before model-slice grouping" `describe` block cover, in order:
+two envelope-invalid rows sharing an accidental synthetic key (each
+counted individually, never merged into one ambiguous slice); one
+envelope-invalid row alongside one fully valid row (the invalid row is
+excluded, the valid row still compares); two fully provenance-valid rows
+for the same slice (ambiguous, preserving the pre-existing duplicate
+semantics); and two provenance-valid duplicate rows where only one
+payload is semantically invalid (the slice stays ambiguous regardless --
+never arbitrarily resolved toward the valid-looking duplicate).
+
 ## What This ADR Deliberately Does NOT Do
 
 - **Does not enable Shadow.** `AI_SHADOW_ENABLED` stays `false` in
