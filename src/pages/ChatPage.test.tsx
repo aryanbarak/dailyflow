@@ -13,8 +13,11 @@ vi.mock("@/integrations/supabase/client", () => ({
 }));
 
 import {
+  applyTwoActionApproveResult,
+  applyTwoActionRequestResult,
   buildChatTimeoutFailureMessages,
   buildTwoActionMessages,
+  buildTwoActionPendingStates,
   CHAT_REQUEST_TIMEOUT_MS,
   ChatBubble,
   classifyMessageIntentSignal,
@@ -2077,12 +2080,14 @@ ${statement}`);
 
 describe("Chat V2 Slice 2B.2: buildTwoActionMessages", () => {
   const calendarAction = {
+    kind: "resolved" as const,
     reply: "✓ Event created: Meeting with Ahmad",
     writePolicy: { domain: "calendar" as const, action: "create" as const, mode: "auto" as const },
     writeExecution: "executed" as const,
     undo: { id: "undo:cal-1", label: "Undo", expiresAt: "2026-07-15T09:00:00.000Z" },
   };
   const taskAction = {
+    kind: "resolved" as const,
     reply: "✓ Task created: Report",
     writePolicy: { domain: "tasks" as const, action: "create" as const, mode: "auto" as const },
     writeExecution: "executed" as const,
@@ -2112,7 +2117,7 @@ describe("Chat V2 Slice 2B.2: buildTwoActionMessages", () => {
   });
 
   it("an action with no undo (e.g. mode 'off', or a 'clarify'/'not_found' outcome) renders without one -- never fabricates an undo affordance", () => {
-    const offAction = { reply: "This Flow AI action is switched off in your settings.", writePolicy: { domain: "tasks" as const, action: "create" as const, mode: "off" as const } };
+    const offAction = { kind: "resolved" as const, reply: "This Flow AI action is switched off in your settings.", writePolicy: { domain: "tasks" as const, action: "create" as const, mode: "off" as const } };
     const messages = buildTwoActionMessages("msg", [offAction, calendarAction], "en", 1000);
     expect(messages[1].undo).toBeUndefined();
     expect(messages[2].undo).toEqual(calendarAction.undo);
@@ -2123,5 +2128,99 @@ describe("Chat V2 Slice 2B.2: buildTwoActionMessages", () => {
     const undoIds = messages.filter((m) => m.undo).map((m) => m.undo!.id);
     expect(undoIds).toEqual(["undo:cal-1", "undo:task-1"]);
     expect(new Set(undoIds).size).toBe(2);
+  });
+});
+
+describe("Chat V2 Slice 2B.2 correction 1: pending-action state helpers", () => {
+  const pendingCalendar = {
+    kind: "pending" as const,
+    reply: "Ready for your approval: Meeting with Ahmad",
+    writePolicy: { domain: "calendar" as const, action: "create" as const, mode: "ask" as const },
+    toolId: "calendar.create_event" as const,
+    requestId: "2b2:msg-1:0",
+    chatMessageId: "msg-1",
+    arguments: { title: "Meeting with Ahmad", dateTimeStart: "2026-09-03T07:00:00.000Z" },
+    previewText: "Meeting with Ahmad",
+  };
+  const pendingTask = {
+    kind: "pending" as const,
+    reply: "Ready for your approval: Report",
+    writePolicy: { domain: "tasks" as const, action: "create" as const, mode: "ask" as const },
+    toolId: "tasks.create" as const,
+    requestId: "2b2:msg-1:1",
+    chatMessageId: "msg-1",
+    arguments: { title: "Report", dueDate: "2026-09-04" },
+    previewText: "Report",
+  };
+
+  describe("buildTwoActionPendingStates", () => {
+    it("builds one 'requesting' entry per pending action, in order, with distinct requestIds", () => {
+      const states = buildTwoActionPendingStates([pendingCalendar, pendingTask]);
+      expect(states).toHaveLength(2);
+      expect(states[0]).toMatchObject({ requestId: "2b2:msg-1:0", toolId: "calendar.create_event", domain: "calendar", status: "requesting" });
+      expect(states[1]).toMatchObject({ requestId: "2b2:msg-1:1", toolId: "tasks.create", domain: "tasks", status: "requesting" });
+      expect(states[0].requestId).not.toBe(states[1].requestId);
+    });
+  });
+
+  describe("applyTwoActionRequestResult", () => {
+    it("moves only the matching entry to approval_pending with its executionId -- the sibling entry is untouched", () => {
+      const initial = buildTwoActionPendingStates([pendingCalendar, pendingTask]);
+      const next = applyTwoActionRequestResult(initial, "2b2:msg-1:0", { status: "approval_pending", executionId: "exec-a" });
+      expect(next[0]).toMatchObject({ requestId: "2b2:msg-1:0", status: "approval_pending", executionId: "exec-a" });
+      expect(next[1]).toEqual(initial[1]);
+    });
+
+    it("a network/auth failure for one action's request marks only that action 'error'", () => {
+      const initial = buildTwoActionPendingStates([pendingCalendar, pendingTask]);
+      const next = applyTwoActionRequestResult(initial, "2b2:msg-1:1", { status: "error" });
+      expect(next[0]).toEqual(initial[0]);
+      expect(next[1].status).toBe("error");
+    });
+  });
+
+  describe("applyTwoActionApproveResult", () => {
+    it("approving action A only ever updates A's own entry -- B's status/executionId are untouched", () => {
+      const afterRequest = applyTwoActionRequestResult(
+        applyTwoActionRequestResult(buildTwoActionPendingStates([pendingCalendar, pendingTask]), "2b2:msg-1:0", { status: "approval_pending", executionId: "exec-a" }),
+        "2b2:msg-1:1",
+        { status: "approval_pending", executionId: "exec-b" },
+      );
+
+      const approving = applyTwoActionApproveResult(afterRequest, "2b2:msg-1:0", { status: "approving" });
+      expect(approving[0].status).toBe("approving");
+      expect(approving[1]).toEqual(afterRequest[1]);
+
+      const succeeded = applyTwoActionApproveResult(approving, "2b2:msg-1:0", { status: "succeeded", reply: "✓ Event created" });
+      expect(succeeded[0]).toMatchObject({ status: "succeeded", resultReply: "✓ Event created" });
+      // B is still exactly where the request phase left it -- never
+      // implicitly approved, never re-executed, never marked succeeded.
+      expect(succeeded[1]).toEqual(afterRequest[1]);
+      expect(succeeded[1].status).toBe("approval_pending");
+    });
+
+    it("subsequently approving B independently succeeds B without altering A's already-terminal state", () => {
+      const afterRequest = applyTwoActionRequestResult(
+        applyTwoActionRequestResult(buildTwoActionPendingStates([pendingCalendar, pendingTask]), "2b2:msg-1:0", { status: "approval_pending", executionId: "exec-a" }),
+        "2b2:msg-1:1",
+        { status: "approval_pending", executionId: "exec-b" },
+      );
+      const aSucceeded = applyTwoActionApproveResult(afterRequest, "2b2:msg-1:0", { status: "succeeded", reply: "✓ Event created" });
+      const bSucceeded = applyTwoActionApproveResult(aSucceeded, "2b2:msg-1:1", { status: "succeeded", reply: "✓ Task created" });
+
+      expect(bSucceeded[0]).toEqual(aSucceeded[0]);
+      expect(bSucceeded[1]).toMatchObject({ status: "succeeded", resultReply: "✓ Task created" });
+    });
+
+    it("a failed or uncertain approval for one action never changes the sibling's own status", () => {
+      const afterRequest = applyTwoActionRequestResult(
+        applyTwoActionRequestResult(buildTwoActionPendingStates([pendingCalendar, pendingTask]), "2b2:msg-1:0", { status: "approval_pending", executionId: "exec-a" }),
+        "2b2:msg-1:1",
+        { status: "approval_pending", executionId: "exec-b" },
+      );
+      const aFailed = applyTwoActionApproveResult(afterRequest, "2b2:msg-1:0", { status: "failed", reply: "Could not create the event." });
+      expect(aFailed[0].status).toBe("failed");
+      expect(aFailed[1]).toEqual(afterRequest[1]);
+    });
   });
 });

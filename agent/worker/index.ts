@@ -43,6 +43,7 @@ import {
   type TwoActionSplitResult,
   undoAutoWrite,
   writeIntentOutcomeIdentity,
+  zonedDateTimeToUtcIso,
 } from './flow-write-policy'
 import { ProviderRequestError, ProviderUnavailableError } from './provider-errors'
 import { createProviders } from './providers/createProviders'
@@ -816,7 +817,7 @@ async function respondToWriteExecution(
 }
 
 // =============================================
-// Chat V2 Slice 2B.2 -- minimal two-action dispatch. Reuses every existing
+// Chat V2 Slice 2B.2 -- two-action dispatch. Reuses every existing
 // per-action primitive (assembleTaskWriteIntent/assembleCalendarWriteIntent,
 // resolveServerFlowWriteMode, resolveCreateTaskTitle/resolveCreateEventTitle,
 // executeAutoTaskWrite/executeAutoCalendarWrite, writeIntentOutcomeIdentity,
@@ -824,39 +825,101 @@ async function respondToWriteExecution(
 // branches above already do -- this function only calls each of them twice,
 // once per decomposed clause, and never introduces a new execution path.
 //
-// SCOPE DECISION (see this slice's own report): only proceeds when NEITHER
-// decomposed action resolves to mode 'ask'. A single action's mode==='ask'
-// approval card is built entirely from the CLIENT's own concurrent LLM
-// reasoning overlay (reasonAboutUserMessage in ChatPage.tsx) reconstructing
-// the write's concrete arguments -- the Worker's own 'ask' response today
-// carries no title/date/etc. at all (see pendingWritePolicy above). That
-// overlay reasons about ONE whole message at a time and has no contract for
-// returning two independent, non-mutually-exclusive proposals; extending it
-// safely is a separate, larger change to a different subsystem, out of this
-// slice's budget. When either action needs approval, this function returns
-// null before touching the database, and the caller falls back to today's
-// existing whole-message single-action path unchanged.
+// CORRECTION 1: mode==='ask' is the PRIMARY path for real Task/Calendar
+// writes (INC-02 clamps production policy to 'ask'; executeAutoTaskWrite/
+// executeAutoCalendarWrite direct calls below are effectively unreachable
+// in production -- see agent-tool-execution.ts's own header comment). For
+// an 'ask'-mode action this function does NOT execute anything and does NOT
+// fabricate an AgentReasoningResult -- it returns a small, server-confirmed
+// 'pending' descriptor (toolId + concrete arguments + a fresh, per-action
+// requestId) that the CLIENT feeds directly into the EXISTING
+// agentToolExecutionClient.requestExecution()/approveExecution() calls
+// (agent-tool-execution.ts's own request -> approval_pending -> approve ->
+// execute lifecycle, completely unmodified). Each action's requestId is
+// server-minted from userMessageId (a fresh UUID per turn) plus its own
+// clause index, so the two actions can never collide, and the existing
+// (user_id, request_id) idempotency on agent_tool_executions applies to
+// each independently, exactly as it already does for a single action.
 //
-// COMMITMENT RULE: once resolution confirms both actions can proceed
-// (neither is 'ask'), this function ALWAYS returns a real Response, never
-// null -- execution order must never leave the caller free to "fall back"
-// to the old whole-message path after a decomposed action has already
-// written to the database, which would risk double-processing that action
-// under the old single-domain routing. A 'clarify'/'not_found' outcome from
-// executeAutoTaskWrite/executeAutoCalendarWrite is therefore handled here as
-// a normal terminal per-action outcome (its own honest reply text), never a
-// reason to bail once execution has started.
-interface TwoActionOutcome {
+// SCOPE BOUNDARY (see this slice's own report): an 'ask'-mode action is
+// only turned into a pending descriptor when it is a CREATE (create_task /
+// create_calendar_event) with (for calendar) a fully resolved start
+// date/time. An UPDATE-kind action parsed by assembleTaskWriteIntent/
+// assembleCalendarWriteIntent carries a fuzzy taskReference/eventReference,
+// never a resolved row id -- but agent-tool-execution.ts's own
+// buildTaskIntent/buildCalendarIntent only ever reconstruct an intent from
+// a pre-resolved targetId (the same contract the Workspace step-approval
+// flow already relies on). Bridging fuzzy-reference resolution into that
+// endpoint is real, separate work, not silently faked here. When this
+// boundary is hit, this function returns null before touching the
+// database or creating any pending descriptor, and the caller falls back
+// to today's existing whole-message path unchanged.
+//
+// COMMITMENT RULE: every bail point (return null) below happens strictly
+// BEFORE any 'auto'-mode action's executeAutoTaskWrite/executeAutoCalendarWrite
+// call and before any 'ask'-mode pending descriptor is returned to the
+// client -- so the caller is never left free to fall back to the old
+// whole-message path after a decomposed action has already written to the
+// database (which would risk double-processing it under the old
+// single-domain routing) or after a pending descriptor has already been
+// handed to the client (which would leave an orphaned, never-approvable
+// promise on the client's screen). Once past every bail point, this
+// function always returns a real Response, never null. A 'clarify'/
+// 'not_found' outcome from an 'auto'-mode execution is handled as a normal
+// terminal per-action outcome (its own honest reply text), never a reason
+// to bail.
+interface TwoActionResolved {
+  kind: 'resolved'
   reply: string
   writePolicy: { domain: 'tasks' | 'calendar'; action: 'create' | 'update'; mode: 'auto' | 'off' }
   writeExecution?: 'executed' | 'failed' | 'provider_unavailable' | 'clarify' | 'not_found'
   undo?: { id: string; label: string; expiresAt: string }
 }
 
+// A durable agent_tool_executions row for this action does NOT exist yet --
+// this function never calls handleAgentToolExecutionRequest itself (that
+// would be a second, server-internal write path parallel to the client's
+// own agentToolExecutionClient.requestExecution() call, exactly the kind of
+// "composite execution object" this correction's instructions forbid).
+// `arguments` is the exact, already-server-confirmed payload
+// agent-tool-execution.ts's buildTaskIntent/buildCalendarIntent expect
+// (title/notes/dueDate for tasks.create; title/notes/dateTimeStart[/
+// dateTimeEnd] as UTC ISO instants for calendar.create_event) -- the client
+// never has to (and must not) re-derive or re-guess it.
+interface TwoActionPending {
+  kind: 'pending'
+  reply: string
+  writePolicy: { domain: 'tasks' | 'calendar'; action: 'create'; mode: 'ask' }
+  toolId: 'tasks.create' | 'calendar.create_event'
+  requestId: string
+  chatMessageId: string
+  arguments: Record<string, unknown>
+  previewText: string
+}
+
+type TwoActionResult = TwoActionResolved | TwoActionPending
+
 const TWO_ACTION_NOT_FOUND_REPLY: Record<Language, string> = {
   de: 'Ich konnte das nicht finden, was aktualisiert werden soll.',
   fa: 'چیزی که خواستید به‌روزرسانی کنم را پیدا نکردم.',
   en: 'I could not find what you asked me to update.',
+}
+
+// Last-resort preview when neither the model nor pattern extraction found a
+// title (e.g. a provider outage with nothing pattern-extractable either) --
+// the clause itself, bounded, so the card never shows a blank/undefined
+// preview. Never used for the actual write's `arguments.title` -- only for
+// display; the executor's own `!intent.title` clarify path still applies
+// unchanged when the write is eventually approved.
+function twoActionFallbackPreview(clause: string): string {
+  const trimmed = clause.trim()
+  return trimmed.length > 60 ? `${trimmed.slice(0, 57)}...` : trimmed
+}
+
+function twoActionPendingReadyReply(language: Language, previewText: string): string {
+  if (language === 'de') return `Bereit zur Genehmigung: ${previewText}`
+  if (language === 'fa') return `آماده تایید شما: ${previewText}`
+  return `Ready for your approval: ${previewText}`
 }
 
 interface ResolvedTwoAction {
@@ -874,7 +937,7 @@ interface ResolvedTwoAction {
   calendarIntent: ParsedCalendarWriteIntent | null
 }
 
-function twoActionOutcomeFromExecution(
+function twoActionResolvedFromExecution(
   domain: 'tasks' | 'calendar',
   action: 'create' | 'update',
   execution:
@@ -884,12 +947,12 @@ function twoActionOutcomeFromExecution(
     | { status: 'provider_unavailable'; reply: string }
     | { status: 'not_found' },
   language: Language,
-): TwoActionOutcome {
+): TwoActionResolved {
   const reply = execution.status === 'not_found' ? TWO_ACTION_NOT_FOUND_REPLY[language] : execution.reply
   const undo = execution.status === 'executed'
     ? { id: execution.undoId, label: language === 'de' ? 'Rückgängig' : language === 'fa' ? 'برگرداندن' : 'Undo', expiresAt: execution.undoExpiresAt }
     : undefined
-  return { reply, writePolicy: { domain, action, mode: 'auto' }, writeExecution: execution.status, undo }
+  return { kind: 'resolved', reply, writePolicy: { domain, action, mode: 'auto' }, writeExecution: execution.status, undo }
 }
 
 async function respondToTwoActionWrite(
@@ -924,49 +987,96 @@ async function respondToTwoActionWrite(
     }
   }
 
-  // Nothing has been written yet -- this is the ONLY point this function is
-  // allowed to return null (see COMMITMENT RULE above).
-  if (resolved.some(r => r.mode === 'ask')) return null
+  // SCOPE BOUNDARY bail (see this function's own header comment) -- the
+  // ONLY two conditions that reject an 'ask'-mode action outright. Nothing
+  // has been written and no descriptor has been returned to the client yet.
+  if (resolved.some(r => r.mode === 'ask' && r.kind !== 'create_task' && r.kind !== 'create_calendar_event')) return null
+  if (resolved.some(r => r.mode === 'ask' && r.calendarIntent && (r.calendarIntent.dateClarificationNeeded || !r.calendarIntent.startDate || !r.calendarIntent.startTime))) return null
+  // A create_calendar_event routed here by an UPDATE/reschedule-worded
+  // reference to an EXISTING task (Slice 2B.1.1's own
+  // isExplicitTaskRescheduleRoutedHere) carries only a LAST-RESORT pattern
+  // guess as `title` -- executeAutoCalendarWrite normally discards that
+  // guess in favor of the referenced task's own authoritative persisted
+  // title, but agent-tool-execution.ts's buildCalendarIntent has no
+  // sourceTaskReference concept at all, so a pending descriptor built from
+  // it would submit the unresolved guess as fact. Same scope boundary as
+  // the UPDATE-kind check above, for the same underlying reason.
+  if (resolved.some(r => r.mode === 'ask' && r.calendarIntent?.sourceTaskReference !== undefined)) return null
 
-  const outcomes: TwoActionOutcome[] = []
-  for (const r of resolved) {
+  const results: TwoActionResult[] = []
+  for (const [index, r] of resolved.entries()) {
     if (r.mode === 'off') {
-      outcomes.push({ reply: WRITE_OFF_REPLY[language], writePolicy: { domain: r.domain, action: r.action, mode: 'off' } })
+      results.push({ kind: 'resolved', reply: WRITE_OFF_REPLY[language], writePolicy: { domain: r.domain, action: r.action, mode: 'off' } })
       continue
     }
-    let providerUnavailable = false
+
     if (r.taskIntent) {
       if (r.taskIntent.kind === 'create_task' && !r.taskIntent.dateClarificationNeeded && r.taskIntent.titleSource !== 'correction') {
         try {
           r.taskIntent.title = await resolveCreateTaskTitle(env, r.taskIntent, r.clause)
         } catch (err) {
+          // A provider outage here degrades to whatever title pattern
+          // extraction already found (possibly none) -- never a reason to
+          // bail, since neither mode has written or promised anything yet:
+          // 'auto' reports it as its own honest provider_unavailable
+          // outcome below; 'ask' simply carries a possibly-empty title
+          // into the pending descriptor, exactly like a single-action
+          // 'auto' write degrades to pattern-only extraction today.
           if (!(err instanceof ProviderUnavailableError)) throw err
-          providerUnavailable = true
         }
       }
-      const execution = providerUnavailable
-        ? { status: 'provider_unavailable' as const, reply: PROVIDER_UNAVAILABLE_WRITE_REPLY[language] }
-        : await executeAutoTaskWrite({ env, userId, language, intent: r.taskIntent, now, timeZone })
-      outcomes.push(twoActionOutcomeFromExecution('tasks', r.action, execution, language))
+      if (r.mode === 'auto') {
+        const execution = await executeAutoTaskWrite({ env, userId, language, intent: r.taskIntent, now, timeZone })
+        results.push(twoActionResolvedFromExecution('tasks', r.action, execution, language))
+      } else {
+        const previewText = r.taskIntent.title ?? twoActionFallbackPreview(r.clause)
+        results.push({
+          kind: 'pending',
+          reply: twoActionPendingReadyReply(language, previewText),
+          writePolicy: { domain: 'tasks', action: 'create', mode: 'ask' },
+          toolId: 'tasks.create',
+          requestId: `2b2:${userMessageId}:${index}`,
+          chatMessageId: userMessageId,
+          arguments: { title: r.taskIntent.title, notes: r.taskIntent.notes, dueDate: r.taskIntent.dueDate ?? null },
+          previewText,
+        })
+      }
     } else if (r.calendarIntent) {
       if (r.calendarIntent.kind === 'create_calendar_event' && !r.calendarIntent.dateClarificationNeeded && r.calendarIntent.titleSource !== 'correction' && r.calendarIntent.sourceTaskReference === undefined) {
         try {
           r.calendarIntent.title = await resolveCreateEventTitle(env, r.calendarIntent, r.clause)
         } catch (err) {
           if (!(err instanceof ProviderUnavailableError)) throw err
-          providerUnavailable = true
         }
       }
-      const execution = providerUnavailable
-        ? { status: 'provider_unavailable' as const, reply: PROVIDER_UNAVAILABLE_WRITE_REPLY[language] }
-        : await executeAutoCalendarWrite({ env, userId, language, intent: r.calendarIntent, now, timeZone })
-      outcomes.push(twoActionOutcomeFromExecution('calendar', r.action, execution, language))
+      if (r.mode === 'auto') {
+        const execution = await executeAutoCalendarWrite({ env, userId, language, intent: r.calendarIntent, now, timeZone })
+        results.push(twoActionResolvedFromExecution('calendar', r.action, execution, language))
+      } else {
+        // startDate/startTime are guaranteed present by the SCOPE BOUNDARY
+        // bail above -- never undefined here.
+        const dateTimeStart = zonedDateTimeToUtcIso(r.calendarIntent.startDate!, r.calendarIntent.startTime!, timeZone)
+        const dateTimeEnd = r.calendarIntent.endTime
+          ? zonedDateTimeToUtcIso(r.calendarIntent.startDate!, r.calendarIntent.endTime, timeZone)
+          : undefined
+        const previewText = r.calendarIntent.title ?? twoActionFallbackPreview(r.clause)
+        results.push({
+          kind: 'pending',
+          reply: twoActionPendingReadyReply(language, previewText),
+          writePolicy: { domain: 'calendar', action: 'create', mode: 'ask' },
+          toolId: 'calendar.create_event',
+          requestId: `2b2:${userMessageId}:${index}`,
+          chatMessageId: userMessageId,
+          arguments: { title: r.calendarIntent.title, notes: r.calendarIntent.notes, dateTimeStart, ...(dateTimeEnd ? { dateTimeEnd } : {}) },
+          previewText,
+        })
+      }
     }
   }
 
   await supabasePost(env, 'agent_chat_messages', { id: userMessageId, user_id: userId, session_id: sessionId, role: 'user', content: message })
-  for (const outcome of outcomes) {
-    await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: outcome.reply })
+  for (const result of results) {
+    await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: result.reply })
   }
 
   // ALF-1B multi-action guard (this slice's own instruction): intent-
@@ -983,8 +1093,8 @@ async function respondToTwoActionWrite(
   // above) is entirely unaffected -- this function never touches it.
 
   resolved.forEach((r, index) => {
-    const outcome = outcomes[index]
-    if (outcome.writeExecution !== 'executed' && outcome.writeExecution !== 'failed') return
+    const result = results[index]
+    if (result.kind !== 'resolved' || (result.writeExecution !== 'executed' && result.writeExecution !== 'failed')) return
     const identity = writeIntentOutcomeIdentity(r.kind)
     if (!identity) return
     ctx.waitUntil(recordProposalOutcome(env, {
@@ -994,12 +1104,12 @@ async function respondToTwoActionWrite(
       domain: r.domain,
       writeMode: 'auto',
       outcome: 'auto_executed',
-      succeeded: outcome.writeExecution === 'executed',
+      succeeded: result.writeExecution === 'executed',
       targetFields: r.targetFields,
     }))
   })
 
-  return json({ actions: outcomes }, 200, origin)
+  return json({ actions: results }, 200, origin)
 }
 
 // =============================================

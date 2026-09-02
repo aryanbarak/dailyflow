@@ -298,30 +298,55 @@ interface ReasoningProposalState {
 }
 
 // Chat V2 Slice 2B.2: when the Worker's deterministic decomposer resolves
-// one message into two independent Task/Calendar actions (each already
-// auto-executed or switched off server-side -- see agent/worker/index.ts's
-// respondToTwoActionWrite), it returns `actions` instead of the usual
-// singular reply/writePolicy/writeExecution/undo fields. Deliberately NOT
-// routed through AgentReasoningResult/ReasoningProposalState/
-// proposalsToStates: that whole pipeline is built around the CLIENT's own
-// concurrent LLM reasoning overlay reconstructing a proposal's concrete
-// arguments (see resolveChatTurnOutcome's own comment), which has no
-// contract for two independent, non-mutually-exclusive proposals in one
-// turn -- forcing a hand-built AgentReasoningResult through it would mean
-// fabricating validator-shaped fields (AGENT_INTENT_SCHEMA_VERSION,
-// promptPreview, etc.) the server never computed. Each decomposed action
-// here has ALREADY been resolved server-side (auto-executed or off), so it
-// needs no approval card at all -- exactly like a single auto-executed
-// write today shows no ReasoningProposalCard, just a reply bubble with an
-// optional undo (see resolveChatTurnOutcome's serverTerminalWrite branch).
-// Rendered as two independent assistant messages instead, reusing the
-// existing message bubble + undo affordance unchanged.
-interface ChatWorkerAction {
+// one message into two independent Task/Calendar actions (see
+// agent/worker/index.ts's respondToTwoActionWrite), it returns `actions`
+// instead of the usual singular reply/writePolicy/writeExecution/undo
+// fields. Deliberately NOT routed through AgentReasoningResult/
+// ReasoningProposalState/proposalsToStates: that whole pipeline is built
+// around the CLIENT's own concurrent LLM reasoning overlay reconstructing a
+// proposal's concrete arguments (see resolveChatTurnOutcome's own comment),
+// which has no contract for two independent, non-mutually-exclusive
+// proposals in one turn -- forcing a hand-built AgentReasoningResult
+// through it would mean fabricating validator-shaped fields
+// (AGENT_INTENT_SCHEMA_VERSION, promptPreview, etc.) the server never
+// computed.
+//
+// Two kinds of action:
+//  - 'resolved' -- already auto-executed or switched off server-side.
+//    Needs no approval card at all, exactly like a single auto-executed
+//    write today shows no ReasoningProposalCard, just a reply bubble with
+//    an optional undo (see resolveChatTurnOutcome's serverTerminalWrite
+//    branch). Rendered as its own assistant message.
+//  - 'pending' -- CORRECTION 1: server policy resolved 'ask' for this
+//    action (the PRIMARY production case -- INC-02 clamps every real
+//    Task/Calendar write to 'ask'). The Worker already deterministically
+//    parsed and confirmed this action's concrete toolId/arguments; this
+//    client does NOT re-derive or re-guess them (never via the LLM
+//    overlay). It calls the EXISTING agentToolExecutionClient.requestExecution()
+//    with them (creating a durable approval_pending row, same as a single
+//    action already does) and later, on explicit user approval,
+//    approveExecution(executionId) -- for that action's own executionId
+//    only. See TwoActionPendingState/buildTwoActionPendingStates below.
+interface ChatWorkerActionResolved {
+  kind: 'resolved'
   reply: string
   writePolicy: { domain: 'tasks' | 'calendar'; action: 'create' | 'update'; mode: 'auto' | 'off' }
   writeExecution?: 'executed' | 'failed' | 'provider_unavailable' | 'clarify' | 'not_found'
   undo?: ChatMsg['undo']
 }
+
+interface ChatWorkerActionPending {
+  kind: 'pending'
+  reply: string
+  writePolicy: { domain: 'tasks' | 'calendar'; action: 'create'; mode: 'ask' }
+  toolId: 'tasks.create' | 'calendar.create_event'
+  requestId: string
+  chatMessageId: string
+  arguments: Record<string, unknown>
+  previewText: string
+}
+
+type ChatWorkerAction = ChatWorkerActionResolved | ChatWorkerActionPending
 
 interface ChatWorkerResponse {
   reply?: string
@@ -331,15 +356,18 @@ interface ChatWorkerResponse {
   actions?: ChatWorkerAction[]
 }
 
-// Pure builder for a decomposed multi-action turn's message list -- one
-// user message plus one assistant message PER decomposed action, in the
-// server's own order, each carrying its own independent undo. `nowMs` is
-// injected (never Date.now() internally) so this stays independently
-// testable with deterministic, collision-free ids, matching this file's
-// own existing convention (resolveChatTurnOutcome/proposalsToStates).
+// Pure builder for a decomposed multi-action turn's RESOLVED-only message
+// list -- one user message plus one assistant message per already-resolved
+// action, in the server's own order, each carrying its own independent
+// undo. Pending actions are handled entirely separately (see
+// buildTwoActionPendingStates) -- never mixed into this list, since they
+// have no reply bubble of their own yet (their card IS the reply). `nowMs`
+// is injected (never Date.now() internally) so this stays independently
+// testable with deterministic, collision-free ids, matching this file's own
+// existing convention (resolveChatTurnOutcome/proposalsToStates).
 export function buildTwoActionMessages(
   userText: string,
-  actions: ChatWorkerAction[],
+  actions: ChatWorkerActionResolved[],
   responseLanguage: SupportedAiResponseLanguage,
   nowMs: number,
 ): ChatMsg[] {
@@ -353,6 +381,90 @@ export function buildTwoActionMessages(
       undo: action.undo,
     })),
   ]
+}
+
+// Chat V2 Slice 2B.2 correction 1 -- one card's worth of state for a
+// pending decomposed action. Deliberately a small, additive, standalone
+// shape (not a ReasoningProposalState) -- see ChatWorkerActionPending's own
+// comment for why. `status` mirrors agent_tool_executions' own lifecycle
+// (approval_pending -> executing -> succeeded/failed/uncertain) plus two
+// client-only transient states ('requesting' before the initial
+// requestExecution() call resolves, 'approving' while approveExecution()
+// is in flight) and one client-only failure state ('error', a network/auth
+// failure talking to the Worker at all, never a domain outcome).
+export type TwoActionPendingStatus = 'requesting' | 'approval_pending' | 'approving' | 'succeeded' | 'failed' | 'uncertain' | 'error'
+
+export interface TwoActionPendingState {
+  requestId: string
+  toolId: 'tasks.create' | 'calendar.create_event'
+  domain: 'tasks' | 'calendar'
+  chatMessageId: string
+  arguments: Record<string, unknown>
+  previewText: string
+  status: TwoActionPendingStatus
+  executionId?: string
+  resultReply?: string
+  undo?: ChatMsg['undo']
+}
+
+// Pure: the initial render state for every pending action in one turn, in
+// order, BEFORE any requestExecution() call has resolved. The caller
+// (handleSend) is responsible for actually firing those calls and folding
+// their results back in via applyTwoActionRequestResult.
+export function buildTwoActionPendingStates(actions: ChatWorkerActionPending[]): TwoActionPendingState[] {
+  return actions.map((action) => ({
+    requestId: action.requestId,
+    toolId: action.toolId,
+    domain: action.writePolicy.domain,
+    chatMessageId: action.chatMessageId,
+    arguments: action.arguments,
+    previewText: action.previewText,
+    status: 'requesting',
+  }))
+}
+
+// Pure state transition for one action's requestExecution() outcome.
+// Matches by requestId ONLY -- every other entry in `prev` (in particular
+// the sibling action) is returned completely unchanged, which is what
+// guarantees one action's own request/approve flow can never leak into
+// another's rendered state.
+export function applyTwoActionRequestResult(
+  prev: TwoActionPendingState[],
+  requestId: string,
+  result:
+    | { status: 'approval_pending'; executionId: string }
+    | { status: 'succeeded' | 'failed' | 'uncertain'; executionId?: string; reply?: string }
+    | { status: 'error' },
+): TwoActionPendingState[] {
+  return prev.map((entry) => {
+    if (entry.requestId !== requestId) return entry
+    if (result.status === 'error') return { ...entry, status: 'error' }
+    return {
+      ...entry,
+      status: result.status,
+      executionId: 'executionId' in result ? result.executionId : entry.executionId,
+      resultReply: 'reply' in result ? result.reply : entry.resultReply,
+    }
+  })
+}
+
+// Pure state transition for one action's approveExecution() outcome --
+// same requestId-only matching discipline as applyTwoActionRequestResult.
+// Approving action A calling this with A's own requestId can structurally
+// never touch B's entry.
+export function applyTwoActionApproveResult(
+  prev: TwoActionPendingState[],
+  requestId: string,
+  result:
+    | { status: 'succeeded' | 'failed' | 'uncertain'; reply: string; undo?: ChatMsg['undo'] }
+    | { status: 'error' }
+    | { status: 'approving' },
+): TwoActionPendingState[] {
+  return prev.map((entry) => {
+    if (entry.requestId !== requestId) return entry
+    if (result.status === 'approving' || result.status === 'error') return { ...entry, status: result.status }
+    return { ...entry, status: result.status, resultReply: result.reply, undo: result.undo }
+  })
 }
 
 // Task 40: WorkspacePlanStep['domain'] is broader (habits/documents/
@@ -2058,6 +2170,10 @@ export default function ChatPage() {
   const [attachError, setAttachError] = useState<string | null>(null)
   const [memoryOffer, setMemoryOffer] = useState<{ documentId: string; fileName: string } | null>(null)
   const [reasoningProposal, setReasoningProposal] = useState<ReasoningProposalState[] | null>(null)
+  // Chat V2 Slice 2B.2 correction 1: independent from reasoningProposal on
+  // purpose -- see ChatWorkerActionPending's own comment on why this is a
+  // small, additive, standalone shape rather than a ReasoningProposalState.
+  const [twoActionPending, setTwoActionPending] = useState<TwoActionPendingState[] | null>(null)
   const [approvalDialogOpen, setApprovalDialogOpen] = useState(false)
   const [githubRepositoryInventory, setGithubRepositoryInventory] = useState<AgentReasoningGitHubInventory>({ status: 'unknown' })
   // Task 17a: replaces the old bottomRef/scrollIntoView sentinel -- the
@@ -2507,14 +2623,58 @@ export default function ChatPage() {
 
       const [{ reply, writePolicy, writeExecution, undo, actions }, overlayResult] = await Promise.all([chatCallPromise, overlayPromise])
 
-      // Chat V2 Slice 2B.2: two already-resolved actions -- render as two
-      // independent assistant messages (each with its own optional undo)
-      // and skip the single-proposal overlay/outcome machinery entirely
-      // (see ChatWorkerResponse's own comment for why). Never mixed with
-      // the single-outcome path below in the same turn.
+      // Chat V2 Slice 2B.2: two independently decomposed actions -- skip
+      // the single-proposal overlay/outcome machinery entirely (see
+      // ChatWorkerResponse's own comment for why). Never mixed with the
+      // single-outcome path below in the same turn.
       if (actions && actions.length > 0) {
+        const resolvedActions = actions.filter((a): a is ChatWorkerActionResolved => a.kind === 'resolved')
+        const pendingActions = actions.filter((a): a is ChatWorkerActionPending => a.kind === 'pending')
+
         setReasoningProposal(null)
-        setMessages(prev => [...prev, ...buildTwoActionMessages(text, actions, responseLanguage, Date.now())])
+        setMessages(prev => [...prev, ...buildTwoActionMessages(text, resolvedActions, responseLanguage, Date.now())])
+
+        if (pendingActions.length > 0) {
+          setTwoActionPending(buildTwoActionPendingStates(pendingActions))
+          const turnSessionId = sessionId
+          const turnLanguage = responseLanguage
+          for (const pending of pendingActions) {
+            // Fire-and-forget, one independent call per action -- matches
+            // the existing single-action convention (requestExecution()
+            // called as soon as the proposal is normalized, BEFORE the
+            // user approves, so a durable approval_pending row already
+            // exists by the time the card is shown). A failure here only
+            // ever updates THIS action's own card (requestId-keyed) --
+            // never the sibling's.
+            void (async () => {
+              try {
+                const client = createAgentToolExecutionClient({
+                  workerBaseUrl: workerUrl,
+                  getAccessToken: async () => {
+                    const { data: { session: authSession } } = await supabase.auth.getSession()
+                    return authSession?.access_token
+                  },
+                })
+                const result = await client.requestExecution({
+                  toolId: pending.toolId,
+                  arguments: pending.arguments,
+                  requestId: pending.requestId,
+                  sessionId: turnSessionId ?? undefined,
+                  chatMessageId: pending.chatMessageId,
+                  timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                  language: turnLanguage,
+                })
+                setTwoActionPending(prev => prev ? applyTwoActionRequestResult(prev, pending.requestId, result.status === 'approval_pending'
+                  ? { status: 'approval_pending', executionId: result.executionId ?? '' }
+                  : { status: result.status, executionId: result.executionId, reply: result.reply }) : prev)
+              } catch (error) {
+                console.error('[ChatPage] Slice 2B.2 correction 1: requestExecution failed for a decomposed action:', error)
+                setTwoActionPending(prev => prev ? applyTwoActionRequestResult(prev, pending.requestId, { status: 'error' }) : prev)
+              }
+            })()
+          }
+        }
+
         if (sentDocument) {
           setAttachedFile(null)
           setAttachedDocument(null)
@@ -2761,6 +2921,32 @@ export default function ChatPage() {
       setSending(false)
     }
   }, [activeSessionId, sending, workerUrl, refreshSessions, t])
+
+  // Chat V2 Slice 2B.2 correction 1: approves exactly ONE decomposed
+  // action's own executionId. Matched by requestId, mutating only that
+  // entry (applyTwoActionApproveResult's own guarantee) -- there is no
+  // "approve all" affordance anywhere in this file, and none is ever built
+  // from this function; the caller passes one requestId per button.
+  const handleApproveTwoAction = useCallback(async (requestId: string) => {
+    const entry = twoActionPending?.find(p => p.requestId === requestId)
+    if (!entry || !entry.executionId || entry.status !== 'approval_pending') return
+
+    setTwoActionPending(prev => prev ? applyTwoActionApproveResult(prev, requestId, { status: 'approving' }) : prev)
+    try {
+      const client = createAgentToolExecutionClient({
+        workerBaseUrl: workerUrl,
+        getAccessToken: async () => {
+          const { data: { session } } = await supabase.auth.getSession()
+          return session?.access_token
+        },
+      })
+      const result = await client.approveExecution(entry.executionId)
+      setTwoActionPending(prev => prev ? applyTwoActionApproveResult(prev, requestId, { status: result.status, reply: result.reply }) : prev)
+    } catch (error) {
+      console.error('[ChatPage] Slice 2B.2 correction 1: approveExecution failed for a decomposed action:', error)
+      setTwoActionPending(prev => prev ? applyTwoActionApproveResult(prev, requestId, { status: 'error' }) : prev)
+    }
+  }, [twoActionPending, workerUrl])
 
   const handleRunReasoningProposal = useCallback(async (index: number) => {
     const current = reasoningProposal?.[index]
@@ -3264,6 +3450,33 @@ export default function ChatPage() {
                 onConfirmAndRunWrite={handleConfirmAndRunWrite}
                 compact={compact}
               />
+            ))}
+
+            {/* Chat V2 Slice 2B.2 correction 1: one small card per pending
+                decomposed action, each with its OWN independent approve
+                control -- approving one never touches the other (see
+                handleApproveTwoAction's own comment). Intentionally not a
+                ReasoningProposalCard -- see ChatWorkerActionPending's
+                comment for why this is a small, standalone shape instead. */}
+            {twoActionPending?.map(pending => (
+              <div key={pending.requestId} className="rounded-lg border border-border bg-card p-3 text-sm">
+                <div className="font-medium">{pending.previewText}</div>
+                {pending.status === 'requesting' && <div className="text-muted-foreground">{t('chat_typing') ?? 'Preparing…'}</div>}
+                {pending.status === 'approval_pending' && (
+                  <button
+                    type="button"
+                    className="mt-2 rounded-md border border-primary px-3 py-1 text-primary"
+                    onClick={() => void handleApproveTwoAction(pending.requestId)}
+                  >
+                    Approve
+                  </button>
+                )}
+                {pending.status === 'approving' && <div className="text-muted-foreground">Approving…</div>}
+                {(pending.status === 'succeeded' || pending.status === 'failed' || pending.status === 'uncertain') && (
+                  <div className="text-muted-foreground">{pending.resultReply}</div>
+                )}
+                {pending.status === 'error' && <div className="text-destructive">Could not reach the server for this action.</div>}
+              </div>
             ))}
           </div>
 

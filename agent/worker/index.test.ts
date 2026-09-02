@@ -2104,19 +2104,119 @@ describe('Chat V2 Slice 2B.2: two independent actions in one message', () => {
     expect(log.taskWrites.length).toBe(0)
   })
 
-  it('falls back to the existing whole-message ambiguous clarification when either decomposed action would need approval -- no write, no partial commitment', async () => {
+  it('CORRECTION 1 -- item 1: Calendar + Task, both resolve ask, produces TWO independent pending actions, never the old "Calendar or Task?" fallback', async () => {
     const log = installFetchMock([], null, 'Gemini should not be called', 'ask')
     const response = await worker.fetch(chatRequest({
       message: 'فردا ساعت ۹ با احمد یک قرار ملاقات بساز و برای جمعه یک تسک گزارش بساز',
       timeZone: 'Europe/Berlin',
     }), testEnv(), fakeExecutionContext())
-    const body = await response.json() as { actions?: unknown; reply?: string; writePolicy?: unknown }
+    const body = await response.json() as {
+      actions?: Array<{ kind?: string; writePolicy?: { domain?: string; action?: string; mode?: string }; toolId?: string; requestId?: string; chatMessageId?: string; arguments?: Record<string, unknown> }>
+      reply?: string
+    }
+
+    expect(response.status).toBe(200)
+    expect(body.reply).toBeUndefined()
+    expect(body.actions).toHaveLength(2)
+    expect(body.actions![0]).toMatchObject({
+      kind: 'pending',
+      writePolicy: { domain: 'calendar', action: 'create', mode: 'ask' },
+      toolId: 'calendar.create_event',
+    })
+    expect(body.actions![0].arguments?.dateTimeStart).toBe('2026-09-03T07:00:00.000Z')
+    expect(body.actions![1]).toMatchObject({
+      kind: 'pending',
+      writePolicy: { domain: 'tasks', action: 'create', mode: 'ask' },
+      toolId: 'tasks.create',
+    })
+    expect(body.actions![1].arguments?.dueDate).toBe('2026-09-04')
+    // No agent_tool_executions row is ever created by /chat itself -- that
+    // is the client's own subsequent requestExecution() call.
+    expect(log.calendarWrites.length).toBe(0)
+    expect(log.taskWrites.length).toBe(0)
+  })
+
+  it('CORRECTION 1 -- item 2: Task + Task, both resolve ask, produces two independent pending actions', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'ask')
+    const response = await worker.fetch(chatRequest({
+      message: 'برای امروز یک تسک گزارش بساز و برای جمعه یک تسک گزارش بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: Array<{ kind?: string; writePolicy?: { domain?: string; mode?: string }; toolId?: string; requestId?: string }> }
+
+    expect(response.status).toBe(200)
+    expect(body.actions).toHaveLength(2)
+    expect(body.actions!.every(a => a.kind === 'pending')).toBe(true)
+    expect(body.actions!.every(a => a.writePolicy?.domain === 'tasks' && a.writePolicy?.mode === 'ask')).toBe(true)
+    expect(body.actions!.every(a => a.toolId === 'tasks.create')).toBe(true)
+    expect(log.taskWrites.length).toBe(0)
+  })
+
+  it('CORRECTION 1 -- item 3: Calendar + Calendar with separate exact times, both resolve ask, produces two independent pending actions', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'ask')
+    const response = await worker.fetch(chatRequest({
+      message: 'یک رویداد فردا ساعت ۸ بساز و یک رویداد جمعه ساعت ۹ بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: Array<{ kind?: string; writePolicy?: { domain?: string; mode?: string }; toolId?: string; arguments?: Record<string, unknown> }> }
+
+    expect(response.status).toBe(200)
+    expect(body.actions).toHaveLength(2)
+    expect(body.actions!.every(a => a.kind === 'pending')).toBe(true)
+    expect(body.actions!.every(a => a.writePolicy?.domain === 'calendar' && a.writePolicy?.mode === 'ask')).toBe(true)
+    expect(body.actions!.every(a => a.toolId === 'calendar.create_event')).toBe(true)
+    expect(body.actions![0].arguments?.dateTimeStart).not.toBe(body.actions![1].arguments?.dateTimeStart)
+    expect(log.calendarWrites.length).toBe(0)
+  })
+
+  it('CORRECTION 1 -- item 4: the two pending actions always get distinct requestIds', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'ask')
+    const response = await worker.fetch(chatRequest({
+      message: 'برای امروز یک تسک گزارش بساز و برای جمعه یک تسک گزارش بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: Array<{ requestId?: string }> }
+    void log
+
+    expect(body.actions).toHaveLength(2)
+    expect(body.actions![0].requestId).toBeTruthy()
+    expect(body.actions![1].requestId).toBeTruthy()
+    expect(body.actions![0].requestId).not.toBe(body.actions![1].requestId)
+  })
+
+  it('SCOPE BOUNDARY: an ask-mode task-reschedule-routed calendar action (unresolved title guess) falls back to the existing whole-message path -- no pending descriptor, no write, no partial commitment', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'ask')
+    // "move task X to tomorrow at 9" resolves to create_calendar_event via
+    // isExplicitTaskRescheduleRoutedHere (Slice 2B.1.1's own "never update
+    // an existing calendar event from a task reference" rule) -- its title
+    // is only a last-resort pattern guess, discarded by executeAutoCalendarWrite
+    // in favor of the referenced task's own persisted title. Outside this
+    // correction's scope boundary (see respondToTwoActionWrite's own comment).
+    const response = await worker.fetch(chatRequest({
+      message: 'Move the task "Call Ahmad" to tomorrow at 9 and create a task for Friday report',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: unknown; reply?: string }
 
     expect(response.status).toBe(200)
     expect(body.actions).toBeUndefined()
-    expect(body.reply).toBe('Should I create a calendar event or a task?')
     expect(log.calendarWrites.length).toBe(0)
     expect(log.taskWrites.length).toBe(0)
+  })
+
+  it('CORRECTION 1 -- item 8: single-action ask behavior is completely unchanged (no actions array, existing pendingWritePolicy shape)', async () => {
+    const log = installFetchMock([], null, 'Write action requires explicit approval.', 'ask')
+    const response = await worker.fetch(chatRequest({
+      message: 'Add an event for next Tuesday at 9am',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: unknown; reply?: string; writePolicy?: { domain?: string; mode?: string } }
+
+    expect(response.status).toBe(200)
+    expect(body.actions).toBeUndefined()
+    expect(body.writePolicy).toMatchObject({ domain: 'calendar', mode: 'ask' })
+    expect(body.reply).toBe('Write action requires explicit approval.')
+    expect(log.calendarWrites.length).toBe(0)
   })
 
   it('a conjunction inside a single action is not decomposed -- existing single-action behavior is unchanged', async () => {

@@ -1068,3 +1068,116 @@ describe('Chat V2 Slice 2A -- server-owned tool execution lifecycle', () => {
     })
   })
 })
+
+// Chat V2 Slice 2B.2 correction 1: proves that TWO decomposed actions from
+// one Chat turn -- each submitted as its own independent
+// requestExecution()/approveExecution() call against exactly this
+// unmodified module -- get the same independence guarantees a single
+// action already has, with zero new code paths. This is deliberately NOT a
+// test of a new "multi-action" primitive; it is a demonstration that the
+// EXISTING per-request/per-execution lifecycle above already provides
+// everything two sibling actions need, simply by using two distinct
+// requestIds.
+describe('Chat V2 Slice 2B.2 correction 1: two independently decomposed actions never interfere with each other', () => {
+  const CALENDAR_CREATE_REQUEST_BODY = {
+    toolId: 'calendar.create_event',
+    arguments: { title: 'Meeting with Ahmad', dateTimeStart: '2026-09-03T07:00:00.000Z' },
+    requestId: '2b2:msg-1:0',
+    timeZone: 'Europe/Berlin',
+  }
+  const TASK_CREATE_REQUEST_BODY_B = {
+    toolId: 'tasks.create',
+    arguments: { title: 'Report', dueDate: '2026-09-04' },
+    requestId: '2b2:msg-1:1',
+    timeZone: 'Europe/Berlin',
+  }
+
+  it('requesting both decomposed actions creates two independent approval_pending rows, one per requestId', async () => {
+    const table = new FakeExecutionsTable()
+    const { fetchMock } = buildFetchMock({ table, policyMode: 'ask' })
+    const [responseA, responseB] = await withFetch(fetchMock, () => Promise.all([
+      handleAgentToolExecutionRequest(authRequest('/agent/execution/request', CALENDAR_CREATE_REQUEST_BODY), mockEnv()),
+      handleAgentToolExecutionRequest(authRequest('/agent/execution/request', TASK_CREATE_REQUEST_BODY_B), mockEnv()),
+    ]))
+    expect(responseA.status).toBe(200)
+    expect(responseB.status).toBe(200)
+    const bodyA = await responseA.json() as { executionId: string; status: string }
+    const bodyB = await responseB.json() as { executionId: string; status: string }
+    expect(bodyA.status).toBe('approval_pending')
+    expect(bodyB.status).toBe('approval_pending')
+    expect(bodyA.executionId).not.toBe(bodyB.executionId)
+    expect(table.rows).toHaveLength(2)
+    expect(table.rows.map((r) => r.request_id).sort()).toEqual(['2b2:msg-1:0', '2b2:msg-1:1'])
+  })
+
+  it('approving action A executes only A -- B stays approval_pending, untouched', async () => {
+    const table = new FakeExecutionsTable()
+    const { fetchMock, calls } = buildFetchMock({ table, policyMode: 'ask', taskRow: { id: 'task-created-b', title: 'Report', due_date: '2026-09-04' } })
+    const [requestA, requestB] = await withFetch(fetchMock, () => Promise.all([
+      handleAgentToolExecutionRequest(authRequest('/agent/execution/request', CALENDAR_CREATE_REQUEST_BODY), mockEnv()),
+      handleAgentToolExecutionRequest(authRequest('/agent/execution/request', TASK_CREATE_REQUEST_BODY_B), mockEnv()),
+    ]))
+    const { executionId: executionIdA } = await requestA.json() as { executionId: string }
+    const { executionId: executionIdB } = await requestB.json() as { executionId: string }
+
+    const approveA = await withFetch(fetchMock, () => handleAgentToolExecutionApprove(authRequest('/agent/execution/approve', { executionId: executionIdA }), mockEnv()))
+    expect(approveA.status).toBe(200)
+    expect((await approveA.json() as { status: string }).status).toBe('succeeded')
+
+    const rowA = table.rows.find((r) => r.id === executionIdA)!
+    const rowB = table.rows.find((r) => r.id === executionIdB)!
+    expect(rowA.status).toBe('succeeded')
+    // B's own approve was never called -- it must still be exactly where
+    // requestExecution() left it, never advanced as a side effect of A's approval.
+    expect(rowB.status).toBe('approval_pending')
+    expect(calls.some((c) => c.method === 'POST' && c.url.includes('/rest/v1/calendar_events'))).toBe(true)
+    expect(calls.some((c) => c.method === 'POST' && c.url.includes('/rest/v1/tasks'))).toBe(false)
+  })
+
+  it('approving B afterward executes B independently -- A is unaffected by B\'s approval', async () => {
+    const table = new FakeExecutionsTable()
+    const { fetchMock, calls } = buildFetchMock({ table, policyMode: 'ask', taskRow: { id: 'task-created-b', title: 'Report', due_date: '2026-09-04' } })
+    const [requestA, requestB] = await withFetch(fetchMock, () => Promise.all([
+      handleAgentToolExecutionRequest(authRequest('/agent/execution/request', CALENDAR_CREATE_REQUEST_BODY), mockEnv()),
+      handleAgentToolExecutionRequest(authRequest('/agent/execution/request', TASK_CREATE_REQUEST_BODY_B), mockEnv()),
+    ]))
+    const { executionId: executionIdA } = await requestA.json() as { executionId: string }
+    const { executionId: executionIdB } = await requestB.json() as { executionId: string }
+    await withFetch(fetchMock, () => handleAgentToolExecutionApprove(authRequest('/agent/execution/approve', { executionId: executionIdA }), mockEnv()))
+
+    const approveB = await withFetch(fetchMock, () => handleAgentToolExecutionApprove(authRequest('/agent/execution/approve', { executionId: executionIdB }), mockEnv()))
+    expect(approveB.status).toBe(200)
+    expect((await approveB.json() as { status: string }).status).toBe('succeeded')
+
+    expect(table.rows.find((r) => r.id === executionIdA)!.status).toBe('succeeded')
+    expect(table.rows.find((r) => r.id === executionIdB)!.status).toBe('succeeded')
+    // A executed exactly once, before B was ever approved -- B's approval
+    // triggered no second write to calendar_events.
+    const calendarWrites = calls.filter((c) => c.method === 'POST' && c.url.includes('/rest/v1/calendar_events'))
+    expect(calendarWrites).toHaveLength(1)
+    const taskWrites = calls.filter((c) => c.method === 'POST' && c.url.includes('/rest/v1/tasks'))
+    expect(taskWrites).toHaveLength(1)
+  })
+
+  it('retrying the same requestId for action A is idempotent -- returns the existing row, never a second row or a second domain write', async () => {
+    const table = new FakeExecutionsTable()
+    const { fetchMock, calls } = buildFetchMock({ table, policyMode: 'ask' })
+    const first = await withFetch(fetchMock, () => handleAgentToolExecutionRequest(authRequest('/agent/execution/request', CALENDAR_CREATE_REQUEST_BODY), mockEnv()))
+    const { executionId: firstId } = await first.json() as { executionId: string }
+
+    const retry = await withFetch(fetchMock, () => handleAgentToolExecutionRequest(authRequest('/agent/execution/request', CALENDAR_CREATE_REQUEST_BODY), mockEnv()))
+    expect(retry.status).toBe(200)
+    const { executionId: retryId } = await retry.json() as { executionId: string }
+    expect(retryId).toBe(firstId)
+    expect(table.rows).toHaveLength(1)
+
+    // Approve once via the retried id -- still exactly one domain write, and
+    // a second approve attempt on the same execution is rejected as a
+    // duplicate (the existing, unmodified guarantee -- test 7 above).
+    await withFetch(fetchMock, () => handleAgentToolExecutionApprove(authRequest('/agent/execution/approve', { executionId: retryId }), mockEnv()))
+    const secondApprove = await withFetch(fetchMock, () => handleAgentToolExecutionApprove(authRequest('/agent/execution/approve', { executionId: retryId }), mockEnv()))
+    expect(secondApprove.status).toBe(409)
+    const calendarWrites = calls.filter((c) => c.method === 'POST' && c.url.includes('/rest/v1/calendar_events'))
+    expect(calendarWrites).toHaveLength(1)
+  })
+})
