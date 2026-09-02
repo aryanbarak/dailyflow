@@ -2125,35 +2125,52 @@ describe('Chat V2 Slice 2B.2: two independent actions in one message', () => {
     // action. Mocked here (matching this test's own AUTO-mode sibling
     // above) so this test keeps exercising the ask-mode PENDING path it is
     // actually named for.
-    const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], 'Report')
-    const response = await worker.fetch(chatRequest({
-      message: 'فردا ساعت ۹ با احمد یک قرار ملاقات بساز و برای جمعه یک تسک گزارش بساز',
-      timeZone: 'Europe/Berlin',
-    }), testEnv(), fakeExecutionContext())
-    const body = await response.json() as {
-      actions?: Array<{ kind?: string; writePolicy?: { domain?: string; action?: string; mode?: string }; toolId?: string; requestId?: string; chatMessageId?: string; arguments?: Record<string, unknown> }>
-      reply?: string
-    }
+    //
+    // PRE-PR TEST STABILIZATION: this test hardcodes absolute expected
+    // dates ("2026-09-03"/"2026-09-04") for "فردا"/"جمعه" (tomorrow/Friday)
+    // relative to the REAL system clock -- with no fake timer, it only ever
+    // passed while "today" was really 2026-09-02 (a Wednesday, so
+    // tomorrow=09-03 and Friday=09-04) and was bound to start failing the
+    // moment real time moved past that day, exactly as happened here (see
+    // the file's own task 22-fix comment above for the identical, already
+    // pre-existing pattern of this bug in another describe block). Pinning
+    // the clock to that same anchor date makes it deterministic forever
+    // instead of re-breaking on the next calendar day.
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-02T09:00:00.000Z'))
+    try {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], 'Report')
+      const response = await worker.fetch(chatRequest({
+        message: 'فردا ساعت ۹ با احمد یک قرار ملاقات بساز و برای جمعه یک تسک گزارش بساز',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as {
+        actions?: Array<{ kind?: string; writePolicy?: { domain?: string; action?: string; mode?: string }; toolId?: string; requestId?: string; chatMessageId?: string; arguments?: Record<string, unknown> }>
+        reply?: string
+      }
 
-    expect(response.status).toBe(200)
-    expect(body.reply).toBeUndefined()
-    expect(body.actions).toHaveLength(2)
-    expect(body.actions![0]).toMatchObject({
-      kind: 'pending',
-      writePolicy: { domain: 'calendar', action: 'create', mode: 'ask' },
-      toolId: 'calendar.create_event',
-    })
-    expect(body.actions![0].arguments?.dateTimeStart).toBe('2026-09-03T07:00:00.000Z')
-    expect(body.actions![1]).toMatchObject({
-      kind: 'pending',
-      writePolicy: { domain: 'tasks', action: 'create', mode: 'ask' },
-      toolId: 'tasks.create',
-    })
-    expect(body.actions![1].arguments?.dueDate).toBe('2026-09-04')
-    // No agent_tool_executions row is ever created by /chat itself -- that
-    // is the client's own subsequent requestExecution() call.
-    expect(log.calendarWrites.length).toBe(0)
-    expect(log.taskWrites.length).toBe(0)
+      expect(response.status).toBe(200)
+      expect(body.reply).toBeUndefined()
+      expect(body.actions).toHaveLength(2)
+      expect(body.actions![0]).toMatchObject({
+        kind: 'pending',
+        writePolicy: { domain: 'calendar', action: 'create', mode: 'ask' },
+        toolId: 'calendar.create_event',
+      })
+      expect(body.actions![0].arguments?.dateTimeStart).toBe('2026-09-03T07:00:00.000Z')
+      expect(body.actions![1]).toMatchObject({
+        kind: 'pending',
+        writePolicy: { domain: 'tasks', action: 'create', mode: 'ask' },
+        toolId: 'tasks.create',
+      })
+      expect(body.actions![1].arguments?.dueDate).toBe('2026-09-04')
+      // No agent_tool_executions row is ever created by /chat itself -- that
+      // is the client's own subsequent requestExecution() call.
+      expect(log.calendarWrites.length).toBe(0)
+      expect(log.taskWrites.length).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('CORRECTION 1 -- item 2: Task + Task, both resolve ask, produces two independent pending actions', async () => {
