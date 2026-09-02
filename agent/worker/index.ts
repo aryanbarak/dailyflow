@@ -20,6 +20,7 @@ import {
   assembleCalendarWriteIntent,
   assembleFinanceWriteIntent,
   assembleTaskWriteIntent,
+  attemptTwoActionSplit,
   calendarIntentTargetFields,
   checkDuplicateRows,
   detectContinuationDomain,
@@ -31,12 +32,15 @@ import {
   financeIntentTargetFields,
   loadImportBatch,
   markImportBatchConsumed,
+  type ParsedCalendarWriteIntent,
+  type ParsedTaskWriteIntent,
   persistImportBatch,
   PROVIDER_UNAVAILABLE_WRITE_REPLY,
   resolveCreateEventTitle,
   resolveCreateTaskTitle,
   resolveServerFlowWriteMode,
   taskIntentTargetFields,
+  type TwoActionSplitResult,
   undoAutoWrite,
   writeIntentOutcomeIdentity,
 } from './flow-write-policy'
@@ -699,6 +703,16 @@ interface WriteExecutionOutcomeContext {
   targetFields: readonly string[]
 }
 
+// Factored out of the single-action mode==='off' branch below (byte-
+// identical text, zero behavior change) so Chat V2 Slice 2B.2's two-action
+// dispatch (respondToTwoActionWrite) can reuse the exact same reply text
+// per decomposed action instead of duplicating the ternary.
+const WRITE_OFF_REPLY: Record<Language, string> = {
+  de: 'Diese Flow-AI-Aktion ist in deinen Einstellungen ausgeschaltet.',
+  fa: 'این اقدام Flow AI در تنظیمات شما خاموش است.',
+  en: 'This Flow AI action is switched off in your settings.',
+}
+
 async function respondToWriteExecution(
   env: Env,
   ctx: ExecutionContext,
@@ -799,6 +813,193 @@ async function respondToWriteExecution(
     }
   }
   return json({ reply: execution.reply, writePolicy: { domain, action, mode }, writeExecution: execution.status, undo }, 200, origin)
+}
+
+// =============================================
+// Chat V2 Slice 2B.2 -- minimal two-action dispatch. Reuses every existing
+// per-action primitive (assembleTaskWriteIntent/assembleCalendarWriteIntent,
+// resolveServerFlowWriteMode, resolveCreateTaskTitle/resolveCreateEventTitle,
+// executeAutoTaskWrite/executeAutoCalendarWrite, writeIntentOutcomeIdentity,
+// recordProposalOutcome) exactly as the single-action mode==='auto'/'off'
+// branches above already do -- this function only calls each of them twice,
+// once per decomposed clause, and never introduces a new execution path.
+//
+// SCOPE DECISION (see this slice's own report): only proceeds when NEITHER
+// decomposed action resolves to mode 'ask'. A single action's mode==='ask'
+// approval card is built entirely from the CLIENT's own concurrent LLM
+// reasoning overlay (reasonAboutUserMessage in ChatPage.tsx) reconstructing
+// the write's concrete arguments -- the Worker's own 'ask' response today
+// carries no title/date/etc. at all (see pendingWritePolicy above). That
+// overlay reasons about ONE whole message at a time and has no contract for
+// returning two independent, non-mutually-exclusive proposals; extending it
+// safely is a separate, larger change to a different subsystem, out of this
+// slice's budget. When either action needs approval, this function returns
+// null before touching the database, and the caller falls back to today's
+// existing whole-message single-action path unchanged.
+//
+// COMMITMENT RULE: once resolution confirms both actions can proceed
+// (neither is 'ask'), this function ALWAYS returns a real Response, never
+// null -- execution order must never leave the caller free to "fall back"
+// to the old whole-message path after a decomposed action has already
+// written to the database, which would risk double-processing that action
+// under the old single-domain routing. A 'clarify'/'not_found' outcome from
+// executeAutoTaskWrite/executeAutoCalendarWrite is therefore handled here as
+// a normal terminal per-action outcome (its own honest reply text), never a
+// reason to bail once execution has started.
+interface TwoActionOutcome {
+  reply: string
+  writePolicy: { domain: 'tasks' | 'calendar'; action: 'create' | 'update'; mode: 'auto' | 'off' }
+  writeExecution?: 'executed' | 'failed' | 'provider_unavailable' | 'clarify' | 'not_found'
+  undo?: { id: string; label: string; expiresAt: string }
+}
+
+const TWO_ACTION_NOT_FOUND_REPLY: Record<Language, string> = {
+  de: 'Ich konnte das nicht finden, was aktualisiert werden soll.',
+  fa: 'چیزی که خواستید به‌روزرسانی کنم را پیدا نکردم.',
+  en: 'I could not find what you asked me to update.',
+}
+
+interface ResolvedTwoAction {
+  domain: 'tasks' | 'calendar'
+  action: 'create' | 'update'
+  mode: 'auto' | 'ask' | 'off'
+  kind: WriteIntentType
+  targetFields: readonly string[]
+  // The individual decomposed clause, not the original two-action message
+  // -- title resolution below must reason about only THIS action's own
+  // text, never the sibling action's, or it can hallucinate/garble a title
+  // out of the other clause's unrelated content.
+  clause: string
+  taskIntent: ParsedTaskWriteIntent | null
+  calendarIntent: ParsedCalendarWriteIntent | null
+}
+
+function twoActionOutcomeFromExecution(
+  domain: 'tasks' | 'calendar',
+  action: 'create' | 'update',
+  execution:
+    | { status: 'executed'; reply: string; undoId: string; undoExpiresAt: string }
+    | { status: 'clarify'; reply: string }
+    | { status: 'failed'; reply: string }
+    | { status: 'provider_unavailable'; reply: string }
+    | { status: 'not_found' },
+  language: Language,
+): TwoActionOutcome {
+  const reply = execution.status === 'not_found' ? TWO_ACTION_NOT_FOUND_REPLY[language] : execution.reply
+  const undo = execution.status === 'executed'
+    ? { id: execution.undoId, label: language === 'de' ? 'Rückgängig' : language === 'fa' ? 'برگرداندن' : 'Undo', expiresAt: execution.undoExpiresAt }
+    : undefined
+  return { reply, writePolicy: { domain, action, mode: 'auto' }, writeExecution: execution.status, undo }
+}
+
+async function respondToTwoActionWrite(
+  env: Env,
+  ctx: ExecutionContext,
+  userId: string,
+  sessionId: string,
+  origin: string,
+  message: string,
+  language: Language,
+  history: ChatMessage[],
+  timeZone: string,
+  split: TwoActionSplitResult,
+  userMessageId: string,
+): Promise<Response | null> {
+  const now = new Date()
+
+  const resolved: ResolvedTwoAction[] = []
+  for (const candidate of [split.first, split.second]) {
+    if (candidate.domain === 'task') {
+      const taskIntent = assembleTaskWriteIntent(candidate.clause, history, now, timeZone)
+      if (!taskIntent) return null
+      const action: 'create' | 'update' = taskIntent.kind.startsWith('create') ? 'create' : 'update'
+      const mode = await resolveServerFlowWriteMode(env, userId, 'tasks', action)
+      resolved.push({ domain: 'tasks', action, mode, kind: taskIntent.kind, targetFields: taskIntentTargetFields(taskIntent), clause: candidate.clause, taskIntent, calendarIntent: null })
+    } else {
+      const calendarIntent = assembleCalendarWriteIntent(candidate.clause, history, now, timeZone)
+      if (!calendarIntent) return null
+      const action: 'create' | 'update' = calendarIntent.kind.startsWith('create') ? 'create' : 'update'
+      const mode = await resolveServerFlowWriteMode(env, userId, 'calendar', action)
+      resolved.push({ domain: 'calendar', action, mode, kind: calendarIntent.kind, targetFields: calendarIntentTargetFields(calendarIntent), clause: candidate.clause, taskIntent: null, calendarIntent })
+    }
+  }
+
+  // Nothing has been written yet -- this is the ONLY point this function is
+  // allowed to return null (see COMMITMENT RULE above).
+  if (resolved.some(r => r.mode === 'ask')) return null
+
+  const outcomes: TwoActionOutcome[] = []
+  for (const r of resolved) {
+    if (r.mode === 'off') {
+      outcomes.push({ reply: WRITE_OFF_REPLY[language], writePolicy: { domain: r.domain, action: r.action, mode: 'off' } })
+      continue
+    }
+    let providerUnavailable = false
+    if (r.taskIntent) {
+      if (r.taskIntent.kind === 'create_task' && !r.taskIntent.dateClarificationNeeded && r.taskIntent.titleSource !== 'correction') {
+        try {
+          r.taskIntent.title = await resolveCreateTaskTitle(env, r.taskIntent, r.clause)
+        } catch (err) {
+          if (!(err instanceof ProviderUnavailableError)) throw err
+          providerUnavailable = true
+        }
+      }
+      const execution = providerUnavailable
+        ? { status: 'provider_unavailable' as const, reply: PROVIDER_UNAVAILABLE_WRITE_REPLY[language] }
+        : await executeAutoTaskWrite({ env, userId, language, intent: r.taskIntent, now, timeZone })
+      outcomes.push(twoActionOutcomeFromExecution('tasks', r.action, execution, language))
+    } else if (r.calendarIntent) {
+      if (r.calendarIntent.kind === 'create_calendar_event' && !r.calendarIntent.dateClarificationNeeded && r.calendarIntent.titleSource !== 'correction' && r.calendarIntent.sourceTaskReference === undefined) {
+        try {
+          r.calendarIntent.title = await resolveCreateEventTitle(env, r.calendarIntent, r.clause)
+        } catch (err) {
+          if (!(err instanceof ProviderUnavailableError)) throw err
+          providerUnavailable = true
+        }
+      }
+      const execution = providerUnavailable
+        ? { status: 'provider_unavailable' as const, reply: PROVIDER_UNAVAILABLE_WRITE_REPLY[language] }
+        : await executeAutoCalendarWrite({ env, userId, language, intent: r.calendarIntent, now, timeZone })
+      outcomes.push(twoActionOutcomeFromExecution('calendar', r.action, execution, language))
+    }
+  }
+
+  await supabasePost(env, 'agent_chat_messages', { id: userMessageId, user_id: userId, session_id: sessionId, role: 'user', content: message })
+  for (const outcome of outcomes) {
+    await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: outcome.reply })
+  }
+
+  // ALF-1B multi-action guard (this slice's own instruction): intent-
+  // routing-v1's captureProductionRoutingTurn derives its correlationId from
+  // sourceMessageId ALONE -- calling it twice here would not fabricate a
+  // wrong label (live-routing-comparison.ts's own grouping already treats
+  // >1 production rows sharing one source_message_id as an ambiguous group
+  // and excludes it from exactRoutingAccuracy/fieldAccuracy scoring, per
+  // that module's existing, unmodified behavior), but it would silently
+  // make this turn's routing unmeasured rather than correctly scored as
+  // "two actions, both routed correctly." Smallest safe v1 behavior:
+  // deliberately do not call it at all for a successfully decomposed turn.
+  // Single-action capture (respondToWriteExecution/the off-mode branch
+  // above) is entirely unaffected -- this function never touches it.
+
+  resolved.forEach((r, index) => {
+    const outcome = outcomes[index]
+    if (outcome.writeExecution !== 'executed' && outcome.writeExecution !== 'failed') return
+    const identity = writeIntentOutcomeIdentity(r.kind)
+    if (!identity) return
+    ctx.waitUntil(recordProposalOutcome(env, {
+      userId,
+      intentType: identity.intentType,
+      toolId: identity.toolId,
+      domain: r.domain,
+      writeMode: 'auto',
+      outcome: 'auto_executed',
+      succeeded: outcome.writeExecution === 'executed',
+      targetFields: r.targetFields,
+    }))
+  })
+
+  return json({ actions: outcomes }, 200, origin)
 }
 
 // =============================================
@@ -1242,6 +1443,22 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
     // ask once, don't loop: no pending state is stored, so the very next
     // message is evaluated fresh and resolves on its own once it names
     // either domain.
+    // Chat V2 Slice 2B.2 -- tried unconditionally, BEFORE the single-domain
+    // detectWriteDomainSignal dispatch below, and regardless of what that
+    // whole-message signal itself would resolve to (see
+    // attemptTwoActionSplit's own comment for why: a same-domain two-action
+    // message resolves to a single non-ambiguous signal today, which the
+    // 'ambiguous'-only gate this replaces would have missed entirely).
+    // respondToTwoActionWrite returns null (no side effects yet) when the
+    // split isn't genuinely two independent, safely-resolvable actions --
+    // in that case this falls through to the existing whole-message path
+    // completely unchanged, exactly as before this slice.
+    const twoActionSplit = attemptTwoActionSplit(message, new Date(), timeZone)
+    if (twoActionSplit) {
+      const twoActionResponse = await respondToTwoActionWrite(env, ctx, userId, sessionId, origin, message, language, history, timeZone, twoActionSplit, userMessageId)
+      if (twoActionResponse) return twoActionResponse
+    }
+
     const writeDomainSignal = detectWriteDomainSignal(message, new Date(), timeZone)
     if (writeDomainSignal === 'ambiguous') {
       const reply = language === 'de'
@@ -1312,11 +1529,7 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
       const action: 'create' | 'update' = kind.startsWith('create') ? 'create' : 'update'
       const mode = await resolveServerFlowWriteMode(env, userId, domain, action)
       if (mode === 'off') {
-        const reply = language === 'de'
-          ? 'Diese Flow-AI-Aktion ist in deinen Einstellungen ausgeschaltet.'
-          : language === 'fa'
-            ? 'این اقدام Flow AI در تنظیمات شما خاموش است.'
-            : 'This Flow AI action is switched off in your settings.'
+        const reply = WRITE_OFF_REPLY[language]
         await supabasePost(env, 'agent_chat_messages', { id: userMessageId, user_id: userId, session_id: sessionId, role: 'user', content: message })
         await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: reply })
         // ALF-1A (ADR-0021) capture point: a real write intent was

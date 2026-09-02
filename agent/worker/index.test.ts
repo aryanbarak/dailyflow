@@ -2021,6 +2021,152 @@ describe('task 22: calendar write policy + routing', () => {
   })
 })
 
+describe('Chat V2 Slice 2B.2: two independent actions in one message', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('Calendar + Task: both execute independently, in message order, when both resolve to auto', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'Meeting with Ahmad')
+    const response = await worker.fetch(chatRequest({
+      message: 'فردا ساعت ۹ با احمد یک قرار ملاقات بساز و برای جمعه یک تسک گزارش بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as {
+      actions?: Array<{ reply?: string; writePolicy?: { domain?: string; action?: string; mode?: string }; writeExecution?: string; undo?: { id?: string } }>
+      reply?: string
+      writePolicy?: unknown
+    }
+
+    expect(response.status).toBe(200)
+    expect(body.writePolicy).toBeUndefined()
+    expect(body.actions).toHaveLength(2)
+    expect(body.actions![0].writePolicy).toMatchObject({ domain: 'calendar', action: 'create', mode: 'auto' })
+    expect(body.actions![0].writeExecution).toBe('executed')
+    expect(body.actions![0].reply).toContain('✓ Event created')
+    expect(body.actions![0].undo?.id).toMatch(/^undo:[0-9a-f-]{36}$/)
+    expect(body.actions![1].writePolicy).toMatchObject({ domain: 'tasks', action: 'create', mode: 'auto' })
+    expect(body.actions![1].writeExecution).toBe('executed')
+    expect(body.actions![1].reply).toContain('✓ Task created')
+    expect(body.actions![1].undo?.id).toMatch(/^undo:[0-9a-f-]{36}$/)
+    expect(log.calendarWrites.some(write => write.method === 'POST')).toBe(true)
+    expect(log.taskWrites.some(write => write.method === 'POST')).toBe(true)
+  })
+
+  it('Task + Task: both execute independently as two separate rows', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'Report')
+    const response = await worker.fetch(chatRequest({
+      message: 'برای امروز یک تسک گزارش بساز و برای جمعه یک تسک گزارش بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: Array<{ writePolicy?: { domain?: string }; writeExecution?: string }> }
+
+    expect(response.status).toBe(200)
+    expect(body.actions).toHaveLength(2)
+    expect(body.actions!.every(a => a.writePolicy?.domain === 'tasks')).toBe(true)
+    expect(body.actions!.every(a => a.writeExecution === 'executed')).toBe(true)
+    expect(log.taskWrites.filter(write => write.method === 'POST')).toHaveLength(2)
+  })
+
+  it('Calendar + Calendar with separate exact times: both execute independently', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto')
+    const response = await worker.fetch(chatRequest({
+      message: 'یک رویداد فردا ساعت ۸ بساز و یک رویداد جمعه ساعت ۹ بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: Array<{ writePolicy?: { domain?: string }; writeExecution?: string }> }
+
+    expect(response.status).toBe(200)
+    expect(body.actions).toHaveLength(2)
+    expect(body.actions!.every(a => a.writePolicy?.domain === 'calendar')).toBe(true)
+    expect(body.actions!.every(a => a.writeExecution === 'executed')).toBe(true)
+    expect(log.calendarWrites.filter(write => write.method === 'POST')).toHaveLength(2)
+  })
+
+  it('one action off, the other auto: each independently reflects its own resolved mode', async () => {
+    // flowWriteMode is applied uniformly by the test harness's mock (both
+    // domain/action lookups resolve the same stored mode) -- 'off' here
+    // exercises the WRITE_OFF_REPLY branch for BOTH decomposed actions,
+    // proving neither one executes and neither ever contacts the DB.
+    const log = installFetchMock([], null, 'Gemini should not be called', 'off')
+    const response = await worker.fetch(chatRequest({
+      message: 'فردا ساعت ۹ با احمد یک قرار ملاقات بساز و برای جمعه یک تسک گزارش بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: Array<{ reply?: string; writePolicy?: { mode?: string }; writeExecution?: string }> }
+
+    expect(response.status).toBe(200)
+    expect(body.actions).toHaveLength(2)
+    expect(body.actions!.every(a => a.writePolicy?.mode === 'off')).toBe(true)
+    expect(body.actions!.every(a => a.writeExecution === undefined)).toBe(true)
+    expect(body.actions!.every(a => a.reply?.includes('switched off'))).toBe(true)
+    expect(log.calendarWrites.length).toBe(0)
+    expect(log.taskWrites.length).toBe(0)
+  })
+
+  it('falls back to the existing whole-message ambiguous clarification when either decomposed action would need approval -- no write, no partial commitment', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'ask')
+    const response = await worker.fetch(chatRequest({
+      message: 'فردا ساعت ۹ با احمد یک قرار ملاقات بساز و برای جمعه یک تسک گزارش بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: unknown; reply?: string; writePolicy?: unknown }
+
+    expect(response.status).toBe(200)
+    expect(body.actions).toBeUndefined()
+    expect(body.reply).toBe('Should I create a calendar event or a task?')
+    expect(log.calendarWrites.length).toBe(0)
+    expect(log.taskWrites.length).toBe(0)
+  })
+
+  it('a conjunction inside a single action is not decomposed -- existing single-action behavior is unchanged', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'Call Ahmad and Sara')
+    const response = await worker.fetch(chatRequest({
+      message: 'Create a task to call Ahmad tomorrow and Sara',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: unknown; writePolicy?: { domain?: string; mode?: string }; writeExecution?: string }
+
+    expect(response.status).toBe(200)
+    expect(body.actions).toBeUndefined()
+    expect(body.writePolicy).toMatchObject({ domain: 'tasks', mode: 'auto' })
+    expect(body.writeExecution).toBe('executed')
+    expect(log.taskWrites.filter(write => write.method === 'POST')).toHaveLength(1)
+  })
+
+  it('a genuinely ambiguous whole message with no conjunction to decompose at is unaffected (existing behavior)', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto')
+    const response = await worker.fetch(chatRequest({
+      message: 'Create a task for the meeting tomorrow',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: unknown; reply?: string }
+
+    expect(response.status).toBe(200)
+    expect(body.actions).toBeUndefined()
+    expect(body.reply).toBe('Should I create a calendar event or a task?')
+    expect(log.calendarWrites.length).toBe(0)
+    expect(log.taskWrites.length).toBe(0)
+  })
+
+  it('two identical decomposed create-task requests do not collide on requestId/idempotency (each gets its own undo)', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'Report')
+    const response = await worker.fetch(chatRequest({
+      message: 'برای امروز یک تسک گزارش بساز و برای فردا یک تسک گزارش بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+    const body = await response.json() as { actions?: Array<{ undo?: { id?: string } }> }
+
+    expect(response.status).toBe(200)
+    expect(body.actions).toHaveLength(2)
+    const ids = body.actions!.map(a => a.undo?.id)
+    expect(ids[0]).toBeTruthy()
+    expect(ids[1]).toBeTruthy()
+    expect(ids[0]).not.toBe(ids[1])
+    expect(log.taskWrites.filter(write => write.method === 'POST')).toHaveLength(2)
+  })
+})
+
 describe('task 22-fix: implicit schedule statements reach the deterministic write pipeline (C1/C2 production root cause)', () => {
   beforeEach(() => {
     vi.useFakeTimers()

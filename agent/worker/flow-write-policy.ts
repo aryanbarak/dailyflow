@@ -1050,6 +1050,61 @@ export function detectContinuationDomain(recentTurns: RecentChatTurn[], now: Dat
   return null
 }
 
+export interface TwoActionSplitCandidate {
+  readonly domain: 'task' | 'calendar'
+  readonly clause: string
+}
+
+export interface TwoActionSplitResult {
+  readonly first: TwoActionSplitCandidate
+  readonly second: TwoActionSplitCandidate
+}
+
+// Chat V2 Slice 2B.2 -- the smallest deterministic two-action decomposer.
+// Deliberately NOT gated on detectWriteDomainSignal(message) === 'ambiguous'
+// alone: that only catches a CONFLICTING-domain whole message (one task
+// noun + one calendar noun). A message combining two actions of the SAME
+// domain ("create task A and create task B") resolves to a single, non-
+// ambiguous 'task' signal today (the whole message still contains a task
+// trigger), so this function is tried unconditionally whenever the message
+// contains one of the recognized conjunctions, regardless of what
+// detectWriteDomainSignal(message) itself already resolved to.
+//
+// A candidate split point is accepted ONLY when BOTH resulting clauses,
+// parsed independently with the exact same detectWriteDomainSignal used for
+// a normal single-message turn, resolve to exactly 'task' or 'calendar' (not
+// 'none', 'ambiguous', or 'finance') -- this is what rejects
+// "create a task to research AND write the report" (the right-hand clause
+// alone carries no task/calendar noun) without any new grammar or NLP.
+// When more than one conjunction occurrence in the message yields a valid
+// split, the message is genuinely structurally ambiguous about where the
+// boundary is -- decomposition is refused and the caller falls back to
+// today's whole-message routing, per this slice's own "correctness over
+// coverage" instruction.
+const TWO_ACTION_CONJUNCTION_PATTERN = /\s+(?:و|and|und)\s+/gi
+
+export function attemptTwoActionSplit(message: string, now: Date, timeZone: string): TwoActionSplitResult | null {
+  const matches = [...message.matchAll(TWO_ACTION_CONJUNCTION_PATTERN)]
+  if (matches.length === 0) return null
+
+  const candidates: TwoActionSplitResult[] = []
+  for (const match of matches) {
+    if (match.index === undefined) continue
+    const left = message.slice(0, match.index).trim()
+    const right = message.slice(match.index + match[0].length).trim()
+    if (!left || !right) continue
+    const leftSignal = detectWriteDomainSignal(left, now, timeZone)
+    const rightSignal = detectWriteDomainSignal(right, now, timeZone)
+    if (leftSignal !== 'task' && leftSignal !== 'calendar') continue
+    if (rightSignal !== 'task' && rightSignal !== 'calendar') continue
+    candidates.push({
+      first: { domain: leftSignal, clause: left },
+      second: { domain: rightSignal, clause: right },
+    })
+  }
+  return candidates.length === 1 ? candidates[0] : null
+}
+
 // Task 22-fix (C1/C2 production root cause): a bare personal statement --
 // "I have a family doctor appointment tomorrow at 13:00" -- carries the
 // exact same write intent as an explicit imperative ("create a task") but

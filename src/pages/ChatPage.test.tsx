@@ -14,6 +14,7 @@ vi.mock("@/integrations/supabase/client", () => ({
 
 import {
   buildChatTimeoutFailureMessages,
+  buildTwoActionMessages,
   CHAT_REQUEST_TIMEOUT_MS,
   ChatBubble,
   classifyMessageIntentSignal,
@@ -2071,5 +2072,56 @@ ${statement}`);
         expect(result.assistant.content.length).toBeGreaterThan(0);
       }
     });
+  });
+});
+
+describe("Chat V2 Slice 2B.2: buildTwoActionMessages", () => {
+  const calendarAction = {
+    reply: "✓ Event created: Meeting with Ahmad",
+    writePolicy: { domain: "calendar" as const, action: "create" as const, mode: "auto" as const },
+    writeExecution: "executed" as const,
+    undo: { id: "undo:cal-1", label: "Undo", expiresAt: "2026-07-15T09:00:00.000Z" },
+  };
+  const taskAction = {
+    reply: "✓ Task created: Report",
+    writePolicy: { domain: "tasks" as const, action: "create" as const, mode: "auto" as const },
+    writeExecution: "executed" as const,
+    undo: { id: "undo:task-1", label: "Undo", expiresAt: "2026-07-15T09:00:00.000Z" },
+  };
+
+  it("produces one user message followed by one assistant message PER action, in the server's own order", () => {
+    const messages = buildTwoActionMessages("call Ahmad tomorrow at 10 and make a task report for Friday", [calendarAction, taskAction], "en", 1000);
+
+    expect(messages).toHaveLength(3);
+    expect(messages[0]).toMatchObject({ role: "user", content: "call Ahmad tomorrow at 10 and make a task report for Friday" });
+    expect(messages[1]).toMatchObject({ role: "assistant", content: calendarAction.reply, undo: calendarAction.undo });
+    expect(messages[2]).toMatchObject({ role: "assistant", content: taskAction.reply, undo: taskAction.undo });
+  });
+
+  it("gives every message a distinct, deterministic id derived from the injected clock, never a shared or colliding one", () => {
+    const messages = buildTwoActionMessages("msg", [calendarAction, taskAction], "en", 5000);
+    const ids = messages.map((m) => m.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("carries the turn's responseLanguage onto every assistant message, never the user message", () => {
+    const messages = buildTwoActionMessages("msg", [calendarAction, taskAction], "de", 1000);
+    expect(messages[0].language).toBeUndefined();
+    expect(messages[1].language).toBe("de");
+    expect(messages[2].language).toBe("de");
+  });
+
+  it("an action with no undo (e.g. mode 'off', or a 'clarify'/'not_found' outcome) renders without one -- never fabricates an undo affordance", () => {
+    const offAction = { reply: "This Flow AI action is switched off in your settings.", writePolicy: { domain: "tasks" as const, action: "create" as const, mode: "off" as const } };
+    const messages = buildTwoActionMessages("msg", [offAction, calendarAction], "en", 1000);
+    expect(messages[1].undo).toBeUndefined();
+    expect(messages[2].undo).toEqual(calendarAction.undo);
+  });
+
+  it("each action's own undo id stays independently distinct -- approving/undoing one never implies the other", () => {
+    const messages = buildTwoActionMessages("msg", [calendarAction, taskAction], "en", 1000);
+    const undoIds = messages.filter((m) => m.undo).map((m) => m.undo!.id);
+    expect(undoIds).toEqual(["undo:cal-1", "undo:task-1"]);
+    expect(new Set(undoIds).size).toBe(2);
   });
 });

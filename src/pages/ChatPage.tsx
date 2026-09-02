@@ -297,6 +297,64 @@ interface ReasoningProposalState {
   executionRequestReply?: string
 }
 
+// Chat V2 Slice 2B.2: when the Worker's deterministic decomposer resolves
+// one message into two independent Task/Calendar actions (each already
+// auto-executed or switched off server-side -- see agent/worker/index.ts's
+// respondToTwoActionWrite), it returns `actions` instead of the usual
+// singular reply/writePolicy/writeExecution/undo fields. Deliberately NOT
+// routed through AgentReasoningResult/ReasoningProposalState/
+// proposalsToStates: that whole pipeline is built around the CLIENT's own
+// concurrent LLM reasoning overlay reconstructing a proposal's concrete
+// arguments (see resolveChatTurnOutcome's own comment), which has no
+// contract for two independent, non-mutually-exclusive proposals in one
+// turn -- forcing a hand-built AgentReasoningResult through it would mean
+// fabricating validator-shaped fields (AGENT_INTENT_SCHEMA_VERSION,
+// promptPreview, etc.) the server never computed. Each decomposed action
+// here has ALREADY been resolved server-side (auto-executed or off), so it
+// needs no approval card at all -- exactly like a single auto-executed
+// write today shows no ReasoningProposalCard, just a reply bubble with an
+// optional undo (see resolveChatTurnOutcome's serverTerminalWrite branch).
+// Rendered as two independent assistant messages instead, reusing the
+// existing message bubble + undo affordance unchanged.
+interface ChatWorkerAction {
+  reply: string
+  writePolicy: { domain: 'tasks' | 'calendar'; action: 'create' | 'update'; mode: 'auto' | 'off' }
+  writeExecution?: 'executed' | 'failed' | 'provider_unavailable' | 'clarify' | 'not_found'
+  undo?: ChatMsg['undo']
+}
+
+interface ChatWorkerResponse {
+  reply?: string
+  writePolicy?: { mode?: 'auto' | 'ask' | 'off' }
+  writeExecution?: string
+  undo?: ChatMsg['undo']
+  actions?: ChatWorkerAction[]
+}
+
+// Pure builder for a decomposed multi-action turn's message list -- one
+// user message plus one assistant message PER decomposed action, in the
+// server's own order, each carrying its own independent undo. `nowMs` is
+// injected (never Date.now() internally) so this stays independently
+// testable with deterministic, collision-free ids, matching this file's
+// own existing convention (resolveChatTurnOutcome/proposalsToStates).
+export function buildTwoActionMessages(
+  userText: string,
+  actions: ChatWorkerAction[],
+  responseLanguage: SupportedAiResponseLanguage,
+  nowMs: number,
+): ChatMsg[] {
+  return [
+    { id: `u-${nowMs}`, role: 'user', content: userText },
+    ...actions.map((action, index) => ({
+      id: `a-${nowMs + 1 + index}`,
+      role: 'assistant' as const,
+      content: action.reply,
+      language: responseLanguage,
+      undo: action.undo,
+    })),
+  ]
+}
+
 // Task 40: WorkspacePlanStep['domain'] is broader (habits/documents/
 // learning/workspace) than the proposal-outcome ledger's own domain CHECK
 // constraint (tasks/calendar/finance/github) -- a write proposal's step
@@ -2352,7 +2410,7 @@ export default function ChatPage() {
       // with an early `return` in the explicit branch) was the actual
       // production bug: a message misclassified 'explicit' by a keyword
       // collision never reached this call at all.
-      const chatCallPromise = (async (): Promise<{ reply: string; writePolicy?: { mode?: 'auto' | 'ask' | 'off' }; writeExecution?: string; undo?: ChatMsg['undo'] }> => {
+      const chatCallPromise = (async (): Promise<ChatWorkerResponse> => {
         // GH-06: previously an unbounded fetch -- a Worker stall here hung
         // this whole promise forever, which in turn hung the Promise.all
         // below indefinitely (nothing downstream, including the read-tool
@@ -2390,7 +2448,7 @@ export default function ChatPage() {
           'Chat request timed out.',
         )
         if (!res.ok) throw new Error(`Worker responded ${res.status}`)
-        return (await res.json()) as { reply: string; writePolicy?: { mode?: 'auto' | 'ask' | 'off' }; writeExecution?: string; undo?: ChatMsg['undo'] }
+        return (await res.json()) as ChatWorkerResponse
       })()
 
       // Task 11 fix: the OVERLAY LANE. Action interpretation runs
@@ -2447,7 +2505,28 @@ export default function ChatPage() {
         })
       }
 
-      const [{ reply, writePolicy, writeExecution, undo }, overlayResult] = await Promise.all([chatCallPromise, overlayPromise])
+      const [{ reply, writePolicy, writeExecution, undo, actions }, overlayResult] = await Promise.all([chatCallPromise, overlayPromise])
+
+      // Chat V2 Slice 2B.2: two already-resolved actions -- render as two
+      // independent assistant messages (each with its own optional undo)
+      // and skip the single-proposal overlay/outcome machinery entirely
+      // (see ChatWorkerResponse's own comment for why). Never mixed with
+      // the single-outcome path below in the same turn.
+      if (actions && actions.length > 0) {
+        setReasoningProposal(null)
+        setMessages(prev => [...prev, ...buildTwoActionMessages(text, actions, responseLanguage, Date.now())])
+        if (sentDocument) {
+          setAttachedFile(null)
+          setAttachedDocument(null)
+          setMemoryOffer(
+            isMemoryOfferEligible(sentDocument.mimeType)
+              ? { documentId: sentDocument.id, fileName: sentDocument.fileName }
+              : null,
+          )
+        }
+        void refreshSessions()
+        return
+      }
 
       // Task 11d (auto-execute read-only tools): a supported, actionable,
       // non-write, non-disambiguated read proposal whose resolved tool is
