@@ -1849,31 +1849,49 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
       // functions the 'auto' branch above and respondToTwoActionWrite both
       // already trust as-is. For a single-action create write with every
       // required field already resolved, build ONE pending descriptor
-      // directly from that intent's own fields -- no new parsing, no new
-      // title-resolution model call (unlike respondToTwoActionWrite's own
-      // pre-pass): `title` here is used exactly as
-      // assembleTaskWriteIntent/assembleCalendarWriteIntent already
-      // produced it, deterministically. The client then renders this
-      // descriptor as-is instead of asking the reasoning overlay -- which
-      // has no chat history at all (see reasoningTypes.ts's
+      // directly from that intent's own fields. The client then renders
+      // this descriptor as-is instead of asking the reasoning overlay --
+      // which has no chat history at all (see reasoningTypes.ts's
       // AgentReasoningInput and the diagnostic test in ChatPage.test.tsx)
       // -- to reconstruct the same intent a second time. Only
       // tasks.create/calendar.create_event are covered; update/complete/
       // finance/github stay on the existing overlay-only path, unchanged.
-      if (domain === 'tasks' && taskWriteIntent && taskWriteIntent.kind === 'create_task' && !taskWriteIntent.dateClarificationNeeded && taskWriteIntent.title) {
-        pendingAction = {
-          kind: 'pending',
-          writePolicy: { domain: 'tasks', action: 'create', mode: 'ask' },
-          toolId: 'tasks.create',
-          requestId: `single:${userMessageId}`,
-          chatMessageId: userMessageId,
-          arguments: {
-            title: taskWriteIntent.title,
-            notes: taskWriteIntent.notes,
-            dueDate: taskWriteIntent.dueDate ?? null,
-            ...(taskWriteIntent.timeOfDay ? { timeOfDay: taskWriteIntent.timeOfDay } : {}),
-          },
-          previewText: taskWriteIntent.title,
+      if (domain === 'tasks' && taskWriteIntent && taskWriteIntent.kind === 'create_task' && !taskWriteIntent.dateClarificationNeeded) {
+        // CORRECTION: the parser's own title (assembleTaskWriteIntent's
+        // output) is a fallback candidate, not necessarily the final
+        // authoritative create title -- reuse the EXACT SAME
+        // resolveCreateTaskTitle discipline the 'auto' branch above and
+        // respondToTwoActionWrite's own pre-pass already use, rather than
+        // trusting the pattern-extracted title directly. Never called for
+        // an explicit user title correction (titleSource === 'correction')
+        // -- that title already IS exact user intent.
+        if (taskWriteIntent.titleSource !== 'correction') {
+          try {
+            taskWriteIntent.title = await resolveCreateTaskTitle(env, taskWriteIntent, message)
+          } catch (err) {
+            if (!(err instanceof ProviderUnavailableError)) throw err
+            // Fail-closed, same as resolveCreateTitle's own contract: a
+            // provider outage with no pattern-extractable fallback leaves
+            // title unresolved here -- the truthy check below then
+            // correctly withholds pendingAction rather than approving an
+            // unresolved title.
+          }
+        }
+        if (taskWriteIntent.title) {
+          pendingAction = {
+            kind: 'pending',
+            writePolicy: { domain: 'tasks', action: 'create', mode: 'ask' },
+            toolId: 'tasks.create',
+            requestId: `single:${userMessageId}`,
+            chatMessageId: userMessageId,
+            arguments: {
+              title: taskWriteIntent.title,
+              notes: taskWriteIntent.notes,
+              dueDate: taskWriteIntent.dueDate ?? null,
+              ...(taskWriteIntent.timeOfDay ? { timeOfDay: taskWriteIntent.timeOfDay } : {}),
+            },
+            previewText: taskWriteIntent.title,
+          }
         }
       } else if (
         domain === 'calendar' &&
@@ -1886,26 +1904,37 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
         // bail uses: a task-reschedule-worded reference to an EXISTING task
         // carries only a last-resort pattern guess as `title`, resolved
         // properly only via a DB lookup this dispatch does not perform.
-        calendarWriteIntent.sourceTaskReference === undefined &&
-        calendarWriteIntent.title
+        calendarWriteIntent.sourceTaskReference === undefined
       ) {
-        const dateTimeStart = zonedDateTimeToUtcIso(calendarWriteIntent.startDate, calendarWriteIntent.startTime, timeZone)
-        const dateTimeEnd = calendarWriteIntent.endTime
-          ? zonedDateTimeToUtcIso(calendarWriteIntent.startDate, calendarWriteIntent.endTime, timeZone)
-          : undefined
-        pendingAction = {
-          kind: 'pending',
-          writePolicy: { domain: 'calendar', action: 'create', mode: 'ask' },
-          toolId: 'calendar.create_event',
-          requestId: `single:${userMessageId}`,
-          chatMessageId: userMessageId,
-          arguments: {
-            title: calendarWriteIntent.title,
-            notes: calendarWriteIntent.notes,
-            dateTimeStart,
-            ...(dateTimeEnd ? { dateTimeEnd } : {}),
-          },
-          previewText: calendarWriteIntent.title,
+        // CORRECTION: same title-resolution discipline as tasks.create
+        // above, reusing the EXACT SAME resolveCreateEventTitle
+        // respondToTwoActionWrite's own pre-pass already calls.
+        if (calendarWriteIntent.titleSource !== 'correction') {
+          try {
+            calendarWriteIntent.title = await resolveCreateEventTitle(env, calendarWriteIntent, message)
+          } catch (err) {
+            if (!(err instanceof ProviderUnavailableError)) throw err
+          }
+        }
+        if (calendarWriteIntent.title) {
+          const dateTimeStart = zonedDateTimeToUtcIso(calendarWriteIntent.startDate!, calendarWriteIntent.startTime!, timeZone)
+          const dateTimeEnd = calendarWriteIntent.endTime
+            ? zonedDateTimeToUtcIso(calendarWriteIntent.startDate!, calendarWriteIntent.endTime, timeZone)
+            : undefined
+          pendingAction = {
+            kind: 'pending',
+            writePolicy: { domain: 'calendar', action: 'create', mode: 'ask' },
+            toolId: 'calendar.create_event',
+            requestId: `single:${userMessageId}`,
+            chatMessageId: userMessageId,
+            arguments: {
+              title: calendarWriteIntent.title,
+              notes: calendarWriteIntent.notes,
+              dateTimeStart,
+              ...(dateTimeEnd ? { dateTimeEnd } : {}),
+            },
+            previewText: calendarWriteIntent.title,
+          }
         }
       }
       // ALF-1A (ADR-0021) capture point: this branch is reached either by

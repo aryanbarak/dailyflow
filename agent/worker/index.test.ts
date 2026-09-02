@@ -1615,7 +1615,12 @@ describe('ADR-0012 server-side task write policy', () => {
     expect(body.writePolicy?.mode).toBe('ask')
     expect(body.reply).toBe('Write action requires explicit approval.')
     expect(log.taskWrites.length).toBe(0)
-    expect(log.geminiCalls.length).toBe(1)
+    // Stabilization patch 1 follow-up CORRECTION: 2, not 1 -- the
+    // single-action pendingAction descriptor now resolves its title
+    // through the same resolveCreateTaskTitle call the 'auto' branch and
+    // respondToTwoActionWrite already use, in addition to the plain chat
+    // reply call.
+    expect(log.geminiCalls.length).toBe(2)
   })
 
   it('policy read failure fails closed to ask and does not execute a write', async () => {
@@ -1631,7 +1636,9 @@ describe('ADR-0012 server-side task write policy', () => {
     expect(body.writePolicy?.mode).toBe('ask')
     expect(body.reply).toBe('Write action requires explicit approval.')
     expect(log.taskWrites.length).toBe(0)
-    expect(log.geminiCalls.length).toBe(1)
+    // Stabilization patch 1 follow-up CORRECTION: see the sibling test
+    // above -- the pendingAction title resolution call adds one more.
+    expect(log.geminiCalls.length).toBe(2)
   })
 
   // Chat V2 Slice 2B.1.1: the OLD version of this test (Slice 2B.1)
@@ -1815,12 +1822,14 @@ describe('Chat V2 Slice 1: requested lane never bypasses server write policy', (
     // no task was created merely because the client asked for the fast lane.
     expect(log.taskWrites.length).toBe(0)
 
-    // Proof 3: exactly one text-generation call happened (the plain chat
-    // reply -- title-extraction never runs in the 'ask' branch, matching
-    // the pre-existing test's own count), and it did NOT request Gemini as
-    // primary. If effectiveChatLane had wrongly stayed 'fast', this call's
-    // createProviders options would carry { preferTextProvider: 'gemini' }.
-    expect(log.geminiCalls.length).toBe(1)
+    // Proof 3: exactly two text-generation calls happened -- the
+    // pendingAction title-resolution call (resolveCreateTaskTitle, same as
+    // the 'auto' branch/respondToTwoActionWrite already use) plus the
+    // plain chat reply -- and the LAST one (the plain chat call) did NOT
+    // request Gemini as primary. If effectiveChatLane had wrongly stayed
+    // 'fast', that call's createProviders options would carry
+    // { preferTextProvider: 'gemini' }.
+    expect(log.geminiCalls.length).toBe(2)
     const chatProvidersCall = createProvidersCalls.at(-1)
     expect((chatProvidersCall?.options as { preferTextProvider?: string } | undefined)?.preferTextProvider).toBeUndefined()
   })
@@ -2792,8 +2801,8 @@ describe('Production stabilization patch 1 follow-up: server-resolved single-act
   })
 
   describe('regression: ordinary single-turn ask-mode creates still produce a pendingAction', () => {
-    it('1. an ordinary single-action ask create_task turn produces exactly one pendingAction', async () => {
-      const log = installFetchMock([], null, 'Gemini should not be called', 'ask')
+    it('1. an ordinary single-action ask create_task turn produces exactly one pendingAction, carrying the title-resolution model result (resolveCreateTaskTitle), not blindly the parser candidate', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], 'Send the report')
       const response = await worker.fetch(chatRequest({
         message: 'فردا یک تسک بساز که گزارش را ارسال کنم',
         timeZone: 'Europe/Berlin',
@@ -2803,12 +2812,12 @@ describe('Production stabilization patch 1 follow-up: server-resolved single-act
       expect(response.status).toBe(200)
       expect(body.writePolicy).toMatchObject({ domain: 'tasks', mode: 'ask' })
       expect(body.pendingAction?.toolId).toBe('tasks.create')
-      expect(body.pendingAction?.arguments?.title).toBeTruthy()
+      expect(body.pendingAction?.arguments?.title).toBe('Send the report')
       expect(log.taskWrites).toHaveLength(0)
     })
 
-    it('2. an ordinary single-action ask create_calendar_event turn produces exactly one pendingAction', async () => {
-      const log = installFetchMock([], null, 'Gemini should not be called', 'ask')
+    it('2. an ordinary single-action ask create_calendar_event turn produces exactly one pendingAction, carrying the title-resolution model result (resolveCreateEventTitle), not blindly the parser candidate', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], 'Team sync')
       const response = await worker.fetch(chatRequest({
         message: 'Add an event for next Tuesday at 9am',
         timeZone: 'Europe/Berlin',
@@ -2818,9 +2827,56 @@ describe('Production stabilization patch 1 follow-up: server-resolved single-act
       expect(response.status).toBe(200)
       expect(body.writePolicy).toMatchObject({ domain: 'calendar', mode: 'ask' })
       expect(body.pendingAction?.toolId).toBe('calendar.create_event')
-      expect(body.pendingAction?.arguments?.title).toBeTruthy()
+      expect(body.pendingAction?.arguments?.title).toBe('Team sync')
       expect(body.pendingAction?.arguments?.dateTimeStart).toBeTruthy()
       expect(log.calendarWrites).toHaveLength(0)
+    })
+  })
+
+  describe('title-resolution CORRECTION: pendingAction reuses the existing resolveCreateTaskTitle/resolveCreateEventTitle discipline, fail-closed', () => {
+    it('3. provider failure with a valid deterministic pattern fallback still produces a pendingAction, carrying that fallback title', async () => {
+      // geminiStatus 429 forces resolveCreateTaskTitle's own model call to
+      // fail -- resolveCreateTitle's EXISTING, unmodified contract then
+      // falls back to the pattern-extracted title as long as it validates
+      // (validateCandidateTitle). This message's pattern title ("Send
+      // invoice") is short and distinct from the raw message, so it
+      // survives that check.
+      const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], null, null, false, false, 429)
+      const response = await worker.fetch(chatRequest({
+        message: "Create a task called 'Send invoice' for tomorrow",
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writePolicy?: { domain?: string; mode?: string }; pendingAction?: { toolId?: string; arguments?: Record<string, unknown> } }
+
+      expect(response.status).toBe(200)
+      expect(body.writePolicy).toMatchObject({ domain: 'tasks', mode: 'ask' })
+      expect(body.pendingAction?.toolId).toBe('tasks.create')
+      expect(body.pendingAction?.arguments?.title).toBe('Send invoice')
+      expect(log.taskWrites).toHaveLength(0)
+    })
+
+    it('4. no valid title resolves (model finds nothing AND the pattern candidate fails validateCandidateTitle) -> no pendingAction is emitted, never an approvable intent with an unresolved title', async () => {
+      // No taskTitleResult override (model returns nothing) and this
+      // message's own pattern title overlaps too much with the raw
+      // request to pass validateCandidateTitle's own quality gate (see
+      // resolveCreateTitle in flow-write-policy.ts) -- resolveCreateTitle
+      // therefore resolves to undefined, exactly like it already does for
+      // every OTHER existing caller (the 'auto' branch, respondToTwoActionWrite).
+      const log = installFetchMock([], null, 'Gemini should not be called', 'ask')
+      const response = await worker.fetch(chatRequest({
+        message: 'فردا یک تسک بساز که گزارش را ارسال کنم',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writePolicy?: { domain?: string; mode?: string }; pendingAction?: unknown; reply?: string }
+
+      expect(response.status).toBe(200)
+      // writePolicy is still reported honestly (unchanged from before this
+      // correction) -- only the immutable, approvable pendingAction is
+      // withheld.
+      expect(body.writePolicy).toMatchObject({ domain: 'tasks', mode: 'ask' })
+      expect(body.pendingAction).toBeUndefined()
+      expect(body.reply).toBeTruthy()
+      expect(log.taskWrites).toHaveLength(0)
     })
   })
 
