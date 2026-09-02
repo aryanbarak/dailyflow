@@ -1865,19 +1865,32 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
         // trusting the pattern-extracted title directly. Never called for
         // an explicit user title correction (titleSource === 'correction')
         // -- that title already IS exact user intent.
-        if (taskWriteIntent.titleSource !== 'correction') {
+        //
+        // FAIL-CLOSED CORRECTION: resolved into its OWN local, never back
+        // onto taskWriteIntent.title. resolveCreateTitle only THROWS
+        // ProviderUnavailableError when its own patternFallback was
+        // ALREADY invalid/undefined (see its own contract in
+        // flow-write-policy.ts) -- so on that throw, the ORIGINAL
+        // taskWriteIntent.title can still be a truthy but INVALID
+        // candidate (exactly what the provider-unavailable path exists to
+        // reject). Leaving that original value in place and gating on it
+        // would let an invalid title survive into pendingAction. This
+        // local starts unresolved and is set ONLY by a genuine outcome
+        // (the correction, or a successful/fallback-successful resolver
+        // call) -- pendingAction is built ONLY from it, never from
+        // taskWriteIntent.title again.
+        let resolvedTaskTitle: string | undefined
+        if (taskWriteIntent.titleSource === 'correction') {
+          resolvedTaskTitle = taskWriteIntent.title
+        } else {
           try {
-            taskWriteIntent.title = await resolveCreateTaskTitle(env, taskWriteIntent, message)
+            resolvedTaskTitle = await resolveCreateTaskTitle(env, taskWriteIntent, message)
           } catch (err) {
             if (!(err instanceof ProviderUnavailableError)) throw err
-            // Fail-closed, same as resolveCreateTitle's own contract: a
-            // provider outage with no pattern-extractable fallback leaves
-            // title unresolved here -- the truthy check below then
-            // correctly withholds pendingAction rather than approving an
-            // unresolved title.
+            resolvedTaskTitle = undefined
           }
         }
-        if (taskWriteIntent.title) {
+        if (resolvedTaskTitle) {
           pendingAction = {
             kind: 'pending',
             writePolicy: { domain: 'tasks', action: 'create', mode: 'ask' },
@@ -1885,12 +1898,12 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
             requestId: `single:${userMessageId}`,
             chatMessageId: userMessageId,
             arguments: {
-              title: taskWriteIntent.title,
+              title: resolvedTaskTitle,
               notes: taskWriteIntent.notes,
               dueDate: taskWriteIntent.dueDate ?? null,
               ...(taskWriteIntent.timeOfDay ? { timeOfDay: taskWriteIntent.timeOfDay } : {}),
             },
-            previewText: taskWriteIntent.title,
+            previewText: resolvedTaskTitle,
           }
         }
       } else if (
@@ -1909,14 +1922,23 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
         // CORRECTION: same title-resolution discipline as tasks.create
         // above, reusing the EXACT SAME resolveCreateEventTitle
         // respondToTwoActionWrite's own pre-pass already calls.
-        if (calendarWriteIntent.titleSource !== 'correction') {
+        //
+        // FAIL-CLOSED CORRECTION: same own-local discipline as
+        // resolvedTaskTitle above -- never written back onto
+        // calendarWriteIntent.title, and pendingAction is built ONLY from
+        // this local.
+        let resolvedEventTitle: string | undefined
+        if (calendarWriteIntent.titleSource === 'correction') {
+          resolvedEventTitle = calendarWriteIntent.title
+        } else {
           try {
-            calendarWriteIntent.title = await resolveCreateEventTitle(env, calendarWriteIntent, message)
+            resolvedEventTitle = await resolveCreateEventTitle(env, calendarWriteIntent, message)
           } catch (err) {
             if (!(err instanceof ProviderUnavailableError)) throw err
+            resolvedEventTitle = undefined
           }
         }
-        if (calendarWriteIntent.title) {
+        if (resolvedEventTitle) {
           const dateTimeStart = zonedDateTimeToUtcIso(calendarWriteIntent.startDate!, calendarWriteIntent.startTime!, timeZone)
           const dateTimeEnd = calendarWriteIntent.endTime
             ? zonedDateTimeToUtcIso(calendarWriteIntent.startDate!, calendarWriteIntent.endTime, timeZone)
@@ -1928,12 +1950,12 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
             requestId: `single:${userMessageId}`,
             chatMessageId: userMessageId,
             arguments: {
-              title: calendarWriteIntent.title,
+              title: resolvedEventTitle,
               notes: calendarWriteIntent.notes,
               dateTimeStart,
               ...(dateTimeEnd ? { dateTimeEnd } : {}),
             },
-            previewText: calendarWriteIntent.title,
+            previewText: resolvedEventTitle,
           }
         }
       }

@@ -2878,6 +2878,50 @@ describe('Production stabilization patch 1 follow-up: server-resolved single-act
       expect(body.reply).toBeTruthy()
       expect(log.taskWrites).toHaveLength(0)
     })
+
+    it('5. FAIL-CLOSED BUG FIX (tasks.create): provider unavailable AND the parser candidate is truthy but invalid (rejected by validateCandidateTitle) -> pendingAction must be undefined, never built from the original unresolved intent.title', async () => {
+      // Before this fix: the ProviderUnavailableError catch left
+      // taskWriteIntent.title untouched at its ORIGINAL (truthy but
+      // invalid -- rejected inside resolveCreateTitle's own
+      // validateCandidateTitle call, which never mutates intent.title
+      // itself) value, so the truthy check downstream incorrectly still
+      // built a pendingAction from it. This message's pattern title
+      // ("فردا که گزارش را ارسال کنم") is truthy but overlaps too much
+      // with the raw request to pass validateCandidateTitle -- exactly
+      // the shape that must now resolve to no pendingAction at all.
+      const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], null, null, false, false, 429)
+      const response = await worker.fetch(chatRequest({
+        message: 'فردا یک تسک بساز که گزارش را ارسال کنم',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writePolicy?: { domain?: string; mode?: string }; pendingAction?: unknown; reply?: string }
+
+      expect(response.status).toBe(200)
+      expect(body.writePolicy).toMatchObject({ domain: 'tasks', mode: 'ask' })
+      expect(body.pendingAction).toBeUndefined()
+      expect(body.reply).toBeTruthy()
+      expect(log.taskWrites).toHaveLength(0)
+    })
+
+    it('6. FAIL-CLOSED BUG FIX (calendar.create_event): provider unavailable AND the parser candidate is truthy but invalid -> pendingAction must be undefined', async () => {
+      // Same shape as test 5, calendar side: this message's pattern title
+      // is a near-verbatim restatement of the raw request, long enough to
+      // be rejected by validateCandidateTitle -- before this fix, the
+      // ORIGINAL truthy-but-invalid calendarWriteIntent.title would have
+      // survived the ProviderUnavailableError catch untouched.
+      const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], null, null, false, false, 429)
+      const response = await worker.fetch(chatRequest({
+        message: 'Schedule a meeting tomorrow at 3pm to review the quarterly budget with finance',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writePolicy?: { domain?: string; mode?: string }; pendingAction?: unknown; reply?: string }
+
+      expect(response.status).toBe(200)
+      expect(body.writePolicy).toMatchObject({ domain: 'calendar', mode: 'ask' })
+      expect(body.pendingAction).toBeUndefined()
+      expect(body.reply).toBeTruthy()
+      expect(log.calendarWrites).toHaveLength(0)
+    })
   })
 
   it('3. 2B.2 two-action decomposition is unaffected -- no pendingAction field, actions array unchanged', async () => {
