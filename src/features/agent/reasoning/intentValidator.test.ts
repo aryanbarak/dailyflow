@@ -1216,6 +1216,34 @@ describe("Task 28 (finance write slice) write intents", () => {
   });
 });
 
+describe("Production stabilization patch 1, FIX A: create_task's own deterministic timeOfDay override + reminder-without-time clarification", () => {
+  it("a resolved time is injected onto target.timeOfDay, never trusted from the model", () => {
+    const result = validate(
+      proposal({ type: "create_task", requestedDomain: "tasks", toolId: "tasks.create", target: { title: "Dentist appointment" } }),
+      "Remind me at 9 to call the dentist tomorrow",
+    );
+    expect(result.proposal.type).toBe("create_task");
+    expect(result.proposal.target?.timeOfDay).toBe("09:00");
+  });
+
+  it("an explicit reminder request with no resolvable time downgrades to ask_clarification instead of a bare create_task proposal", () => {
+    const result = validate(
+      proposal({ type: "create_task", requestedDomain: "tasks", toolId: "tasks.create", target: { title: "Dentist appointment" } }),
+      "Remind me to call the dentist tomorrow",
+    );
+    expect(result.proposal.type).toBe("ask_clarification");
+  });
+
+  it("an ordinary create_task with no reminder wording is unaffected -- no clarification, no timeOfDay", () => {
+    const result = validate(
+      proposal({ type: "create_task", requestedDomain: "tasks", toolId: "tasks.create", target: { title: "Buy milk" } }),
+      "Create a task to buy milk",
+    );
+    expect(result.proposal.type).toBe("create_task");
+    expect(result.proposal.target?.timeOfDay).toBeUndefined();
+  });
+});
+
 // Task 42: task 41-verify traced the PO's exact production phrase all the
 // way through this validator -- the model's own type survives (see that
 // report's probe), but target.direction (re-derived deterministically at

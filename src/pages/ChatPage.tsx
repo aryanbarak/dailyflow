@@ -503,9 +503,14 @@ export function twoActionPendingPreviewLines(pending: TwoActionPendingState, t: 
   const notes = pending.arguments.notes as string | undefined
   if (pending.toolId === 'tasks.create') {
     const dueDate = pending.arguments.dueDate as string | null | undefined
+    // Stabilization patch 1, FIX A2: shown VERBATIM, same discipline as
+    // dueDate above -- a consequential, immutable execution argument that
+    // must be visible before approval.
+    const timeOfDay = pending.arguments.timeOfDay as string | undefined
     return [
       title ? `${t('agent_intent_preview_title')}: ${title}` : null,
       dueDate ? `${t('agent_intent_preview_due')}: ${dueDate}` : null,
+      timeOfDay ? `${t('family_reminder')}: ${timeOfDay}` : null,
       notes ? `${t('agent_intent_preview_notes')}: ${notes}` : null,
     ].filter((line): line is string => Boolean(line))
   }
@@ -1206,6 +1211,9 @@ function approvalForReasoningStep(
       category: t('agent_intent_preview_category'),
       description: t('agent_intent_preview_description'),
       iban: t('agent_intent_preview_iban'),
+      // Stabilization patch 1, FIX A2: reuses the existing "Reminder"
+      // translation rather than adding a new i18n key.
+      reminder: t('family_reminder'),
     }
     return {
       stepId: step.id,

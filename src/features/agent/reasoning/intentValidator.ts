@@ -10,6 +10,7 @@ import {
 } from "./reasoningTypes";
 import {
   parseDeterministicDueDate,
+  parseDeterministicTimeOfDay,
   parseDeterministicTimeRange,
   zonedDateTimeToUtcIso,
 } from "./deterministicDates";
@@ -342,6 +343,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
+// Stabilization patch 1, FIX A1: hand-synced with
+// agent/worker/flow-write-policy.ts's own isExplicitReminderRequest --
+// this frontend bundle and the Worker are two independently-deployed
+// builds with no shared runtime (see deterministicDates.ts's own header
+// comment on why its functions are hand-ported the same way, not
+// imported). Narrow, observed vocabulary only -- no generic NLP.
+function isExplicitReminderRequest(message: string): boolean {
+  return /یادآوری/.test(message) || /\bremind(?:er)?\b/i.test(message);
+}
+
 function hasRejectedFields(value: Record<string, unknown>) {
   return (
     "userId" in value ||
@@ -407,6 +418,13 @@ function normalizeTarget(value: unknown) {
     title: safeBoundedText(value.title, 200),
     notes: safeBoundedText(value.notes, 2000),
     dueDate: value.dueDate === null ? null : safeBoundedText(value.dueDate, 32),
+    // Stabilization patch 1, FIX A2: same "well-formed-or-dropped
+    // placeholder, unconditionally overridden below" treatment as dueDate
+    // above -- create_task has no promptInstruction asking the model for
+    // this field at all, so in practice this read almost always yields
+    // undefined and the deterministic override further down is what
+    // actually sets it.
+    timeOfDay: safeBoundedText(value.timeOfDay, 8),
     eventTitle: safeBoundedText(value.eventTitle, 200),
     eventReference: safeString(value.eventReference) || undefined,
     eventId: safeString(value.eventId) || undefined,
@@ -1405,6 +1423,26 @@ export function validateAgentIntentProposal(input: {
       question: textFor(input.language, "clarify"),
       reason: "Exact due date is required before preparing a task write.",
     });
+  }
+  // Stabilization patch 1, FIX A2/A1: same "never trust the model's own
+  // value" rule as dueDate above -- create_task has no promptInstruction
+  // asking the model for a reminder time at all, so this is the only
+  // source. Mirrors executeAutoTaskWrite/respondToTwoActionWrite's own
+  // Worker-side reminderTimeClarificationNeeded gate (agent/worker/flow-write-policy.ts,
+  // agent/worker/index.ts) for the client-driven single-action path, whose
+  // arguments come from THIS overlay's target, never the Worker's own parser.
+  if (type === "create_task" && target) {
+    const timeOfDay = parseDeterministicTimeOfDay(input.userMessage);
+    if (timeOfDay) target.timeOfDay = timeOfDay;
+    if (isExplicitReminderRequest(input.userMessage) && !timeOfDay) {
+      return createSafeProposal("ask_clarification", {
+        userMessage: input.userMessage,
+        language: input.language,
+        now,
+        question: textFor(input.language, "clarify"),
+        reason: "A reminder time is required before creating a task with a reminder.",
+      });
+    }
   }
   if (type === "complete_task") {
     const match = findTaskTarget(input.safeContext, target);

@@ -83,6 +83,11 @@ export interface WriteRuntimeProposalTarget {
   title?: string;
   notes?: string;
   dueDate?: string | null;
+  // Stabilization patch 1, FIX A2: create_task's reminder time -- carried
+  // through to buildHandlerInput (shared/writeIntentRegistry.ts) exactly
+  // like dueDate above, so it survives into agentToolExecutionClient's
+  // requestExecution() arguments.
+  timeOfDay?: string;
   // Task 22 (calendar write slice).
   eventTitle?: string;
   eventReference?: string;

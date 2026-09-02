@@ -2277,6 +2277,18 @@ describe("Chat V2 Slice 2B.2 correction 2, BLOCKER 1: twoActionPendingPreviewLin
     expect(lines).toContain("agent_intent_preview_due: 2027-01-03");
   });
 
+  it("stabilization patch 1, reminder test 4: a 2B.2 task pending action carrying timeOfDay exposes the exact reminder time before approval, shown verbatim", () => {
+    const taskWithReminder = { ...taskPending, arguments: { title: "Dentist appointment", dueDate: "2026-09-04", timeOfDay: "09:00" } };
+    const lines = twoActionPendingPreviewLines(taskWithReminder, t);
+    expect(lines).toContain("family_reminder: 09:00");
+    expect(lines).toContain("agent_intent_preview_due: 2026-09-04");
+  });
+
+  it("no reminder line is shown when timeOfDay is absent (unaffected baseline)", () => {
+    const lines = twoActionPendingPreviewLines(taskPending, t);
+    expect(lines.some((line) => line.startsWith("family_reminder:"))).toBe(false);
+  });
+
   it("3. sibling A/B previews cannot mix arguments -- each is derived only from its own entry's own arguments", () => {
     const calendarLines = twoActionPendingPreviewLines(calendarPending, t);
     const taskLines = twoActionPendingPreviewLines(taskPending, t);

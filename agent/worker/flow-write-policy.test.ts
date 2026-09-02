@@ -1957,3 +1957,89 @@ describe('Chat V2 Slice 2B.2: attemptTwoActionSplit', () => {
     expect(attemptTwoActionSplit('یک تسک بساز و 20 euro expense record', NOW, TZ)).toBeNull()
   })
 })
+
+describe('Production stabilization patch 1, FIX A1: reminderTimeClarificationNeeded', () => {
+  it('an explicit reminder request with no time sets reminderTimeClarificationNeeded, exact production message', () => {
+    const intent = parseTaskWriteIntent('برای فردا یک تسک بساز که یادآوری کند داکتر دندان دارم', NOW, TZ)
+    expect(intent?.kind).toBe('create_task')
+    expect(intent?.dueDate).toBeTruthy()
+    expect(intent?.timeOfDay).toBeUndefined()
+    expect(intent?.reminderTimeClarificationNeeded).toBe(true)
+  })
+
+  it('an explicit reminder request WITH a time resolves normally -- no clarification needed', () => {
+    const intent = parseTaskWriteIntent('برای فردا ساعت ۹ یادآوری کن که داکتر دندان دارم', NOW, TZ)
+    expect(intent?.kind).toBe('create_task')
+    expect(intent?.timeOfDay).toBe('09:00')
+    expect(intent?.reminderTimeClarificationNeeded).toBe(false)
+  })
+
+  it('English "remind me" with no time also sets reminderTimeClarificationNeeded', () => {
+    const intent = parseTaskWriteIntent('remind me to call the dentist tomorrow', NOW, TZ)
+    expect(intent?.kind).toBe('create_task')
+    expect(intent?.reminderTimeClarificationNeeded).toBe(true)
+  })
+
+  it('an ordinary task with no reminder wording is completely unaffected (regression)', () => {
+    const intent = parseTaskWriteIntent('یک تسک برای گزارش بساز', NOW, TZ)
+    expect(intent?.kind).toBe('create_task')
+    expect(intent?.reminderTimeClarificationNeeded).toBe(false)
+  })
+
+  it('multi-turn: turn 1 requests a reminder with no time, turn 2 supplies one -- the merged intent retains dueDate and resolves timeOfDay', () => {
+    const turn1 = 'برای فردا یک تسک بساز که یادآوری کند داکتر دندان دارم'
+    const direct = parseTaskWriteIntent(turn1, NOW, TZ)
+    expect(direct?.reminderTimeClarificationNeeded).toBe(true)
+
+    const merged = assembleTaskWriteIntent('بله ساعت ۹', [{ role: 'user', content: turn1 }], NOW, TZ)
+    expect(merged?.kind).toBe('create_task')
+    expect(merged?.dueDate).toBe(direct?.dueDate)
+    expect(merged?.timeOfDay).toBe('09:00')
+    expect(merged?.reminderTimeClarificationNeeded).toBe(false)
+  })
+})
+
+describe('Production stabilization patch 1, FIX B: action/work verb + exact-time routing', () => {
+  it('"call Ahmad tomorrow at 10" resolves to calendar (exact time present)', () => {
+    expect(detectWriteDomainSignal('فردا ساعت ۱۰ به احمد زنگ بزن', NOW, TZ)).toBe('calendar')
+  })
+
+  it('"call Ahmad tomorrow" (no time) resolves to task', () => {
+    expect(detectWriteDomainSignal('فردا به احمد زنگ بزن', NOW, TZ)).toBe('task')
+  })
+
+  it('exact production compound input decomposes into Calendar + Task', () => {
+    const result = attemptTwoActionSplit('فردا ساعت ۱۰ به احمد زنگ بزن و برای جمعه یک تسک گزارش بساز', NOW, TZ)
+    expect(result).not.toBeNull()
+    expect(result!.first.domain).toBe('calendar')
+    expect(result!.second.domain).toBe('task')
+  })
+
+  it('the decomposed calendar action resolves a clean create_calendar_event with no sourceTaskReference (no scope-boundary bail)', () => {
+    const intent = parseCalendarWriteIntent('فردا ساعت ۱۰ به احمد زنگ بزن', NOW, TZ)
+    expect(intent?.kind).toBe('create_calendar_event')
+    expect(intent?.startDate).toBeTruthy()
+    expect(intent?.startTime).toBe('10:00')
+    expect(intent?.sourceTaskReference).toBeUndefined()
+  })
+
+  it('regression: "فردا تسک تماس با احمد را بساز" (explicit task noun, no time) stays task', () => {
+    expect(detectWriteDomainSignal('فردا تسک تماس با احمد را بساز', NOW, TZ)).toBe('task')
+  })
+
+  it('regression: "فردا ساعت ۱۰ با احمد تماس بگیرم" (تماس بگیر form, exact time) stays calendar', () => {
+    expect(detectWriteDomainSignal('فردا ساعت ۱۰ با احمد تماس بگیرم', NOW, TZ)).toBe('calendar')
+  })
+
+  it('regression: "فردا ساعت ۱۰ یک تسک بساز که به احمد زنگ بزنم" (explicit task noun + exact time) stays calendar', () => {
+    expect(detectWriteDomainSignal('فردا ساعت ۱۰ یک تسک بساز که به احمد زنگ بزنم', NOW, TZ)).toBe('calendar')
+  })
+
+  it('regression: an explicit calendar noun message is unaffected', () => {
+    expect(detectWriteDomainSignal('یک رویداد فردا ساعت ۱۰ بساز', NOW, TZ)).toBe('calendar')
+  })
+
+  it('regression: a read-only, past-tense mention of a call does not become a calendar write', () => {
+    expect(detectWriteDomainSignal('دیروز ساعت ۱۰ با احمد تماس گرفتم', NOW, TZ)).toBe('none')
+  })
+})

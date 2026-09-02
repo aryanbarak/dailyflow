@@ -4,6 +4,7 @@ import path from 'node:path'
 import worker from './index'
 import type { Env } from './types'
 import { writeIntentRegistry } from '../../shared/writeIntentRegistry'
+import { zonedDateTimeToUtcIso } from './flow-write-policy'
 import { buildReasoningResponseSchema } from './reasoning-endpoint'
 import { ProviderRequestError, ProviderUnavailableError } from './provider-errors'
 // ADR-0018 S4: every model call (text-gen: briefing/plain chat/attachment
@@ -2442,6 +2443,154 @@ describe('Chat V2 Slice 2B.2: two independent actions in one message', () => {
     expect(body.actions!.every(a => a.kind === 'pending')).toBe(true)
     expect(body.actions![0].arguments?.title).toBeTruthy()
     expect(body.actions![1].arguments?.title).toBeTruthy()
+  })
+})
+
+describe('Production stabilization patch 1', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  describe('FIX A: reminder must survive (or block, honestly, before it can be lost)', () => {
+    it('reminder test 1: the exact production message with no reminder time never produces a task approval -- clarification only, no task write, no alarm write', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'ask')
+      const response = await worker.fetch(chatRequest({
+        message: 'برای فردا یک تسک بساز که یادآوری کند داکتر دندان دارم',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { reply?: string; writePolicy?: unknown }
+
+      expect(response.status).toBe(200)
+      expect(body.writePolicy).toBeUndefined()
+      expect(body.reply).toBeTruthy()
+      expect(log.taskWrites.length).toBe(0)
+      expect(log.alarmWrites.length).toBe(0)
+    })
+
+    it('reminder test 2: turn 2 supplies the missing time -- the merged intent retains dueDate AND resolves timeOfDay through to a real alarm', async () => {
+      const turn1 = 'برای فردا یک تسک بساز که یادآوری کند داکتر دندان دارم'
+      const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [{ role: 'user', content: turn1 }], 'Dentist reminder')
+      const response = await worker.fetch(chatRequest({
+        message: 'بله ساعت ۹',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writeExecution?: string; writePolicy?: { domain?: string; mode?: string } }
+
+      expect(response.status).toBe(200)
+      expect(body.writePolicy).toMatchObject({ domain: 'tasks', mode: 'auto' })
+      expect(body.writeExecution).toBe('executed')
+      expect(log.taskWrites.filter(w => w.method === 'POST')).toHaveLength(1)
+      const dueDate = log.taskWrites[0].body?.due_date as string
+      expect(dueDate).toBeTruthy()
+      expect(log.alarmWrites.filter(w => w.method === 'POST')).toHaveLength(1)
+      expect(log.alarmWrites[0].body?.trigger_at).toBe(zonedDateTimeToUtcIso(dueDate, '09:00', 'Europe/Berlin'))
+    })
+  })
+
+  describe('FIX B: action/work verb routing at the full /chat level', () => {
+    it('routing test 5: "call Ahmad tomorrow at 10" auto-executes as a calendar write', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'Call Ahmad')
+      const response = await worker.fetch(chatRequest({
+        message: 'فردا ساعت ۱۰ به احمد زنگ بزن',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writePolicy?: { domain?: string; mode?: string }; writeExecution?: string }
+
+      expect(response.status).toBe(200)
+      expect(body.writePolicy).toMatchObject({ domain: 'calendar', mode: 'auto' })
+      expect(body.writeExecution).toBe('executed')
+      expect(log.calendarWrites.filter(w => w.method === 'POST')).toHaveLength(1)
+    })
+
+    it('routing test 6: "call Ahmad tomorrow" (no time) auto-executes as a task write', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'Call Ahmad')
+      const response = await worker.fetch(chatRequest({
+        message: 'فردا به احمد زنگ بزن',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writePolicy?: { domain?: string; mode?: string }; writeExecution?: string }
+
+      expect(response.status).toBe(200)
+      expect(body.writePolicy).toMatchObject({ domain: 'tasks', mode: 'auto' })
+      expect(body.writeExecution).toBe('executed')
+      expect(log.taskWrites.filter(w => w.method === 'POST')).toHaveLength(1)
+    })
+
+    it('routing test 7: the exact production compound input now decomposes into TWO independent ask-mode pending actions -- calendar first, task second -- with no dependency on the conversational callGeminiChat call succeeding', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], 'Call Ahmad')
+      const response = await worker.fetch(chatRequest({
+        message: 'فردا ساعت ۱۰ به احمد زنگ بزن و برای جمعه یک تسک گزارش بساز',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { actions?: Array<{ kind?: string; writePolicy?: { domain?: string; mode?: string } }> }
+
+      expect(response.status).toBe(200)
+      expect(body.actions).toHaveLength(2)
+      expect(body.actions!.every(a => a.kind === 'pending')).toBe(true)
+      expect(body.actions![0].writePolicy).toMatchObject({ domain: 'calendar', mode: 'ask' })
+      expect(body.actions![1].writePolicy).toMatchObject({ domain: 'tasks', mode: 'ask' })
+      expect(log.calendarWrites.length).toBe(0)
+      expect(log.taskWrites.length).toBe(0)
+    })
+  })
+
+  describe('FIX C: a conversational-reply provider failure must not erase an already-resolved ask policy', () => {
+    it('provider fallback test 8: pendingWritePolicy survives a callGeminiChat ProviderUnavailableError -- never a bare provider-unavailable reply that loses the action', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'ask', new Map(), [], null, null, false, false, 429)
+      const response = await worker.fetch(chatRequest({
+        message: "Create task 'Review invoices' for tomorrow",
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { reply?: string; writePolicy?: { domain?: string; action?: string; mode?: string } }
+
+      expect(response.status).toBe(200)
+      expect(body.writePolicy).toMatchObject({ domain: 'tasks', action: 'create', mode: 'ask' })
+      expect(body.reply).toBeTruthy()
+      expect(body.reply).not.toContain('temporarily unavailable')
+      expect(log.taskWrites.length).toBe(0)
+    })
+
+    it('a genuine provider failure with NO resolved write policy still reports the honest provider-unavailable reply, unchanged', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], null, null, false, false, 429)
+      const response = await worker.fetch(chatRequest({
+        message: 'What tasks do I have today?',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { reply?: string; writePolicy?: unknown }
+
+      expect(response.status).toBe(200)
+      expect(body.writePolicy).toBeUndefined()
+      expect(body.reply).toContain('temporarily unavailable')
+      void log
+    })
+  })
+
+  describe('regression: locked Task/Calendar semantics are unaffected by FIX B', () => {
+    it('"فردا تسک تماس با احمد را بساز" (explicit task noun, no time) still resolves task', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'Call Ahmad')
+      const response = await worker.fetch(chatRequest({
+        message: 'فردا تسک تماس با احمد را بساز',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writePolicy?: { domain?: string } }
+
+      expect(response.status).toBe(200)
+      expect(body.writePolicy).toMatchObject({ domain: 'tasks' })
+      void log
+    })
+
+    it('"فردا ساعت ۱۰ یک تسک بساز که به احمد زنگ بزنم" (explicit task noun + exact time) still resolves calendar', async () => {
+      const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'Call Ahmad')
+      const response = await worker.fetch(chatRequest({
+        message: 'فردا ساعت ۱۰ یک تسک بساز که به احمد زنگ بزنم',
+        timeZone: 'Europe/Berlin',
+      }), testEnv(), fakeExecutionContext())
+      const body = await response.json() as { writePolicy?: { domain?: string } }
+
+      expect(response.status).toBe(200)
+      expect(body.writePolicy).toMatchObject({ domain: 'calendar' })
+      void log
+    })
   })
 })
 
