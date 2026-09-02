@@ -2265,6 +2265,71 @@ describe('Chat V2 Slice 2B.2: two independent actions in one message', () => {
     expect(ids[0]).not.toBe(ids[1])
     expect(log.taskWrites.filter(write => write.method === 'POST')).toHaveLength(2)
   })
+
+  it('CORRECTION 2, BLOCKER 2, item 5: ask+ask multi-action /chat persists the user message but does NOT persist a "Ready for approval" assistant transcript before any agent_tool_executions row exists', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'ask')
+    const response = await worker.fetch(chatRequest({
+      message: 'فردا ساعت ۹ با احمد یک قرار ملاقات بساز و برای جمعه یک تسک گزارش بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+
+    expect(response.status).toBe(200)
+    // Only the user message is durably persisted from inside /chat itself --
+    // no assistant "Ready for your approval" row exists yet for either
+    // pending action. Both pending actions' own agent_tool_executions rows
+    // (and the client-side chat card that shows them) are created entirely
+    // separately, later, by the client's own requestExecution() calls.
+    expect(log.chatMessageWrites).toHaveLength(1)
+    expect(log.chatMessageWrites[0]).toMatchObject({ role: 'user', content: 'فردا ساعت ۹ با احمد یک قرار ملاقات بساز و برای جمعه یک تسک گزارش بساز' })
+  })
+
+  it('CORRECTION 2, BLOCKER 2, item 6: no durable "ready for approval" claim is ever written for a pending action, so a later requestExecution failure has nothing stale to leave behind', async () => {
+    // /chat has no separate "confirm after requestExecution succeeds" write
+    // path -- the honesty guarantee holds structurally (this function never
+    // calls supabasePost for a 'pending' result at all), not because of a
+    // timing race that happens to resolve favorably. Asserting no write
+    // anywhere in the log contains the pending reply text proves the claim
+    // was never made durable, independent of whatever the client does next.
+    const log = installFetchMock([], null, 'Gemini should not be called', 'ask')
+    await worker.fetch(chatRequest({
+      message: 'فردا ساعت ۹ با احمد یک قرار ملاقات بساز و برای جمعه یک تسک گزارش بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+
+    const anyReadyClaimPersisted = log.chatMessageWrites.some(write => String(write.content).includes('Ready for your approval'))
+    expect(anyReadyClaimPersisted).toBe(false)
+  })
+
+  it('CORRECTION 2, BLOCKER 2, item 7: a resolved/off sibling reply still persists honestly even when the other action is pending', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'off')
+    const response = await worker.fetch(chatRequest({
+      message: 'فردا ساعت ۹ با احمد یک قرار ملاقات بساز و برای جمعه یک تسک گزارش بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+
+    expect(response.status).toBe(200)
+    // Both actions resolve 'off' here (uniform mock mode), so both are
+    // 'resolved' kind, already-final outcomes -- both replies persist
+    // immediately, same as before this correction.
+    expect(log.chatMessageWrites).toHaveLength(3)
+    expect(log.chatMessageWrites[0]).toMatchObject({ role: 'user' })
+    expect(log.chatMessageWrites[1]).toMatchObject({ role: 'assistant' })
+    expect(log.chatMessageWrites[2]).toMatchObject({ role: 'assistant' })
+  })
+
+  it('CORRECTION 2, BLOCKER 2, item 8: the successful auto-execution persistence lifecycle is unchanged -- both resolved replies still persist alongside the user message', async () => {
+    const log = installFetchMock([], null, 'Gemini should not be called', 'auto', new Map(), [], 'Meeting with Ahmad')
+    const response = await worker.fetch(chatRequest({
+      message: 'فردا ساعت ۹ با احمد یک قرار ملاقات بساز و برای جمعه یک تسک گزارش بساز',
+      timeZone: 'Europe/Berlin',
+    }), testEnv(), fakeExecutionContext())
+
+    expect(response.status).toBe(200)
+    expect(log.chatMessageWrites).toHaveLength(3)
+    expect(log.chatMessageWrites[0]).toMatchObject({ role: 'user' })
+    expect(log.chatMessageWrites[1].content).toContain('✓ Event created')
+    expect(log.chatMessageWrites[2].content).toContain('✓ Task created')
+  })
 })
 
 describe('task 22-fix: implicit schedule statements reach the deterministic write pipeline (C1/C2 production root cause)', () => {

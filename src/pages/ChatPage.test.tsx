@@ -36,6 +36,7 @@ import {
   resultMessage,
   runtimeSummaryMessage,
   shouldUseReasoningForMessage,
+  twoActionPendingPreviewLines,
 } from "./ChatPage";
 import { shouldAutoRunReadOnlyOverlay } from "@/features/chat/autoReadOverlayGate";
 import { ENGINEERING_TASK_NOT_PROPOSED_REASON_MARKER, getStrongReadDomainEvidence, getToolById, isAutoExecutableReadOnlyToolId, PROVIDER_UNAVAILABLE_REASON_MARKER, withTimeout } from "@/features/agent";
@@ -2222,5 +2223,77 @@ describe("Chat V2 Slice 2B.2 correction 1: pending-action state helpers", () => 
       expect(aFailed[0].status).toBe("failed");
       expect(aFailed[1]).toEqual(afterRequest[1]);
     });
+  });
+});
+
+describe("Chat V2 Slice 2B.2 correction 2, BLOCKER 1: twoActionPendingPreviewLines", () => {
+  const t = (key: string) => key;
+
+  const calendarPending = {
+    requestId: "2b2:msg-1:0",
+    toolId: "calendar.create_event" as const,
+    domain: "calendar" as const,
+    chatMessageId: "msg-1",
+    arguments: { title: "Meeting with Ahmad", notes: "Bring the report", dateTimeStart: "2026-09-03T07:00:00.000Z", dateTimeEnd: "2026-09-03T08:00:00.000Z" },
+    previewText: "Meeting with Ahmad",
+    status: "approval_pending" as const,
+  };
+  const taskPending = {
+    requestId: "2b2:msg-1:1",
+    toolId: "tasks.create" as const,
+    domain: "tasks" as const,
+    chatMessageId: "msg-1",
+    arguments: { title: "Report", notes: "Quarterly numbers", dueDate: "2026-09-04" },
+    previewText: "Report",
+    status: "approval_pending" as const,
+  };
+
+  it("1. a calendar approval card's preview lines expose the exact scheduled start and end time before approval, derived from the same UTC instants sent to requestExecution()", () => {
+    // Locale-formatted, not a hardcoded literal -- proves the line is
+    // derived from arguments.dateTimeStart/dateTimeEnd verbatim (same
+    // formatDateTime helper TasksPage/the single-action card already use),
+    // independent of which locale/timezone this test runs under.
+    const lines = twoActionPendingPreviewLines(calendarPending, t);
+    expect(lines).toContain(`agent_intent_preview_start: ${new Date("2026-09-03T07:00:00.000Z").toLocaleString()}`);
+    expect(lines).toContain(`agent_intent_preview_end: ${new Date("2026-09-03T08:00:00.000Z").toLocaleString()}`);
+    expect(lines).toContain("agent_intent_preview_title: Meeting with Ahmad");
+    expect(lines).toContain("agent_intent_preview_notes: Bring the report");
+  });
+
+  it("2. a task approval card's preview lines expose the exact due date before approval, derived from the same dueDate sent to requestExecution()", () => {
+    const lines = twoActionPendingPreviewLines(taskPending, t);
+    expect(lines).toContain(`agent_intent_preview_due: ${new Date("2026-09-04").toLocaleDateString(undefined, { month: "short", day: "numeric" })}`);
+    expect(lines).toContain("agent_intent_preview_title: Report");
+    expect(lines).toContain("agent_intent_preview_notes: Quarterly numbers");
+  });
+
+  it("3. sibling A/B previews cannot mix arguments -- each is derived only from its own entry's own arguments", () => {
+    const calendarLines = twoActionPendingPreviewLines(calendarPending, t);
+    const taskLines = twoActionPendingPreviewLines(taskPending, t);
+    expect(calendarLines.join("\n")).not.toContain("Report");
+    expect(calendarLines.join("\n")).not.toContain("Quarterly numbers");
+    expect(taskLines.join("\n")).not.toContain("Meeting with Ahmad");
+    expect(taskLines.join("\n")).not.toContain("Bring the report");
+  });
+
+  it("omits due date/notes/end-time lines entirely when the underlying argument is absent, rather than showing a blank or guessed value", () => {
+    const bareTask = { ...taskPending, arguments: { title: "Report", dueDate: null } };
+    const lines = twoActionPendingPreviewLines(bareTask, t);
+    expect(lines).toEqual(["agent_intent_preview_title: Report"]);
+  });
+
+  it("4. existing single-action approval preview (proposalToState/approvalForReasoningStep/writeIntentRegistry) is untouched by this correction", () => {
+    const result: AgentReasoningResult = {
+      ...reasoningResult("create_task", "tasks.create"),
+      proposal: {
+        ...reasoningResult("create_task", "tasks.create").proposal,
+        target: { title: "Call Ahmad", dueDate: "2026-07-16", notes: "Follow up" },
+        requiresApproval: true,
+      },
+    };
+    const state = proposalToState(result, t);
+    expect(state.approval?.previewText).toBe(
+      "agent_intent_preview_title: Call Ahmad\nagent_intent_preview_due: 2026-07-16\nagent_intent_preview_notes: Follow up",
+    );
   });
 });

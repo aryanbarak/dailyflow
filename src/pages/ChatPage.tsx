@@ -110,6 +110,7 @@ import {
 } from '@/features/ai/responseLanguage'
 import { findWriteIntentDescriptor, writeIntentRegistry } from '../../shared/writeIntentRegistry'
 import { reportProposalOutcome, writeProposalTargetFields, type ProposalOutcomeDomain } from '@/features/agent/proposalOutcomeReporting'
+import { formatDateLabel, formatDateTime } from '@/lib/date'
 
 export interface ChatMsg {
   id: string
@@ -465,6 +466,40 @@ export function applyTwoActionApproveResult(
     if (result.status === 'approving' || result.status === 'error') return { ...entry, status: result.status }
     return { ...entry, status: result.status, resultReply: result.reply, undo: result.undo }
   })
+}
+
+// CORRECTION 2, BLOCKER 1: the pending card previously showed only
+// pending.previewText (effectively just the title) -- not enough for the
+// user to approve consequential facts (a scheduled time, a due date) sight
+// unseen. This reads ONLY `pending.toolId`/`pending.arguments` -- the exact
+// same, already server-confirmed object this action's own requestExecution()
+// call sends -- never re-parses the original message and never re-runs an
+// LLM. Pure and per-entry, so it structurally cannot mix in a sibling
+// action's fields (there is no sibling in scope here at all). dueDate is a
+// date-only string (flow-write-policy.ts's ParsedTaskWriteIntent.dueDate);
+// dateTimeStart/dateTimeEnd are UTC ISO instants (zonedDateTimeToUtcIso in
+// respondToTwoActionWrite) -- formatDateLabel/formatDateTime (src/lib/date.ts)
+// are the same helpers TasksPage/other approval previews already use for
+// this exact display purpose, reused here rather than re-implemented.
+export function twoActionPendingPreviewLines(pending: TwoActionPendingState, t: Translate): string[] {
+  const title = (pending.arguments.title as string | undefined) || pending.previewText
+  const notes = pending.arguments.notes as string | undefined
+  if (pending.toolId === 'tasks.create') {
+    const dueDate = pending.arguments.dueDate as string | null | undefined
+    return [
+      `${t('agent_intent_preview_title')}: ${title}`,
+      dueDate ? `${t('agent_intent_preview_due')}: ${formatDateLabel(dueDate)}` : null,
+      notes ? `${t('agent_intent_preview_notes')}: ${notes}` : null,
+    ].filter((line): line is string => Boolean(line))
+  }
+  const dateTimeStart = pending.arguments.dateTimeStart as string | undefined
+  const dateTimeEnd = pending.arguments.dateTimeEnd as string | undefined
+  return [
+    `${t('agent_intent_preview_title')}: ${title}`,
+    dateTimeStart ? `${t('agent_intent_preview_start')}: ${formatDateTime(dateTimeStart)}` : null,
+    dateTimeEnd ? `${t('agent_intent_preview_end')}: ${formatDateTime(dateTimeEnd)}` : null,
+    notes ? `${t('agent_intent_preview_notes')}: ${notes}` : null,
+  ].filter((line): line is string => Boolean(line))
 }
 
 // Task 40: WorkspacePlanStep['domain'] is broader (habits/documents/
@@ -3461,6 +3496,20 @@ export default function ChatPage() {
             {twoActionPending?.map(pending => (
               <div key={pending.requestId} className="rounded-lg border border-border bg-card p-3 text-sm">
                 <div className="font-medium">{pending.previewText}</div>
+                {/* Chat V2 Slice 2B.2 correction 2, BLOCKER 1: the exact
+                    consequential arguments (title/due date/notes for tasks;
+                    title/start/end/notes for calendar) this action will
+                    submit, so the user can see them BEFORE clicking Approve
+                    -- not only the title above. See
+                    twoActionPendingPreviewLines' own comment. */}
+                <div className="mt-2 rounded-lg border border-border/25 bg-background/30 px-3 py-2">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    {t('approval_preview_label')}
+                  </p>
+                  <p className="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-foreground/90" dir="auto">
+                    {twoActionPendingPreviewLines(pending, t).join('\n')}
+                  </p>
+                </div>
                 {pending.status === 'requesting' && <div className="text-muted-foreground">{t('chat_typing') ?? 'Preparing…'}</div>}
                 {pending.status === 'approval_pending' && (
                   <button

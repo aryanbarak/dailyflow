@@ -1075,7 +1075,21 @@ async function respondToTwoActionWrite(
   }
 
   await supabasePost(env, 'agent_chat_messages', { id: userMessageId, user_id: userId, session_id: sessionId, role: 'user', content: message })
+  // CORRECTION 2, BLOCKER 2: a 'pending' result's reply ("Ready for your
+  // approval: ...") is NOT persisted here. At this exact point no
+  // agent_tool_executions row exists yet for it -- that durable row is only
+  // created later by the CLIENT's own agentToolExecutionClient.requestExecution()
+  // call (see this function's own header comment on why that call is never
+  // made from inside /chat). If that later call fails (network/auth error),
+  // persisting this reply now would leave a durable transcript claiming an
+  // action is "ready for approval" when no durable approval binding was
+  // ever created for it -- an honesty violation the reload/history view has
+  // no way to detect or correct. A 'resolved' result's reply describes an
+  // outcome that has ALREADY happened (or an 'off'/'clarify'/'not_found'
+  // outcome that is already final) by the time this line runs, so it is
+  // always safe to persist immediately, unchanged from before.
   for (const result of results) {
+    if (result.kind !== 'resolved') continue
     await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: result.reply })
   }
 
