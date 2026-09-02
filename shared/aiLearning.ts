@@ -320,6 +320,20 @@ const EVENT_KIND_SEMANTICS: Record<AiLearningEventKind, { producerType: AiLearni
   execution_outcome: { producerType: 'execution_verifier', labelConfidence: 'execution_verified' },
 }
 
+// Read-only accessor for EVENT_KIND_SEMANTICS above (ALF-1B correction 2,
+// item 1) -- lets a READ-SIDE consumer (e.g.
+// agent/worker/ai-learning/live-routing-comparison.ts, re-validating
+// already-exported ledger rows) enforce the exact same
+// eventKind -> (producerType, labelConfidence) governance boundary this
+// module enforces at WRITE time, without hand-duplicating the table (a
+// second, independently-maintained copy could silently drift and
+// contradict this one). Returns a fresh, frozen object per call so a
+// caller can never mutate the canonical table through the returned
+// reference.
+export function eventKindSemantics(eventKind: AiLearningEventKind): { producerType: AiLearningProducerType; labelConfidence: AiLearningLabelConfidence | null } {
+  return { ...EVENT_KIND_SEMANTICS[eventKind] }
+}
+
 export function collectAiLearningEventInputErrors(value: unknown): string[] {
   const errors: string[] = []
   if (!isRecord(value)) {

@@ -79,6 +79,8 @@ interface RawLedgerRow {
   learning_task?: unknown
   schema_version?: unknown
   event_kind?: unknown
+  producer_type?: unknown
+  label_confidence?: unknown
   provider_id?: unknown
   model_id?: unknown
   model_version?: unknown
@@ -122,6 +124,15 @@ export function parseJsonl(text: string): ParsedJsonlLine[] {
 // caller (loadEventsFile) simply excludes it. A whole-file read/parse
 // failure (missing file, invalid JSON on some line) DOES throw, since
 // that is a caller-fixable input error, not ledger-data noise to tolerate.
+//
+// ALF-1B correction 2, item 3: a production_label/shadow_prediction row
+// with a missing/empty source_message_id makes exact pairing structurally
+// impossible for this comparison layer -- normalization fails (returns
+// null) for exactly those two event kinds when source_message_id is
+// absent/empty, which loadEventsFile below then turns into a fail-closed
+// MALFORMED_EVENT_ROW abort. Other event kinds (turn_observed etc.) are
+// never read by compareLiveRoutingEvents anyway, so no such requirement
+// applies to them here.
 export function toLiveLearningEventRecord(row: unknown): LiveLearningEventRecord | null {
   if (!row || typeof row !== 'object' || Array.isArray(row)) return null
   const r = row as RawLedgerRow
@@ -131,11 +142,18 @@ export function toLiveLearningEventRecord(row: unknown): LiveLearningEventRecord
     !isNonEmptyString(r.correlation_id) ||
     !isNonEmptyString(r.learning_task) ||
     !isNonEmptyString(r.schema_version) ||
-    !isNonEmptyString(r.event_kind)
+    !isNonEmptyString(r.event_kind) ||
+    !isNonEmptyString(r.producer_type)
   ) {
     return null
   }
   if (!r.payload || typeof r.payload !== 'object' || Array.isArray(r.payload)) return null
+  if (
+    (r.event_kind === 'production_label' || r.event_kind === 'shadow_prediction') &&
+    !isNonEmptyString(r.source_message_id)
+  ) {
+    return null
+  }
 
   return {
     id: r.id,
@@ -145,6 +163,8 @@ export function toLiveLearningEventRecord(row: unknown): LiveLearningEventRecord
     learningTask: r.learning_task,
     schemaVersion: r.schema_version,
     eventKind: r.event_kind,
+    producerType: r.producer_type,
+    labelConfidence: isNonEmptyString(r.label_confidence) ? r.label_confidence : null,
     providerId: isNonEmptyString(r.provider_id) ? r.provider_id : null,
     modelId: isNonEmptyString(r.model_id) ? r.model_id : null,
     modelVersion: isNonEmptyString(r.model_version) ? r.model_version : null,

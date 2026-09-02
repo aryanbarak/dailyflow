@@ -212,6 +212,109 @@ comparison result back into production behavior.
     test and `shadow-semantic-consistency.test.ts`'s "rejects a ui-only
     registry intent..." test) -- not a silent behavior change.
 
+## Amendment (ALF-1B correction 2): full envelope + provenance validation
+
+Independent review found that the original comparison layer treated
+`eventKind === 'production_label'`/`'shadow_prediction'` alone as
+sufficient to establish authority, and silently dropped or under-counted
+several classes of malformed input. This amendment closes those gaps,
+entirely in the read-side `live-routing-comparison.ts`/
+`live-eval-report-lib.ts` layer -- no change to ALF-0/ALF-1A's write-side
+contracts, and no change to Decision items 1-11 above.
+
+**Producer/confidence governance is now enforced on read, not assumed.**
+`shared/aiLearning.ts` already enforces, at WRITE time, that
+`production_label` can only ever carry `(producerType: 'deterministic_policy',
+labelConfidence: 'validated')` and `shadow_prediction` only
+`(producerType: 'shadow_model', labelConfidence: 'candidate')` (its
+`EVENT_KIND_SEMANTICS` table, cross-checked by
+`collectAiLearningEventInputErrors`). `LiveLearningEventRecord` now
+carries `producerType`/`labelConfidence` through from the export, and
+`live-routing-comparison.ts` re-validates them against that SAME
+canonical table via a new exported `eventKindSemantics()` accessor
+(shared/aiLearning.ts) -- never a second, independently hand-typed
+mapping that could silently drift or contradict it. A row claiming
+`eventKind='production_label'` but `producerType='shadow_model'`/
+`labelConfidence='candidate'` (or the mirror case) is rejected as invalid
+for its claimed side; it can never become production truth, or a scored
+candidate, merely by an export/replay path mislabeling `eventKind`.
+
+**The full live-eval envelope is validated, not just the payload.**
+Previously only the payload's own shape/vocabulary/consistency was
+checked; the record's own `learningTask`/`schemaVersion`/producer fields
+were unchecked. Now, for both `production_label` and `shadow_prediction`:
+`learningTask` must be exactly `'intent_routing_v1'` and (top-level)
+`schemaVersion` must be exactly `'intent-routing-v1'` -- both derived from
+`shared/aiLearning.ts`'s own `AI_LEARNING_TASK_SCHEMA_VERSIONS` mapping,
+never a second literal. Since the payload's OWN `schemaVersion` is
+separately required (by `collectIntentRoutingLearningPayloadErrors`) to be
+that exact same literal, a top-level/payload schema disagreement can never
+pass both checks at once -- consistency is enforced structurally, by both
+sides independently pinning to the same canonical constant, not by an
+extra cross-field comparison. A `shadow_prediction` additionally requires
+NON-EMPTY `providerId`/`modelId`/`modelVersion` -- missing provenance is
+now a hard rejection, never silently normalized into an eligible
+empty-string model slice (`buildComparison` can no longer be reached with
+a null provider/model field, since `isValidForComparison`'s
+`shadow_prediction` branch rejects the row first). Two rows sharing the
+same MALFORMED `learningTask`/`schemaVersion` string are never treated as
+a comparable pair merely because their malformed strings happen to match
+each other -- both are rejected by the same envelope check independently
+of whether they happen to group together.
+
+**A missing `sourceMessageId` is reported, never silently dropped.**
+`compareLiveRoutingEvents` now runs an explicit pre-pass over its input:
+any `production_label`/`shadow_prediction` record with a missing/empty
+`sourceMessageId` is counted into `invalidProductionLabelCount`/
+`invalidShadowPredictionCount` (it can never be paired at all -- exact
+pairing requires `sourceMessageId`) and excluded from grouping entirely;
+`pairingKey` itself no longer has a "return null" escape hatch, so every
+record that reaches it is guaranteed pairable. At the CLI boundary,
+`live-eval-report-lib.ts`'s `toLiveLearningEventRecord` now returns `null`
+(triggering the existing fail-closed `MALFORMED_EVENT_ROW` abort) for a
+`production_label`/`shadow_prediction` row with a missing/empty
+`source_message_id` -- the CLI aborts the whole report rather than ever
+silently proceeding on a data set missing this signal. Other event kinds
+(`turn_observed`, etc.) carry no such requirement, since
+`compareLiveRoutingEvents` never reads them at all.
+
+**Invalid Shadow counting is independent of production cleanliness.**
+Before this correction, a group's Shadow rows were only reached (and
+validated) AFTER production was confirmed unique and valid -- a malformed
+Shadow prediction paired with a missing, duplicate, or invalid production
+label for the same turn was never counted at all, under-reporting
+`invalidShadowPredictionCount`/`ambiguousShadowModelSlices`. The main loop
+is now split into two independently-resolved halves per group
+(`resolveProductionRow`/`resolveShadowSlice`): production's own
+missing/ambiguous/invalid status is still a GROUP-level fact, recorded
+exactly once via `missingProductionSide`/`ambiguousProductionGroups`/
+`invalidProductionLabelCount`, but EVERY Shadow model-slice in the group
+is independently resolved regardless of that outcome -- an
+invalid/ambiguous Shadow prediction is always counted as such, whether or
+not production also happened to be clean. The exact counting semantics:
+
+- `missingShadowSide` stays gated on production being clean (a "no
+  Shadow yet" signal is only meaningful when production for the turn is
+  otherwise usable) -- unchanged from before this correction.
+- `invalidShadowPredictionCount`/`ambiguousShadowModelSlices` are now
+  UNCONDITIONAL -- computed for every shadow model-slice in every
+  group, never gated on production's status.
+- A comparison is still only ever BUILT when production is clean AND
+  the Shadow slice is valid AND unambiguous -- pairing/scoring
+  eligibility is unchanged; only the accounting of Shadow-side problems
+  that do NOT result in a comparison is corrected.
+- A genuinely valid Shadow prediction with no clean production
+  counterpart is neither invalid nor ambiguous -- it produces no
+  comparison and is not added to any invalid/ambiguous counter (the
+  group's production-side problem is already recorded once by the
+  production-side counters).
+
+See `agent/worker/ai-learning/live-routing-comparison.test.ts`'s
+"producer/confidence governance", "full envelope validation", and
+"invalid Shadow counting is independent of production cleanliness"
+`describe` blocks, plus `live-eval-report.test.ts`'s new
+`producer_type`/`source_message_id` coverage, for the full test matrix.
+
 ## What This ADR Deliberately Does NOT Do
 
 - **Does not enable Shadow.** `AI_SHADOW_ENABLED` stays `false` in

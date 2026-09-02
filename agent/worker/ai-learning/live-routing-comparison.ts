@@ -17,9 +17,14 @@
 // NO ONLINE LEARNING. NO WEIGHT UPDATES. NO MODEL-GENERATED VALUE EVER
 // BECOMES TRUTH. `production_label` is read as authoritative for every
 // scored field; `shadow_prediction` is read as a candidate to compare
-// against it, never the reverse -- see compareEligibleGroup below, which
-// has no code path that could substitute a shadow value for the
-// production value it is being scored against.
+// against it, never the reverse -- see buildComparison below, which has
+// no code path that could substitute a shadow value for the production
+// value it is being scored against. ALF-1B correction 2 additionally
+// re-validates each side's own eventKind/producerType/labelConfidence
+// against shared/aiLearning.ts's canonical governance table (see
+// isValidLiveLearningEnvelope below) -- a row cannot become production
+// truth, or a scored candidate, merely by an export/replay path
+// mislabeling which side it claims to be.
 //
 // PURE FUNCTIONS, NO I/O, NO DATABASE ACCESS. This module only transforms
 // an in-memory array of already-fetched/already-exported ledger rows
@@ -39,11 +44,22 @@
 // string -- never a stringified value drawn from a payload.
 
 import {
+  AI_LEARNING_TASK_SCHEMA_VERSIONS,
   collectIntentRoutingLearningPayloadErrors,
+  eventKindSemantics,
+  isAiLearningLabelConfidence,
+  isAiLearningProducerType,
   type IntentRoutingLearningPayloadV1,
 } from '../../../shared/aiLearning'
 import { isAllowedShadowIntentType, isAllowedShadowToolId } from './shadow-vocabulary'
 import { isSemanticallyConsistentRoutingPayload } from './shadow-semantic-consistency'
+
+// The only learning task/schema this module ever compares -- derived from
+// shared/aiLearning.ts's own canonical learningTask -> schemaVersion
+// mapping (ALF-1B correction 2, item 2), never a second, independently
+// hand-typed literal.
+const ROUTING_LEARNING_TASK = 'intent_routing_v1' as const
+const ROUTING_SCHEMA_VERSION = AI_LEARNING_TASK_SCHEMA_VERSIONS[ROUTING_LEARNING_TASK]
 
 // ---------------------------------------------------------------------
 // Input: the read-only ledger-row shape this module consumes. Deliberately
@@ -60,6 +76,15 @@ export interface LiveLearningEventRecord {
   readonly learningTask: string
   readonly schemaVersion: string
   readonly eventKind: string
+  // ALF-1B correction 2, item 1: carried through so this module can
+  // re-validate the SAME producerType/labelConfidence governance boundary
+  // shared/aiLearning.ts's collectAiLearningEventInputErrors enforces at
+  // write time -- "a model prediction is never truth" is meaningless if a
+  // malformed export could relabel a shadow_prediction row's producerType
+  // as 'deterministic_policy' and have it silently accepted as production
+  // truth by this read-side layer.
+  readonly producerType: string
+  readonly labelConfidence: string | null
   readonly providerId: string | null
   readonly modelId: string | null
   readonly modelVersion: string | null
@@ -142,15 +167,65 @@ function asScoredValue(value: unknown): string | boolean | undefined {
 
 // ---------------------------------------------------------------------
 // Pairing key. Pairs ONLY on these five fields -- never on text,
-// timestamp proximity, "latest event," or model output content.
+// timestamp proximity, "latest event," or model output content. Callers
+// MUST only call this on a record whose sourceMessageId is already known
+// non-empty (see the sourceMessageId pre-pass in compareLiveRoutingEvents
+// below, ALF-1B correction 2, item 3) -- this function no longer has a
+// "return null for missing sourceMessageId" escape hatch, so a missing
+// sourceMessageId is never silently absorbed into pairing at all.
 // ---------------------------------------------------------------------
-function pairingKey(record: LiveLearningEventRecord): string | null {
-  if (!record.sourceMessageId) return null
+function pairingKey(record: LiveLearningEventRecord & { sourceMessageId: string }): string {
   return [record.userId, record.sourceMessageId, record.correlationId, record.learningTask, record.schemaVersion].join('\x00')
 }
 
 function modelKey(record: LiveLearningEventRecord): string {
   return [record.providerId ?? '', record.modelId ?? '', record.modelVersion ?? ''].join('\x00')
+}
+
+// ---------------------------------------------------------------------
+// Envelope validity (ALF-1B correction 2, items 1 + 2): everything about a
+// record OUTSIDE its payload that must hold for it to be eligible for
+// comparison at all. Reuses shared/aiLearning.ts's own canonical
+// eventKind -> (producerType, labelConfidence) table (via
+// eventKindSemantics) and its learningTask -> schemaVersion table (via
+// AI_LEARNING_TASK_SCHEMA_VERSIONS) -- the SAME governance boundary
+// enforced at write time, never a second, independently maintained,
+// potentially-contradictory copy.
+//
+// A malformed row such as (eventKind='production_label',
+// producerType='shadow_model', labelConfidence='candidate') fails here --
+// it can NEVER become production truth merely by an export/replay path
+// claiming eventKind='production_label'; the producerType/labelConfidence
+// pair is cross-checked against what THAT eventKind is canonically
+// allowed to carry. The mirror case (eventKind='shadow_prediction',
+// producerType='deterministic_policy', labelConfidence='validated') fails
+// closed the same way.
+// ---------------------------------------------------------------------
+function isValidLiveLearningEnvelope(
+  record: LiveLearningEventRecord,
+  expectedEventKind: 'production_label' | 'shadow_prediction',
+): record is LiveLearningEventRecord & { sourceMessageId: string } {
+  if (record.eventKind !== expectedEventKind) return false
+  if (!record.sourceMessageId) return false
+  if (record.learningTask !== ROUTING_LEARNING_TASK) return false
+  if (record.schemaVersion !== ROUTING_SCHEMA_VERSION) return false
+
+  if (!isAiLearningProducerType(record.producerType)) return false
+  const semantics = eventKindSemantics(expectedEventKind)
+  if (record.producerType !== semantics.producerType) return false
+  if (record.labelConfidence !== null && !isAiLearningLabelConfidence(record.labelConfidence)) return false
+  if ((record.labelConfidence ?? null) !== semantics.labelConfidence) return false
+
+  // Model provenance is required, not optional, for a candidate
+  // prediction (mirrors shared/aiLearning.ts's own
+  // collectAiLearningEventInputErrors write-time check) -- never
+  // normalize a missing provider/model/version to an eligible
+  // empty-string model slice (ALF-1B correction 2, item 2).
+  if (expectedEventKind === 'shadow_prediction') {
+    if (!record.providerId || !record.modelId || !record.modelVersion) return false
+  }
+
+  return true
 }
 
 // ---------------------------------------------------------------------
@@ -161,7 +236,14 @@ function modelKey(record: LiveLearningEventRecord): string {
 // those gates existed; see ADR-0022's own note). Applied to BOTH sides:
 // production_label is authoritative truth, but a malformed/inconsistent
 // production_label is never silently trusted as ground truth either -- it
-// is excluded and reported, not scored against.
+// is excluded and reported, not scored against. Note this only checks the
+// PAYLOAD's own schemaVersion (via collectIntentRoutingLearningPayloadErrors,
+// which requires it to be exactly 'intent-routing-v1'); the record's
+// top-level schemaVersion is checked separately by
+// isValidLiveLearningEnvelope above -- since both are independently
+// pinned to the SAME canonical literal, a top-level/payload schema
+// disagreement can never pass both checks (item 2's consistency
+// requirement).
 // ---------------------------------------------------------------------
 function isValidRoutingPayloadForComparison(payload: unknown): payload is IntentRoutingLearningPayloadV1 {
   if (collectIntentRoutingLearningPayloadErrors(payload).length > 0) return false
@@ -172,9 +254,23 @@ function isValidRoutingPayloadForComparison(payload: unknown): payload is Intent
   return true
 }
 
+// Combines envelope validity (this file, item 1 + 2) with payload
+// validity (above) -- a record must pass BOTH to be eligible for
+// comparison. Kept as two separate functions (rather than one merged
+// check) so each concern stays independently testable and each failure
+// reason stays legible in review, even though callers only ever need the
+// combined answer.
+function isValidForComparison(
+  record: LiveLearningEventRecord,
+  expectedEventKind: 'production_label' | 'shadow_prediction',
+): record is LiveLearningEventRecord & { sourceMessageId: string } {
+  if (!isValidLiveLearningEnvelope(record, expectedEventKind)) return false
+  return isValidRoutingPayloadForComparison(record.payload)
+}
+
 function buildComparison(
-  production: LiveLearningEventRecord,
-  shadow: LiveLearningEventRecord,
+  production: LiveLearningEventRecord & { sourceMessageId: string },
+  shadow: LiveLearningEventRecord & { sourceMessageId: string },
 ): LiveRoutingComparisonV1 {
   const productionPayload = production.payload as unknown as IntentRoutingLearningPayloadV1
   const shadowPayload = shadow.payload as unknown as IntentRoutingLearningPayloadV1
@@ -191,11 +287,18 @@ function buildComparison(
 
   return {
     schemaVersion: LIVE_ROUTING_COMPARISON_SCHEMA_VERSION,
-    sourceMessageId: production.sourceMessageId as string,
+    sourceMessageId: production.sourceMessageId,
     productionEventId: production.id,
     shadowEventId: shadow.id,
     learningTask: production.learningTask,
     routingSchemaVersion: production.schemaVersion,
+    // Non-null/non-empty by construction -- isValidForComparison's
+    // shadow_prediction branch already rejected any row missing
+    // providerId/modelId/modelVersion, so a comparison can never carry an
+    // empty-string model slice (ALF-1B correction 2, item 2). The `?? ''`
+    // fallback below is unreachable in practice; it exists only because
+    // LiveLearningEventRecord's own field type is `string | null` and TypeScript
+    // cannot see the validity check that already ran in the caller.
     providerId: shadow.providerId ?? '',
     modelId: shadow.modelId ?? '',
     modelVersion: shadow.modelVersion ?? '',
@@ -228,21 +331,45 @@ export interface LiveRoutingEvalReport {
   readonly comparisons: readonly LiveRoutingComparisonV1[]
 }
 
+type PairableRecord = LiveLearningEventRecord & { sourceMessageId: string }
+
+// One group's production-side outcome (ALF-1B correction 2, item 4 pulled
+// this out of the main loop body to keep each concern independently
+// readable/testable). 'row' is the only status a comparison can ever be
+// built against.
+type ProductionResolution =
+  | { readonly status: 'missing' }
+  | { readonly status: 'ambiguous' }
+  | { readonly status: 'invalid' }
+  | { readonly status: 'row'; readonly row: PairableRecord }
+
+function resolveProductionRow(productionRows: readonly PairableRecord[]): ProductionResolution {
+  if (productionRows.length === 0) return { status: 'missing' }
+  if (productionRows.length > 1) return { status: 'ambiguous' }
+  if (!isValidForComparison(productionRows[0], 'production_label')) return { status: 'invalid' }
+  return { status: 'row', row: productionRows[0] }
+}
+
+// One shadow model-slice's outcome, evaluated independently of the
+// group's production-side outcome (item 4's core fix -- a Shadow
+// prediction's own validity/ambiguity is never contingent on production
+// also being clean).
+type ShadowSliceResolution =
+  | { readonly status: 'ambiguous' }
+  | { readonly status: 'invalid' }
+  | { readonly status: 'row'; readonly row: PairableRecord }
+
+function resolveShadowSlice(modelRows: readonly PairableRecord[]): ShadowSliceResolution {
+  if (modelRows.length > 1) return { status: 'ambiguous' }
+  if (!isValidForComparison(modelRows[0], 'shadow_prediction')) return { status: 'invalid' }
+  return { status: 'row', row: modelRows[0] }
+}
+
 // Never throws. Pure: the SAME input array always produces the SAME
 // output, deterministically -- no randomness, no clock, no "latest wins."
 export function compareLiveRoutingEvents(events: readonly LiveLearningEventRecord[]): LiveRoutingEvalReport {
   const productionEvents = events.filter((e) => e.eventKind === 'production_label')
   const shadowEvents = events.filter((e) => e.eventKind === 'shadow_prediction')
-
-  const groups = new Map<string, LiveLearningEventRecord[]>()
-  for (const record of events) {
-    if (record.eventKind !== 'production_label' && record.eventKind !== 'shadow_prediction') continue
-    const key = pairingKey(record)
-    if (key === null) continue // no sourceMessageId -- cannot be paired at all, excluded silently (should not occur for a durably-captured ALF-1A row)
-    const bucket = groups.get(key)
-    if (bucket) bucket.push(record)
-    else groups.set(key, [record])
-  }
 
   let missingProductionSide = 0
   let missingShadowSide = 0
@@ -252,34 +379,70 @@ export function compareLiveRoutingEvents(events: readonly LiveLearningEventRecor
   let invalidShadowPredictionCount = 0
   const comparisons: LiveRoutingComparisonV1[] = []
 
+  // ALF-1B correction 2, item 3: a production_label/shadow_prediction row
+  // with a missing/empty sourceMessageId makes exact pairing structurally
+  // impossible -- reported here as invalid/unpairable, never silently
+  // dropped from consideration the way the pre-correction pairingKey===
+  // null branch used to. Only records that survive this pass (guaranteed
+  // non-empty sourceMessageId) are ever handed to pairingKey below.
+  const pairable: PairableRecord[] = []
+  for (const record of events) {
+    if (record.eventKind !== 'production_label' && record.eventKind !== 'shadow_prediction') continue
+    if (!record.sourceMessageId) {
+      if (record.eventKind === 'production_label') invalidProductionLabelCount += 1
+      else invalidShadowPredictionCount += 1
+      continue
+    }
+    pairable.push(record as PairableRecord)
+  }
+
+  const groups = new Map<string, PairableRecord[]>()
+  for (const record of pairable) {
+    const key = pairingKey(record)
+    const bucket = groups.get(key)
+    if (bucket) bucket.push(record)
+    else groups.set(key, [record])
+  }
+
   for (const groupRecords of groups.values()) {
     const productionRows = groupRecords.filter((r) => r.eventKind === 'production_label')
     const shadowRows = groupRecords.filter((r) => r.eventKind === 'shadow_prediction')
 
-    if (productionRows.length === 0) {
+    // --- Production side: unchanged group-level gating semantics from
+    // before this correction -- missingProductionSide/ambiguousProductionGroups
+    // remain a fact about the GROUP as a whole ("is there a single clean
+    // authoritative label for this turn").
+    const production = resolveProductionRow(productionRows)
+    if (production.status === 'missing') {
       // Only meaningful if there IS a shadow row to be missing a
       // production counterpart for.
       if (shadowRows.length > 0) missingProductionSide += 1
-      continue
-    }
-
-    if (productionRows.length > 1) {
+    } else if (production.status === 'ambiguous') {
       // M (ALF-1B): never pick one arbitrarily ("latest," first-seen, or
       // otherwise) -- production is supposed to be a single authoritative
       // truth per turn; more than one row for the same pairing key is an
       // ambiguity to REPORT, never silently resolved.
       ambiguousProductionGroups += 1
-      continue
-    }
-
-    const productionRow = productionRows[0]
-    if (!isValidRoutingPayloadForComparison(productionRow.payload)) {
+    } else if (production.status === 'invalid') {
       invalidProductionLabelCount += 1
-      continue
     }
+    const productionRow = production.status === 'row' ? production.row : undefined
 
+    // --- Shadow side (ALF-1B correction 2, item 4): every shadow
+    // model-slice in this group is resolved/counted INDEPENDENTLY of the
+    // production-side outcome just computed above -- a malformed or
+    // semantically-invalid Shadow prediction is invalid on its own
+    // terms, never hidden behind (or contingent on) production also
+    // being missing/duplicate/invalid for the same turn. Only whether a
+    // comparison gets BUILT depends on production also being clean; the
+    // invalid/ambiguous COUNTS below do not.
     if (shadowRows.length === 0) {
-      missingShadowSide += 1
+      // Preserves the original semantics: "missing shadow side" is only
+      // a meaningful signal when production for this turn is otherwise
+      // usable. If production is ALSO missing/ambiguous/invalid, that is
+      // already fully accounted for by the production-side counters
+      // above, and does not additionally need a "no shadow either" note.
+      if (productionRow) missingShadowSide += 1
       continue
     }
 
@@ -291,7 +454,7 @@ export function compareLiveRoutingEvents(events: readonly LiveLearningEventRecor
     // model slice (should not occur given the ledger's own idempotency
     // constraint, but exported/replayed data could still contain one) is
     // its own, separate ambiguity, reported and excluded, never picked.
-    const byModel = new Map<string, LiveLearningEventRecord[]>()
+    const byModel = new Map<string, PairableRecord[]>()
     for (const row of shadowRows) {
       const key = modelKey(row)
       const bucket = byModel.get(key)
@@ -300,16 +463,25 @@ export function compareLiveRoutingEvents(events: readonly LiveLearningEventRecor
     }
 
     for (const modelRows of byModel.values()) {
-      if (modelRows.length > 1) {
+      const shadow = resolveShadowSlice(modelRows)
+      if (shadow.status === 'ambiguous') {
         ambiguousShadowModelSlices += 1
         continue
       }
-      const shadowRow = modelRows[0]
-      if (!isValidRoutingPayloadForComparison(shadowRow.payload)) {
+      if (shadow.status === 'invalid') {
         invalidShadowPredictionCount += 1
         continue
       }
-      comparisons.push(buildComparison(productionRow, shadowRow))
+      if (productionRow) {
+        comparisons.push(buildComparison(productionRow, shadow.row))
+      }
+      // else: a genuinely VALID shadow prediction with no clean
+      // production counterpart in this group. Not itself invalid, so NOT
+      // added to invalidShadowPredictionCount -- the group's own
+      // production-side problem was already recorded exactly once by the
+      // production-side counters above. No comparison is produced (a
+      // comparison, by definition, requires a valid production label to
+      // score against -- see Decision item 1: production is truth).
     }
   }
 

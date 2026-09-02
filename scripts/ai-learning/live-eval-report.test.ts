@@ -95,6 +95,8 @@ test('toLiveLearningEventRecord maps a well-formed snake_case ledger row to the 
     learning_task: 'intent_routing_v1',
     schema_version: 'intent-routing-v1',
     event_kind: 'production_label',
+    producer_type: 'deterministic_policy',
+    label_confidence: 'validated',
     provider_id: null,
     model_id: null,
     model_version: null,
@@ -105,6 +107,8 @@ test('toLiveLearningEventRecord maps a well-formed snake_case ledger row to the 
   assert.equal(record!.userId, 'user-1')
   assert.equal(record!.sourceMessageId, 'msg-1')
   assert.equal(record!.providerId, null)
+  assert.equal(record!.producerType, 'deterministic_policy')
+  assert.equal(record!.labelConfidence, 'validated')
 })
 
 test('toLiveLearningEventRecord returns null (never throws) for a row missing a required field', () => {
@@ -113,20 +117,40 @@ test('toLiveLearningEventRecord returns null (never throws) for a row missing a 
   assert.equal(toLiveLearningEventRecord('not an object'), null)
   assert.equal(toLiveLearningEventRecord({
     id: 'evt-1', user_id: 'u', correlation_id: 'c', learning_task: 't', schema_version: 's', event_kind: 'production_label',
-    payload: 'not an object',
+    producer_type: 'deterministic_policy', payload: 'not an object',
+  }), null)
+  // Missing producer_type (ALF-1B correction 2, item 1) -- required on
+  // every row, regardless of event_kind.
+  assert.equal(toLiveLearningEventRecord({
+    id: 'evt-1', user_id: 'u', source_message_id: 'msg-1', correlation_id: 'c', learning_task: 't', schema_version: 's',
+    event_kind: 'production_label', payload: {},
   }), null)
 })
 
-test('toLiveLearningEventRecord normalizes a missing/empty optional column to null, not an empty string', () => {
+test('toLiveLearningEventRecord normalizes a missing/empty optional column to null, not an empty string (for an event_kind ALF-1B does not require sourceMessageId on)', () => {
   const record = toLiveLearningEventRecord({
-    id: 'evt-1', user_id: 'u', correlation_id: 'c', learning_task: 't', schema_version: 's', event_kind: 'shadow_prediction',
-    source_message_id: '', provider_id: '', model_id: undefined, model_version: null, source_hash: null,
+    id: 'evt-1', user_id: 'u', correlation_id: 'c', learning_task: 't', schema_version: 's', event_kind: 'turn_observed',
+    producer_type: 'deterministic_policy', source_message_id: '', provider_id: '', model_id: undefined, model_version: null, source_hash: null,
     payload: {},
   })
   assert.ok(record)
   assert.equal(record!.sourceMessageId, null)
   assert.equal(record!.providerId, null)
   assert.equal(record!.modelId, null)
+})
+
+// ALF-1B correction 2, item 3: unlike 'turn_observed' above, a
+// production_label/shadow_prediction row with an EMPTY (not just missing)
+// source_message_id must fail closed, not normalize to null and proceed.
+test('toLiveLearningEventRecord rejects a production_label/shadow_prediction row with an EMPTY source_message_id', () => {
+  assert.equal(toLiveLearningEventRecord({
+    id: 'evt-1', user_id: 'u', correlation_id: 'c', learning_task: 't', schema_version: 's', event_kind: 'production_label',
+    producer_type: 'deterministic_policy', source_message_id: '', payload: {},
+  }), null)
+  assert.equal(toLiveLearningEventRecord({
+    id: 'evt-1', user_id: 'u', correlation_id: 'c', learning_task: 't', schema_version: 's', event_kind: 'shadow_prediction',
+    producer_type: 'shadow_model', source_message_id: '', payload: {},
+  }), null)
 })
 
 test('formatLiveEvalReport explicitly states language and requiresApproval as masked, never silently omitted', () => {
@@ -158,7 +182,7 @@ function withTempEventsFile(contents: string, fn: (path: string) => void) {
 }
 
 test('loadEventsFile aborts the whole report with a fixed MALFORMED_EVENT_ROW error when any row cannot be normalized', () => {
-  withTempEventsFile('{"id":"evt-1","user_id":"u","correlation_id":"c","learning_task":"t","schema_version":"s","event_kind":"production_label","payload":{}}\n{"id":"evt-2"}\n', (path) => {
+  withTempEventsFile('{"id":"evt-1","user_id":"u","source_message_id":"msg-1","correlation_id":"c","learning_task":"t","schema_version":"s","event_kind":"production_label","producer_type":"deterministic_policy","payload":{}}\n{"id":"evt-2"}\n', (path) => {
     assert.throws(
       () => loadEventsFile(path),
       (error: unknown) => {
@@ -174,7 +198,7 @@ test('loadEventsFile aborts the whole report with a fixed MALFORMED_EVENT_ROW er
 
 test('loadEventsFile aborts with a fixed MALFORMED_JSON_LINE error, never echoing a secret marker in a bad line', () => {
   const secretMarker = 'SECRET_MARKER_DO_NOT_LEAK'
-  withTempEventsFile(`{"id":"evt-1","user_id":"u","correlation_id":"c","learning_task":"t","schema_version":"s","event_kind":"production_label","payload":{}}\nnot json ${secretMarker}\n`, (path) => {
+  withTempEventsFile(`{"id":"evt-1","user_id":"u","source_message_id":"msg-1","correlation_id":"c","learning_task":"t","schema_version":"s","event_kind":"production_label","producer_type":"deterministic_policy","payload":{}}\nnot json ${secretMarker}\n`, (path) => {
     assert.throws(
       () => loadEventsFile(path),
       (error: unknown) => {
@@ -189,11 +213,57 @@ test('loadEventsFile aborts with a fixed MALFORMED_JSON_LINE error, never echoin
 })
 
 test('loadEventsFile succeeds and returns every row when the whole file is well-formed', () => {
-  withTempEventsFile('{"id":"evt-1","user_id":"u","correlation_id":"c","learning_task":"t","schema_version":"s","event_kind":"production_label","payload":{}}\n', (path) => {
+  withTempEventsFile('{"id":"evt-1","user_id":"u","source_message_id":"msg-1","correlation_id":"c","learning_task":"t","schema_version":"s","event_kind":"production_label","producer_type":"deterministic_policy","payload":{}}\n', (path) => {
     const records = loadEventsFile(path)
     assert.equal(records.length, 1)
     assert.equal(records[0].id, 'evt-1')
+    assert.equal(records[0].producerType, 'deterministic_policy')
   })
+})
+
+test('loadEventsFile rejects a production_label row missing source_message_id (ALF-1B correction 2, item 3) -- fails closed, never silently proceeds', () => {
+  withTempEventsFile('{"id":"evt-1","user_id":"u","correlation_id":"c","learning_task":"t","schema_version":"s","event_kind":"production_label","producer_type":"deterministic_policy","payload":{}}\n', (path) => {
+    assert.throws(
+      () => loadEventsFile(path),
+      (error: unknown) => {
+        const e = error as LiveEvalReportError
+        assert.ok(e instanceof LiveEvalReportError)
+        assert.equal(e.code, 'MALFORMED_EVENT_ROW')
+        assert.equal(e.line, 1)
+        return true
+      },
+    )
+  })
+})
+
+test('loadEventsFile rejects a row missing producer_type (ALF-1B correction 2, item 1)', () => {
+  withTempEventsFile('{"id":"evt-1","user_id":"u","source_message_id":"msg-1","correlation_id":"c","learning_task":"t","schema_version":"s","event_kind":"production_label","payload":{}}\n', (path) => {
+    assert.throws(
+      () => loadEventsFile(path),
+      (error: unknown) => {
+        const e = error as LiveEvalReportError
+        assert.ok(e instanceof LiveEvalReportError)
+        assert.equal(e.code, 'MALFORMED_EVENT_ROW')
+        return true
+      },
+    )
+  })
+})
+
+test('toLiveLearningEventRecord normalizes a missing label_confidence to null, and carries through a present one verbatim', () => {
+  const withoutConfidence = toLiveLearningEventRecord({
+    id: 'evt-1', user_id: 'u', source_message_id: 'msg-1', correlation_id: 'c', learning_task: 't', schema_version: 's',
+    event_kind: 'production_label', producer_type: 'deterministic_policy', payload: {},
+  })
+  assert.ok(withoutConfidence)
+  assert.equal(withoutConfidence!.labelConfidence, null)
+
+  const withConfidence = toLiveLearningEventRecord({
+    id: 'evt-2', user_id: 'u', source_message_id: 'msg-1', correlation_id: 'c', learning_task: 't', schema_version: 's',
+    event_kind: 'production_label', producer_type: 'deterministic_policy', label_confidence: 'validated', payload: {},
+  })
+  assert.ok(withConfidence)
+  assert.equal(withConfidence!.labelConfidence, 'validated')
 })
 
 test('loadEventsFile throws a fixed FILE_READ_FAILED error for a missing file', () => {

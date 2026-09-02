@@ -37,6 +37,11 @@ function productionEvent(overrides: Partial<LiveLearningEventRecord> = {}): Live
     learningTask: 'intent_routing_v1',
     schemaVersion: 'intent-routing-v1',
     eventKind: 'production_label',
+    // Canonical (producerType, labelConfidence) pair for production_label
+    // per shared/aiLearning.ts's EVENT_KIND_SEMANTICS (ALF-1B correction
+    // 2, item 1).
+    producerType: 'deterministic_policy',
+    labelConfidence: 'validated',
     providerId: null,
     modelId: null,
     modelVersion: null,
@@ -55,6 +60,11 @@ function shadowEvent(overrides: Partial<LiveLearningEventRecord> = {}): LiveLear
     learningTask: 'intent_routing_v1',
     schemaVersion: 'intent-routing-v1',
     eventKind: 'shadow_prediction',
+    // Canonical (producerType, labelConfidence) pair for shadow_prediction
+    // per shared/aiLearning.ts's EVENT_KIND_SEMANTICS (ALF-1B correction
+    // 2, item 1).
+    producerType: 'shadow_model',
+    labelConfidence: 'candidate',
     providerId: 'workers-ai',
     modelId: '@cf/some-org/shadow-model',
     modelVersion: '2026-09-01',
@@ -76,7 +86,16 @@ describe('compareLiveRoutingEvents', () => {
   })
 
   // B. Domain mismatch => exact false.
-  it('B: a domain mismatch alone makes exactRoutingMatch false, and only the domain field is reported as a mismatch', () => {
+  // ALF-1B correction 2, item 5: renamed from the original "...only the
+  // domain field is reported as a mismatch" -- the fixture below (needed
+  // to stay semantically valid under the ALF-1B correction 1 consistency
+  // gate; see its own comment) also changes interactionClass and
+  // intentType/toolId, so domain is no longer the ONLY field this
+  // comparison disagrees on. The assertions below only ever checked
+  // domain.match and exactRoutingMatch -- never "only domain" -- so this
+  // is a description fix, not a behavior or assertion change; the
+  // semantic-consistency gate itself is not weakened to chase the old name.
+  it('B: a domain mismatch makes exactRoutingMatch false, and the domain field itself is reported as a mismatch', () => {
     const report = compareLiveRoutingEvents([
       productionEvent(),
       // domain differs from production ('calendar'); intentType/toolId/
@@ -191,6 +210,200 @@ describe('compareLiveRoutingEvents', () => {
     expect(report.eligiblePairs).toBe(0)
     expect(report.invalidProductionLabelCount).toBe(1)
     expect(report.invalidOrIncompatiblePairs).toBe(1)
+  })
+
+  // ALF-1B correction 2, item 1: restore canonical eventKind/producerType/
+  // labelConfidence governance semantics (shared/aiLearning.ts's own
+  // EVENT_KIND_SEMANTICS, reused via eventKindSemantics -- never a second,
+  // independently hand-typed mapping). A model-sourced row can never
+  // become production truth merely by claiming eventKind='production_label'.
+  describe('producer/confidence governance (ALF-1B correction 2, item 1)', () => {
+    it('a row claiming eventKind=production_label with producerType=shadow_model/labelConfidence=candidate is rejected, never accepted as production truth', () => {
+      const report = compareLiveRoutingEvents([
+        productionEvent({ producerType: 'shadow_model', labelConfidence: 'candidate' }),
+        shadowEvent(),
+      ])
+      expect(report.eligiblePairs).toBe(0)
+      expect(report.invalidProductionLabelCount).toBe(1)
+    })
+
+    it('a row claiming eventKind=shadow_prediction with producerType=deterministic_policy/labelConfidence=validated fails closed, never scored as a candidate', () => {
+      const report = compareLiveRoutingEvents([
+        productionEvent(),
+        shadowEvent({ producerType: 'deterministic_policy', labelConfidence: 'validated' }),
+      ])
+      expect(report.eligiblePairs).toBe(0)
+      expect(report.invalidShadowPredictionCount).toBe(1)
+    })
+
+    it('an unrecognized producerType value is rejected on either side', () => {
+      const reportProd = compareLiveRoutingEvents([
+        productionEvent({ producerType: 'not_a_real_producer_type' }),
+        shadowEvent(),
+      ])
+      expect(reportProd.invalidProductionLabelCount).toBe(1)
+
+      const reportShadow = compareLiveRoutingEvents([
+        productionEvent(),
+        shadowEvent({ producerType: 'not_a_real_producer_type' }),
+      ])
+      expect(reportShadow.invalidShadowPredictionCount).toBe(1)
+    })
+
+    it('an unrecognized labelConfidence value is rejected on either side', () => {
+      const reportProd = compareLiveRoutingEvents([
+        productionEvent({ labelConfidence: 'not_a_real_confidence' }),
+        shadowEvent(),
+      ])
+      expect(reportProd.invalidProductionLabelCount).toBe(1)
+
+      const reportShadow = compareLiveRoutingEvents([
+        productionEvent(),
+        shadowEvent({ labelConfidence: 'not_a_real_confidence' }),
+      ])
+      expect(reportShadow.invalidShadowPredictionCount).toBe(1)
+    })
+
+    it('a production_label with labelConfidence=null (instead of "validated") is rejected -- the exact pair is required, not just "some" confidence', () => {
+      const report = compareLiveRoutingEvents([
+        productionEvent({ labelConfidence: null }),
+        shadowEvent(),
+      ])
+      expect(report.invalidProductionLabelCount).toBe(1)
+    })
+  })
+
+  // ALF-1B correction 2, item 2: full live-eval envelope validation --
+  // learningTask/schemaVersion must be the canonical routing pair, and a
+  // shadow_prediction must carry non-empty provider/model/version
+  // provenance. Fail closed / explicitly reported, never scored.
+  describe('full envelope validation (ALF-1B correction 2, item 2)', () => {
+    it('an unknown learningTask is rejected on either side', () => {
+      const reportProd = compareLiveRoutingEvents([
+        productionEvent({ learningTask: 'some_other_task' }),
+        shadowEvent(),
+      ])
+      expect(reportProd.invalidProductionLabelCount).toBe(1)
+
+      const reportShadow = compareLiveRoutingEvents([
+        productionEvent(),
+        shadowEvent({ learningTask: 'some_other_task' }),
+      ])
+      expect(reportShadow.invalidShadowPredictionCount).toBe(1)
+    })
+
+    it('a wrong top-level schema_version is rejected even when learningTask is correct', () => {
+      const report = compareLiveRoutingEvents([
+        productionEvent({ schemaVersion: 'intent-routing-v2' }),
+        shadowEvent(),
+      ])
+      expect(report.invalidProductionLabelCount).toBe(1)
+    })
+
+    it('a top-level/payload schema disagreement is rejected (top-level valid, payload schemaVersion wrong)', () => {
+      const report = compareLiveRoutingEvents([
+        productionEvent(),
+        shadowEvent({ payload: { ...VALID_SHADOW_PAYLOAD, schemaVersion: 'intent-routing-v2' } }),
+      ])
+      expect(report.invalidShadowPredictionCount).toBe(1)
+    })
+
+    it('a shadow_prediction missing provider_id is rejected, never normalized to an eligible empty-string model slice', () => {
+      const report = compareLiveRoutingEvents([
+        productionEvent(),
+        shadowEvent({ providerId: null }),
+      ])
+      expect(report.eligiblePairs).toBe(0)
+      expect(report.invalidShadowPredictionCount).toBe(1)
+    })
+
+    it('a shadow_prediction missing model_id is rejected, never normalized to an eligible empty-string model slice', () => {
+      const report = compareLiveRoutingEvents([
+        productionEvent(),
+        shadowEvent({ modelId: null }),
+      ])
+      expect(report.eligiblePairs).toBe(0)
+      expect(report.invalidShadowPredictionCount).toBe(1)
+    })
+
+    it('a shadow_prediction missing model_version is rejected, never normalized to an eligible empty-string model slice', () => {
+      const report = compareLiveRoutingEvents([
+        productionEvent(),
+        shadowEvent({ modelVersion: null }),
+      ])
+      expect(report.eligiblePairs).toBe(0)
+      expect(report.invalidShadowPredictionCount).toBe(1)
+    })
+
+    it('a valid comparison never carries an empty-string providerId/modelId/modelVersion', () => {
+      const report = compareLiveRoutingEvents([productionEvent(), shadowEvent()])
+      expect(report.comparisons[0].providerId).not.toBe('')
+      expect(report.comparisons[0].modelId).not.toBe('')
+      expect(report.comparisons[0].modelVersion).not.toBe('')
+    })
+
+    it('two rows sharing the same MALFORMED learningTask/schemaVersion strings are never treated as a comparable pair merely because their malformed strings happen to match each other', () => {
+      const report = compareLiveRoutingEvents([
+        productionEvent({ learningTask: 'bogus_task', schemaVersion: 'bogus-schema' }),
+        shadowEvent({ learningTask: 'bogus_task', schemaVersion: 'bogus-schema' }),
+      ])
+      expect(report.eligiblePairs).toBe(0)
+      expect(report.comparisons).toHaveLength(0)
+      expect(report.invalidProductionLabelCount).toBe(1)
+      expect(report.invalidShadowPredictionCount).toBe(1)
+    })
+  })
+
+  // ALF-1B correction 2, item 4: invalid Shadow accounting must not depend
+  // on whether the corresponding production group later proves clean.
+  describe('invalid Shadow counting is independent of production cleanliness (ALF-1B correction 2, item 4)', () => {
+    it('an invalid shadow prediction is counted even when production for the same turn is MISSING entirely', () => {
+      const report = compareLiveRoutingEvents([
+        shadowEvent({ providerId: null }), // envelope-invalid, no production row at all
+      ])
+      expect(report.invalidShadowPredictionCount).toBe(1)
+      expect(report.eligiblePairs).toBe(0)
+    })
+
+    it('an invalid shadow prediction is counted even when production for the same turn is AMBIGUOUS (duplicate rows)', () => {
+      const report = compareLiveRoutingEvents([
+        productionEvent({ id: 'prod-1' }),
+        productionEvent({ id: 'prod-2' }),
+        shadowEvent({ providerId: null }), // envelope-invalid
+      ])
+      expect(report.ambiguousProductionGroups).toBe(1)
+      expect(report.invalidShadowPredictionCount).toBe(1)
+      expect(report.eligiblePairs).toBe(0)
+    })
+
+    it('an invalid shadow prediction is counted even when production for the same turn is itself INVALID', () => {
+      const report = compareLiveRoutingEvents([
+        productionEvent({ producerType: 'shadow_model', labelConfidence: 'candidate' }), // envelope-invalid production
+        shadowEvent({ providerId: null }), // envelope-invalid shadow
+      ])
+      expect(report.invalidProductionLabelCount).toBe(1)
+      expect(report.invalidShadowPredictionCount).toBe(1)
+      expect(report.eligiblePairs).toBe(0)
+    })
+
+    it('an AMBIGUOUS shadow model slice is counted even when production for the same turn is missing/invalid', () => {
+      const report = compareLiveRoutingEvents([
+        shadowEvent({ id: 'shadow-a' }),
+        shadowEvent({ id: 'shadow-b' }), // same model slice as shadow-a -- ambiguous
+      ])
+      expect(report.ambiguousShadowModelSlices).toBe(1)
+      expect(report.eligiblePairs).toBe(0)
+    })
+
+    it('a genuinely VALID shadow prediction with no clean production counterpart produces no comparison and is not miscounted as invalid', () => {
+      const report = compareLiveRoutingEvents([
+        shadowEvent(), // fully valid, no production row at all in this group
+      ])
+      expect(report.invalidShadowPredictionCount).toBe(0)
+      expect(report.ambiguousShadowModelSlices).toBe(0)
+      expect(report.missingProductionSide).toBe(1)
+      expect(report.comparisons).toHaveLength(0)
+    })
   })
 
   // I. source_message_id mismatch => never pair.
@@ -359,13 +572,56 @@ describe('compareLiveRoutingEvents', () => {
     })
   })
 
-  it('events with no sourceMessageId at all are excluded from pairing entirely, not crashing and not silently paired by any other heuristic', () => {
+  // ALF-1B correction 2, item 3: a missing sourceMessageId must never be
+  // silently dropped from consideration -- it is explicitly counted as
+  // invalid/unpairable (not merely "excluded"), and the same applies
+  // whether it's a production_label or a shadow_prediction row missing it.
+  it('a production_label with no sourceMessageId is reported as an invalid, unpairable production label, never silently lost', () => {
+    const report = compareLiveRoutingEvents([
+      productionEvent({ sourceMessageId: null }),
+      shadowEvent(),
+    ])
+    expect(report.eligiblePairs).toBe(0)
+    expect(report.comparisons).toHaveLength(0)
+    expect(report.invalidProductionLabelCount).toBe(1)
+    // The shadow row now has no group to belong to at all (its own
+    // sourceMessageId='msg-1' no longer shares a pairing key with
+    // anything) -- missingProductionSide reflects that it is a shadow row
+    // with no production counterpart in ITS OWN group.
+    expect(report.missingProductionSide).toBe(1)
+  })
+
+  it('a shadow_prediction with no sourceMessageId is reported as an invalid, unpairable shadow prediction, never silently lost', () => {
+    const report = compareLiveRoutingEvents([
+      productionEvent(),
+      shadowEvent({ sourceMessageId: null }),
+    ])
+    expect(report.eligiblePairs).toBe(0)
+    expect(report.comparisons).toHaveLength(0)
+    expect(report.invalidShadowPredictionCount).toBe(1)
+    // The production row's own group now has no shadow row in it at all.
+    expect(report.missingShadowSide).toBe(1)
+  })
+
+  it('production and shadow rows both missing sourceMessageId are each independently reported as invalid, never crashing and never silently paired by any other heuristic', () => {
     const report = compareLiveRoutingEvents([
       productionEvent({ sourceMessageId: null }),
       shadowEvent({ sourceMessageId: null }),
     ])
     expect(report.eligiblePairs).toBe(0)
     expect(report.comparisons).toHaveLength(0)
+    expect(report.invalidProductionLabelCount).toBe(1)
+    expect(report.invalidShadowPredictionCount).toBe(1)
+  })
+
+  it('an empty-string sourceMessageId is treated the same as null -- invalid/unpairable, never accepted as a real pairing key component', () => {
+    const report = compareLiveRoutingEvents([
+      productionEvent({ sourceMessageId: '' }),
+      shadowEvent({ sourceMessageId: '' }),
+    ])
+    expect(report.eligiblePairs).toBe(0)
+    expect(report.invalidProductionLabelCount).toBe(1)
+    expect(report.invalidShadowPredictionCount).toBe(1)
   })
 
   it('non-routing event kinds (e.g. turn_observed, user_feedback, execution_outcome) are ignored entirely', () => {
