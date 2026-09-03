@@ -20,18 +20,16 @@ import {
   Wallet,
 } from "lucide-react";
 import { AddHabitModal } from "@/features/habits/components/AddHabitModal";
-import { AgentBriefingCard } from "@/components/AgentBriefingCard";
-import "@/components/AgentBriefingCard.css";
 import { FlowAIOrb } from "@/components/FlowAIOrb";
 import { SmartflowAsciiVisual } from "@/components/smartflow";
-import { SmartAcademyWidget } from "@/components/dashboard/SmartAcademyWidget";
 import { TodaysFocusWidget } from "@/components/dashboard/TodaysFocusWidget";
 import { AiInsightsWidget } from "@/components/dashboard/AiInsightsWidget";
-import { RecommendedTopicsWidget } from "@/components/dashboard/RecommendedTopicsWidget";
+import ChatPage from "@/pages/ChatPage";
 import { useSetPageTitle } from "@/hooks/useSetPageTitle";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { SkeletonBlock } from "@/components/common/Skeletons";
+import { cn } from "@/lib/utils";
 import { useMusicPlayer, loadHistory } from "@/hooks/useMusicPlayer";
 import { useWorkspace } from "@/features/workspace";
 import { trackWorkspaceInteraction } from "@/features/workspace";
@@ -59,7 +57,6 @@ import type {
   WorkspaceNavigationTarget,
   WorkspaceRightRail,
   WorkspaceSignalDomain,
-  WorkspaceSkill,
   WorkspaceWelcome,
   Workspace,
   WorkspacePlanStep,
@@ -396,7 +393,69 @@ function FocusPlaylistCard() {
   );
 }
 
-function FlowAIAssistantRail({ rail }: Readonly<{ rail: WorkspaceRightRail }>) {
+// Home / Flow AI v2 design cleanup: the "Smart Context" rail's first (and
+// most important) group -- a compact, read-only "what's happening today"
+// summary. Deliberately not its own Card (TodaysFocusWidget already
+// supplies its own card chrome below) so it doesn't nest cards inside
+// cards. Uses only data Dashboard already had available (workspace.agentContext.events
+// for `nextEvent`, the same pending-approval predicate the existing
+// approval boundary card already uses for `approvalsPendingCount`) -- no
+// new fetch, no new recommendation logic.
+function HomeTodayContext({
+  nextEvent,
+  approvalsPendingCount,
+}: Readonly<{
+  nextEvent: { title: string; startLabel: string } | null;
+  approvalsPendingCount: number;
+}>) {
+  return (
+    <div className="space-y-3">
+      <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
+        Today
+      </p>
+      {(nextEvent || approvalsPendingCount > 0) && (
+        <div className="space-y-2">
+          {nextEvent && (
+            <div className="rounded-lg border border-border/25 bg-background/15 px-3 py-2">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Next event
+              </p>
+              <p className="mt-1 truncate text-sm font-medium text-foreground">{nextEvent.title}</p>
+              <p className="text-[11px] text-muted-foreground">{nextEvent.startLabel}</p>
+            </div>
+          )}
+          {approvalsPendingCount > 0 && (
+            <div className="rounded-lg border border-primary/20 bg-primary/[0.04] px-3 py-2">
+              <p className="text-xs font-medium text-foreground">
+                {approvalsPendingCount} pending approval{approvalsPendingCount > 1 ? "s" : ""}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+      <TodaysFocusWidget />
+    </div>
+  );
+}
+
+// Home / Flow AI v2 design cleanup: `showChatEntry` toggles the orb/status/
+// "Chat with Flow AI" CTA block. On Home itself the real, working chat
+// panel is already the dominant surface (see Dashboard's own composition
+// below), so that CTA would just point at itself -- `showChatEntry={false}`
+// there renders this as a plain "Relevant Context" supporting card instead,
+// and ALSO gates out Continue learning / Recommended today (Home V2 design
+// contract correction: those are permanent-dashboard-widget content,
+// approved to be removed/reduced from normal Home -- they only remain on
+// the showChatEntry=true cold-start path). The welcome (cold-start) flow
+// still passes no prop (defaults to true), unchanged from before this
+// task, since it has no inline chat panel yet.
+// Exported (named, alongside the default `Dashboard`) solely so
+// DashboardHomeFlowAiLayout.test.tsx can render it directly and assert on
+// real DOM output instead of source-text regexes for this distinction.
+export function FlowAIAssistantRail({
+  rail,
+  showChatEntry = true,
+}: Readonly<{ rail: WorkspaceRightRail; showChatEntry?: boolean }>) {
   const navigate = useNavigate();
   const visibleLessons = rail.recentLessons.slice(0, 6);
   const visibleRecommendations = rail.recommendations.slice(0, 6);
@@ -406,60 +465,81 @@ function FlowAIAssistantRail({ rail }: Readonly<{ rail: WorkspaceRightRail }>) {
 
   return (
     <Card className="glass-card relative overflow-hidden">
-      <SmartflowAsciiVisual
-        variant="sphere"
-        className="pointer-events-none absolute -right-24 -top-24 h-[300px] w-[300px] opacity-30"
-      />
+      {showChatEntry && (
+        <SmartflowAsciiVisual
+          variant="sphere"
+          className="pointer-events-none absolute -right-24 -top-24 h-[300px] w-[300px] opacity-30"
+        />
+      )}
 
       <CardContent className="relative z-10 space-y-4 p-4">
-        <div className="flex items-start gap-3">
-            <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-visible">
-              <FlowAIOrb
-                size="md"
-                state="presence"
-                beam={false}
-                particles
-                glowIntensity={0.9}
-                theme="transparent"
-                ariaLabel="Flow AI active assistant"
-              />
-            </div>
-            <div className="min-w-0">
-              <p className="text-sm font-semibold">Flow AI</p>
-              <div className="mt-2 space-y-1.5">
-                <div className="flex items-center gap-2 text-xs font-medium text-emerald-300">
-                  <span className="relative flex h-2 w-2">
-                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-45" />
-                    <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-400" />
-                  </span>
-                  Online
+        {showChatEntry ? (
+          <>
+            <div className="flex items-start gap-3">
+                <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-visible">
+                  <FlowAIOrb
+                    size="md"
+                    state="presence"
+                    beam={false}
+                    particles
+                    glowIntensity={0.9}
+                    theme="transparent"
+                    ariaLabel="Flow AI active assistant"
+                  />
                 </div>
-                <p className="text-xs leading-5 text-muted-foreground">
-                  {rail.statusMessage}
-                </p>
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold">Flow AI</p>
+                  <div className="mt-2 space-y-1.5">
+                    <div className="flex items-center gap-2 text-xs font-medium text-emerald-300">
+                      <span className="relative flex h-2 w-2">
+                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-45" />
+                        <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-400" />
+                      </span>
+                      Online
+                    </div>
+                    <p className="text-xs leading-5 text-muted-foreground">
+                      {rail.statusMessage}
+                    </p>
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
 
-        <Button
-          size="sm"
-          className="w-full gap-2 text-white border-0"
-          style={{ background: "var(--gradient-primary)" }}
-          onClick={() => {
-            trackWorkspaceUiClick({
-              type: "chat_opened",
-              domain: "learning",
-              targetId: "flow-ai-chat",
-              targetTitle: "Chat with Flow AI",
-              source: "flow_ai",
-            });
-            navigate("/chat");
-          }}
-        >
-          <MessageSquare className="w-4 h-4" />
-          Chat with Flow AI
-        </Button>
+            <Button
+              size="sm"
+              className="w-full gap-2 text-white border-0"
+              style={{ background: "var(--gradient-primary)" }}
+              onClick={() => {
+                trackWorkspaceUiClick({
+                  type: "chat_opened",
+                  domain: "learning",
+                  targetId: "flow-ai-chat",
+                  targetTitle: "Chat with Flow AI",
+                  source: "flow_ai",
+                });
+                navigate("/chat");
+              }}
+            >
+              <MessageSquare className="w-4 h-4" />
+              Chat with Flow AI
+            </Button>
+          </>
+        ) : (
+          <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
+            Relevant Context
+          </p>
+        )}
 
+        {/* Home V2 design contract correction: Continue learning and
+            Recommended today are permanent-dashboard-widget content --
+            approved to be removed/reduced from normal Home (spec's Home V2
+            contract). They stay ONLY on the cold-start/WelcomeWorkspace
+            path (showChatEntry=true, this component's pre-existing default
+            behaviour, deliberately untouched here) and are never rendered
+            for normal Home's "Relevant Context" group
+            (showChatEntry=false) -- see the two `{showChatEntry && (...)}`
+            guards below and the FlowAIAssistantRail usage sites in
+            Dashboard's own return JSX. */}
+        {showChatEntry && (
         <div className="border-t border-border/35 pt-3">
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
             Continue learning
@@ -527,7 +607,9 @@ function FlowAIAssistantRail({ rail }: Readonly<{ rail: WorkspaceRightRail }>) {
             </button>
           </div>
         </div>
+        )}
 
+        {showChatEntry && (
         <div className="border-t border-border/35 pt-3">
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
             Recommended today
@@ -581,8 +663,17 @@ function FlowAIAssistantRail({ rail }: Readonly<{ rail: WorkspaceRightRail }>) {
             </button>
           </div>
         </div>
+        )}
 
-        <div className="border-t border-border/35 pt-3">
+        {/* Recent conversation is the ONLY "Relevant Context" content for
+            normal Home (showChatEntry=false) -- Continue learning and
+            Recommended today are gated out above. When showChatEntry is
+            false this is the first block under the "Relevant Context"
+            label, so it gets no top border there (mirrors HomeTodayContext's
+            own first-block treatment); when true it's the third block
+            after the CTA/Continue-learning/Recommended-today stack, same
+            as before this correction. */}
+        <div className={cn("pt-3", showChatEntry ? "border-t border-border/35" : "border-t-0")}>
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
             Recent conversation
           </p>
@@ -646,56 +737,6 @@ function FlowAIAssistantRail({ rail }: Readonly<{ rail: WorkspaceRightRail }>) {
         </div>
       </CardContent>
     </Card>
-  );
-}
-
-function HeroSkills({
-  className = "",
-  skills,
-}: Readonly<{ className?: string; skills: WorkspaceSkill[] }>) {
-  const navigate = useNavigate();
-
-  return (
-    <section className={className}>
-      <div className="space-y-3">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-            How I can help today
-          </p>
-        </div>
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
-          {skills.map((skill) => {
-            const SkillIcon = workspaceIconMap[skill.icon];
-            return (
-              <button
-                key={skill.title}
-                type="button"
-                onClick={() =>
-                  trackAndNavigateToWorkspaceTarget(navigate, skill.target, {
-                    type: "skill_opened",
-                    source: "hero",
-                    targetId: skill.title,
-                    targetTitle: skill.title,
-                    domain: skill.signalDomain,
-                  })
-                }
-                className="group flex min-h-[92px] items-start gap-3 rounded-xl border border-border/35 bg-background/25 p-3 text-left transition-all hover:-translate-y-0.5 hover:border-primary/35 hover:bg-primary/10 hover:shadow-[0_0_24px_rgba(139,92,246,0.12)]"
-              >
-                <div className="icon-tile h-9 w-9 rounded-lg bg-primary/10 transition-colors group-hover:bg-primary/15">
-                  <SkillIcon className="h-4 w-4 text-primary" />
-                </div>
-                <div className="min-w-0">
-                  <p className="text-sm font-semibold leading-5">{skill.title}</p>
-                  <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                    {skill.description}
-                  </p>
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-    </section>
   );
 }
 
@@ -800,7 +841,6 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const { t } = useT();
   const [showAddHabit, setShowAddHabit] = useState(false);
-  const [showDailyStoryDetails, setShowDailyStoryDetails] = useState(false);
   const [approvalDialogOpen, setApprovalDialogOpen] = useState(false);
   const [approvalDialogTarget, setApprovalDialogTarget] =
     useState<"generic" | "taskComplete" | null>(null);
@@ -842,6 +882,39 @@ export default function Dashboard() {
         : null,
     [pendingStepApproval, workspace.plan.steps],
   );
+  // Home / Flow AI v2 design cleanup: the Smart Context rail's compact
+  // "Today" summary -- both derived from data `useWorkspace()` already
+  // fetches (workspace.agentContext.events / workspace.approval.stepApprovals),
+  // no new backend call. `approvalsPendingCount` reuses the exact same
+  // pending/requiresApproval predicate as the approval boundary card above.
+  const approvalsPendingCount = useMemo(
+    () =>
+      workspace.approval.stepApprovals.filter(
+        (approval) => approval.status === "pending" && approval.requiresApproval,
+      ).length,
+    [workspace.approval.stepApprovals],
+  );
+  const nextEvent = useMemo(() => {
+    const nowIso = new Date().toISOString();
+    const upcoming = workspace.agentContext.events
+      .filter((event) => {
+        const start = event.dateTimeStart ?? event.start;
+        return Boolean(start) && start! >= nowIso;
+      })
+      .sort((a, b) => (a.dateTimeStart ?? a.start ?? "").localeCompare(b.dateTimeStart ?? b.start ?? ""));
+    const soonest = upcoming[0];
+    if (!soonest) return null;
+    const start = soonest.dateTimeStart ?? soonest.start;
+    if (!start) return null;
+    return {
+      title: soonest.title,
+      startLabel: new Date(start).toLocaleString(undefined, {
+        weekday: "short",
+        hour: "numeric",
+        minute: "2-digit",
+      }),
+    };
+  }, [workspace.agentContext.events]);
   const approvalPresentationTool = useMemo(
     () =>
       pendingStepApproval?.toolId
@@ -1015,105 +1088,48 @@ export default function Dashboard() {
             />
           ) : (
             <>
+      {/* Home / Flow AI v2 design cleanup: compact greeting + tiny daily
+          brief, replacing the old hero card's decorative gradient, the
+          "How I can help today" skills grid, and the bordered "Today's
+          Signals" box with one small counts line -- metrics as supporting
+          context, not a primary card (spec section 2/7). Net-this-month is
+          intentionally not repeated here (still on the Finance page); the
+          three counts mirrored below are the same predicate/fields the
+          rest of this file already used for them. */}
       <WorkspaceRevealSection order={0}>
-        <section className="relative overflow-hidden rounded-2xl border border-primary/10 bg-card/35 px-4 py-5 sm:px-6 lg:px-8 lg:py-6">
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-x-0 top-0 h-56"
-            style={{
-              background:
-                "radial-gradient(ellipse 46% 34% at 50% 0%, rgba(196,184,255,0.13), transparent 72%), radial-gradient(ellipse 32% 22% at 12% 12%, rgba(34,211,238,0.055), transparent 74%)",
-            }}
-          />
-
-          <div className="relative z-10 flex flex-col">
-            <p className="text-[11px] font-semibold uppercase tracking-widest text-primary/75">
-              {workspace.today.label}
-            </p>
-            <h1 className="mt-1.5 max-w-3xl text-2xl font-semibold tracking-tight text-foreground sm:text-[1.7rem]">
-              {workspace.hero.title}
-            </h1>
-            <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
-              {workspace.hero.summary}
-            </p>
-
-            <HeroSkills
-              className="mt-5 hidden lg:block"
-              skills={workspace.hero.skills}
-            />
-
-            <div className="mt-4 flex flex-col gap-2 rounded-lg border border-border/25 bg-secondary/[0.07] px-3 py-2.5 text-left sm:flex-row sm:items-center sm:justify-between">
-              <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-                Today&apos;s Signals
-              </p>
-              {workspace.signals.isLoading ? (
-                <div className="flex flex-wrap gap-3">
-                  <SkeletonBlock className="h-4 w-16" />
-                  <SkeletonBlock className="h-4 w-16" />
-                  <SkeletonBlock className="h-4 w-20" />
-                </div>
-              ) : (
-                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                  <span>
-                    <span className="text-foreground">{workspace.signals.incompleteTasks}</span> Tasks
-                  </span>
-                  <span>
-                    <span className="text-foreground">{workspace.signals.eventsToday}</span> Events
-                  </span>
-                  <span>
-                    <span className="text-foreground">€{workspace.signals.netThisMonthLabel}</span> Net
-                  </span>
-                </div>
-              )}
-            </div>
-          </div>
-        </section>
-      </WorkspaceRevealSection>
-
-      <WorkspaceRevealSection order={1} className="lg:hidden">
-        <FlowAIAssistantRail rail={workspace.rightRail} />
-      </WorkspaceRevealSection>
-
-      <WorkspaceRevealSection order={2} className="lg:hidden">
-        <HeroSkills skills={workspace.hero.skills} />
-      </WorkspaceRevealSection>
-
-      <WorkspaceRevealSection order={1}>
-        <section className="space-y-3">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-              My Suggested Actions
-            </p>
-            <h2 className="mt-1 text-lg font-semibold tracking-tight">I surfaced these next</h2>
-          </div>
-          <div className="rounded-2xl border border-primary/10 bg-primary/[0.025] p-2.5">
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
-              {workspace.suggestedActions.map((action) => {
-                const ActionIcon = workspaceIconMap[action.icon];
-                return (
-                  <button
-                    key={action.title}
-                    type="button"
-                    onClick={() =>
-                      trackAndNavigateToWorkspaceTarget(navigate, action.target, {
-                        type: "action_clicked",
-                        source: "suggested_actions",
-                        targetId: action.title,
-                        targetTitle: action.title,
-                        domain: action.signalDomain,
-                      })
-                    }
-                    className="group flex min-h-[86px] flex-col rounded-xl border border-border/35 bg-background/25 p-3 text-left transition-colors hover:border-primary/35 hover:bg-primary/10"
-                  >
-                    <ActionIcon className="h-4 w-4 text-primary" />
-                    <span className="mt-2.5 text-sm font-semibold">{action.title}</span>
-                    <span className="mt-1 text-xs leading-5 text-muted-foreground">
-                      {action.description}
+        <section className="px-0.5">
+          <p className="text-[11px] font-semibold uppercase tracking-widest text-primary/70">
+            {workspace.today.label}
+          </p>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-foreground sm:text-[1.7rem]">
+            {workspace.hero.title}
+          </h1>
+          <p className="mt-1.5 max-w-xl text-sm leading-6 text-muted-foreground">
+            {workspace.hero.summary}
+          </p>
+          <div className="mt-3 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground">
+            {workspace.signals.isLoading ? (
+              <SkeletonBlock className="h-3.5 w-40" />
+            ) : (
+              <>
+                <span>
+                  <span className="font-medium text-foreground">{workspace.signals.incompleteTasks}</span> tasks
+                </span>
+                <span aria-hidden="true">·</span>
+                <span>
+                  <span className="font-medium text-foreground">{workspace.signals.eventsToday}</span> events
+                </span>
+                {approvalsPendingCount > 0 && (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <span>
+                      <span className="font-medium text-foreground">{approvalsPendingCount}</span> approval
+                      {approvalsPendingCount > 1 ? "s" : ""}
                     </span>
-                  </button>
-                );
-              })}
-            </div>
+                  </>
+                )}
+              </>
+            )}
           </div>
         </section>
       </WorkspaceRevealSection>
@@ -1358,104 +1374,35 @@ export default function Dashboard() {
         </WorkspaceRevealSection>
       )}
 
-      <WorkspaceRevealSection order={2}>
-        <section className="space-y-3">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-              AI Reasoning
-            </p>
-            <h2 className="mt-1 text-lg font-semibold tracking-tight">Why these matter today</h2>
-          </div>
+      {/* Home / Flow AI v2 design cleanup: Flow AI is the dominant surface
+          on Home now -- the real ChatPage, embedded (not a promo card that
+          links out to /chat). `embedded` only changes ChatPage's own root
+          height/sticky classes (see ChatPage.tsx); every other behaviour
+          (messages, composer, approval cards, task/calendar previews,
+          execution state, RTL) is exactly the same component /chat uses.
+          The panel's own height is set here, by this parent, since
+          embedding is what makes ChatPage's normal `lg:h-screen` wrong. */}
+      <WorkspaceRevealSection order={1}>
+        <div className="h-[560px] overflow-hidden rounded-2xl border border-border/30 bg-card/20 lg:h-[calc(100vh-230px)] lg:min-h-[560px]">
+          <ChatPage embedded />
+        </div>
+      </WorkspaceRevealSection>
 
-          <div className="rounded-xl border border-border/25 bg-background/15 p-3 text-left backdrop-blur-sm sm:p-4">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <Sparkles className="h-3.5 w-3.5 text-primary" />
-                <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-                  AI Reasoning
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowDailyStoryDetails((value) => !value)}
-                className="text-xs font-medium text-primary transition-colors hover:text-primary/80"
-              >
-                {showDailyStoryDetails ? "Show less" : "Read full briefing"}
-              </button>
-            </div>
-
-            <ul className="mt-3 grid gap-x-6 gap-y-1.5 text-sm text-foreground/90 sm:grid-cols-2">
-              {workspace.dailyStory.bullets.map((item) => (
-                <li key={item} className="flex gap-2 border-t border-border/30 py-2 first:border-t-0 sm:[&:nth-child(2)]:border-t-0">
-                  <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-primary/70" />
-                  <span className="leading-5">{item}</span>
-                </li>
-              ))}
-            </ul>
-
-            {showDailyStoryDetails && (
-              <div className="mt-4 border-t border-border/50 pt-4 [&_.agent-briefing-card]:!bg-transparent [&_.agent-briefing-card]:!border-0 [&_.agent-briefing-card]:!p-0 [&_.agent-briefing-card]:!m-0 [&_.agent-briefing-card]:!rounded-none">
-                <AgentBriefingCard />
-              </div>
-            )}
-          </div>
-        </section>
+      {/* Home / Flow AI v2 design cleanup: Smart Context, mobile placement
+          -- stacks below the chat panel (spec section 8), never squeezing
+          it. Desktop shows the same two groups in the sticky rail instead
+          (below, outside this WelcomeWorkspace/isLowData branch's `<div
+          className="space-y-7">` column). */}
+      <WorkspaceRevealSection order={2} className="space-y-4 lg:hidden">
+        <HomeTodayContext nextEvent={nextEvent} approvalsPendingCount={approvalsPendingCount} />
+        <FlowAIAssistantRail rail={workspace.rightRail} showChatEntry={false} />
       </WorkspaceRevealSection>
 
       <WorkspaceRevealSection order={3}>
-        <section className="space-y-3">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-              What needs attention
-            </p>
-            <h2 className="mt-1 text-lg font-semibold tracking-tight">Today&apos;s focus</h2>
-          </div>
-          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 lg:gap-4">
-            <TodaysFocusWidget />
-            <AiInsightsWidget />
-          </div>
-        </section>
+        <AiInsightsWidget />
       </WorkspaceRevealSection>
 
-      <WorkspaceRevealSection order={4}>
-        <section className="space-y-3">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-              Continue Learning
-            </p>
-            <h2 className="mt-1 text-lg font-semibold tracking-tight">Selected for your current momentum</h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Continue from the Smart Academy path already waiting in your workspace.
-            </p>
-          </div>
-          <SmartAcademyWidget />
-        </section>
-      </WorkspaceRevealSection>
-
-      <WorkspaceRevealSection order={5}>
-        <section className="space-y-3">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-              Recommended Today
-            </p>
-            <h2 className="mt-1 text-lg font-semibold tracking-tight">Because I noticed...</h2>
-          </div>
-          <div className="flex flex-col gap-2 sm:flex-row">
-            {workspace.recommendationReasons.map((reason) => (
-              <p
-                key={reason.title}
-                className="flex-1 rounded-lg border border-border/35 bg-secondary/10 px-3 py-2 text-xs leading-5 text-muted-foreground"
-              >
-                <span className="font-medium text-foreground">{reason.title}</span>{" "}
-                {reason.body}
-              </p>
-            ))}
-          </div>
-          <RecommendedTopicsWidget />
-        </section>
-      </WorkspaceRevealSection>
-
-      <WorkspaceRevealSection order={6}>
+      <WorkspaceRevealSection order={3}>
         <section className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-4">
           <Card className="glass-card">
             <CardContent className="p-3 space-y-3">
@@ -1558,8 +1505,15 @@ export default function Dashboard() {
           )}
         </div>
 
-        <WorkspaceRevealSection order={2} className="hidden lg:sticky lg:top-6 lg:block">
-          <FlowAIAssistantRail rail={workspace.rightRail} />
+        {/* Home / Flow AI v2 design cleanup: Smart Context, desktop
+            placement -- the same two groups as the mobile stack above,
+            sticky beside the dominant chat panel rather than a second
+            dashboard's worth of cards (spec section 4). */}
+        <WorkspaceRevealSection order={2} className="hidden space-y-4 lg:sticky lg:top-6 lg:block">
+          {!workspace.isLowData && (
+            <HomeTodayContext nextEvent={nextEvent} approvalsPendingCount={approvalsPendingCount} />
+          )}
+          <FlowAIAssistantRail rail={workspace.rightRail} showChatEntry={workspace.isLowData} />
         </WorkspaceRevealSection>
       </div>
       <StepApprovalDialog
