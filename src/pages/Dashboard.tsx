@@ -946,7 +946,15 @@ export default function Dashboard() {
               workspace signals; no new backend reads. At <=760px the v2
               rev-2 file pins the row as an explicit 2x2 grid (#sfMetrics:
               1fr 1fr, 8px gap, 10px bottom margin; capsules min-w-0 with
-              7px/10px padding) instead of relying on flex wrapping. */}
+              7px/10px padding) instead of relying on flex wrapping.
+              PO decision (post-v2 rev-2): the four capsules are
+              CLICKABLE -- Open Tasks -> /tasks, Today's Events ->
+              /calendar, Habit Streak -> /habits (existing routes,
+              tracked like every other workspace navigation), and
+              Approvals opens the SAME StepApprovalDialog the rail's
+              Pending Approvals rows open (first pending item; disabled
+              when nothing is pending). Navigation + the existing dialog
+              only -- no new execution surface. */}
           <div className="mb-3 flex flex-none flex-wrap gap-2.5 max-[760px]:mb-2.5 max-[760px]:grid max-[760px]:grid-cols-2 max-[760px]:gap-2">
             {workspace.signals.isLoading ? (
               <>
@@ -957,7 +965,19 @@ export default function Dashboard() {
               </>
             ) : (
               <>
-                <div className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-[#7078B4]/[0.22] bg-[#0B0D20]/60 py-2 pl-2.5 pr-3.5 backdrop-blur-[8px] max-[760px]:min-w-0 max-[760px]:py-[7px] max-[760px]:pr-2.5">
+                <button
+                  type="button"
+                  onClick={() =>
+                    trackAndNavigateToWorkspaceTarget(navigate, { route: "/tasks" }, {
+                      type: "action_clicked",
+                      source: "hero",
+                      targetId: "home-metric-open-tasks",
+                      targetTitle: "Open Tasks",
+                      domain: "tasks",
+                    })
+                  }
+                  className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-[#7078B4]/[0.22] bg-[#0B0D20]/60 py-2 pl-2.5 pr-3.5 text-left backdrop-blur-[8px] transition-colors hover:border-[#7D5CFF]/40 hover:bg-[#7C4DFF]/[0.08] max-[760px]:min-w-0 max-[760px]:py-[7px] max-[760px]:pr-2.5"
+                >
                   <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#7C4DFF]/[0.16] text-[#A88BFF]">
                     <CheckSquare className="h-3.5 w-3.5" strokeWidth={2} />
                   </span>
@@ -967,8 +987,20 @@ export default function Dashboard() {
                       {workspace.signals.incompleteTasks}
                     </span>
                   </span>
-                </div>
-                <div className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-[#7078B4]/[0.22] bg-[#0B0D20]/60 py-2 pl-2.5 pr-3.5 backdrop-blur-[8px] max-[760px]:min-w-0 max-[760px]:py-[7px] max-[760px]:pr-2.5">
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    trackAndNavigateToWorkspaceTarget(navigate, { route: "/calendar" }, {
+                      type: "action_clicked",
+                      source: "hero",
+                      targetId: "home-metric-todays-events",
+                      targetTitle: "Today's Events",
+                      domain: "calendar",
+                    })
+                  }
+                  className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-[#7078B4]/[0.22] bg-[#0B0D20]/60 py-2 pl-2.5 pr-3.5 text-left backdrop-blur-[8px] transition-colors hover:border-[#7D5CFF]/40 hover:bg-[#7C4DFF]/[0.08] max-[760px]:min-w-0 max-[760px]:py-[7px] max-[760px]:pr-2.5"
+                >
                   <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#4F73FF]/[0.15] text-[#678BFF]">
                     <Calendar className="h-3.5 w-3.5" strokeWidth={2} />
                   </span>
@@ -978,8 +1010,26 @@ export default function Dashboard() {
                       {workspace.signals.eventsToday}
                     </span>
                   </span>
-                </div>
-                <div className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-[#7078B4]/[0.22] bg-[#0B0D20]/60 py-2 pl-2.5 pr-3.5 backdrop-blur-[8px] max-[760px]:min-w-0 max-[760px]:py-[7px] max-[760px]:pr-2.5">
+                </button>
+                <button
+                  type="button"
+                  // /habits is a real app route but not part of the
+                  // WorkspaceRoute union (that type stays untouched --
+                  // no shared-type change for a presentation click), so
+                  // this capsule tracks + navigates directly instead of
+                  // going through trackAndNavigateToWorkspaceTarget.
+                  onClick={() => {
+                    trackWorkspaceUiClick({
+                      type: "action_clicked",
+                      domain: "habits",
+                      targetId: "home-metric-habit-streak",
+                      targetTitle: "Habit Streak",
+                      source: "hero",
+                    });
+                    navigate("/habits");
+                  }}
+                  className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-[#7078B4]/[0.22] bg-[#0B0D20]/60 py-2 pl-2.5 pr-3.5 text-left backdrop-blur-[8px] transition-colors hover:border-[#7D5CFF]/40 hover:bg-[#7C4DFF]/[0.08] max-[760px]:min-w-0 max-[760px]:py-[7px] max-[760px]:pr-2.5"
+                >
                   <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#F3A044]/[0.14] text-[#F3A044]">
                     <Flame className="h-3.5 w-3.5" strokeWidth={2} />
                   </span>
@@ -989,8 +1039,13 @@ export default function Dashboard() {
                       {habitStreak}
                     </span>
                   </span>
-                </div>
-                <div className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-[#7D5CFF]/[0.35] bg-[#7C4DFF]/[0.10] py-2 pl-2.5 pr-3.5 backdrop-blur-[8px] max-[760px]:min-w-0 max-[760px]:py-[7px] max-[760px]:pr-2.5">
+                </button>
+                <button
+                  type="button"
+                  disabled={railPendingApprovals.length === 0}
+                  onClick={() => railPendingApprovals[0]?.onReview()}
+                  className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-[#7D5CFF]/[0.35] bg-[#7C4DFF]/[0.10] py-2 pl-2.5 pr-3.5 text-left backdrop-blur-[8px] transition-colors enabled:hover:border-[#7D5CFF]/60 enabled:hover:bg-[#7C4DFF]/[0.16] disabled:cursor-default max-[760px]:min-w-0 max-[760px]:py-[7px] max-[760px]:pr-2.5"
+                >
                   <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#7C4DFF]/20 text-[#C2B1FF]">
                     <ShieldCheck className="h-3.5 w-3.5" strokeWidth={2} />
                   </span>
@@ -1000,7 +1055,7 @@ export default function Dashboard() {
                       {approvalsPendingCount}
                     </span>
                   </span>
-                </div>
+                </button>
               </>
             )}
           </div>
