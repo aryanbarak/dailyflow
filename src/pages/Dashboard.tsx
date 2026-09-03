@@ -819,15 +819,17 @@ export default function Dashboard() {
           approved hero is the night-sky composition -- vertical dark sky
           gradient, the exact 20-star field (designated stars twinkle),
           the atmospheric glow ellipse, and the small inward moon/orb
-          group at (880,118) -- at the v2 heights (190px, 196px at
-          <=760px) with the v2 overlay: date eyebrow + the greeting H1
+          group at (880,118) -- at the v2 heights (190px; 132px at
+          <=760px per the v2 rev-2 file `SmartFlow Home v2 (standalone)
+          (1).html`, which compacted the whole mobile band) with the v2
+          overlay: date eyebrow + the greeting H1
           ONLY (v2 moved the supporting sentence out and relocated the
           metric capsules below the hero, above the chat shell). NO
           mountain/ridge/wave paths. Every position, radius, opacity,
           gradient stop and animation value below is copied verbatim from
           the v2 prototype. */}
       <WorkspaceRevealSection order={0} className="lg:shrink-0">
-        <section className="relative min-h-[190px] flex-none overflow-hidden max-[760px]:min-h-[196px]">
+        <section className="relative min-h-[190px] flex-none overflow-hidden max-[760px]:min-h-[132px]">
           <svg
             aria-hidden="true"
             viewBox="0 0 1200 300"
@@ -884,16 +886,17 @@ export default function Dashboard() {
           </svg>
 
           {/* v2 text overlay: padding 30px 36px 22px, max-width 720px;
-              date eyebrow + greeting H1 (32px, 23px at <=760px) and
+              date eyebrow + greeting H1 (32px, 22px at <=760px) and
               nothing else -- the supporting sentence is gone and the
               metric capsules moved below the hero (v2). At <=1120px the
               text caps at 56% so it stays clear of the moon; at <=760px
-              it compacts (18px padding, full width). */}
-          <div className="relative z-[2] max-w-[720px] px-9 pb-[22px] pt-[30px] max-[1120px]:max-w-[56%] max-[760px]:max-w-full max-[760px]:p-[18px]">
+              it compacts per the v2 rev-2 file (padding 16px 16px 12px,
+              full width). */}
+          <div className="relative z-[2] max-w-[720px] px-9 pb-[22px] pt-[30px] max-[1120px]:max-w-[56%] max-[760px]:max-w-full max-[760px]:px-4 max-[760px]:pb-3 max-[760px]:pt-4">
             <p className="text-[11px] font-semibold uppercase tracking-[.18em] text-[#9A6BFF]">
               {workspace.today.label}
             </p>
-            <h1 className="mt-2 text-[32px] font-semibold leading-[1.15] tracking-[-.01em] text-[#F7F7FC] max-[760px]:text-[23px]">
+            <h1 className="mt-2 text-[32px] font-semibold leading-[1.15] tracking-[-.01em] text-[#F7F7FC] max-[760px]:text-[22px]">
               {workspace.hero.title}
             </h1>
           </div>
@@ -920,28 +923,41 @@ export default function Dashboard() {
           scrolls ONLY inside the transcript; the composer stays
           permanently visible; the page never scrolls because the
           transcript grew. Below lg (the app's separate mobile shell,
-          which scrolls the page) the wrapper keeps a bounded 560px height
-          so the same internal contract holds there too. Nothing renders
-          after the chat except the mobile-stacked Assistant Rail. */}
+          which scrolls the page) the wrapper keeps a bounded height so
+          the same internal contract holds there too -- sized so that
+          with the shell's search row (~42px) + the v2 hero above (190px;
+          132px at <=760px per the v2 rev-2 mobile rules) and the fixed
+          bottom nav (pb-20, 80px) below, the composer lands exactly at
+          the nav's top edge on first paint instead of being clipped
+          behind it (mobile responsive pass): 318px = 42+196+80 for the
+          761-1023 band, 254px = 42+132+80 at <=760px; dvh also shrinks
+          with the on-screen keyboard, keeping the composer visible while
+          typing. min-h keeps the chat usable on short viewports (the
+          page then scrolls, as before). The <=760px paddings are the v2
+          rev-2 sfCenter values (10px all around). Nothing renders after
+          the chat except the mobile-stacked Assistant Rail. */}
       <WorkspaceRevealSection order={1} className="lg:flex lg:min-h-0 lg:flex-1 lg:flex-col">
-        <div className="flex h-[560px] flex-col px-4 pb-4 pt-3 max-[760px]:px-2.5 max-[760px]:pb-2.5 sm:px-7 sm:pb-5 lg:h-auto lg:min-h-0 lg:flex-1">
+        <div className="flex h-[calc(100dvh-318px)] min-h-[420px] flex-col px-4 pb-4 pt-3 max-[760px]:h-[calc(100dvh-254px)] max-[760px]:px-2.5 max-[760px]:pb-2.5 max-[760px]:pt-2.5 sm:px-7 sm:pb-5 lg:h-auto lg:min-h-0 lg:flex-1">
           {/* SmartFlow Home v2 §metrics: the metric capsules moved OUT of
               the hero to a flex-none row directly above the chat shell,
               each stretching equally (flex-1, min-width 150px), and v2
               adds the fourth capsule -- Habit Streak (existing habits
               data, best current streak). Counts are the existing
-              workspace signals; no new backend reads. */}
-          <div className="mb-3 flex flex-none flex-wrap gap-2.5">
+              workspace signals; no new backend reads. At <=760px the v2
+              rev-2 file pins the row as an explicit 2x2 grid (#sfMetrics:
+              1fr 1fr, 8px gap, 10px bottom margin; capsules min-w-0 with
+              7px/10px padding) instead of relying on flex wrapping. */}
+          <div className="mb-3 flex flex-none flex-wrap gap-2.5 max-[760px]:mb-2.5 max-[760px]:grid max-[760px]:grid-cols-2 max-[760px]:gap-2">
             {workspace.signals.isLoading ? (
               <>
-                <SkeletonBlock className="h-[46px] min-w-[150px] flex-1 rounded-xl" />
-                <SkeletonBlock className="h-[46px] min-w-[150px] flex-1 rounded-xl" />
-                <SkeletonBlock className="h-[46px] min-w-[150px] flex-1 rounded-xl" />
-                <SkeletonBlock className="h-[46px] min-w-[150px] flex-1 rounded-xl" />
+                <SkeletonBlock className="h-[46px] min-w-[150px] flex-1 rounded-xl max-[760px]:min-w-0" />
+                <SkeletonBlock className="h-[46px] min-w-[150px] flex-1 rounded-xl max-[760px]:min-w-0" />
+                <SkeletonBlock className="h-[46px] min-w-[150px] flex-1 rounded-xl max-[760px]:min-w-0" />
+                <SkeletonBlock className="h-[46px] min-w-[150px] flex-1 rounded-xl max-[760px]:min-w-0" />
               </>
             ) : (
               <>
-                <div className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-[#7078B4]/[0.22] bg-[#0B0D20]/60 py-2 pl-2.5 pr-3.5 backdrop-blur-[8px]">
+                <div className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-[#7078B4]/[0.22] bg-[#0B0D20]/60 py-2 pl-2.5 pr-3.5 backdrop-blur-[8px] max-[760px]:min-w-0 max-[760px]:py-[7px] max-[760px]:pr-2.5">
                   <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#7C4DFF]/[0.16] text-[#A88BFF]">
                     <CheckSquare className="h-3.5 w-3.5" strokeWidth={2} />
                   </span>
@@ -952,7 +968,7 @@ export default function Dashboard() {
                     </span>
                   </span>
                 </div>
-                <div className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-[#7078B4]/[0.22] bg-[#0B0D20]/60 py-2 pl-2.5 pr-3.5 backdrop-blur-[8px]">
+                <div className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-[#7078B4]/[0.22] bg-[#0B0D20]/60 py-2 pl-2.5 pr-3.5 backdrop-blur-[8px] max-[760px]:min-w-0 max-[760px]:py-[7px] max-[760px]:pr-2.5">
                   <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#4F73FF]/[0.15] text-[#678BFF]">
                     <Calendar className="h-3.5 w-3.5" strokeWidth={2} />
                   </span>
@@ -963,7 +979,7 @@ export default function Dashboard() {
                     </span>
                   </span>
                 </div>
-                <div className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-[#7078B4]/[0.22] bg-[#0B0D20]/60 py-2 pl-2.5 pr-3.5 backdrop-blur-[8px]">
+                <div className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-[#7078B4]/[0.22] bg-[#0B0D20]/60 py-2 pl-2.5 pr-3.5 backdrop-blur-[8px] max-[760px]:min-w-0 max-[760px]:py-[7px] max-[760px]:pr-2.5">
                   <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#F3A044]/[0.14] text-[#F3A044]">
                     <Flame className="h-3.5 w-3.5" strokeWidth={2} />
                   </span>
@@ -974,7 +990,7 @@ export default function Dashboard() {
                     </span>
                   </span>
                 </div>
-                <div className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-[#7D5CFF]/[0.35] bg-[#7C4DFF]/[0.10] py-2 pl-2.5 pr-3.5 backdrop-blur-[8px]">
+                <div className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-[#7D5CFF]/[0.35] bg-[#7C4DFF]/[0.10] py-2 pl-2.5 pr-3.5 backdrop-blur-[8px] max-[760px]:min-w-0 max-[760px]:py-[7px] max-[760px]:pr-2.5">
                   <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#7C4DFF]/20 text-[#C2B1FF]">
                     <ShieldCheck className="h-3.5 w-3.5" strokeWidth={2} />
                   </span>

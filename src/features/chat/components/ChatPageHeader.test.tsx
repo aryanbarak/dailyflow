@@ -185,6 +185,47 @@ describe("ChatPageHeader title override (Home V2 final visual correction, round 
   });
 });
 
+describe("ChatPageHeader mobile responsive pass (Home mobile fix)", () => {
+  it("the title cluster can shrink (min-w-0 + overflow-hidden) so it never renders on top of the controls cluster on narrow phones -- while the brand text itself stays untruncated", async () => {
+    const { ChatPageHeader } = await freshModules();
+    const { container } = render(
+      <ChatPageHeader
+        compact={false}
+        prefersReducedMotion
+        onOpenMoreMenu={vi.fn()}
+        onOpenConversations={vi.fn()}
+        onStartNewChat={vi.fn()}
+        titleOverride="SmartFlow"
+        showOnlineStatus
+      />,
+    );
+    const heading = within(container).getByRole("heading", { level: 1 });
+    const cluster = heading.closest("div");
+    expect(cluster?.className).toContain("min-w-0");
+    expect(cluster?.className).toContain("overflow-hidden");
+    expect(heading.className).not.toContain("truncate");
+  });
+
+  it("the Online ornament is sm-gated (hidden on phones, where the row has no room for it) but still renders whenever showOnlineStatus is set", async () => {
+    const { ChatPageHeader } = await freshModules();
+    const { container } = render(
+      <ChatPageHeader
+        compact={false}
+        prefersReducedMotion
+        onOpenMoreMenu={vi.fn()}
+        onOpenConversations={vi.fn()}
+        onStartNewChat={vi.fn()}
+        titleOverride="SmartFlow"
+        showOnlineStatus
+      />,
+    );
+    const onlineLabel = within(container).getByText("Online");
+    const ornament = onlineLabel.closest("span[class*='ps-1']");
+    expect(ornament?.className).toContain("hidden");
+    expect(ornament?.className).toContain("sm:flex");
+  });
+});
+
 describe("ChatPageHeader RTL mirroring (task 17c, D4)", () => {
   it("renders correctly (labels translate, no crash) under an ancestor dir=rtl -- the actual VISUAL mirroring is native flexbox behavior driven by that ancestor dir, which jsdom does not lay out pixel-for-pixel; this component deliberately has NO hardcoded flex-row-reverse of its own, relying entirely on the ancestor (ChatPage's own root, task 17c's E4 fix) the way the codebase's own RTL convention elsewhere (ConversationsDrawer's side={isRTL?...}) already establishes", async () => {
     const { useAppearance, ChatPageHeader } = await freshModules();

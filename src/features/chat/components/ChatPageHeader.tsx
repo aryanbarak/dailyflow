@@ -74,10 +74,19 @@ export function ChatPageHeader({
     <motion.header
       initial={prefersReducedMotion ? false : { opacity: 0, y: -10 }}
       animate={{ opacity: 1, y: 0 }}
-      className={cn("shrink-0 border-b border-border px-3 sm:px-6", compact ? "py-2" : "py-3")}
+      // v2 rev-2 mobile rules (#sfChatHead): the header compacts to
+      // 10px vertical padding at <=760px.
+      className={cn("shrink-0 border-b border-border px-3 max-[760px]:py-2.5 sm:px-6", compact ? "py-2" : "py-3")}
     >
       <div className="flex items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-2">
+        {/* Mobile responsive pass: min-w-0 + overflow-hidden let this
+            cluster actually SHRINK instead of overlapping the controls
+            cluster on narrow phones (the title cluster used to render on
+            top of the theme/density pill at <=390px). The brand text
+            itself stays untruncated -- the width is recovered by the
+            smaller mobile title size, the sm-gated Online label, and the
+            tighter mobile control gaps below. */}
+        <div className="flex min-w-0 items-center gap-2 overflow-hidden">
           <Button
             type="button"
             size="icon"
@@ -91,14 +100,16 @@ export function ChatPageHeader({
           <div className="icon-tile shrink-0">
             <Bot className="w-4 h-4 text-primary" />
           </div>
-          <h1 className="whitespace-nowrap text-lg font-semibold leading-tight">{titleOverride ?? t("chat_title")}</h1>
+          <h1 className="whitespace-nowrap text-base font-semibold leading-tight sm:text-lg">{titleOverride ?? t("chat_title")}</h1>
           {showOnlineStatus && (
             // Frozen handoff §7 colors via existing palette/tokens (the
             // chat feature's flowTokenDerivation test forbids raw hex
             // here): emerald-400 is exactly the frozen online-dot green,
             // and muted-foreground is the chat theme's secondary text
-            // token the frozen "Online" grey maps to.
-            <span className="flex items-center gap-1.5 ps-1">
+            // token the frozen "Online" grey maps to. Hidden below sm:
+            // on phones the header row has no room for the ornament and
+            // it collided with the controls cluster.
+            <span className="hidden items-center gap-1.5 ps-1 sm:flex">
               <span className="relative inline-flex h-2 w-2">
                 <span className="sf-home-ping absolute inset-0 rounded-full bg-emerald-400 motion-safe:animate-[sfPing_2.2s_cubic-bezier(0,0,0.2,1)_infinite]" />
                 <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-400" />
@@ -107,7 +118,7 @@ export function ChatPageHeader({
             </span>
           )}
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex shrink-0 items-center gap-1 sm:gap-2">
           {onOpenAssistantPanel && (
             <Button
               type="button"
@@ -131,9 +142,12 @@ export function ChatPageHeader({
           >
             <History className="h-4 w-4" />
           </Button>
-          <Button size="sm" variant="outline" className="gap-1.5" onClick={onStartNewChat}>
+          {/* v2 rev-2 mobile rules (#sfNewChatBtn/#sfNewChatLabel): the
+              New Chat button is icon-only up to 760px (not just below
+              sm), so the compacted mobile header row always fits. */}
+          <Button size="sm" variant="outline" className="gap-1.5" onClick={onStartNewChat} aria-label={t("flow_new_chat")}>
             <Plus className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">{t("flow_new_chat")}</span>
+            <span className="hidden min-[761px]:inline">{t("flow_new_chat")}</span>
           </Button>
         </div>
       </div>
