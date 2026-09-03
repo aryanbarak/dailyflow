@@ -526,6 +526,204 @@ that manual pass happens.
 - **Progressive play-area growth** (MB-14) → retired MB-22 (`4941d99`); see
   the fixed-500px bullet above (ADR-0015 §13).
 
+### 2.8 Chat V2 — write-capable agentic chat (Slices 1 → 2B.2) + Production Stabilization Patch 1 (this task, 2026-09-03)
+
+Governed by [ADR-0012](docs/decisions/adr/ADR-0012-write-capability-layer.md)
+(Accepted) and [ADR-0019](docs/decisions/adr/ADR-0019-permission-key-on-write-intent.md)
+(Accepted, 2026-08-27); no Chat-V2-specific ADR exists — each slice below
+extends that already-accepted architecture rather than introducing a new
+one. **IMPLEMENTED, merged to `main`** for every slice below; see the
+Stabilization Patch bullet for the important caveat on whether the
+*currently deployed* Worker actually runs this code.
+
+- **Slice 1 — Gemini-first fast conversation path.** PR
+  [#200](https://github.com/aryanbarak/smartflow/pull/200) (merged
+  2026-08-31, squash commit `17193a2`). A deterministic fast lane
+  (`src/features/chat/chatV2Routing.ts`) skips the parallel reasoning
+  overlay for low-risk conversational turns and prefers Gemini 3.6 Flash;
+  retryable Gemini unavailability falls back through the existing
+  Workers AI chain. Server-side write policy remains authoritative and can
+  demote a client-requested fast lane — direct regression coverage proves
+  client lane input cannot bypass task/calendar/finance approval
+  semantics. Safe text-lane telemetry (provider/model/latency only, no
+  prompt/reply content) via `agent/worker/chat-text-telemetry.ts`. No
+  migration.
+- **Slice 2A — server-owned tool execution lifecycle.** PR
+  [#201](https://github.com/aryanbarak/smartflow/pull/201) (merged
+  2026-09-01, squash commit `97fed84`). New
+  `agent/worker/agent-tool-execution.ts` (request → approve/execute →
+  audit) and client `src/features/agent/agentToolExecutionClient.ts`.
+  Migration `supabase/migrations/20260831120000_agent_tool_executions.sql`
+  (new `agent_tool_executions` table; production-application status not
+  independently re-verified in this reconciliation — see §4). All five
+  migrated Agent write handlers (`tasks.create/update/complete`,
+  `calendar.create_event/update_event`) had their direct-Supabase-write
+  fallback **removed** — a handler with no execution client now fails
+  closed (`AGENT_EXECUTION_CLIENT_UNAVAILABLE`) instead of writing
+  straight to the database. Idempotency is scoped to the per-attempt
+  `(user_id, request_id)` pair
+  (`agent_tool_executions_user_request_unique`), not a permanent semantic
+  intent hash.
+- **Slice 2B.1 — explicit Task/Calendar semantics ("locked domain
+  rule").** PR [#202](https://github.com/aryanbarak/smartflow/pull/202)
+  (merged 2026-09-01, squash commit `17e6a0b`). An explicit domain noun
+  ("task"/"تسک"/"Aufgabe" vs. "event"/"meeting"/"جلسه"/"Termin") now wins
+  over temporal inference: a request naming "task" explicitly but also
+  carrying a time-of-day used to be silently reclassified into a calendar
+  event; it now asks Task-vs-Calendar-Event instead of discarding the
+  user's stated domain. Consolidated from previously independently
+  hand-maintained copies into shared logic
+  (`agent/worker/flow-write-policy.ts`,
+  `src/features/agent/reasoning/intentValidator.ts`,
+  `reasoningOrchestrator.ts`, `reasoningPrompt.ts`), with a new shared
+  parity fixture (`shared/taskCalendarDomainParityCases.ts`).
+- **Slice 2B.1.1 — exact-time scheduling semantics.** PR
+  [#203](https://github.com/aryanbarak/smartflow/pull/203) (merged
+  2026-09-01, squash commit `4e17258`). Exact-time work now routes to
+  Calendar while preserving Task identity/title when scheduling. New
+  shared deterministic classifier `shared/schedulingDomain.ts`, consumed
+  by both the client validator and the Worker (no duplicated grammar).
+- **Slice 2B.2 — two independent Task/Calendar actions in one turn.** PR
+  [#208](https://github.com/aryanbarak/smartflow/pull/208) (merged
+  2026-09-02, squash commit `c9d0468`). Deterministic two-clause
+  decomposition (`attemptTwoActionSplit` in `flow-write-policy.ts`) — a
+  message like "call Ahmad tomorrow at 10 and create a task report for
+  Friday" now produces two independent pending/executed outcomes instead
+  of colliding into the old single-domain-or-ambiguous dispatch. Only
+  accepts a conjunction split when BOTH resulting clauses independently
+  resolve through the existing `detectWriteDomainSignal` to exactly one
+  of task/calendar — rejecting a same-action "and" (e.g. "research and
+  write the report") and multi-way-ambiguous splits, with no new grammar.
+  Each decomposed action reuses the existing per-action pipeline
+  (`agent-tool-execution.ts`, `ChatPage.tsx`'s existing approval-card
+  machinery) rather than a second parallel system.
+- **Production Stabilization Patch 1.** PR
+  [#209](https://github.com/aryanbarak/smartflow/pull/209) (merged
+  2026-09-02T23:44:36Z, squash commit `bbdb6c6`, containing commits
+  `a1554d6`, `32d4669`, `2a76252`, `2210dae`, `f62093e`, `ea4be01`).
+  Closes several real production gaps found after Slice 2B.2 shipped:
+  - Reminder `timeOfDay` preservation through to alarm creation, and a
+    narrow Persian call/action-verb routing correction (`a1554d6`).
+  - Provider-failure write-policy preservation — a failed title-extraction
+    model call no longer loses the already-resolved write policy
+    (`a1554d6`).
+  - **Server-authoritative single-action ask-mode `pendingAction`**
+    (`2a76252`): a new, optional `pendingAction` response field lets the
+    Worker's own already-history-aware intent assembly (which the client's
+    history-blind reasoning overlay structurally cannot do — proven by a
+    dedicated diagnostic test in `32d4669` before this fix was written)
+    resolve a deterministic single-action proposal for `tasks.create`/
+    `calendar.create_event` only. Reuses the existing Slice 2B.2
+    pending-action contract/approval-lifecycle helpers
+    (`buildTwoActionPendingStates` et al., wrapped as a one-element
+    array) — no new approval framework.
+  - **Authoritative Task/Calendar title resolution** (`2210dae`):
+    `pendingAction`'s title is resolved through the pre-existing
+    `resolveCreateTaskTitle`/`resolveCreateEventTitle` pipeline (already
+    used by Slice 2B.2), not the raw deterministic-parser candidate.
+  - **Fail-closed title handling** (`f62093e`): closes a gap where, on a
+    provider outage, an unvalidated/invalid parser title could still leak
+    into `pendingAction` instead of correctly withholding it.
+  - Deterministic test-clock stabilization (`ea4be01`): a pre-existing,
+    unrelated relative-date test (`agent/worker/index.test.ts`,
+    `"CORRECTION 1 -- item 1"`) pinned to a fixed system time via Vitest
+    fake timers, removing a real-wall-clock dependency that broke on
+    calendar rollover.
+  - **Explicit scope boundary — not yet extended beyond this:**
+    `pendingAction` covers only `tasks.create` and `calendar.create_event`;
+    `tasks.update`/`tasks.complete`/finance/GitHub write intents are
+    unaffected and still rely on the client reasoning overlay's own
+    (history-blind) proposal path for a single-action ask-mode turn — see
+    §3 for this as an explicit NOT-yet-implemented boundary.
+  - **Validation performed:** full suite green at merge time — 281 test
+    files passed / 5 skipped (286), 4569 tests passed / 76 skipped (4645),
+    0 failed; typecheck clean (no new/regressed errors); `git diff --check`
+    clean. The multi-turn reminder-continuation scenario and the
+    Calendar+Task exact-time two-action scenario were both exercised via
+    the REAL, unmodified server-side handlers
+    (`worker.fetch`, `handleAgentToolExecutionRequest`,
+    `handleAgentToolExecutionApprove` — the same functions the deployed
+    Worker runs) end-to-end inside the automated Vitest suite, against a
+    purpose-built mock persistence layer — this is **verified via the
+    real production code path in an automated test harness**, not a live
+    run against production Supabase/Cloudflare, and should be read as
+    such (see the deploy-freshness caveat immediately below).
+  - **OPEN CONDITION — Worker deploy freshness not confirmed (new finding,
+    this reconciliation).** `agent/worker` is a Cloudflare Worker deployed
+    only via manual `npx wrangler deploy` (`CLAUDE.md`); no CI workflow
+    deploys it — `.github/workflows/deploy-cloudflare-pages.yml` deploys
+    only the frontend, and the one workflow that could plausibly cover the
+    Worker, `.github/workflows/deploy-dailyflow.yml.disabled`, is disabled
+    and on inspection never invokes `wrangler`/touches the Worker at all.
+    Direct user testing against live chat on 2026-09-03 showed behavior
+    consistent with a **pre**-Stabilization-Patch-1 Worker (a bare
+    reminder-creation request produced only a descriptive reply with no
+    approvable card; a compound "call X tomorrow / task for Friday"
+    message mis-routed and date-conflated the call, matching exactly the
+    bug `a1554d6` fixed). This reconciliation could not confirm from
+    git/code alone whether the deployed Worker has been redeployed since
+    PR #209 (or even since PR #206's ALF-1A capture-enable — see §2.9) —
+    treat every claim in this section as **merged to `main` and
+    test-harness-verified**, not as **confirmed live in production**,
+    until a fresh `npx wrangler deploy` happens and is spot-checked.
+
+### 2.9 AI Learning Foundation (ALF-0 / ALF-1A / ALF-1B)
+
+- **ALF-0 — ledger + eval/training contracts.** PR
+  [#204](https://github.com/aryanbarak/smartflow/pull/204) (merged
+  2026-09-01T18:42:13Z). Governed by
+  [ADR-0020](docs/decisions/adr/ADR-0020-ai-learning-foundation-and-shadow-model-governance.md)
+  — **Accepted** ("Product Owner reviewed and approved ALF-0, PR #204").
+  Establishes the `ai_learning_events` schema/contracts.
+  **PRODUCTION-VERIFIED (schema only):** ADR-0021's own "Operational note"
+  section records that this migration
+  (`20260901184730_ai_learning_events`) was applied to production after
+  explicit Product Owner authorization — the only Chat-V2-era-adjacent
+  migration in this whole reconciliation with an explicit, dated
+  production-application record.
+- **ALF-1A — live learning capture and shadow runtime.** PR
+  [#205](https://github.com/aryanbarak/smartflow/pull/205) (merged
+  2026-09-01T20:59:43Z). Governed by
+  [ADR-0021](docs/decisions/adr/ADR-0021-live-learning-capture-and-shadow-runtime.md)
+  — status **Proposed**, not yet Accepted (per the ADR's own header and
+  `docs/decisions/adr/README.md`'s index — do not read this as an
+  Accepted decision). Reuses the ALF-0 schema unchanged; no new migration.
+  **IMPLEMENTED BUT GATED** behind two flags resolved in
+  `agent/worker/ai-learning/live-capture-config.ts`
+  (`AI_LEARNING_CAPTURE_ENABLED`, `AI_SHADOW_ENABLED` —
+  `agent/worker/types.ts:42-43`):
+  - PR [#206](https://github.com/aryanbarak/smartflow/pull/206) ("enable
+    production learning capture," merged 2026-09-01T21:38:22Z) set
+    `agent/worker/wrangler.toml`'s `AI_LEARNING_CAPTURE_ENABLED = "true"`
+    — capture-only, `production_label` events only (confirmed by
+    `index.ai-learning-capture.test.ts`'s "capture enabled with shadow
+    disabled appends only a production_label event"). **This is repo
+    config, not a confirmed-live production state** — see §2.8's
+    deploy-freshness OPEN CONDITION; the same unresolved deploy gap
+    applies here.
+  - `AI_SHADOW_ENABLED` remains `"false"` on `main` as of this
+    reconciliation (`agent/worker/wrangler.toml:48`, re-verified fresh,
+    not carried forward from an old claim) — **IMPLEMENTED BUT DISABLED**.
+    The committed comment says "until ALF-1B review," but ALF-1B (below)
+    has since merged and the flag is still off — flip status confirmed
+    stale against current code, corrected here rather than left inaccurate
+    (same discipline as §4's existing stale-doc corrections).
+- **ALF-1B — live routing evaluation and comparison layer.** PR
+  [#207](https://github.com/aryanbarak/smartflow/pull/207) (merged
+  2026-09-02T02:56:00Z, commit `292b54b` + 3 review-correction commits).
+  Governed by new ADR-0022 (`ADR-0022-live-routing-evaluation-and-comparison-semantics.md`)
+  — status **Proposed**, not yet Accepted. A deterministic, read-only,
+  offline JSONL live-eval CLI comparing authoritative `production_label`
+  events against candidate-only `shadow_prediction` events (exact-key
+  pairing, masked fair-scoring, semantic consistency validation,
+  producer/confidence/model-provenance validation, fail-closed). By its
+  own commit message: "zero runtime authority for evaluation results,"
+  "no comparison persistence," "no Shadow enablement." **IMPLEMENTED** as
+  a standalone evaluation tool — but since `AI_SHADOW_ENABLED` is still
+  `false` (above), no live `shadow_prediction` data exists in production
+  for it to evaluate yet; the tool is implemented, its live input is not
+  yet being produced.
+
 ## 3. Verified NOT implemented
 
 Confirmed from code, not assumed (full detail in the reconciliation doc §6):
@@ -563,6 +761,15 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
   [ADR-0011](docs/decisions/adr/ADR-0011-confirmed-personal-memory-consumption.md)
   §5, not designed.
 - Conversation memory, semantic/vector memory, RAG.
+- **Server-authoritative `pendingAction` (§2.8, Stabilization Patch 1) for
+  any domain beyond `tasks.create`/`calendar.create_event`.**
+  `tasks.update`/`tasks.complete`/finance/GitHub write intents in
+  single-action ask-mode still depend on the client reasoning overlay's
+  own history-blind proposal path — deliberately not extended, per that
+  patch's own explicit scope boundary, not an oversight.
+- **`AI_SHADOW_ENABLED` (§2.9, ALF-1A/1B).** Shadow-prediction capture is
+  implemented but off in the current `agent/worker/wrangler.toml`; ALF-1B's
+  evaluation CLI therefore has no live data to compare yet.
 
 ## 4. Current blockers / open decisions
 
@@ -754,6 +961,37 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
     briefing's own caller already resolves one (or `/chat`'s per-request
     resolution pattern, if briefing generation has no equivalent yet — not
     investigated as part of DATE-01, out of that slice's scope).
+  - **Chat V2 reminder-continuation Notes duplication (found during this
+    reconciliation, not fixed here).** `mergeTaskIntent`
+    (`agent/worker/flow-write-policy.ts:1291`) rebuilds notes by
+    concatenating the prior notes and the new message, then re-wrapping the
+    result through `createTaskNotes` (`flow-write-policy.ts:607-611`),
+    which unconditionally prepends a fresh "Original request: " line — but
+    the prior notes already carry that exact prefix from the first turn's
+    own `createTaskNotes` call. A multi-turn reminder (e.g. "create a
+    task..." → "at 9am") therefore ends up with a `notes` value containing
+    two stacked "Original request: " prefixes around the turn-1 and turn-2
+    text — a real, code-confirmed duplication, not cosmetic-only
+    speculation. Non-blocking: `extractOriginalRequestText`
+    (`flow-write-policy.ts:761-765`) still recovers the correct original
+    text for title resolution because its regex only reads up to the first
+    `\nTime mentioned:`/end-of-string boundary, so title accuracy is
+    unaffected — only the persisted `notes` field's raw text is doubled.
+  - **Reminder clarification language reported as sometimes English for a
+    Persian/Dari request (Product-Owner-reported, 2026-09-02/03; not
+    isolated to a specific code path in this reconciliation).** The one
+    clarification site this reconciliation directly inspected for language
+    correctness — `REMINDER_TIME_CLARIFICATION_REPLY`
+    (`agent/worker/index.ts:723-727`, added by Stabilization Patch 1's FIX
+    A1) — is correctly keyed by `Record<Language, string>` including `fa`,
+    and `respondToTwoActionWrite`'s own reminder-time bail (`index.ts:1044`)
+    falls through to that same, correctly-localized single-domain reply
+    rather than emitting its own text. The reported mismatch was therefore
+    **not reproduced at this specific site** during this reconciliation —
+    recorded as-reported per the Product Owner's direct observation rather
+    than dismissed, but its exact trigger site remains unconfirmed; a
+    broader sweep of every clarification/reply site for
+    response-language-vs-request-language consistency has not been done.
 
 ### Design debt register (Product Owner's video review, task `8`)
 
