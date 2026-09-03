@@ -16,7 +16,11 @@ import type { WorkspaceRightRail } from "@/features/workspace";
 // rendered for real -- used below wherever the contract is actually about
 // its rendered output.
 vi.mock("@/components/FlowAIOrb", () => ({ FlowAIOrb: (props: { ariaLabel?: string }) => <div data-testid="flow-ai-orb" aria-label={props.ariaLabel} /> }));
-vi.mock("@/components/smartflow", () => ({ SmartflowAsciiVisual: () => null }));
+vi.mock("@/components/smartflow", () => ({
+  SmartflowAsciiVisual: (props: { variant?: string; className?: string }) => (
+    <div data-testid="ascii-visual" data-variant={props.variant} className={props.className} />
+  ),
+}));
 // Dashboard.tsx transitively imports the real Supabase client (via
 // useWorkspace's many services), which throws at module-construction time
 // outside a real dev/CI env (VITE_SMARTFLOW_SUPABASE_MODE guard -- see
@@ -176,6 +180,17 @@ describe("Frozen handoff: the FULL Assistant Rail (five sections, real orb, inde
     expect(html).toMatch(/min-h-0 flex-1 overflow-y-auto/);
   });
 
+  it("PO correction: the animated ASCII sphere background is back in the rail header -- the SAME SmartflowAsciiVisual sphere placement PR #211's approved rail had (top-right, 300px, 30% opacity, decorative), behind a z-10 content layer", () => {
+    const html = renderRail();
+    expect(html).toContain('data-testid="ascii-visual"');
+    expect(html).toContain('data-variant="sphere"');
+    expect(html).toMatch(/pointer-events-none absolute -right-24 -top-24 h-\[300px\] w-\[300px\] opacity-30/);
+    // Contained by the rail (overflow-hidden root) and never intercepting
+    // clicks; the scrolling content sits above it.
+    expect(html).toMatch(/relative flex h-full min-h-0 flex-col overflow-hidden/);
+    expect(html).toMatch(/relative z-10 min-h-0 flex-1 overflow-y-auto/);
+  });
+
   it("renders all five approved sections, in the frozen order, when data is supplied: Pending Approvals, AI Suggestions, Continue Learning, Recommended Today, Recent Conversation", () => {
     const html = renderRail(true);
     const order = [
@@ -212,48 +227,48 @@ describe("Frozen handoff: the FULL Assistant Rail (five sections, real orb, inde
   });
 });
 
-// SmartFlow Home v2: the conditional action bars are back in the Home
-// composition (v2 keeps them as conditional runtime UI, hidden unless the
-// same runtime predicates as always are true) with unchanged behavior.
-describe("SmartFlow Home v2: approval/write/read-only bars are conditional runtime UI with unchanged handlers", () => {
-  it("all three boundary bars are conditionally rendered (unchanged execution/state logic) and sit between the hero and the chat panel", () => {
-    expect(dashboardSource).toMatch(/pendingStepApproval && pendingApprovalStep/);
-    expect(dashboardSource).toMatch(/taskCompleteWriteCandidate &&/);
-    expect(dashboardSource).toMatch(/readOnlyRuntimeStep && readOnlyRuntimeResolution/);
-
-    const approvalIndex = dashboardSource.indexOf("pendingStepApproval && pendingApprovalStep && (");
-    const chatIndex = dashboardSource.indexOf("<ChatPage");
-    expect(approvalIndex).toBeGreaterThan(-1);
-    expect(approvalIndex).toBeLessThan(chatIndex);
+// PO decision (post-v2 correction): the action-bar cards are REMOVED from
+// Home again (presentation only) -- nothing replaces them. The approval
+// CAPABILITY stays: the same StepApprovalDialog, the same runtime
+// predicates (wiring the Assistant Rail's Pending Approvals rows), and the
+// runtime modules themselves (readOnlyRuntime.test.ts / writeRuntime.test.ts
+// / ChatPageAgentExecutionWiring.test.tsx cover execution semantics, which
+// this change never touches).
+describe("PO correction: Home action-bar cards removed -- approval capability preserved through dialog + rail", () => {
+  it("none of the bar presentations render on Home (no bar copy, no bar-only i18n keys)", () => {
+    expect(dashboardSource).not.toMatch(/approval_card_title/);
+    expect(dashboardSource).not.toMatch(/write_task_title/);
+    expect(dashboardSource).not.toMatch(/agent_run_read_only_action/);
+    expect(dashboardSource).not.toMatch(/border-\[#7D5CFF\]\/30 bg-\[#7C4DFF\]\/\[0\.07\]/);
+    expect(dashboardSource).not.toMatch(/border-\[#7078B4\]\/25 bg-\[#0F1128\]\/\[0\.55\]/);
   });
 
-  it("the bars are the compact single-line treatment (v2 borders/backgrounds), and the old large-card metadata-grid presentation stays gone", () => {
-    const approvalBars = dashboardSource.match(/border-\[#7D5CFF\]\/30 bg-\[#7C4DFF\]\/\[0\.07\]/g) ?? [];
-    expect(approvalBars.length).toBeGreaterThanOrEqual(2);
-    expect(dashboardSource).toMatch(/border-\[#7078B4\]\/25 bg-\[#0F1128\]\/\[0\.55\]/);
+  it("nothing replaced the bars: between the hero section and the chat panel only the v2 metric-capsule row renders -- no interactive bar/button", () => {
+    const heroEnd = dashboardSource.indexOf("</WorkspaceRevealSection>", dashboardSource.indexOf("min-h-[190px]"));
+    const chatIndex = dashboardSource.indexOf("<ChatPage");
+    expect(heroEnd).toBeGreaterThan(-1);
+    expect(chatIndex).toBeGreaterThan(heroEnd);
+    const between = dashboardSource.slice(heroEnd, chatIndex);
+    expect(between).toMatch(/Habit Streak/);
+    expect(between).not.toMatch(/<Button|<button|onClick/);
+  });
+
+  it("the approval surfaces stay: StepApprovalDialog still renders with the same generic/taskComplete targets, opened from the rail's Pending Approvals rows via the SAME runtime predicates", () => {
+    expect(dashboardSource).toMatch(/<StepApprovalDialog/);
+    expect(dashboardSource).toMatch(/setApprovalDialogTarget\("generic"\);\s*setApprovalDialogOpen\(true\);/);
+    expect(dashboardSource).toMatch(/setApprovalDialogTarget\("taskComplete"\);\s*setApprovalDialogOpen\(true\);/);
+    expect(dashboardSource).toMatch(/pendingStepApproval && pendingApprovalStep/);
+    expect(dashboardSource).toMatch(/getTaskCompleteWriteCandidate/);
+    // The dialog itself performs approve/reject/close against the approval
+    // service (see StepApprovalDialog.tsx) -- Dashboard only opens/closes it.
+    expect(dashboardSource).toMatch(/onDecision=\{handleApprovalDialogDecision\}/);
+  });
+
+  it("the old large-card metadata-grid presentation also stays gone (nothing regressed back in)", () => {
     expect(dashboardSource).not.toMatch(/rounded-xl border border-primary\/15/);
     expect(dashboardSource).not.toMatch(/agent_resolved_tool/);
-    expect(dashboardSource).not.toMatch(/agent_execution_mode/);
     expect(dashboardSource).not.toMatch(/reflection_section_label/);
-    expect(dashboardSource).not.toMatch(/safePreviewItems/);
     expect(dashboardSource).not.toMatch(/ReflectionSummary/);
-  });
-
-  it("every action button's exact onClick handler and disabled condition are byte-identical to the pre-REV-2 implementation -- only presentation policy changed across revisions", () => {
-    expect(dashboardSource).toMatch(/onClick=\{\(\) => \{\s*setApprovalDialogTarget\("generic"\);\s*setApprovalDialogOpen\(true\);\s*\}\}/);
-    expect(dashboardSource).toMatch(/onClick=\{\(\) => void handleRunTaskCompleteWrite\(\)\}/);
-    expect(dashboardSource).toMatch(/disabled=\{taskCompleteRunStatus === "running" \|\| Boolean\(taskCompleteRunResult\)\}/);
-    expect(dashboardSource).toMatch(/onClick=\{\(\) => \{\s*setApprovalDialogTarget\("taskComplete"\);\s*setApprovalDialogOpen\(true\);\s*\}\}/);
-    expect(dashboardSource).toMatch(/onClick=\{\(\) => void handleRunReadOnlyTool\(\)\}/);
-    expect(dashboardSource).toMatch(/disabled=\{readOnlyRunStatus === "running"\}/);
-  });
-
-  it("sufficient identifying text remains for every surface -- the task title, the approval card title, and the read-only step title are rendered; StepApprovalDialog stays the explicit-approval surface", () => {
-    expect(dashboardSource).toMatch(/\{t\("approval_card_title"\)\}/);
-    expect(dashboardSource).toMatch(/\{t\("write_task_title"\)\}: \{taskCompleteWriteCandidate\.taskTitle\}/);
-    expect(dashboardSource).toMatch(/\{readOnlyRuntimeStep\.title\}/);
-    expect(dashboardSource).toMatch(/<StepApprovalDialog/);
-    expect(dashboardSource).toMatch(/onDecision=\{handleApprovalDialogDecision\}/);
   });
 });
 
