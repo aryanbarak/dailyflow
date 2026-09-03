@@ -6,6 +6,10 @@ for the full evidence trail behind this rebuild — file-by-file commit
 mapping, migration inventory, and a discrepancy table against the prior
 version of this document).
 
+Last reconciled for Chat V2 / ALF status: 2026-09-03 (§2.8, §2.9 — this
+file is not frozen at the August 7 rebuild; later sections carry their
+own dated evidence as work lands).
+
 ## 0. Maintenance rule
 
 **This file is the only status source for SmartFlow.** No other document —
@@ -564,25 +568,40 @@ Stabilization Patch bullet for the important caveat on whether the
   `(user_id, request_id)` pair
   (`agent_tool_executions_user_request_unique`), not a permanent semantic
   intent hash.
-- **Slice 2B.1 — explicit Task/Calendar semantics ("locked domain
-  rule").** PR [#202](https://github.com/aryanbarak/smartflow/pull/202)
-  (merged 2026-09-01, squash commit `17e6a0b`). An explicit domain noun
-  ("task"/"تسک"/"Aufgabe" vs. "event"/"meeting"/"جلسه"/"Termin") now wins
-  over temporal inference: a request naming "task" explicitly but also
-  carrying a time-of-day used to be silently reclassified into a calendar
-  event; it now asks Task-vs-Calendar-Event instead of discarding the
-  user's stated domain. Consolidated from previously independently
-  hand-maintained copies into shared logic
+- **Slice 2B.1 (historical) — introduced explicit Task/Calendar semantics
+  ("locked domain rule").** PR
+  [#202](https://github.com/aryanbarak/smartflow/pull/202) (merged
+  2026-09-01, squash commit `17e6a0b`). Introduced the rule that an
+  explicit domain noun ("task"/"تسک"/"Aufgabe" vs.
+  "event"/"meeting"/"جلسه"/"Termin") wins over temporal inference, so a
+  request naming "task" explicitly (previously silently reclassified into
+  a calendar event whenever it also carried a time-of-day) would no
+  longer have its stated domain discarded. Consolidated from previously
+  independently hand-maintained copies into shared logic
   (`agent/worker/flow-write-policy.ts`,
   `src/features/agent/reasoning/intentValidator.ts`,
   `reasoningOrchestrator.ts`, `reasoningPrompt.ts`), with a new shared
   parity fixture (`shared/taskCalendarDomainParityCases.ts`).
-- **Slice 2B.1.1 — exact-time scheduling semantics.** PR
+  **Superseded the next day for the exact-time case** — see 2B.1.1
+  immediately below; Slice 2B.1's own "ask Task-vs-Calendar-Event" branch
+  for an explicit Task carrying a concrete time is no longer the current
+  behavior (do not read the paragraph above as describing today's
+  runtime).
+- **Slice 2B.1.1 — exact-time scheduling semantics (current authoritative
+  rule for this case).** PR
   [#203](https://github.com/aryanbarak/smartflow/pull/203) (merged
-  2026-09-01, squash commit `4e17258`). Exact-time work now routes to
-  Calendar while preserving Task identity/title when scheduling. New
-  shared deterministic classifier `shared/schedulingDomain.ts`, consumed
-  by both the client validator and the Worker (no duplicated grammar).
+  2026-09-01, squash commit `4e17258`). New shared deterministic
+  classifier `shared/schedulingDomain.ts` (consumed by both the client
+  validator and the Worker, no duplicated grammar), whose own header
+  comment states the supersession explicitly: "PO decision (supersedes
+  Slice 2B.1's 'ask task-vs-calendar' rule): a concrete time-of-day is
+  scheduling intent." **Current rule:** an explicit Task request that also
+  carries a concrete exact time now routes straight to Calendar instead of
+  asking Task-vs-Calendar-Event — Tasks have no time-of-day column, so
+  routing to Calendar is what preserves the time the user actually stated;
+  Task identity/title is preserved unchanged when this reroute happens.
+  Slice 2B.1's locked-domain-noun rule otherwise still stands for every
+  case that does NOT carry a concrete exact time.
 - **Slice 2B.2 — two independent Task/Calendar actions in one turn.** PR
   [#208](https://github.com/aryanbarak/smartflow/pull/208) (merged
   2026-09-02, squash commit `c9d0468`). Deterministic two-clause
@@ -644,28 +663,21 @@ Stabilization Patch bullet for the important caveat on whether the
     (`worker.fetch`, `handleAgentToolExecutionRequest`,
     `handleAgentToolExecutionApprove` — the same functions the deployed
     Worker runs) end-to-end inside the automated Vitest suite, against a
-    purpose-built mock persistence layer — this is **verified via the
-    real production code path in an automated test harness**, not a live
-    run against production Supabase/Cloudflare, and should be read as
-    such (see the deploy-freshness caveat immediately below).
-  - **OPEN CONDITION — Worker deploy freshness not confirmed (new finding,
-    this reconciliation).** `agent/worker` is a Cloudflare Worker deployed
-    only via manual `npx wrangler deploy` (`CLAUDE.md`); no CI workflow
-    deploys it — `.github/workflows/deploy-cloudflare-pages.yml` deploys
-    only the frontend, and the one workflow that could plausibly cover the
-    Worker, `.github/workflows/deploy-dailyflow.yml.disabled`, is disabled
-    and on inspection never invokes `wrangler`/touches the Worker at all.
-    Direct user testing against live chat on 2026-09-03 showed behavior
-    consistent with a **pre**-Stabilization-Patch-1 Worker (a bare
-    reminder-creation request produced only a descriptive reply with no
-    approvable card; a compound "call X tomorrow / task for Friday"
-    message mis-routed and date-conflated the call, matching exactly the
-    bug `a1554d6` fixed). This reconciliation could not confirm from
-    git/code alone whether the deployed Worker has been redeployed since
-    PR #209 (or even since PR #206's ALF-1A capture-enable — see §2.9) —
-    treat every claim in this section as **merged to `main` and
-    test-harness-verified**, not as **confirmed live in production**,
-    until a fresh `npx wrangler deploy` happens and is spot-checked.
+    purpose-built mock persistence layer.
+  - **PRODUCTION-VERIFIED — 2026-09-03.** Beyond the automated-suite
+    verification above, the Product Owner directly production-smoke-tested
+    the deployed Worker against live chat on 2026-09-03 and confirmed:
+    an exact-time Calendar + Task compound request produced two
+    independent approval cards; a "call ... at 10" request routed to
+    Calendar with the exact 10:00 time preserved (the Slice 2B.1.1 rule
+    above, live); a reminder-create request with no time asked for
+    clarification; the follow-up "ساعت ۱۰" produced the correct pending
+    Task with Due 2026-09-04 + Reminder 10:00; approving it created the
+    Task; and the Calendar/Tasks UI showed the persisted alarm, not "No
+    alarm." This closes the deploy-freshness question this reconciliation
+    could not answer from git/code evidence alone — the currently deployed
+    Worker does run Production Stabilization Patch 1's code, confirmed by
+    direct live behavior, not merely inferred from `main`.
 
 ### 2.9 AI Learning Foundation (ALF-0 / ALF-1A / ALF-1B)
 
@@ -697,10 +709,16 @@ Stabilization Patch bullet for the important caveat on whether the
     `agent/worker/wrangler.toml`'s `AI_LEARNING_CAPTURE_ENABLED = "true"`
     — capture-only, `production_label` events only (confirmed by
     `index.ai-learning-capture.test.ts`'s "capture enabled with shadow
-    disabled appends only a production_label event"). **This is repo
-    config, not a confirmed-live production state** — see §2.8's
-    deploy-freshness OPEN CONDITION; the same unresolved deploy gap
-    applies here.
+    disabled appends only a production_label event"). **Repo config
+    only:** the deployed Worker is now confirmed current as of 2026-09-03
+    for Production Stabilization Patch 1 (§2.8's PRODUCTION-VERIFIED
+    entry), which is a separate deploy artifact/timing question from
+    whether this specific flag's *runtime output* has been checked —
+    production `ai_learning_events` rows were not directly queried in
+    this reconciliation, so whether live capture is actually writing
+    `production_label` events today remains **not independently
+    verified**, distinct from (and not to be inferred from) the Chat
+    Worker's own confirmed-current deploy.
   - `AI_SHADOW_ENABLED` remains `"false"` on `main` as of this
     reconciliation (`agent/worker/wrangler.toml:48`, re-verified fresh,
     not carried forward from an old claim) — **IMPLEMENTED BUT DISABLED**.
@@ -719,10 +737,14 @@ Stabilization Patch bullet for the important caveat on whether the
   producer/confidence/model-provenance validation, fail-closed). By its
   own commit message: "zero runtime authority for evaluation results,"
   "no comparison persistence," "no Shadow enablement." **IMPLEMENTED** as
-  a standalone evaluation tool — but since `AI_SHADOW_ENABLED` is still
-  `false` (above), no live `shadow_prediction` data exists in production
-  for it to evaluate yet; the tool is implemented, its live input is not
-  yet being produced.
+  a standalone evaluation tool. Current repo config has
+  `AI_SHADOW_ENABLED = "false"` (`agent/worker/wrangler.toml:48`), so the
+  currently configured runtime is not intended to emit new
+  `shadow_prediction` rows — production ledger contents were not
+  independently queried in this reconciliation, so this is a
+  configuration-based inference, not a direct confirmation that zero such
+  rows exist in production today (e.g. from a prior, differently-configured
+  deploy window).
 
 ## 3. Verified NOT implemented
 
