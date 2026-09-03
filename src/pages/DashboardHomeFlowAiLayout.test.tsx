@@ -113,13 +113,12 @@ describe("Frozen handoff: ChatPage's `embedded` prop only changes its own root s
     expect(chatPageSource).toMatch(/export default function ChatPage\(\{ embedded = false, onOpenAssistantPanel \}: ChatPageProps = \{\}\)/);
   });
 
-  it("REV 2 §7: Home's embedded header is the compact controls bar (no branding) -- gated on `embedded`, so the standalone route keeps its full header; the REV 1 titleOverride/showOnlineStatus branding props are gone entirely", () => {
-    expect(chatPageSource).toMatch(/compactControls=\{embedded\}/);
-    expect(chatPageSource).not.toMatch(/titleOverride/);
-    expect(chatPageSource).not.toMatch(/showOnlineStatus/);
+  it("SmartFlow Home v2: the embedded header carries 'SmartFlow' + the Online cluster again (titleOverride/showOnlineStatus, v2 superseded REV 2's de-branded header) -- the standalone route resolves the same expressions to undefined/false, unchanged", () => {
+    expect(chatPageSource).toMatch(/titleOverride=\{embedded \? 'SmartFlow' : undefined\}/);
+    expect(chatPageSource).toMatch(/showOnlineStatus=\{embedded\}/);
   });
 
-  it("the embedded-only extras (assistant-panel button, 'Ask SmartFlow anything…' placeholder, wide transcript) are all gated on `embedded`, so the standalone route renders none of them", () => {
+  it("the embedded-only extras (assistant-panel button, 'Ask SmartFlow anything…' placeholder, wide transcript, v2 centered empty state) are all gated on `embedded`, so the standalone route renders none of them", () => {
     expect(chatPageSource).toMatch(/onOpenAssistantPanel=\{embedded \? onOpenAssistantPanel : undefined\}/);
     expect(chatPageSource).toMatch(/placeholderOverride=\{embedded \? 'Ask SmartFlow anything…' : undefined\}/);
     expect(chatPageSource).toMatch(/embedded=\{embedded\}/);
@@ -213,49 +212,48 @@ describe("Frozen handoff: the FULL Assistant Rail (five sections, real orb, inde
   });
 });
 
-// REV 2 §4/§6: the Home action bars are REMOVED (presentation only) --
-// nothing replaces them, and the hero flows directly into the chat. The
-// approval CAPABILITY stays: the same StepApprovalDialog, the same runtime
-// predicates (now wiring the Assistant Rail's Pending Approvals rows), and
-// the runtime modules themselves (readOnlyRuntime.test.ts /
-// writeRuntime.test.ts / ChatPageAgentExecutionWiring.test.tsx cover
-// execution semantics, which this change never touches).
-describe("REV 2: Home action bars removed -- approval capability preserved through dialog + rail", () => {
-  it("none of the three bar presentations render on Home anymore (no bar copy, no bar-only i18n keys)", () => {
-    expect(dashboardSource).not.toMatch(/approval_card_title/);
-    expect(dashboardSource).not.toMatch(/write_task_title/);
-    expect(dashboardSource).not.toMatch(/agent_run_read_only_action/);
-    expect(dashboardSource).not.toMatch(/border-\[#7D5CFF\]\/30 bg-\[#7C4DFF\]\/\[0\.07\]/);
-    expect(dashboardSource).not.toMatch(/border-\[#7078B4\]\/25 bg-\[#0F1128\]\/\[0\.55\]/);
-  });
-
-  it("nothing replaced the bars: between the hero section and the chat panel there is only the REV 2 removal note, no rendered module", () => {
-    const heroEnd = dashboardSource.indexOf("</WorkspaceRevealSection>", dashboardSource.indexOf("min-h-[190px]"));
-    const chatIndex = dashboardSource.indexOf("<ChatPage");
-    expect(heroEnd).toBeGreaterThan(-1);
-    expect(chatIndex).toBeGreaterThan(heroEnd);
-    const between = dashboardSource.slice(heroEnd, chatIndex);
-    // Only comments/wrappers -- no interactive elements sit between them.
-    expect(between).not.toMatch(/<Button|<button|onClick/);
-  });
-
-  it("the approval surfaces stay: StepApprovalDialog still renders with the same generic/taskComplete targets, opened from the rail's Pending Approvals rows via the SAME runtime predicates", () => {
-    expect(dashboardSource).toMatch(/<StepApprovalDialog/);
-    expect(dashboardSource).toMatch(/setApprovalDialogTarget\("generic"\);\s*setApprovalDialogOpen\(true\);/);
-    expect(dashboardSource).toMatch(/setApprovalDialogTarget\("taskComplete"\);\s*setApprovalDialogOpen\(true\);/);
+// SmartFlow Home v2: the conditional action bars are back in the Home
+// composition (v2 keeps them as conditional runtime UI, hidden unless the
+// same runtime predicates as always are true) with unchanged behavior.
+describe("SmartFlow Home v2: approval/write/read-only bars are conditional runtime UI with unchanged handlers", () => {
+  it("all three boundary bars are conditionally rendered (unchanged execution/state logic) and sit between the hero and the chat panel", () => {
     expect(dashboardSource).toMatch(/pendingStepApproval && pendingApprovalStep/);
-    expect(dashboardSource).toMatch(/getTaskCompleteWriteCandidate/);
-    // The dialog itself still performs approve/reject/close against the
-    // approval service (see StepApprovalDialog.tsx) -- Dashboard only
-    // opens/closes it.
-    expect(dashboardSource).toMatch(/onDecision=\{handleApprovalDialogDecision\}/);
+    expect(dashboardSource).toMatch(/taskCompleteWriteCandidate &&/);
+    expect(dashboardSource).toMatch(/readOnlyRuntimeStep && readOnlyRuntimeResolution/);
+
+    const approvalIndex = dashboardSource.indexOf("pendingStepApproval && pendingApprovalStep && (");
+    const chatIndex = dashboardSource.indexOf("<ChatPage");
+    expect(approvalIndex).toBeGreaterThan(-1);
+    expect(approvalIndex).toBeLessThan(chatIndex);
   });
 
-  it("the old large-card metadata-grid presentation also stays gone (nothing regressed back in)", () => {
+  it("the bars are the compact single-line treatment (v2 borders/backgrounds), and the old large-card metadata-grid presentation stays gone", () => {
+    const approvalBars = dashboardSource.match(/border-\[#7D5CFF\]\/30 bg-\[#7C4DFF\]\/\[0\.07\]/g) ?? [];
+    expect(approvalBars.length).toBeGreaterThanOrEqual(2);
+    expect(dashboardSource).toMatch(/border-\[#7078B4\]\/25 bg-\[#0F1128\]\/\[0\.55\]/);
     expect(dashboardSource).not.toMatch(/rounded-xl border border-primary\/15/);
     expect(dashboardSource).not.toMatch(/agent_resolved_tool/);
+    expect(dashboardSource).not.toMatch(/agent_execution_mode/);
     expect(dashboardSource).not.toMatch(/reflection_section_label/);
+    expect(dashboardSource).not.toMatch(/safePreviewItems/);
     expect(dashboardSource).not.toMatch(/ReflectionSummary/);
+  });
+
+  it("every action button's exact onClick handler and disabled condition are byte-identical to the pre-REV-2 implementation -- only presentation policy changed across revisions", () => {
+    expect(dashboardSource).toMatch(/onClick=\{\(\) => \{\s*setApprovalDialogTarget\("generic"\);\s*setApprovalDialogOpen\(true\);\s*\}\}/);
+    expect(dashboardSource).toMatch(/onClick=\{\(\) => void handleRunTaskCompleteWrite\(\)\}/);
+    expect(dashboardSource).toMatch(/disabled=\{taskCompleteRunStatus === "running" \|\| Boolean\(taskCompleteRunResult\)\}/);
+    expect(dashboardSource).toMatch(/onClick=\{\(\) => \{\s*setApprovalDialogTarget\("taskComplete"\);\s*setApprovalDialogOpen\(true\);\s*\}\}/);
+    expect(dashboardSource).toMatch(/onClick=\{\(\) => void handleRunReadOnlyTool\(\)\}/);
+    expect(dashboardSource).toMatch(/disabled=\{readOnlyRunStatus === "running"\}/);
+  });
+
+  it("sufficient identifying text remains for every surface -- the task title, the approval card title, and the read-only step title are rendered; StepApprovalDialog stays the explicit-approval surface", () => {
+    expect(dashboardSource).toMatch(/\{t\("approval_card_title"\)\}/);
+    expect(dashboardSource).toMatch(/\{t\("write_task_title"\)\}: \{taskCompleteWriteCandidate\.taskTitle\}/);
+    expect(dashboardSource).toMatch(/\{readOnlyRuntimeStep\.title\}/);
+    expect(dashboardSource).toMatch(/<StepApprovalDialog/);
+    expect(dashboardSource).toMatch(/onDecision=\{handleApprovalDialogDecision\}/);
   });
 });
 
@@ -270,13 +268,13 @@ describe("Frozen handoff: hero is the approved star-field composition -- NO moun
     expect(dashboardSource).not.toMatch(/--flow-bg-deep/);
   });
 
-  it("the hero SVG is the frozen 1200x300 canvas with the REV 2 vertically-centred crop (xMidYMid slice, so the moon survives the shorter hero) and the REV 2 heights: 190px, 150px at <=760px", () => {
+  it("the hero SVG is the 1200x300 canvas with the v2 crop (xMidYMax slice) and the v2 heights: 190px, 196px at <=760px", () => {
     const hero = heroBlock();
     expect(dashboardSource).toMatch(/min-h-\[190px\]/);
-    expect(dashboardSource).toMatch(/max-\[760px\]:min-h-\[150px\]/);
+    expect(dashboardSource).toMatch(/max-\[760px\]:min-h-\[196px\]/);
     expect(dashboardSource).not.toMatch(/min-h-\[248px\]/);
     expect(hero).toMatch(/viewBox="0 0 1200 300"/);
-    expect(hero).toMatch(/preserveAspectRatio="xMidYMid slice"/);
+    expect(hero).toMatch(/preserveAspectRatio="xMidYMax slice"/);
     expect(hero).toMatch(/#0C0F2E/);
     expect(hero).toMatch(/#080A1F/);
     expect(hero).toMatch(/#050615/);
@@ -309,24 +307,36 @@ describe("Frozen handoff: hero is the approved star-field composition -- NO moun
     expect(heroBlock()).not.toMatch(/<FlowAIOrb/);
   });
 
-  it("REV 2 §3: NO large greeting H1 -- the overlay is date eyebrow + ONE supporting sentence (the lead text) + the three metric capsules, from existing workspace signals", () => {
+  it("SmartFlow Home v2: the hero overlay is date eyebrow + greeting H1 ONLY (32px, 23px at <=760px) -- no supporting sentence and no capsules inside the hero", () => {
     const hero = heroBlock();
-    // The hero renders no heading element and no hero.title at all.
-    expect(hero).not.toMatch(/<h1/);
-    expect(hero).not.toMatch(/workspace\.hero\.title/);
-    expect(dashboardSource).not.toMatch(/workspace\.hero\.title/);
-    // The supporting sentence became the lead line (REV 2 prototype:
-    // 15px, #B9BCD4).
-    expect(hero).toMatch(/text-\[15px\] leading-normal text-\[#B9BCD4\]/);
-    expect(hero).toMatch(/workspace\.hero\.summary/);
+    expect(hero).toMatch(/<h1/);
+    expect(hero).toMatch(/workspace\.hero\.title/);
+    expect(hero).toMatch(/text-\[32px\]/);
+    expect(hero).toMatch(/max-\[760px\]:text-\[23px\]/);
     expect(hero).toMatch(/workspace\.today\.label/);
+    expect(hero).not.toMatch(/workspace\.hero\.summary/);
+    expect(hero).not.toMatch(/Open Tasks/);
+    expect(hero).not.toMatch(/workspace\.signals\.incompleteTasks/);
     expect(dashboardSource).toMatch(/max-w-\[720px\]/);
-    expect(dashboardSource).toMatch(/Open Tasks/);
-    expect(dashboardSource).toMatch(/Today&apos;s Events/);
-    expect(dashboardSource).toMatch(/Approvals/);
-    expect(dashboardSource).toMatch(/workspace\.signals\.incompleteTasks/);
-    expect(dashboardSource).toMatch(/workspace\.signals\.eventsToday/);
-    expect(dashboardSource).toMatch(/approvalsPendingCount/);
+  });
+
+  it("SmartFlow Home v2: the FOUR metric capsules (Open Tasks · Today's Events · Habit Streak · Approvals) render as an equal-stretch row (flex-1, min-w 150px) between the hero and the chat shell, from existing data only", () => {
+    const heroEnd = dashboardSource.indexOf("</WorkspaceRevealSection>", dashboardSource.indexOf("min-h-[190px]"));
+    const chatIndex = dashboardSource.indexOf("<ChatPage");
+    const betweenHeroAndChat = dashboardSource.slice(heroEnd, chatIndex);
+    expect(betweenHeroAndChat).toMatch(/Open Tasks/);
+    expect(betweenHeroAndChat).toMatch(/Today&apos;s Events/);
+    expect(betweenHeroAndChat).toMatch(/Habit Streak/);
+    expect(betweenHeroAndChat).toMatch(/Approvals/);
+    expect(betweenHeroAndChat).toMatch(/min-w-\[150px\] flex-1/);
+    expect(betweenHeroAndChat).toMatch(/workspace\.signals\.incompleteTasks/);
+    expect(betweenHeroAndChat).toMatch(/workspace\.signals\.eventsToday/);
+    expect(betweenHeroAndChat).toMatch(/\{habitStreak\}/);
+    expect(betweenHeroAndChat).toMatch(/\{approvalsPendingCount\}/);
+    // Habit Streak reuses the EXISTING habits query (same React Query key
+    // useWorkspace already fetches) -- no new backend read.
+    expect(dashboardSource).toMatch(/useHabits\(\)/);
+    expect(dashboardSource).toMatch(/habit\.currentStreak/);
   });
 });
 

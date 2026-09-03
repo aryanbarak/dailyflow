@@ -79,23 +79,11 @@ function useSidebarIdentity() {
 // identity, same logo header, same active treatment, same footer -- never
 // a second menu system. `onNavigate` (drawer only) closes the drawer when
 // a destination is selected; navigation itself stays NavLink's job.
-// REV 2 §8/§9 (Home IA): Home IS the SmartFlow conversation, so Home's
-// navigation UI shows no separate Chat destination -- the drawer passes
-// `hideChatDestination` to filter the /chat entry out of the SAME
-// navItems list (no second data source). Non-Home routes keep the full
-// unchanged list, and the /chat route itself still exists (route
-// consolidation is deliberately a separate change).
-export function FullSidebarContent({
-  onNavigate,
-  hideChatDestination = false,
-}: Readonly<{ onNavigate?: () => void; hideChatDestination?: boolean }>) {
+export function FullSidebarContent({ onNavigate }: Readonly<{ onNavigate?: () => void }>) {
   const location = useLocation();
   const { t } = useT();
   const shouldReduceMotion = useReducedMotion();
   const { displayName, initials } = useSidebarIdentity();
-  const visibleNavItems = hideChatDestination
-    ? navItems.filter((item) => item.path !== "/chat")
-    : navItems;
 
   return (
     <>
@@ -192,7 +180,7 @@ export function FullSidebarContent({
 
       {/* Navigation — Context Rail: active pill slides between items via layoutId */}
       <nav className="relative z-10 flex-1 p-4 space-y-0.5 overflow-y-auto scrollbar-hide">
-        {visibleNavItems.map((item) => {
+        {navItems.map((item) => {
           const isActive =
             item.activeMatch === "prefix"
               ? location.pathname === item.path || location.pathname.startsWith(`${item.path}/`)
@@ -280,11 +268,10 @@ export function Sidebar() {
   const [homeMenuOpen, setHomeMenuOpen] = useState(false);
   const { displayName, initials } = useSidebarIdentity();
 
-  // SmartFlow Home frozen design handoff §4/§9 (REV 2): route-aware
-  // presentation mode, not a second navigation system. On Home the rail
-  // is slim and icon-only -- hamburger, 12px spacer, Home, Settings, flex
-  // spacer, avatar; REV 2 removed the Chat icon because Home itself IS
-  // the conversation -- 68px wide (64px at <=1280px), and BOTH the hamburger
+  // SmartFlow Home frozen design handoff §4/§9: route-aware presentation
+  // mode, not a second navigation system. On Home the rail is slim and
+  // icon-only -- hamburger, 12px spacer, Home, Chat, Settings, flex
+  // spacer, avatar -- 68px wide (64px at <=1280px), and BOTH the hamburger
   // and the Home icon open the EXISTING full navigation (FullSidebarContent
   // above: same navItems, star field, logo, footer) as a 256px left
   // overlay drawer over a scrim. Selecting a destination closes the drawer
@@ -323,15 +310,20 @@ export function Sidebar() {
             className="z-[90] flex w-64 max-w-[82vw] flex-col gap-0 overflow-hidden border-r border-[#7078B4]/[0.22] bg-[#090B1C]/[0.97] p-0 shadow-[24px_0_60px_rgba(0,0,0,0.5)]"
           >
             <div className="relative flex h-full min-h-0 flex-col overflow-hidden">
-              <FullSidebarContent onNavigate={() => setHomeMenuOpen(false)} hideChatDestination />
+              <FullSidebarContent onNavigate={() => setHomeMenuOpen(false)} />
             </div>
           </SheetContent>
         </Sheet>
 
         <nav className="flex flex-1 flex-col items-center gap-1.5" aria-label={t('nav_dashboard')}>
-          {/* REV 2 §8: no Chat icon here -- Home IS the SmartFlow
-              conversation, so a Chat destination on Home's own rail was
-              redundant. */}
+          <NavLink
+            to="/chat"
+            title={t('nav_chat')}
+            aria-label={t('nav_chat')}
+            className={HOME_RAIL_BUTTON_CLASS}
+          >
+            <MessageSquare className="h-5 w-5" strokeWidth={1.7} />
+          </NavLink>
           <NavLink
             to="/settings"
             title={t('nav_settings')}

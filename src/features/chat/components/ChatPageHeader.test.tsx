@@ -152,8 +152,8 @@ describe("ChatPageHeader composition (task 17c, D4)", () => {
   });
 });
 
-describe("ChatPageHeader compact controls mode (SmartFlow Home REV 2 §7)", () => {
-  it("compactControls renders NO branding cluster -- no heading, no icon tile, no ping dot, no 'Online' text (the Assistant Rail owns SmartFlow identity + presence on Home)", async () => {
+describe("ChatPageHeader title override (Home V2 final visual correction, round 2)", () => {
+  it("renders the provided titleOverride instead of the chat_title translation -- Home's embedded chat panel passes 'SmartFlow' here", async () => {
     const { ChatPageHeader } = await freshModules();
     const { container } = render(
       <ChatPageHeader
@@ -162,43 +162,14 @@ describe("ChatPageHeader compact controls mode (SmartFlow Home REV 2 §7)", () =
         onOpenMoreMenu={vi.fn()}
         onOpenConversations={vi.fn()}
         onStartNewChat={vi.fn()}
-        compactControls
+        titleOverride="SmartFlow"
       />,
     );
-    expect(within(container).queryByRole("heading", { level: 1 })).toBeNull();
-    expect(container.querySelector(".icon-tile")).toBeNull();
-    expect(container.textContent).not.toContain("Online");
-    expect(container.textContent).not.toContain("SmartFlow");
+    const heading = within(container).getByRole("heading", { level: 1 });
+    expect(heading.textContent).toBe("SmartFlow");
   });
 
-  it("compactControls keeps the controls usable: More, Conversations, New Chat still render and fire their handlers; the assistant-panel button renders when a handler is provided", async () => {
-    const { ChatPageHeader } = await freshModules();
-    const onOpenMoreMenu = vi.fn();
-    const onOpenConversations = vi.fn();
-    const onStartNewChat = vi.fn();
-    const onOpenAssistantPanel = vi.fn();
-    const { container } = render(
-      <ChatPageHeader
-        compact={false}
-        prefersReducedMotion
-        onOpenMoreMenu={onOpenMoreMenu}
-        onOpenConversations={onOpenConversations}
-        onStartNewChat={onStartNewChat}
-        onOpenAssistantPanel={onOpenAssistantPanel}
-        compactControls
-      />,
-    );
-    within(container).getByLabelText("More").click();
-    within(container).getByLabelText("Conversations").click();
-    within(container).getByText("New Chat").click();
-    within(container).getByLabelText("Assistant panel").click();
-    expect(onOpenMoreMenu).toHaveBeenCalledTimes(1);
-    expect(onOpenConversations).toHaveBeenCalledTimes(1);
-    expect(onStartNewChat).toHaveBeenCalledTimes(1);
-    expect(onOpenAssistantPanel).toHaveBeenCalledTimes(1);
-  });
-
-  it("without compactControls (the standalone /chat route), the unchanged chat_title translation ('Flow AI') still renders as the heading -- standalone behavior is unaffected by REV 2", async () => {
+  it("falls back to the unchanged chat_title translation ('Flow AI') when titleOverride is omitted -- the standalone /chat route's own call site passes no override, so its behavior is unaffected", async () => {
     const { ChatPageHeader } = await freshModules();
     const { container } = render(
       <ChatPageHeader

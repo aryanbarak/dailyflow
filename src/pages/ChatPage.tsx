@@ -3529,12 +3529,13 @@ export default function ChatPage({ embedded = false, onOpenAssistantPanel }: Cha
         onOpenMoreMenu={() => setMoreMenuOpen(true)}
         onOpenConversations={() => setConversationsDrawerOpen(true)}
         onStartNewChat={startNewChat}
-        // SmartFlow Home REV 2 §7: Home's embedded header is a compact
-        // CONTROLS bar with NO branding cluster (no title/tile, no ping,
-        // no "Online") -- the Assistant Rail owns SmartFlow identity and
-        // presence. The standalone /chat route (embedded=false) keeps its
-        // full header, byte-identical.
-        compactControls={embedded}
+        // SmartFlow Home v2 (`SmartFlow Home v2.dc.html`): the embedded
+        // header carries the "SmartFlow" title and the ping-dot "Online"
+        // cluster again (v2 superseded REV 2's compact de-branded header).
+        // The standalone /chat route (embedded=false) passes no override,
+        // so its own `chat_title` translation is completely unchanged.
+        titleOverride={embedded ? 'SmartFlow' : undefined}
+        showOnlineStatus={embedded}
         // Frozen handoff §10: (<=1120px only) the Assistant-panel button.
         onOpenAssistantPanel={embedded ? onOpenAssistantPanel : undefined}
       />
@@ -3614,6 +3615,11 @@ export default function ChatPage({ embedded = false, onOpenAssistantPanel }: Cha
                     actions={QUICK_ACTIONS}
                     disabled={sending}
                     onSelectPrompt={insertQuickActionPrompt}
+                    // SmartFlow Home v2: Home's embedded new-chat empty
+                    // state is the centered animated-orb greeting from the
+                    // v2 prototype (see ChatEmptyState's own comment); the
+                    // standalone /chat route keeps its card + quick actions.
+                    embedded={embedded}
                   />
                 </motion.div>
               )}
