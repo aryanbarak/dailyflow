@@ -109,18 +109,26 @@ describe("Y2 (task 17g): no avatar node in assistant message rows; the empty-sta
   });
 });
 
-describe("Y3 (task 17g): the message COLUMN itself is capped to a reading measure at lg+, not just the bubble", () => {
-  it("the chat column carries a centred max-w-3xl at lg+", () => {
-    expect(chatPageSource).toMatch(/relative flex min-w-0 flex-1 flex-col lg:mx-auto lg:max-w-3xl/);
+describe("Y3 (task 17g, scoped to STANDALONE by SmartFlow Home REV 2 §7): the standalone message column is capped to a reading measure at lg+; Home's embedded transcript deliberately is NOT", () => {
+  it("the chat column carries the centred max-w-3xl at lg+ ONLY when not embedded -- Home's embedded transcript spans the full chat-shell width (REV 2 'wider conversation')", () => {
+    expect(chatPageSource).toMatch(
+      /'relative flex min-w-0 flex-1 flex-col min-h-0', !embedded && 'lg:mx-auto lg:max-w-3xl'/,
+    );
   });
 
-  it("the per-bubble 70ch cap is comfortably narrower than the column's own 3xl cap -- no double-capping conflict (70ch ~ 490-560px at a 14px body font, well under 48rem/768px)", () => {
+  it("the per-bubble 70ch cap is comfortably narrower than the standalone column's own 3xl cap -- no double-capping conflict (70ch ~ 490-560px at a 14px body font, well under 48rem/768px); embedded bubbles instead cap at the REV 2 percentages", () => {
     const { container } = render(<ChatBubble role="assistant" content="Hello there." />);
     const bubble = container.querySelector(".rounded-xl")!;
     expect(bubble.className).toMatch(/lg:max-w-\[70ch\]/);
-    // The bubble cap is what actually binds at lg+; the column cap exists
-    // to keep the whole column from stretching edge-to-edge on an
-    // ultra-wide monitor now that 17f removed the desktop sidebar.
+    const embeddedRender = render(<ChatBubble role="assistant" content="Hello there." embedded />);
+    const embeddedBubble = embeddedRender.container.querySelector(".rounded-xl")!;
+    expect(embeddedBubble.className).toMatch(/lg:max-w-\[86%\]/);
+    expect(embeddedBubble.className).not.toMatch(/lg:max-w-\[70ch\]/);
+    const embeddedUser = render(<ChatBubble role="user" content="Hello there." embedded />);
+    expect(embeddedUser.container.querySelector(".rounded-xl")!.className).toMatch(/lg:max-w-\[64%\]/);
+    // The bubble cap is what actually binds at lg+; the standalone column
+    // cap exists to keep the whole column from stretching edge-to-edge on
+    // an ultra-wide monitor now that 17f removed the desktop sidebar.
   });
 });
 

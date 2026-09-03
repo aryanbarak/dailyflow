@@ -74,7 +74,12 @@ afterEach(() => {
 });
 
 describe("ChatPageHeader composition (task 17c, D4)", () => {
-  it("renders exactly two icon-only trigger buttons before the brand text -- More then Conversations, in that DOM order", async () => {
+  // The FIRST freshModules() call in this file pays the whole module-graph
+  // import cost (appearanceStore + header, ~3-4s cold) -- under a fully
+  // parallel `npm test` run that warmup intermittently blew the 5s default
+  // and failed this one test by timeout with every assertion untouched.
+  // Explicit timeout for the warmup-bearing test only.
+  it("renders exactly two icon-only trigger buttons before the brand text -- More then Conversations, in that DOM order", { timeout: 20000 }, async () => {
     const { ChatPageHeader } = await freshModules();
     const { container } = render(
       <ChatPageHeader

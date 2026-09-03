@@ -78,7 +78,13 @@ afterEach(() => {
 });
 
 describe("ChatEmptyState RTL (task 17b)", () => {
-  it("Persian language flips the row to dir=rtl, so native flex order and scroll-start mirror correctly", async () => {
+  // The FIRST freshModules() call pays the whole module-graph import cost
+  // (appearanceStore + ChatEmptyState, which since SmartFlow Home v2 also
+  // pulls FlowAIOrb for the embedded variant) -- under a fully parallel
+  // `npm test` run that warmup intermittently blows the 5s default and
+  // fails this one test by timeout with every assertion untouched. Same
+  // hardening as ChatPageHeader.test.tsx's warmup-bearing test.
+  it("Persian language flips the row to dir=rtl, so native flex order and scroll-start mirror correctly", { timeout: 20000 }, async () => {
     const { useAppearance, ChatEmptyState } = await freshModules();
     act(() => {
       useAppearance.setState({ language: "fa" });

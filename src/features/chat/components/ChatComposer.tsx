@@ -50,7 +50,7 @@ export interface ChatComposerProps {
   readonly attachError?: string | null;
   // SmartFlow Home frozen design handoff §7: Home's embedded composer says
   // "Ask SmartFlow anything…". Presentation-only, same pattern as
-  // ChatPageHeader's titleOverride -- undefined (the standalone /chat
+  // ChatPageHeader's compactControls -- undefined (the standalone /chat
   // route and every existing caller) falls back to the translated
   // `chat_placeholder`, unchanged.
   readonly placeholderOverride?: string;

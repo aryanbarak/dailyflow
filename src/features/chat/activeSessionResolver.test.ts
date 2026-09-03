@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ACTIVE_SESSION_STORAGE_KEY,
+  NEW_CHAT_PERSISTED_MARKER,
   persistActiveSessionId,
   readPersistedActiveSessionId,
   resolveActiveSessionOnMount,
@@ -54,6 +55,15 @@ describe("resolveActiveSessionOnMount (task 17f, C1b)", () => {
     });
     expect(result).toEqual({ kind: "empty" });
   });
+
+  it("marker -> empty (PO decision, v2 follow-up): the persisted new-chat marker resolves to empty even though sessions exist and explicitNewChat is false -- a reload after pressing New Chat stays on the new chat", () => {
+    const result = resolveActiveSessionOnMount({
+      persistedSessionId: NEW_CHAT_PERSISTED_MARKER,
+      sessions,
+      explicitNewChat: false,
+    });
+    expect(result).toEqual({ kind: "empty" });
+  });
 });
 
 // Same MemoryStorage shim ChatPageHeader.test.tsx already uses for
@@ -96,10 +106,11 @@ describe("persistActiveSessionId / readPersistedActiveSessionId", () => {
     expect(readPersistedActiveSessionId()).toBe("s-123");
   });
 
-  it("persisting null clears any previously persisted value (New Chat's own outcome)", () => {
+  it("persisting null writes the new-chat MARKER over any previously persisted value (New Chat's own outcome) -- deliberately NOT a key removal, so it stays distinguishable from 'never persisted'", () => {
     persistActiveSessionId("s-123");
     persistActiveSessionId(null);
-    expect(readPersistedActiveSessionId()).toBeNull();
+    expect(readPersistedActiveSessionId()).toBe(NEW_CHAT_PERSISTED_MARKER);
+    expect(window.localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY)).toBe(NEW_CHAT_PERSISTED_MARKER);
   });
 
   it("readPersistedActiveSessionId returns null, never throws, when localStorage access fails (private browsing/quota)", () => {
@@ -155,36 +166,33 @@ describe("reload sequence (task 20c, R2): persisted session exists -> resumed; N
     expect(resolution).toEqual({ kind: "resume", sessionId: "s-active" });
   });
 
-  it("New Chat pressed (persistence cleared), THEN a pull-to-refresh reload happens before anything is sent: an explicit New Chat trigger at mount time always resolves empty, regardless of what is persisted or which sessions exist", () => {
+  it("New Chat pressed, THEN an ORDINARY reload happens before anything is sent: the persisted new-chat marker keeps the reload on the EMPTY chat (PO decision, v2 follow-up -- this exact sequence used to resume the previous session and was documented as an accepted residual case; it no longer is)", () => {
     const sessions = [{ id: "s-active" }, { id: "s-other" }];
     // The user was in s-active (persisted), then pressed New Chat --
-    // ChatPage.tsx's real startNewChat() clears persistence for exactly
-    // this reason: "so an accidental reload right after (before anything
-    // is sent) doesn't drag back the PREVIOUS session."
+    // ChatPage.tsx's real startNewChat() persists the marker for exactly
+    // this reason: a reload right after (before anything is sent) must
+    // land back on the NEW chat, not drag back the previous session.
     persistActiveSessionId("s-active");
     persistActiveSessionId(null);
-    expect(readPersistedActiveSessionId()).toBeNull();
+    expect(readPersistedActiveSessionId()).toBe(NEW_CHAT_PERSISTED_MARKER);
 
-    // A reload at THIS exact moment, modelled the way a mount that is
-    // itself the direct continuation of a just-pressed New Chat would
-    // resolve (explicitNewChat: true) -- confirms the empty state wins
-    // outright, not merely "happens to fall back to nothing because
-    // sessions is empty" (sessions is NOT empty here, on purpose, and
-    // s-active is still the most recently updated one -- proving this
-    // isn't a coincidence of an empty session list).
+    // An ordinary reload at THIS exact moment -- ChatPage's own mount
+    // effect always passes explicitNewChat:false; the persisted marker
+    // alone must win, with sessions deliberately NON-empty and s-active
+    // still the most recently updated one (proving this isn't a
+    // coincidence of an empty session list).
     const resolution = resolveActiveSessionOnMount({
       persistedSessionId: readPersistedActiveSessionId(),
       sessions,
-      explicitNewChat: true,
+      explicitNewChat: false,
     });
 
     expect(resolution).toEqual({ kind: "empty" });
   });
 
-  it("documents the residual case this resolver does NOT distinguish: a reload with NO explicit New Chat signal and cleared persistence falls back to the most recent session, not empty -- persistedSessionId=null is ambiguous between 'first-ever load' and 'New Chat was pressed, then an ORDINARY reload (not modelled as explicitNewChat) happened' by design, since ChatPage never passes explicitNewChat:true from its own mount effect (see that file's own resolveActiveSessionOnMount call, always explicitNewChat:false) -- an accidental reload seconds after New Chat, before anything is typed, resumes the most recent session rather than staying empty, which is judged an acceptable outcome since nothing was lost (no draft, no message)", () => {
+  it("first-ever load stays unaffected by the marker design: an ABSENT key (nothing ever persisted) still resumes the most recent session -- the marker, not key removal, is what encodes New Chat", () => {
     const sessions = [{ id: "s-active" }, { id: "s-other" }];
-    persistActiveSessionId("s-active");
-    persistActiveSessionId(null);
+    expect(readPersistedActiveSessionId()).toBeNull();
 
     const resolution = resolveActiveSessionOnMount({
       persistedSessionId: readPersistedActiveSessionId(),
@@ -193,5 +201,20 @@ describe("reload sequence (task 20c, R2): persisted session exists -> resumed; N
     });
 
     expect(resolution).toEqual({ kind: "resume", sessionId: "s-active" });
+  });
+
+  it("sending the first message of the new chat overwrites the marker with the real session id, so the NEXT reload resumes that new conversation", () => {
+    const sessions = [{ id: "s-new" }, { id: "s-active" }];
+    persistActiveSessionId(null);
+    // handleSend created the session and ChatPage's sync effect persisted it:
+    persistActiveSessionId("s-new");
+
+    const resolution = resolveActiveSessionOnMount({
+      persistedSessionId: readPersistedActiveSessionId(),
+      sessions,
+      explicitNewChat: false,
+    });
+
+    expect(resolution).toEqual({ kind: "resume", sessionId: "s-new" });
   });
 });

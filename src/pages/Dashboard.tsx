@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 import {
   WorkspaceReveal,
   WorkspaceRevealSection,
@@ -10,7 +10,6 @@ import {
   Calendar,
   CheckSquare,
   ChevronRight,
-  Eye,
   FileText,
   Flame,
   MessageSquare,
@@ -23,26 +22,13 @@ import { FlowAIOrb } from "@/components/FlowAIOrb";
 import { cn } from "@/lib/utils";
 import ChatPage from "@/pages/ChatPage";
 import { useSetPageTitle } from "@/hooks/useSetPageTitle";
-import { Button } from "@/components/ui/button";
 import { SkeletonBlock } from "@/components/common/Skeletons";
+import { SmartflowAsciiVisual } from "@/components/smartflow";
 import { useWorkspace } from "@/features/workspace";
 import { trackWorkspaceInteraction } from "@/features/workspace";
-import type { ApprovalInteractionResult } from "@/features/agent/approvalInteraction";
-import {
-  SUPPORTED_READ_ONLY_TOOL_IDS,
-  canStartReadOnlyRun,
-  runReadOnlyTool,
-  type ReadOnlyRuntimeResult,
-  type ReadOnlyRunState,
-} from "@/features/agent/readOnlyRuntime";
+import { useHabits } from "@/features/habits/useHabits";
 import type { ToolResolutionResult } from "@/features/agent/toolResolverTypes";
-import {
-  runWriteTool,
-  type WriteRuntimeResult,
-  type WriteRuntimeStatus,
-} from "@/features/agent/writeRuntime";
 import { StepApprovalDialog } from "@/features/workspace/components/StepApprovalDialog";
-import { useT } from "@/i18n";
 import type {
   WorkspaceIconKey,
   WorkspaceInteractionSource,
@@ -140,18 +126,6 @@ function trackAndNavigateToWorkspaceTarget(
   navigateToWorkspaceTarget(navigate, target);
 }
 
-type TaskCompleteWriteUiStatus =
-  | "idle"
-  | "awaiting_approval"
-  | "approved"
-  | "running"
-  | "success"
-  | "already_completed"
-  | "denied"
-  | "verification_failed"
-  | "timeout"
-  | "failed";
-
 interface TaskCompleteWriteCandidate {
   step: WorkspacePlanStep;
   stepApproval: WorkspaceStepApproval;
@@ -215,81 +189,16 @@ function getTaskCompleteWriteCandidate(
   return candidates.length === 1 ? candidates[0] : null;
 }
 
-function approvalMatchesTaskCompleteCandidate(
-  approval: WorkspaceStepApproval | null | undefined,
-  candidate: TaskCompleteWriteCandidate | null,
-) {
-  return Boolean(
-    candidate &&
-      approval &&
-      approval.status === "approved" &&
-      approval.stepId === candidate.step.id &&
-      approval.toolId === "tasks.complete" &&
-      approval.targetId === candidate.taskId &&
-      approval.approvalScope === "single_step" &&
-      approval.riskLevel === "medium",
-  );
-}
-
-function rejectedApprovalMatchesTaskCompleteCandidate(
-  approval: WorkspaceStepApproval | null | undefined,
-  candidate: TaskCompleteWriteCandidate | null,
-) {
-  return Boolean(
-    candidate &&
-      approval &&
-      approval.status === "rejected" &&
-      approval.stepId === candidate.step.id &&
-      approval.toolId === "tasks.complete" &&
-      approval.targetId === candidate.taskId,
-  );
-}
-
-function writeStatusToUiStatus(
-  status: WriteRuntimeStatus,
-  alreadyCompleted?: boolean,
-): TaskCompleteWriteUiStatus {
-  if (status === "success") {
-    return alreadyCompleted ? "already_completed" : "success";
-  }
-  if (status === "rejected" || status === "policy_denied" || status === "approval_required") {
-    return "denied";
-  }
-  if (status === "verification_failed") return "verification_failed";
-  return "failed";
-}
-
-function taskCompleteResultKey(
-  status: TaskCompleteWriteUiStatus,
-): "write_task_result_success" | "write_task_result_already_completed" | "write_task_result_approval_required" | "write_task_result_rejected" | "write_task_result_policy_denied" | "write_task_result_verification_failed" | "write_task_result_timeout" | "write_task_result_failed" | null {
-  switch (status) {
-    case "success":
-      return "write_task_result_success";
-    case "already_completed":
-      return "write_task_result_already_completed";
-    case "awaiting_approval":
-      return "write_task_result_approval_required";
-    case "denied":
-      return "write_task_result_policy_denied";
-    case "verification_failed":
-      return "write_task_result_verification_failed";
-    case "timeout":
-      return "write_task_result_timeout";
-    case "failed":
-      return "write_task_result_failed";
-    default:
-      return null;
-  }
-}
-
-// SmartFlow Home frozen design handoff §8: the FULL approved Assistant
-// Rail -- animated FlowAIOrb (the REAL existing component, exactly the
-// mount the handoff freezes), "SmartFlow", Online ping, status line, the
-// gradient CTA, then the five approved sections in order: Pending
+// SmartFlow Home frozen design handoff §8 (REV 2): the FULL approved
+// Assistant Rail -- animated FlowAIOrb (the REAL existing component,
+// exactly the mount the handoff freezes), "SmartFlow", Online ping,
+// status line, then the five approved sections in order: Pending
 // Approvals · AI Suggestions · Continue Learning · Recommended Today ·
-// Recent Conversation. All data is EXISTING Dashboard/workspace/runtime
-// data composed in by the caller (no new backends/engines): approvals come
-// from the same predicates the boundary bars use, suggestions from
+// Recent Conversation. REV 2 removed the "Chat with SmartFlow" CTA --
+// Home itself IS the SmartFlow conversation, so the CTA was redundant.
+// All data is EXISTING Dashboard/workspace/runtime data composed in by
+// the caller (no new backends/engines): approvals come from the same
+// runtime predicates the approval dialog uses, suggestions from
 // workspace.suggestedActions, everything else from WorkspaceRightRail.
 // The body is its own independent scroller (flex-1/min-h-0/overflow-y-auto)
 // so the rail's height can never influence the chat composer.
@@ -338,8 +247,17 @@ export function FlowAIAssistantRail({
     : [];
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-6 pt-5">
+    <div className="relative flex h-full min-h-0 flex-col overflow-hidden">
+      {/* PO decision (post-v2 correction): the animated ASCII sphere that
+          lived in this section's background before the frozen-handoff
+          rewrite (PR #211's rail: SmartflowAsciiVisual variant="sphere",
+          top-right, 300px, 30% opacity, decorative) is restored -- same
+          existing component, same placement, never a recreation. */}
+      <SmartflowAsciiVisual
+        variant="sphere"
+        className="pointer-events-none absolute -right-24 -top-24 h-[300px] w-[300px] opacity-30"
+      />
+      <div className="relative z-10 min-h-0 flex-1 overflow-y-auto px-5 pb-6 pt-5">
         <div className="flex items-start gap-3.5">
           <div className="mt-0.5 flex h-[52px] w-[52px] shrink-0 items-center justify-center overflow-visible">
             {/* Frozen handoff §2/§8: MOUNT EXISTING SMARTFLOW ASSISTANT
@@ -381,24 +299,6 @@ export function FlowAIAssistantRail({
             </p>
           </div>
         </div>
-
-        <Button
-          className="mt-4 h-10 w-full gap-2 rounded-xl border-0 text-[13px] font-semibold text-white shadow-[0_0_18px_rgba(124,77,255,0.42),0_0_42px_rgba(92,56,220,0.22)]"
-          style={{ background: "var(--gradient-primary)" }}
-          onClick={() => {
-            trackWorkspaceUiClick({
-              type: "chat_opened",
-              domain: "learning",
-              targetId: "flow-ai-chat",
-              targetTitle: "Chat with SmartFlow",
-              source: "flow_ai",
-            });
-            navigate("/chat");
-          }}
-        >
-          <MessageSquare className="h-4 w-4" />
-          Chat with SmartFlow
-        </Button>
 
         {pendingApprovals.length > 0 && (
           <div className="mt-5 border-t border-[#757CAA]/[0.14] pt-4">
@@ -741,7 +641,6 @@ function WelcomeWorkspace({
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const { t } = useT();
   const [approvalDialogOpen, setApprovalDialogOpen] = useState(false);
   // SmartFlow Home frozen design handoff §10 (<=1120px, desktop shell):
   // the Assistant Rail leaves the grid and becomes a fixed right overlay,
@@ -749,23 +648,21 @@ export default function Dashboard() {
   const [assistantPanelOpen, setAssistantPanelOpen] = useState(false);
   const [approvalDialogTarget, setApprovalDialogTarget] =
     useState<"generic" | "taskComplete" | null>(null);
-  const [latestApprovalDecision, setLatestApprovalDecision] =
-    useState<ApprovalInteractionResult | null>(null);
-  const [taskCompleteApprovalDecision, setTaskCompleteApprovalDecision] =
-    useState<ApprovalInteractionResult | null>(null);
-  const [taskCompleteRunStatus, setTaskCompleteRunStatus] =
-    useState<TaskCompleteWriteUiStatus>("idle");
-  const [taskCompleteRunResult, setTaskCompleteRunResult] =
-    useState<WriteRuntimeResult | null>(null);
-  const [taskCompleteRefreshFailed, setTaskCompleteRefreshFailed] =
-    useState(false);
-  const [readOnlyRunStatus, setReadOnlyRunStatus] =
-    useState<ReadOnlyRunState>("idle");
-  const [readOnlyRunResult, setReadOnlyRunResult] =
-    useState<ReadOnlyRuntimeResult | null>(null);
-  const readOnlyRunInFlightRef = useRef(false);
-  const taskCompleteRunInFlightRef = useRef(false);
   const workspace = useWorkspace();
+  // SmartFlow Home v2: the fourth metric capsule (Habit Streak) reads the
+  // EXISTING habits query -- the same React Query key useWorkspace already
+  // fetches (deduped by the cache), so this adds no new data read or
+  // backend call. Best CURRENT streak across active habits, matching the
+  // Habits page's own currentStreak stat.
+  const habitsQuery = useHabits();
+  const habitStreak = useMemo(
+    () =>
+      (habitsQuery.data ?? []).reduce(
+        (best, habit) => Math.max(best, habit.currentStreak ?? 0),
+        0,
+      ),
+    [habitsQuery.data],
+  );
   const taskCompleteWriteCandidate = useMemo(
     () => getTaskCompleteWriteCandidate(workspace),
     [workspace],
@@ -806,159 +703,27 @@ export default function Dashboard() {
         : null,
     [pendingStepApproval, workspace.toolResolutions],
   );
-  const readOnlyRuntimeResolution = useMemo(
-    () =>
-      workspace.toolResolutions.find(
-        (resolution) =>
-          resolution.resolved &&
-          SUPPORTED_READ_ONLY_TOOL_IDS.includes(
-            resolution.toolId as (typeof SUPPORTED_READ_ONLY_TOOL_IDS)[number],
-          ),
-      ) ?? null,
-    [workspace.toolResolutions],
-  );
-  const readOnlyRuntimeStep = useMemo(
-    () =>
-      readOnlyRuntimeResolution
-        ? workspace.plan.steps.find((step) => step.id === readOnlyRuntimeResolution.stepId) ?? null
-        : null,
-    [readOnlyRuntimeResolution, workspace.plan.steps],
-  );
-  const readOnlyRuntimeApproval = useMemo(
-    () =>
-      readOnlyRuntimeStep
-        ? workspace.approval.stepApprovals.find((approval) => approval.stepId === readOnlyRuntimeStep.id) ?? null
-        : null,
-    [readOnlyRuntimeStep, workspace.approval.stepApprovals],
-  );
-  const approvedTaskCompleteApproval = useMemo(() => {
-    const approval = taskCompleteApprovalDecision?.ok ? taskCompleteApprovalDecision.approval : null;
-    return approvalMatchesTaskCompleteCandidate(approval, taskCompleteWriteCandidate) ? approval : null;
-  }, [taskCompleteApprovalDecision, taskCompleteWriteCandidate]);
-
-  useEffect(() => {
-    setTaskCompleteApprovalDecision(null);
-    setTaskCompleteRunResult(null);
-    setTaskCompleteRefreshFailed(false);
-    setTaskCompleteRunStatus(taskCompleteWriteCandidate ? "awaiting_approval" : "idle");
-  }, [taskCompleteWriteCandidate?.bindingKey]);
-
-  const handleApprovalDialogDecision = (result: ApprovalInteractionResult) => {
-    if (approvalDialogTarget === "taskComplete") {
-      if (result.ok && result.decision === "approved") {
-        setTaskCompleteApprovalDecision(result);
-        setTaskCompleteRunStatus(
-          approvalMatchesTaskCompleteCandidate(result.approval, taskCompleteWriteCandidate)
-            ? "approved"
-            : "awaiting_approval",
-        );
-        return;
-      }
-
-      if (result.ok && result.decision === "rejected") {
-        setTaskCompleteApprovalDecision(result);
-        setTaskCompleteRunStatus(
-          rejectedApprovalMatchesTaskCompleteCandidate(result.approval, taskCompleteWriteCandidate)
-            ? "denied"
-            : "awaiting_approval",
-        );
-        return;
-      }
-
-      if (result.ok && result.decision === "closed") {
-        return;
-      }
-
-      setTaskCompleteApprovalDecision(result);
-      setTaskCompleteRunStatus("awaiting_approval");
-      return;
-    }
-
-    setLatestApprovalDecision(result);
-  };
+  // The approval/reject/close interaction itself happens INSIDE
+  // StepApprovalDialog (it calls the approval service directly and remains
+  // the single explicit-approval surface). The decision callback
+  // previously only drove the removed Home action bars' local status
+  // text/run buttons (the PO removed those bar cards from Home), so there
+  // is no Home-side state to update. Execution of approved work continues
+  // through the existing conversation (ChatPage agent execution wiring).
+  const handleApprovalDialogDecision = () => {};
 
   const handleCloseApprovalDialog = () => {
     setApprovalDialogOpen(false);
     setApprovalDialogTarget(null);
   };
 
-  const handleRunReadOnlyTool = async () => {
-    if (readOnlyRunInFlightRef.current) return;
-    if (!canStartReadOnlyRun(readOnlyRunStatus)) return;
-    if (!readOnlyRuntimeStep || !readOnlyRuntimeResolution) return;
-
-    readOnlyRunInFlightRef.current = true;
-    setReadOnlyRunStatus("running");
-    setReadOnlyRunResult(null);
-    try {
-      const result = await runReadOnlyTool({
-        step: readOnlyRuntimeStep,
-        toolResolution: readOnlyRuntimeResolution,
-        approval: readOnlyRuntimeApproval,
-        executionInput: {},
-        executionContext: {
-          tasks: workspace.agentContext.tasks,
-          events: workspace.agentContext.events,
-          learningProgress: workspace.agentContext.learningProgress,
-          workspace,
-        },
-      });
-      setReadOnlyRunStatus(
-        result.status === "success" ? "success" : result.status === "failed" ? "failed" : "denied",
-      );
-      setReadOnlyRunResult(result);
-    } finally {
-      readOnlyRunInFlightRef.current = false;
-    }
-  };
-
-  const handleRunTaskCompleteWrite = async () => {
-    if (taskCompleteRunInFlightRef.current) return;
-    if (!taskCompleteWriteCandidate || !approvedTaskCompleteApproval) return;
-
-    taskCompleteRunInFlightRef.current = true;
-    setTaskCompleteRunStatus("running");
-    setTaskCompleteRunResult(null);
-    setTaskCompleteRefreshFailed(false);
-    try {
-      const result = await runWriteTool({
-        requestId: `write:tasks.complete:${taskCompleteWriteCandidate.step.id}:${taskCompleteWriteCandidate.taskId}:${Date.now()}`,
-        step: taskCompleteWriteCandidate.step,
-        toolResolution: taskCompleteWriteCandidate.toolResolution,
-        approval: approvedTaskCompleteApproval,
-        executionContext: {
-          tasks: workspace.agentContext.tasks,
-          events: workspace.agentContext.events,
-          learningProgress: workspace.agentContext.learningProgress,
-          workspace,
-        },
-      });
-
-      setTaskCompleteRunResult(result);
-      const nextStatus = writeStatusToUiStatus(result.status, result.alreadyCompleted);
-      setTaskCompleteRunStatus(nextStatus);
-
-      if (
-        result.verified &&
-        (nextStatus === "success" || nextStatus === "already_completed")
-      ) {
-        try {
-          await workspace.refresh?.tasks();
-        } catch {
-          setTaskCompleteRefreshFailed(true);
-        }
-      }
-    } finally {
-      taskCompleteRunInFlightRef.current = false;
-    }
-  };
-
   useSetPageTitle("Dashboard", workspace.today.label);
 
   // Frozen handoff §8 (Pending Approvals): the rail rows reuse the EXACT
-  // same runtime predicates and approval-dialog wiring as the boundary
-  // bars above -- clicking a row opens the same StepApprovalDialog the
-  // corresponding bar's Review button opens. No new approval semantics.
+  // same runtime predicates (pending + requiresApproval, task-complete
+  // write candidate) that gate the boundary bars -- clicking a row opens
+  // the same StepApprovalDialog the corresponding bar's Review button
+  // opens. No new approval semantics.
   const railPendingApprovals = useMemo<AssistantRailApprovalItem[]>(() => {
     const capitalize = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
     const items: AssistantRailApprovalItem[] = [];
@@ -1046,20 +811,23 @@ export default function Dashboard() {
               style={{ background: "var(--flow-gradient-background)" }}
             >
               {/* Center column -- frozen §3: flex column, min-width 0,
-                  min-height 0; hero and action bars are flex-none rows and
-                  the chat wrapper takes all remaining height. */}
+                  min-height 0; hero, action bars and the metric-capsule
+                  row are flex-none rows and the chat wrapper takes all
+                  remaining height. */}
               <div className="flex min-h-0 min-w-0 flex-col">
-      {/* SmartFlow Home frozen design handoff §5: the approved hero is a
-          minimal night-sky composition -- vertical dark sky gradient, the
-          exact 20-star field (5 designated stars twinkle), the atmospheric
-          glow ellipse, and the small inward moon/orb group at (880,118).
-          It intentionally contains NO mountain/ridge/wave paths (the
-          earlier layered-mountain implementation is superseded and fully
-          removed). Every position, radius, opacity, gradient stop and
-          animation value below is copied verbatim from the frozen
-          prototype `SmartFlow Home.dc.html`. */}
+      {/* SmartFlow Home v2 (`SmartFlow Home v2.dc.html`) §hero: the
+          approved hero is the night-sky composition -- vertical dark sky
+          gradient, the exact 20-star field (designated stars twinkle),
+          the atmospheric glow ellipse, and the small inward moon/orb
+          group at (880,118) -- at the v2 heights (190px, 196px at
+          <=760px) with the v2 overlay: date eyebrow + the greeting H1
+          ONLY (v2 moved the supporting sentence out and relocated the
+          metric capsules below the hero, above the chat shell). NO
+          mountain/ridge/wave paths. Every position, radius, opacity,
+          gradient stop and animation value below is copied verbatim from
+          the v2 prototype. */}
       <WorkspaceRevealSection order={0} className="lg:shrink-0">
-        <section className="relative min-h-[248px] flex-none overflow-hidden max-[760px]:min-h-[196px]">
+        <section className="relative min-h-[190px] flex-none overflow-hidden max-[760px]:min-h-[196px]">
           <svg
             aria-hidden="true"
             viewBox="0 0 1200 300"
@@ -1115,10 +883,12 @@ export default function Dashboard() {
             </g>
           </svg>
 
-          {/* Frozen §5 text overlay: padding 30px 36px 22px, max-width
-              720px; at <=1120px the text caps at 56% so the subtitle stays
-              clear of the moon; at <=760px it compacts (18px padding, H1
-              23px, full width). */}
+          {/* v2 text overlay: padding 30px 36px 22px, max-width 720px;
+              date eyebrow + greeting H1 (32px, 23px at <=760px) and
+              nothing else -- the supporting sentence is gone and the
+              metric capsules moved below the hero (v2). At <=1120px the
+              text caps at 56% so it stays clear of the moon; at <=760px
+              it compacts (18px padding, full width). */}
           <div className="relative z-[2] max-w-[720px] px-9 pb-[22px] pt-[30px] max-[1120px]:max-w-[56%] max-[760px]:max-w-full max-[760px]:p-[18px]">
             <p className="text-[11px] font-semibold uppercase tracking-[.18em] text-[#9A6BFF]">
               {workspace.today.label}
@@ -1126,185 +896,17 @@ export default function Dashboard() {
             <h1 className="mt-2 text-[32px] font-semibold leading-[1.15] tracking-[-.01em] text-[#F7F7FC] max-[760px]:text-[23px]">
               {workspace.hero.title}
             </h1>
-            <p className="mt-2 text-sm leading-normal text-[#A5A8C2]">
-              {workspace.hero.summary}
-            </p>
-            {/* Frozen §5 metric capsules -- compact, never dashboard
-                cards. Counts are the existing workspace signals. */}
-            <div className="mt-4 flex flex-wrap gap-2.5">
-              {workspace.signals.isLoading ? (
-                <>
-                  <SkeletonBlock className="h-[46px] w-28 rounded-xl" />
-                  <SkeletonBlock className="h-[46px] w-28 rounded-xl" />
-                </>
-              ) : (
-                <>
-                  <div className="flex items-center gap-2.5 rounded-xl border border-[#7078B4]/[0.22] bg-[#0B0D20]/60 py-2 pl-2.5 pr-3.5 backdrop-blur-[8px]">
-                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#7C4DFF]/[0.16] text-[#A88BFF]">
-                      <CheckSquare className="h-3.5 w-3.5" strokeWidth={2} />
-                    </span>
-                    <span>
-                      <span className="block text-[10px] font-medium uppercase tracking-[.08em] text-[#777C9A] max-[760px]:text-[9px]">Open Tasks</span>
-                      <span className="text-[17px] font-semibold text-[#F7F7FC]">
-                        {workspace.signals.incompleteTasks}
-                      </span>
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2.5 rounded-xl border border-[#7078B4]/[0.22] bg-[#0B0D20]/60 py-2 pl-2.5 pr-3.5 backdrop-blur-[8px]">
-                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#4F73FF]/[0.15] text-[#678BFF]">
-                      <Calendar className="h-3.5 w-3.5" strokeWidth={2} />
-                    </span>
-                    <span>
-                      <span className="block text-[10px] font-medium uppercase tracking-[.08em] text-[#777C9A] max-[760px]:text-[9px]">Today&apos;s Events</span>
-                      <span className="text-[17px] font-semibold text-[#F7F7FC]">
-                        {workspace.signals.eventsToday}
-                      </span>
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2.5 rounded-xl border border-[#7D5CFF]/[0.35] bg-[#7C4DFF]/[0.10] py-2 pl-2.5 pr-3.5 backdrop-blur-[8px]">
-                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#7C4DFF]/20 text-[#C2B1FF]">
-                      <ShieldCheck className="h-3.5 w-3.5" strokeWidth={2} />
-                    </span>
-                    <span>
-                      <span className="block text-[10px] font-medium uppercase tracking-[.08em] text-[#777C9A] max-[760px]:text-[9px]">Approvals</span>
-                      <span className="text-[17px] font-semibold text-[#F7F7FC]">
-                        {approvalsPendingCount}
-                      </span>
-                    </span>
-                  </div>
-                </>
-              )}
-            </div>
           </div>
         </section>
       </WorkspaceRevealSection>
 
-      {/* SmartFlow Home frozen design handoff §6: the conditional agent
-          boundary surfaces are compact single-line action bars stacked
-          under the hero (padding 0 28px, gap 8px). Same runtime
-          predicates, same handlers/onClick targets, same disabled logic,
-          same approval-dialog wiring as always -- ONLY presentation. The
-          full metadata (risk/scope/tool) still appears in
-          StepApprovalDialog before anything executes; explicit approval
-          and read-only semantics are completely unchanged. */}
-      <WorkspaceRevealSection order={2} className="lg:shrink-0">
-        <div className="flex flex-col gap-2 px-4 max-[760px]:px-0.5 sm:px-7">
-          {pendingStepApproval && pendingApprovalStep && (
-            <div className="flex items-center gap-3 rounded-xl border border-[#7D5CFF]/30 bg-[#7C4DFF]/[0.07] px-3 py-[9px]">
-              <ShieldCheck className="h-[15px] w-[15px] shrink-0 text-[#A88BFF]" strokeWidth={2} aria-hidden="true" />
-              <p className="min-w-0 flex-1 truncate text-[13px] text-[#E7E7F5]">
-                {t("approval_card_title")}
-                {latestApprovalDecision?.ok && latestApprovalDecision.decision !== "closed" && (
-                  <span className="ms-2 font-medium text-[#C2B1FF]">
-                    {latestApprovalDecision.decision === "approved"
-                      ? t("approval_decision_approved")
-                      : t("approval_decision_rejected")}
-                  </span>
-                )}
-              </p>
-              <Button
-                type="button"
-                size="sm"
-                onClick={() => {
-                  setApprovalDialogTarget("generic");
-                  setApprovalDialogOpen(true);
-                }}
-                className="shrink-0 rounded-[9px] border-0 px-3.5 text-xs font-semibold text-white shadow-[0_0_14px_rgba(124,77,255,0.3)]"
-                style={{ background: "var(--gradient-primary)" }}
-              >
-                {t("approval_review_action")}
-              </Button>
-            </div>
-          )}
-
-          {taskCompleteWriteCandidate && (
-            <div className="flex items-center gap-3 rounded-xl border border-[#7D5CFF]/30 bg-[#7C4DFF]/[0.07] px-3 py-[9px]">
-              <ShieldCheck className="h-[15px] w-[15px] shrink-0 text-[#A88BFF]" strokeWidth={2} aria-hidden="true" />
-              <p className="min-w-0 flex-1 truncate text-[13px] text-[#E7E7F5]" aria-live="polite">
-                {t("write_task_title")}: {taskCompleteWriteCandidate.taskTitle}
-                {taskCompleteRunStatus === "approved" && (
-                  <span className="ms-2 font-medium text-[#C2B1FF]">{t("write_task_approved_ready")}</span>
-                )}
-                {taskCompleteRunStatus === "running" && (
-                  <span className="ms-2 font-medium text-[#C2B1FF]">{t("write_task_running_state")}</span>
-                )}
-                {taskCompleteRunStatus === "denied" && !taskCompleteRunResult && (
-                  <span className="ms-2 font-medium text-[#A5A8C2]">
-                    {t(
-                      taskCompleteApprovalDecision?.ok &&
-                        taskCompleteApprovalDecision.decision === "rejected"
-                        ? "write_task_result_rejected"
-                        : "write_task_result_policy_denied",
-                    )}
-                  </span>
-                )}
-                {taskCompleteRunResult && (
-                  <span className="ms-2 font-medium text-[#C2B1FF]">
-                    {t(taskCompleteResultKey(taskCompleteRunStatus) ?? "write_task_result_failed")}
-                  </span>
-                )}
-                {taskCompleteRefreshFailed && (
-                  <span className="ms-2 text-[#A5A8C2]">{t("write_task_refresh_failed")}</span>
-                )}
-              </p>
-
-              {approvedTaskCompleteApproval ? (
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={() => void handleRunTaskCompleteWrite()}
-                  disabled={taskCompleteRunStatus === "running" || Boolean(taskCompleteRunResult)}
-                  className="shrink-0 rounded-[9px] border-0 px-3.5 text-xs font-semibold text-white shadow-[0_0_14px_rgba(124,77,255,0.3)]"
-                  style={{ background: "var(--gradient-primary)" }}
-                >
-                  {taskCompleteRunStatus === "running"
-                    ? t("agent_run_running")
-                    : t("write_task_complete_button")}
-                </Button>
-              ) : (
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={() => {
-                    setApprovalDialogTarget("taskComplete");
-                    setApprovalDialogOpen(true);
-                  }}
-                  disabled={taskCompleteRunStatus === "running"}
-                  className="shrink-0 rounded-[9px] border-0 px-3.5 text-xs font-semibold text-white shadow-[0_0_14px_rgba(124,77,255,0.3)]"
-                  style={{ background: "var(--gradient-primary)" }}
-                >
-                  {t("approval_review_action")}
-                </Button>
-              )}
-            </div>
-          )}
-
-          {readOnlyRuntimeStep && readOnlyRuntimeResolution && (
-            <div className="flex items-center gap-3 rounded-xl border border-[#7078B4]/25 bg-[#0F1128]/[0.55] px-3 py-[9px]">
-              <Eye className="h-[15px] w-[15px] shrink-0 text-[#62DDF4]" strokeWidth={2} aria-hidden="true" />
-              <p className="min-w-0 flex-1 truncate text-[13px] text-[#E7E7F5]">
-                {readOnlyRuntimeStep.title}
-                {readOnlyRunResult && (
-                  <span className="ms-2 text-[#A5A8C2]">{readOnlyRunResult.safeSummary}</span>
-                )}
-              </p>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => void handleRunReadOnlyTool()}
-                disabled={readOnlyRunStatus === "running"}
-                className="shrink-0 rounded-[9px] border-[#7078B4]/40 bg-transparent px-3.5 text-xs font-semibold text-[#A5A8C2] hover:border-[#7D5CFF]/[0.62] hover:bg-[#7C4DFF]/[0.08] hover:text-[#F7F7FC]"
-              >
-                {readOnlyRunStatus === "running"
-                  ? t("agent_run_running")
-                  : t("agent_run_read_only_action")}
-              </Button>
-            </div>
-          )}
-        </div>
-      </WorkspaceRevealSection>
-
+      {/* PO decision (post-v2 correction): the two/three conditional
+          action-bar cards are REMOVED from Home again -- the hero flows
+          into the capsule row and chat with nothing between. Approval and
+          execution governance stays fully reachable through the
+          conversation's own approval interactions and the Assistant
+          Rail's Pending Approvals rows (both open the same
+          StepApprovalDialog / existing runtime surfaces). */}
       {/* SmartFlow Home frozen design handoff §7 -- CRITICAL LAYOUT
           CONTRACT. SmartFlow chat is the dominant surface and the LAST
           thing in the center column: the real ChatPage, embedded (never a
@@ -1323,6 +925,69 @@ export default function Dashboard() {
           after the chat except the mobile-stacked Assistant Rail. */}
       <WorkspaceRevealSection order={1} className="lg:flex lg:min-h-0 lg:flex-1 lg:flex-col">
         <div className="flex h-[560px] flex-col px-4 pb-4 pt-3 max-[760px]:px-2.5 max-[760px]:pb-2.5 sm:px-7 sm:pb-5 lg:h-auto lg:min-h-0 lg:flex-1">
+          {/* SmartFlow Home v2 §metrics: the metric capsules moved OUT of
+              the hero to a flex-none row directly above the chat shell,
+              each stretching equally (flex-1, min-width 150px), and v2
+              adds the fourth capsule -- Habit Streak (existing habits
+              data, best current streak). Counts are the existing
+              workspace signals; no new backend reads. */}
+          <div className="mb-3 flex flex-none flex-wrap gap-2.5">
+            {workspace.signals.isLoading ? (
+              <>
+                <SkeletonBlock className="h-[46px] min-w-[150px] flex-1 rounded-xl" />
+                <SkeletonBlock className="h-[46px] min-w-[150px] flex-1 rounded-xl" />
+                <SkeletonBlock className="h-[46px] min-w-[150px] flex-1 rounded-xl" />
+                <SkeletonBlock className="h-[46px] min-w-[150px] flex-1 rounded-xl" />
+              </>
+            ) : (
+              <>
+                <div className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-[#7078B4]/[0.22] bg-[#0B0D20]/60 py-2 pl-2.5 pr-3.5 backdrop-blur-[8px]">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#7C4DFF]/[0.16] text-[#A88BFF]">
+                    <CheckSquare className="h-3.5 w-3.5" strokeWidth={2} />
+                  </span>
+                  <span>
+                    <span className="block text-[10px] font-medium uppercase tracking-[.08em] text-[#777C9A] max-[760px]:text-[9px]">Open Tasks</span>
+                    <span className="text-[17px] font-semibold text-[#F7F7FC]">
+                      {workspace.signals.incompleteTasks}
+                    </span>
+                  </span>
+                </div>
+                <div className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-[#7078B4]/[0.22] bg-[#0B0D20]/60 py-2 pl-2.5 pr-3.5 backdrop-blur-[8px]">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#4F73FF]/[0.15] text-[#678BFF]">
+                    <Calendar className="h-3.5 w-3.5" strokeWidth={2} />
+                  </span>
+                  <span>
+                    <span className="block text-[10px] font-medium uppercase tracking-[.08em] text-[#777C9A] max-[760px]:text-[9px]">Today&apos;s Events</span>
+                    <span className="text-[17px] font-semibold text-[#F7F7FC]">
+                      {workspace.signals.eventsToday}
+                    </span>
+                  </span>
+                </div>
+                <div className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-[#7078B4]/[0.22] bg-[#0B0D20]/60 py-2 pl-2.5 pr-3.5 backdrop-blur-[8px]">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#F3A044]/[0.14] text-[#F3A044]">
+                    <Flame className="h-3.5 w-3.5" strokeWidth={2} />
+                  </span>
+                  <span>
+                    <span className="block text-[10px] font-medium uppercase tracking-[.08em] text-[#777C9A] max-[760px]:text-[9px]">Habit Streak</span>
+                    <span className="text-[17px] font-semibold text-[#F7F7FC]">
+                      {habitStreak}
+                    </span>
+                  </span>
+                </div>
+                <div className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-[#7D5CFF]/[0.35] bg-[#7C4DFF]/[0.10] py-2 pl-2.5 pr-3.5 backdrop-blur-[8px]">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#7C4DFF]/20 text-[#C2B1FF]">
+                    <ShieldCheck className="h-3.5 w-3.5" strokeWidth={2} />
+                  </span>
+                  <span>
+                    <span className="block text-[10px] font-medium uppercase tracking-[.08em] text-[#777C9A] max-[760px]:text-[9px]">Approvals</span>
+                    <span className="text-[17px] font-semibold text-[#F7F7FC]">
+                      {approvalsPendingCount}
+                    </span>
+                  </span>
+                </div>
+              </>
+            )}
+          </div>
           <section
             aria-label="SmartFlow conversation"
             className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[18px] border border-[#7078B4]/[0.22] bg-[#080A1B]/[0.55] shadow-[0_16px_40px_rgba(0,0,0,0.28)] backdrop-blur-[14px]"

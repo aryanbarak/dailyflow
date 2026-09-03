@@ -159,3 +159,35 @@ describe("ChatEmptyState D2: mobile has no chip/card/orb markup at all", () => {
     expect(desktopBlock).toContain(action.labelKey === "flow_action_study" ? "Study With Me" : "");
   });
 });
+
+// SmartFlow Home v2 (`SmartFlow Home v2.dc.html`, new-chat empty state):
+// Home's embedded chat renders the centered animated-orb greeting instead
+// of the card + chip layout. The orb is the REAL FlowAIOrb (its breathing/
+// glow background animation restored per the PO's instruction), never the
+// prototype's CSS stand-in. Standalone (`embedded` omitted) is proven
+// unchanged by every existing test above.
+describe("ChatEmptyState embedded variant (SmartFlow Home v2)", () => {
+  it("renders the centered greeting + tagline with the REAL FlowAIOrb mount, and neither the glass card nor the quick-action chips", () => {
+    const html = renderToString(
+      <ChatEmptyState greetingName="Aryan" theme="dark" actions={[action]} disabled={false} onSelectPrompt={vi.fn()} embedded />,
+    );
+    expect(html).toContain("Aryan");
+    expect(html).toContain("here to help you learn, plan, and grow every day");
+    // The real FlowAIOrb mount (aria-labelled), not the static
+    // --flow-gradient-orb corner motif and not a CSS stand-in.
+    expect(html).toContain("SmartFlow assistant");
+    expect(html).not.toContain("var(--flow-gradient-orb)");
+    expect(html).not.toContain("glass-card");
+    expect(html).not.toContain('role="listitem"');
+    expect(html).not.toContain("chat-empty-state-desktop");
+    expect(html).not.toContain("chat-empty-state-mobile");
+  });
+
+  it("the embedded layout is the v2 centered column (items-center + text-center)", () => {
+    const html = renderToString(
+      <ChatEmptyState greetingName="Aryan" theme="dark" actions={[action]} disabled={false} onSelectPrompt={vi.fn()} embedded />,
+    );
+    expect(html).toMatch(/class="[^"]*flex-col items-center[^"]*"/);
+    expect(html).toMatch(/text-center/);
+  });
+});

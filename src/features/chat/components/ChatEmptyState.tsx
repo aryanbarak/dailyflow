@@ -3,6 +3,7 @@ import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
 import { SmartflowAsciiVisual } from "@/components/smartflow";
+import { FlowAIOrb } from "@/components/FlowAIOrb";
 
 // SmartFlow -- Flow AI visual identity (task 17b). The mockup's "lobby"
 // page, distilled into the CONVERSATION-FIRST empty state (see the task's
@@ -55,11 +56,44 @@ export interface ChatEmptyStateProps {
   readonly actions: readonly ChatEmptyStateAction[];
   readonly disabled: boolean;
   readonly onSelectPrompt: (prompt: string) => void;
+  // SmartFlow Home v2 (`SmartFlow Home v2.dc.html`, new-chat empty state):
+  // Home's EMBEDDED chat renders a centered greeting -- the ANIMATED
+  // SmartFlow orb (the real FlowAIOrb with its breathing/glow background
+  // animation, per the standing "never a CSS stand-in" rule; the
+  // prototype's CSS orb is a review stand-in), "Hello, {name}." and a
+  // one-line tagline. No card, no quick-action chips (the v2 empty state
+  // shows none). Default false: the standalone /chat route keeps the
+  // existing card + chip layout below, byte-identical.
+  readonly embedded?: boolean;
 }
 
-export function ChatEmptyState({ greetingName, theme, actions, disabled, onSelectPrompt }: ChatEmptyStateProps) {
+export function ChatEmptyState({ greetingName, theme, actions, disabled, onSelectPrompt, embedded = false }: ChatEmptyStateProps) {
   const { t, isRTL } = useT();
   const isDark = theme === "dark";
+
+  if (embedded) {
+    return (
+      <div dir={isRTL ? "rtl" : "ltr"} className="flex flex-col items-center px-6 pb-5 pt-11 text-center">
+        <div className="flex h-[58px] w-[58px] shrink-0 items-center justify-center overflow-visible">
+          <FlowAIOrb
+            size={58}
+            state="presence"
+            beam={false}
+            particles
+            glowIntensity={0.9}
+            theme="transparent"
+            ariaLabel="SmartFlow assistant"
+          />
+        </div>
+        <h2 className="mt-[18px] text-[21px] font-semibold tracking-[-0.01em] text-foreground">
+          {t("flow_greeting")}, {greetingName}.
+        </h2>
+        <p className="mt-[7px] max-w-[380px] text-[13px] leading-relaxed text-muted-foreground [text-wrap:pretty]">
+          I&apos;m SmartFlow — here to help you learn, plan, and grow every day.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div dir={isRTL ? "rtl" : "ltr"}>

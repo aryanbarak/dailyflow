@@ -19,8 +19,21 @@ export interface ActiveSessionCandidate {
   readonly id: string;
 }
 
+// PO decision (SmartFlow Home v2 follow-up): pressing "New Chat" and then
+// reloading must land back on the NEW empty chat, not resume the previous
+// session. Task 17f's original encoding could not express that -- "New
+// Chat" REMOVED the persisted key, which is indistinguishable from
+// "first-ever load on this device", and the resolver's most-recent
+// fallback (correct for first loads) dragged the old session back. The
+// fix is this explicit marker: "New Chat" now PERSISTS the marker instead
+// of removing the key, so an absent key still means "first load -> resume
+// most recent", while the marker means "the user deliberately started
+// fresh -> stay empty". Sending the first message overwrites the marker
+// with the real new session id, exactly as before.
+export const NEW_CHAT_PERSISTED_MARKER = "__new-chat__";
+
 export interface ResolveActiveSessionOnMountInput {
-  /** Read from persistence (localStorage) -- null if nothing was ever persisted, or the page is being loaded for the first time on this device. */
+  /** Read from persistence (localStorage) -- null if nothing was ever persisted (first load on this device); NEW_CHAT_PERSISTED_MARKER if the user explicitly started a new chat and nothing has been sent yet. */
   readonly persistedSessionId: string | null;
   /** Already ordered most-recent-first (useChatSessions sorts by updated_at DESC). */
   readonly sessions: readonly ActiveSessionCandidate[];
@@ -36,6 +49,11 @@ export function resolveActiveSessionOnMount(
   input: ResolveActiveSessionOnMountInput,
 ): ActiveSessionResolution {
   if (input.explicitNewChat) return { kind: "empty" };
+
+  // The user pressed New Chat and reloaded before sending anything: stay
+  // on the fresh empty chat (PO decision -- see NEW_CHAT_PERSISTED_MARKER
+  // above). The previous conversation stays one History click away.
+  if (input.persistedSessionId === NEW_CHAT_PERSISTED_MARKER) return { kind: "empty" };
 
   if (input.persistedSessionId !== null) {
     const stillExists = input.sessions.some((session) => session.id === input.persistedSessionId);
@@ -64,7 +82,11 @@ export function persistActiveSessionId(sessionId: string | null): void {
   if (typeof window === "undefined") return;
   try {
     if (sessionId === null) {
-      window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
+      // null = "the user is deliberately on the fresh empty chat" (New
+      // Chat pressed, or an explicitly-empty resolution). Persist the
+      // MARKER rather than removing the key: an absent key must keep
+      // meaning "first-ever load", which resumes the most recent session.
+      window.localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, NEW_CHAT_PERSISTED_MARKER);
     } else {
       window.localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, sessionId);
     }

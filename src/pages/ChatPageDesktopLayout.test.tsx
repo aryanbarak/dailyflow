@@ -43,9 +43,11 @@ describe("B1 (task 17f): the persistent desktop Conversations panel is gone from
   });
 });
 
-describe("B2 (task 17f): the chat column takes the freed width and self-centres at lg+", () => {
-  it("the chat column carries a centred max-width at lg+, not an unconstrained full-bleed flex-1", () => {
-    expect(chatPageSource).toMatch(/relative flex min-w-0 flex-1 flex-col lg:mx-auto lg:max-w-3xl/);
+describe("B2 (task 17f): the chat column takes the freed width and self-centres at lg+ (SmartFlow Home REV 2 scoped this to the STANDALONE route -- Home's embedded transcript spans the full shell width instead)", () => {
+  it("the standalone chat column carries a centred max-width at lg+, not an unconstrained full-bleed flex-1 -- the cap is gated behind `!embedded`", () => {
+    expect(chatPageSource).toMatch(
+      /'relative flex min-w-0 flex-1 flex-col min-h-0', !embedded && 'lg:mx-auto lg:max-w-3xl'/,
+    );
   });
 
   it("the 70ch bubble reading-measure cap from task 17e is untouched", () => {
