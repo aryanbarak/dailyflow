@@ -12,25 +12,16 @@ import {
   FileText,
   Flame,
   MessageSquare,
-  Music,
-  Pause,
-  Play,
-  Plus,
   Sparkles,
   Wallet,
 } from "lucide-react";
-import { AddHabitModal } from "@/features/habits/components/AddHabitModal";
 import { FlowAIOrb } from "@/components/FlowAIOrb";
 import { SmartflowAsciiVisual } from "@/components/smartflow";
-import { TodaysFocusWidget } from "@/components/dashboard/TodaysFocusWidget";
-import { AiInsightsWidget } from "@/components/dashboard/AiInsightsWidget";
 import ChatPage from "@/pages/ChatPage";
 import { useSetPageTitle } from "@/hooks/useSetPageTitle";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { SkeletonBlock } from "@/components/common/Skeletons";
-import { cn } from "@/lib/utils";
-import { useMusicPlayer, loadHistory } from "@/hooks/useMusicPlayer";
 import { useWorkspace } from "@/features/workspace";
 import { trackWorkspaceInteraction } from "@/features/workspace";
 import type { ApprovalInteractionResult } from "@/features/agent/approvalInteraction";
@@ -289,173 +280,20 @@ function taskCompleteResultKey(
   }
 }
 
-function FocusPlaylistCard() {
-  const navigate = useNavigate();
-  const { currentTrack, isPlaying, pause, resume, playYouTube } =
-    useMusicPlayer();
-  const lastPlayed = useMemo(() => loadHistory()[0] ?? null, []);
-
-  const isYouTube = currentTrack?.type === "youtube";
-  const trackTitle = currentTrack
-    ? currentTrack.type === "youtube"
-      ? currentTrack.title
-      : currentTrack.name
-    : null;
-  const videoId = isYouTube ? currentTrack.videoId : null;
-  const thumbnailUrl = videoId
-    ? `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`
-    : null;
-
-  return (
-    <Card className="glass-card">
-      <CardContent className="p-3 space-y-3">
-        <div className="flex items-center gap-3">
-          <div className="icon-tile w-7 h-7 rounded-md">
-            <Music className="w-3.5 h-3.5 text-primary" />
-          </div>
-          <p className="text-sm font-semibold">Focus Playlist</p>
-        </div>
-
-        {currentTrack ? (
-          <div className="flex items-center gap-3">
-            {thumbnailUrl ? (
-              <img
-                src={thumbnailUrl}
-                alt=""
-                className="w-12 h-12 rounded-md object-cover shrink-0"
-              />
-            ) : (
-              <div className="icon-tile w-12 h-12 rounded-md">
-                <Music className="w-5 h-5 text-primary" />
-              </div>
-            )}
-            <div className="min-w-0 flex-1">
-              <p className="text-xs font-medium truncate">{trackTitle}</p>
-              <p className="text-[10px] text-muted-foreground">
-                {isPlaying ? "Now playing" : "Paused"}
-              </p>
-            </div>
-            <button
-              type="button"
-              aria-label={isPlaying ? "Pause" : "Resume"}
-              onClick={isPlaying ? pause : resume}
-              className="icon-tile w-8 h-8 rounded-full shrink-0 hover:bg-primary/20 transition-colors"
-            >
-              {isPlaying ? (
-                <Pause className="w-4 h-4 text-primary" />
-              ) : (
-                <Play className="w-4 h-4 text-primary ml-0.5" />
-              )}
-            </button>
-          </div>
-        ) : lastPlayed ? (
-          <div className="flex items-center gap-3">
-            <img
-              src={`https://img.youtube.com/vi/${lastPlayed.videoId}/mqdefault.jpg`}
-              alt=""
-              className="w-12 h-12 rounded-md object-cover shrink-0"
-            />
-            <div className="min-w-0 flex-1">
-              <p className="text-xs font-medium truncate">
-                {lastPlayed.title}
-              </p>
-              <p className="text-[10px] text-muted-foreground">Last played</p>
-            </div>
-            <button
-              type="button"
-              aria-label="Play"
-              onClick={() =>
-                playYouTube(lastPlayed.videoId, lastPlayed.title)
-              }
-              className="icon-tile w-8 h-8 rounded-full shrink-0 hover:bg-primary/20 transition-colors"
-            >
-              <Play className="w-4 h-4 text-primary ml-0.5" />
-            </button>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            <p className="text-xs text-muted-foreground">
-              No recent tracks
-            </p>
-            <Button
-              size="sm"
-              variant="outline"
-              className="w-full gap-2"
-              onClick={() => navigate("/music")}
-            >
-              <Music className="w-3.5 h-3.5" />
-              Browse Music
-            </Button>
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-// Home / Flow AI v2 design cleanup: the "Smart Context" rail's first (and
-// most important) group -- a compact, read-only "what's happening today"
-// summary. Deliberately not its own Card (TodaysFocusWidget already
-// supplies its own card chrome below) so it doesn't nest cards inside
-// cards. Uses only data Dashboard already had available (workspace.agentContext.events
-// for `nextEvent`, the same pending-approval predicate the existing
-// approval boundary card already uses for `approvalsPendingCount`) -- no
-// new fetch, no new recommendation logic.
-function HomeTodayContext({
-  nextEvent,
-  approvalsPendingCount,
-}: Readonly<{
-  nextEvent: { title: string; startLabel: string } | null;
-  approvalsPendingCount: number;
-}>) {
-  return (
-    <div className="space-y-3">
-      <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
-        Today
-      </p>
-      {(nextEvent || approvalsPendingCount > 0) && (
-        <div className="space-y-2">
-          {nextEvent && (
-            <div className="rounded-lg border border-border/25 bg-background/15 px-3 py-2">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                Next event
-              </p>
-              <p className="mt-1 truncate text-sm font-medium text-foreground">{nextEvent.title}</p>
-              <p className="text-[11px] text-muted-foreground">{nextEvent.startLabel}</p>
-            </div>
-          )}
-          {approvalsPendingCount > 0 && (
-            <div className="rounded-lg border border-primary/20 bg-primary/[0.04] px-3 py-2">
-              <p className="text-xs font-medium text-foreground">
-                {approvalsPendingCount} pending approval{approvalsPendingCount > 1 ? "s" : ""}
-              </p>
-            </div>
-          )}
-        </div>
-      )}
-      <TodaysFocusWidget />
-    </div>
-  );
-}
-
-// Home / Flow AI v2 design cleanup: `showChatEntry` toggles the orb/status/
-// "Chat with Flow AI" CTA block. On Home itself the real, working chat
-// panel is already the dominant surface (see Dashboard's own composition
-// below), so that CTA would just point at itself -- `showChatEntry={false}`
-// there renders this as a plain "Relevant Context" supporting card instead,
-// and ALSO gates out Continue learning / Recommended today (Home V2 design
-// contract correction: those are permanent-dashboard-widget content,
-// approved to be removed/reduced from normal Home -- they only remain on
-// the showChatEntry=true cold-start path). The welcome (cold-start) flow
-// still passes no prop (defaults to true), unchanged from before this
-// task, since it has no inline chat panel yet.
-// Exported (named, alongside the default `Dashboard`) solely so
+// Home V2 final visual alignment: the FULL original Assistant Rail,
+// restored from pre-#211 (the "Home / Flow AI v2 design cleanup" PR had
+// trimmed this to a compact "Today + Relevant Context" summary behind a
+// `showChatEntry` toggle -- the Product Owner's final contract explicitly
+// rejected that trim and asked for the complete original panel back,
+// unconditionally, with only its "Flow AI" copy renamed to "SmartFlow").
+// No `showChatEntry` toggle anymore -- every call site (the cold-start
+// WelcomeWorkspace path and normal Home's own sticky/stacked rail) always
+// gets the same full panel: orb, Online status, CTA, Continue learning,
+// Recommended today, Recent conversation.
+// Exported (named, alongside the default `Dashboard`) so
 // DashboardHomeFlowAiLayout.test.tsx can render it directly and assert on
-// real DOM output instead of source-text regexes for this distinction.
-export function FlowAIAssistantRail({
-  rail,
-  showChatEntry = true,
-}: Readonly<{ rail: WorkspaceRightRail; showChatEntry?: boolean }>) {
+// real DOM output.
+export function FlowAIAssistantRail({ rail }: Readonly<{ rail: WorkspaceRightRail }>) {
   const navigate = useNavigate();
   const visibleLessons = rail.recentLessons.slice(0, 6);
   const visibleRecommendations = rail.recommendations.slice(0, 6);
@@ -465,81 +303,60 @@ export function FlowAIAssistantRail({
 
   return (
     <Card className="glass-card relative overflow-hidden">
-      {showChatEntry && (
-        <SmartflowAsciiVisual
-          variant="sphere"
-          className="pointer-events-none absolute -right-24 -top-24 h-[300px] w-[300px] opacity-30"
-        />
-      )}
+      <SmartflowAsciiVisual
+        variant="sphere"
+        className="pointer-events-none absolute -right-24 -top-24 h-[300px] w-[300px] opacity-30"
+      />
 
       <CardContent className="relative z-10 space-y-4 p-4">
-        {showChatEntry ? (
-          <>
-            <div className="flex items-start gap-3">
-                <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-visible">
-                  <FlowAIOrb
-                    size="md"
-                    state="presence"
-                    beam={false}
-                    particles
-                    glowIntensity={0.9}
-                    theme="transparent"
-                    ariaLabel="Flow AI active assistant"
-                  />
+        <div className="flex items-start gap-3">
+            <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-visible">
+              <FlowAIOrb
+                size="md"
+                state="presence"
+                beam={false}
+                particles
+                glowIntensity={0.9}
+                theme="transparent"
+                ariaLabel="SmartFlow active assistant"
+              />
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-semibold">SmartFlow</p>
+              <div className="mt-2 space-y-1.5">
+                <div className="flex items-center gap-2 text-xs font-medium text-emerald-300">
+                  <span className="relative flex h-2 w-2">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-45" />
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-400" />
+                  </span>
+                  Online
                 </div>
-                <div className="min-w-0">
-                  <p className="text-sm font-semibold">Flow AI</p>
-                  <div className="mt-2 space-y-1.5">
-                    <div className="flex items-center gap-2 text-xs font-medium text-emerald-300">
-                      <span className="relative flex h-2 w-2">
-                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-45" />
-                        <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-400" />
-                      </span>
-                      Online
-                    </div>
-                    <p className="text-xs leading-5 text-muted-foreground">
-                      {rail.statusMessage}
-                    </p>
-                  </div>
-                </div>
+                <p className="text-xs leading-5 text-muted-foreground">
+                  {rail.statusMessage}
+                </p>
               </div>
+            </div>
+          </div>
 
-            <Button
-              size="sm"
-              className="w-full gap-2 text-white border-0"
-              style={{ background: "var(--gradient-primary)" }}
-              onClick={() => {
-                trackWorkspaceUiClick({
-                  type: "chat_opened",
-                  domain: "learning",
-                  targetId: "flow-ai-chat",
-                  targetTitle: "Chat with Flow AI",
-                  source: "flow_ai",
-                });
-                navigate("/chat");
-              }}
-            >
-              <MessageSquare className="w-4 h-4" />
-              Chat with Flow AI
-            </Button>
-          </>
-        ) : (
-          <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
-            Relevant Context
-          </p>
-        )}
+        <Button
+          size="sm"
+          className="w-full gap-2 text-white border-0"
+          style={{ background: "var(--gradient-primary)" }}
+          onClick={() => {
+            trackWorkspaceUiClick({
+              type: "chat_opened",
+              domain: "learning",
+              targetId: "flow-ai-chat",
+              targetTitle: "Chat with SmartFlow",
+              source: "flow_ai",
+            });
+            navigate("/chat");
+          }}
+        >
+          <MessageSquare className="w-4 h-4" />
+          Chat with SmartFlow
+        </Button>
 
-        {/* Home V2 design contract correction: Continue learning and
-            Recommended today are permanent-dashboard-widget content --
-            approved to be removed/reduced from normal Home (spec's Home V2
-            contract). They stay ONLY on the cold-start/WelcomeWorkspace
-            path (showChatEntry=true, this component's pre-existing default
-            behaviour, deliberately untouched here) and are never rendered
-            for normal Home's "Relevant Context" group
-            (showChatEntry=false) -- see the two `{showChatEntry && (...)}`
-            guards below and the FlowAIAssistantRail usage sites in
-            Dashboard's own return JSX. */}
-        {showChatEntry && (
         <div className="border-t border-border/35 pt-3">
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
             Continue learning
@@ -607,9 +424,7 @@ export function FlowAIAssistantRail({
             </button>
           </div>
         </div>
-        )}
 
-        {showChatEntry && (
         <div className="border-t border-border/35 pt-3">
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
             Recommended today
@@ -663,17 +478,8 @@ export function FlowAIAssistantRail({
             </button>
           </div>
         </div>
-        )}
 
-        {/* Recent conversation is the ONLY "Relevant Context" content for
-            normal Home (showChatEntry=false) -- Continue learning and
-            Recommended today are gated out above. When showChatEntry is
-            false this is the first block under the "Relevant Context"
-            label, so it gets no top border there (mirrors HomeTodayContext's
-            own first-block treatment); when true it's the third block
-            after the CTA/Continue-learning/Recommended-today stack, same
-            as before this correction. */}
-        <div className={cn("pt-3", showChatEntry ? "border-t border-border/35" : "border-t-0")}>
+        <div className="border-t border-border/35 pt-3">
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
             Recent conversation
           </p>
@@ -730,7 +536,7 @@ export function FlowAIAssistantRail({
             <div className="rounded-lg border border-border/25 bg-background/15 p-3">
               <p className="text-xs font-medium">No recent conversation yet.</p>
               <p className="mt-1 text-[11px] leading-4 text-muted-foreground">
-                Your latest Flow AI thread will appear here.
+                Your latest SmartFlow thread will appear here.
               </p>
             </div>
           )}
@@ -840,7 +646,6 @@ function WelcomeWorkspace({
 export default function Dashboard() {
   const navigate = useNavigate();
   const { t } = useT();
-  const [showAddHabit, setShowAddHabit] = useState(false);
   const [approvalDialogOpen, setApprovalDialogOpen] = useState(false);
   const [approvalDialogTarget, setApprovalDialogTarget] =
     useState<"generic" | "taskComplete" | null>(null);
@@ -882,11 +687,9 @@ export default function Dashboard() {
         : null,
     [pendingStepApproval, workspace.plan.steps],
   );
-  // Home / Flow AI v2 design cleanup: the Smart Context rail's compact
-  // "Today" summary -- both derived from data `useWorkspace()` already
-  // fetches (workspace.agentContext.events / workspace.approval.stepApprovals),
-  // no new backend call. `approvalsPendingCount` reuses the exact same
-  // pending/requiresApproval predicate as the approval boundary card above.
+  // Home V2 final visual alignment: the hero's compact tasks/events/
+  // approvals counts line reuses the exact same pending/requiresApproval
+  // predicate as the approval boundary card below -- no new backend call.
   const approvalsPendingCount = useMemo(
     () =>
       workspace.approval.stepApprovals.filter(
@@ -894,27 +697,6 @@ export default function Dashboard() {
       ).length,
     [workspace.approval.stepApprovals],
   );
-  const nextEvent = useMemo(() => {
-    const nowIso = new Date().toISOString();
-    const upcoming = workspace.agentContext.events
-      .filter((event) => {
-        const start = event.dateTimeStart ?? event.start;
-        return Boolean(start) && start! >= nowIso;
-      })
-      .sort((a, b) => (a.dateTimeStart ?? a.start ?? "").localeCompare(b.dateTimeStart ?? b.start ?? ""));
-    const soonest = upcoming[0];
-    if (!soonest) return null;
-    const start = soonest.dateTimeStart ?? soonest.start;
-    if (!start) return null;
-    return {
-      title: soonest.title,
-      startLabel: new Date(start).toLocaleString(undefined, {
-        weekday: "short",
-        hour: "numeric",
-        minute: "2-digit",
-      }),
-    };
-  }, [workspace.agentContext.events]);
   const approvalPresentationTool = useMemo(
     () =>
       pendingStepApproval?.toolId
@@ -1088,48 +870,73 @@ export default function Dashboard() {
             />
           ) : (
             <>
-      {/* Home / Flow AI v2 design cleanup: compact greeting + tiny daily
-          brief, replacing the old hero card's decorative gradient, the
-          "How I can help today" skills grid, and the bordered "Today's
-          Signals" box with one small counts line -- metrics as supporting
-          context, not a primary card (spec section 2/7). Net-this-month is
-          intentionally not repeated here (still on the Finance page); the
-          three counts mirrored below are the same predicate/fields the
-          rest of this file already used for them. */}
+      {/* Home V2 final visual alignment: the scenic greeting header (spec
+          section 3). No new image asset/content pipeline -- the "dark
+          premium background" and "moon/orb in the upper-right" are built
+          from tokens/components this project already ships: the mountain
+          silhouette is an inline SVG filled with the existing
+          --flow-primary-900/--flow-bg-deep tokens, the sky is the existing
+          --flow-gradient-background radial, and the moon IS the existing
+          FlowAIOrb component (the same "orb" the Assistant Rail and
+          Sidebar logo already use), sized via its own "hero" preset --
+          not a new visual language. Greeting + compact stats sit above it
+          (z-10); the scenery is purely decorative background, not a
+          separate card. */}
       <WorkspaceRevealSection order={0}>
-        <section className="px-0.5">
-          <p className="text-[11px] font-semibold uppercase tracking-widest text-primary/70">
-            {workspace.today.label}
-          </p>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-foreground sm:text-[1.7rem]">
-            {workspace.hero.title}
-          </h1>
-          <p className="mt-1.5 max-w-xl text-sm leading-6 text-muted-foreground">
-            {workspace.hero.summary}
-          </p>
-          <div className="mt-3 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground">
-            {workspace.signals.isLoading ? (
-              <SkeletonBlock className="h-3.5 w-40" />
-            ) : (
-              <>
-                <span>
-                  <span className="font-medium text-foreground">{workspace.signals.incompleteTasks}</span> tasks
-                </span>
-                <span aria-hidden="true">·</span>
-                <span>
-                  <span className="font-medium text-foreground">{workspace.signals.eventsToday}</span> events
-                </span>
-                {approvalsPendingCount > 0 && (
-                  <>
-                    <span aria-hidden="true">·</span>
-                    <span>
-                      <span className="font-medium text-foreground">{approvalsPendingCount}</span> approval
-                      {approvalsPendingCount > 1 ? "s" : ""}
-                    </span>
-                  </>
-                )}
-              </>
-            )}
+        <section
+          className="relative overflow-hidden rounded-2xl border border-primary/10 px-4 py-6 sm:px-6 lg:px-8 lg:py-8"
+          style={{ background: "var(--flow-gradient-background)" }}
+        >
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute -right-6 -top-10 opacity-90 sm:right-2 sm:top-[-2.5rem]"
+          >
+            <FlowAIOrb size="hero" state="presence" beam={false} particles glowIntensity={0.55} theme="transparent" />
+          </div>
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 400 120"
+            preserveAspectRatio="none"
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-24 w-full opacity-80 sm:h-32"
+          >
+            <polygon points="0,120 0,70 60,20 130,90 190,35 260,95 320,50 400,85 400,120" fill="var(--flow-primary-900)" />
+            <polygon points="0,120 0,95 90,55 170,100 250,65 330,105 400,80 400,120" fill="var(--flow-bg-deep)" />
+          </svg>
+
+          <div className="relative z-10 max-w-2xl">
+            <p className="text-[11px] font-semibold uppercase tracking-widest text-primary/75">
+              {workspace.today.label}
+            </p>
+            <h1 className="mt-1.5 text-2xl font-semibold tracking-tight text-foreground sm:text-[1.7rem]">
+              {workspace.hero.title}
+            </h1>
+            <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
+              {workspace.hero.summary}
+            </p>
+            <div className="mt-4 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground">
+              {workspace.signals.isLoading ? (
+                <SkeletonBlock className="h-3.5 w-40" />
+              ) : (
+                <>
+                  <span>
+                    <span className="font-medium text-foreground">{workspace.signals.incompleteTasks}</span> tasks
+                  </span>
+                  <span aria-hidden="true">·</span>
+                  <span>
+                    <span className="font-medium text-foreground">{workspace.signals.eventsToday}</span> events
+                  </span>
+                  {approvalsPendingCount > 0 && (
+                    <>
+                      <span aria-hidden="true">·</span>
+                      <span>
+                        <span className="font-medium text-foreground">{approvalsPendingCount}</span> approval
+                        {approvalsPendingCount > 1 ? "s" : ""}
+                      </span>
+                    </>
+                  )}
+                </>
+              )}
+            </div>
           </div>
         </section>
       </WorkspaceRevealSection>
@@ -1374,146 +1181,48 @@ export default function Dashboard() {
         </WorkspaceRevealSection>
       )}
 
-      {/* Home / Flow AI v2 design cleanup: Flow AI is the dominant surface
-          on Home now -- the real ChatPage, embedded (not a promo card that
-          links out to /chat). `embedded` only changes ChatPage's own root
-          height/sticky classes (see ChatPage.tsx); every other behaviour
+      {/* Home V2 final visual alignment: SmartFlow chat is the dominant
+          surface, and the LAST thing in the main column (spec section 4/5)
+          -- the real ChatPage, embedded (not a promo card that links out
+          to /chat). `embedded` only changes ChatPage's own root height/
+          sticky classes (see ChatPage.tsx); every other behaviour
           (messages, composer, approval cards, task/calendar previews,
           execution state, RTL) is exactly the same component /chat uses.
-          The panel's own height is set here, by this parent, since
-          embedding is what makes ChatPage's normal `lg:h-screen` wrong. */}
+          No other dashboard-style cards or modules render after this --
+          the shortcut/insights/playlist widgets this main column used to
+          end with are removed from Home's composition per the Product
+          Owner's final contract; none of those underlying components were
+          deleted from the codebase, just no longer referenced here (see
+          DashboardHomeFlowAiLayout.test.tsx for the exact list). */}
       <WorkspaceRevealSection order={1}>
         <div className="h-[560px] overflow-hidden rounded-2xl border border-border/30 bg-card/20 lg:h-[calc(100vh-230px)] lg:min-h-[560px]">
           <ChatPage embedded />
         </div>
       </WorkspaceRevealSection>
 
-      {/* Home / Flow AI v2 design cleanup: Smart Context, mobile placement
-          -- stacks below the chat panel (spec section 8), never squeezing
-          it. Desktop shows the same two groups in the sticky rail instead
-          (below, outside this WelcomeWorkspace/isLowData branch's `<div
-          className="space-y-7">` column). */}
-      <WorkspaceRevealSection order={2} className="space-y-4 lg:hidden">
-        <HomeTodayContext nextEvent={nextEvent} approvalsPendingCount={approvalsPendingCount} />
-        <FlowAIAssistantRail rail={workspace.rightRail} showChatEntry={false} />
-      </WorkspaceRevealSection>
-
-      <WorkspaceRevealSection order={3}>
-        <AiInsightsWidget />
-      </WorkspaceRevealSection>
-
-      <WorkspaceRevealSection order={3}>
-        <section className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-4">
-          <Card className="glass-card">
-            <CardContent className="p-3 space-y-3">
-              <div className="flex items-center gap-3">
-                <div className="icon-tile w-7 h-7 rounded-md">
-                  <Plus className="w-3.5 h-3.5 text-primary" />
-                </div>
-                <div>
-                  <p className="text-sm font-semibold">Manual Actions</p>
-                  <p className="text-xs text-muted-foreground">Still available when you need a direct shortcut.</p>
-                </div>
-              </div>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-4">
-                <button
-                  type="button"
-                  onClick={() => {
-                    trackWorkspaceUiClick({
-                      type: "action_clicked",
-                      domain: "tasks",
-                      targetId: "manual-new-task",
-                      targetTitle: "New Task",
-                      source: "manual_actions",
-                    });
-                    navigate("/tasks");
-                  }}
-                  className="flex items-center gap-2 rounded-lg border border-border/45 bg-secondary/15 px-3 py-2.5 text-left text-foreground transition-colors hover:bg-secondary/35 hover:border-primary/30"
-                >
-                  <div className="icon-tile w-6 h-6 rounded-md bg-violet-500/15">
-                    <CheckSquare className="w-3.5 h-3.5 text-violet-400" />
-                  </div>
-                  <span className="text-[11px] font-medium">New Task</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    trackWorkspaceUiClick({
-                      type: "action_clicked",
-                      domain: "documents",
-                      targetId: "manual-journal",
-                      targetTitle: "Journal",
-                      source: "manual_actions",
-                    });
-                    navigate("/journal");
-                  }}
-                  className="flex items-center gap-2 rounded-lg border border-border/45 bg-secondary/15 px-3 py-2.5 text-left text-foreground transition-colors hover:bg-secondary/35 hover:border-primary/30"
-                >
-                  <div className="icon-tile w-6 h-6 rounded-md bg-blue-500/15">
-                    <BookOpen className="w-3.5 h-3.5 text-blue-400" />
-                  </div>
-                  <span className="text-[11px] font-medium">Journal</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    trackWorkspaceUiClick({
-                      type: "action_clicked",
-                      domain: "habits",
-                      targetId: "manual-add-habit",
-                      targetTitle: "Add Habit",
-                      source: "manual_actions",
-                    });
-                    setShowAddHabit(true);
-                  }}
-                  className="flex items-center gap-2 rounded-lg border border-border/45 bg-secondary/15 px-3 py-2.5 text-left text-foreground transition-colors hover:bg-secondary/35 hover:border-primary/30"
-                >
-                  <div className="icon-tile w-6 h-6 rounded-md bg-orange-500/15">
-                    <Flame className="w-3.5 h-3.5 text-orange-400" />
-                  </div>
-                  <span className="text-[11px] font-medium">Add Habit</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    trackWorkspaceUiClick({
-                      type: "action_clicked",
-                      domain: "finance",
-                      targetId: "manual-record-expense",
-                      targetTitle: "Record Expense",
-                      source: "manual_actions",
-                    });
-                    navigate("/finance");
-                  }}
-                  className="flex items-center gap-2 rounded-lg border border-border/45 bg-secondary/15 px-3 py-2.5 text-left text-foreground transition-colors hover:bg-secondary/35 hover:border-primary/30"
-                >
-                  <div className="icon-tile w-6 h-6 rounded-md bg-emerald-500/15">
-                    <Wallet className="w-3.5 h-3.5 text-emerald-400" />
-                  </div>
-                  <span className="text-[11px] font-medium">Record Expense</span>
-                </button>
-              </div>
-            </CardContent>
-          </Card>
-          <FocusPlaylistCard />
-          {showAddHabit && (
-            <AddHabitModal onClose={() => setShowAddHabit(false)} />
-          )}
-        </section>
+      {/* Home V2 final visual alignment: on mobile/tablet the Assistant
+          Rail becomes secondary -- it stacks below chat instead of living
+          in a separate sticky column (spec section 7). Desktop renders the
+          identical, full, unconditional FlowAIAssistantRail as its own
+          sticky column instead (below, outside this WelcomeWorkspace/
+          isLowData branch's `<div className="space-y-7">` column) -- same
+          component, same data, just a different placement per breakpoint. */}
+      <WorkspaceRevealSection order={2} className="lg:hidden">
+        <FlowAIAssistantRail rail={workspace.rightRail} />
       </WorkspaceRevealSection>
             </>
           )}
         </div>
 
-        {/* Home / Flow AI v2 design cleanup: Smart Context, desktop
-            placement -- the same two groups as the mobile stack above,
-            sticky beside the dominant chat panel rather than a second
-            dashboard's worth of cards (spec section 4). */}
-        <WorkspaceRevealSection order={2} className="hidden space-y-4 lg:sticky lg:top-6 lg:block">
-          {!workspace.isLowData && (
-            <HomeTodayContext nextEvent={nextEvent} approvalsPendingCount={approvalsPendingCount} />
-          )}
-          <FlowAIAssistantRail rail={workspace.rightRail} showChatEntry={workspace.isLowData} />
+        {/* Home V2 final visual alignment: the FULL Assistant Rail, sticky
+            beside the dominant chat panel on desktop -- restored
+            unconditionally for both the cold-start WelcomeWorkspace branch
+            and normal Home, exactly as it rendered before PR #211 (this
+            section sits outside the isLowData ternary above for the same
+            reason it did pre-#211: one rail, same place, regardless of
+            which main-column branch is showing). */}
+        <WorkspaceRevealSection order={2} className="hidden lg:sticky lg:top-6 lg:block">
+          <FlowAIAssistantRail rail={workspace.rightRail} />
         </WorkspaceRevealSection>
       </div>
       <StepApprovalDialog

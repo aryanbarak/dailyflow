@@ -1,4 +1,5 @@
-import { NavLink, useLocation } from "react-router-dom";
+import { useState } from "react";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { motion, useReducedMotion } from "framer-motion";
 import {
   LayoutDashboard,
@@ -15,6 +16,7 @@ import {
   BookOpen,
   MessageSquare,
   FolderKanban,
+  Menu,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { GlobalSearch } from "@/features/search/GlobalSearch";
@@ -24,6 +26,9 @@ import { useProfile } from "@/features/profile/useProfile";
 import { FlowAIOrb } from "@/components/FlowAIOrb";
 import { SmartflowAsciiVisual } from "@/components/smartflow";
 import { getSmartAcademyUrl } from "@/config/apps";
+import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
+import { NavItemsGrid } from "./MobileNav";
+import { mainNavItems, moreNavItems } from "./mobileNavItems";
 import { useT } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
 
@@ -52,12 +57,21 @@ const navItems: {
   { icon: Settings, key: 'nav_settings', path: "/settings" },
 ];
 
+// Home V2 final visual alignment: Home's slim, icon-only rail shows only
+// these essential destinations by default -- Home/Dashboard, Chat, Settings
+// (the exact three the approved contract names) -- everything else stays
+// reachable via the hamburger's full-item sheet below, so no destination is
+// actually lost, only de-emphasized on Home specifically.
+const HOME_RAIL_ESSENTIAL_PATHS = new Set(["/", "/chat", "/settings"]);
+
 export function Sidebar() {
   const location = useLocation();
+  const navigate = useNavigate();
   const { user } = useAuth();
   const { profile } = useProfile();
   const { t } = useT();
   const shouldReduceMotion = useReducedMotion();
+  const [homeMenuOpen, setHomeMenuOpen] = useState(false);
 
   const displayName = profile?.displayName?.trim()
     || user?.email?.split("@")[0]
@@ -68,6 +82,71 @@ export function Sidebar() {
     .slice(0, 2)
     .map((part) => part[0]?.toUpperCase())
     .join("") || "U";
+
+  // Home V2 final visual alignment: route-aware presentation mode, not a
+  // second navigation system -- same `navItems` data, same destinations,
+  // same active-state rules; Home just renders a slim icon-only rail
+  // instead of the full text sidebar. Every other route (Tasks, Calendar,
+  // Projects, ...) renders the unchanged full sidebar below, untouched by
+  // this branch. The hamburger reuses MobileNav's own Sheet + NavItemsGrid
+  // (mainNavItems + moreNavItems, the exact same full item set ChatPage's
+  // own "More" menu already reuses) instead of inventing a second menu UI.
+  if (location.pathname === "/") {
+    const essentialItems = navItems.filter((item) => HOME_RAIL_ESSENTIAL_PATHS.has(item.path));
+
+    return (
+      <aside className="w-[68px] h-screen sticky top-0 shrink-0 bg-sidebar border-r border-sidebar-border flex flex-col items-center gap-2 py-4">
+        <Sheet open={homeMenuOpen} onOpenChange={setHomeMenuOpen}>
+          <SheetTrigger asChild>
+            <button
+              type="button"
+              aria-label={t('nav_more')}
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-sidebar-foreground/80 transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+          </SheetTrigger>
+          <SheetContent side="left" className="w-80" aria-label={t('nav_more')}>
+            <NavItemsGrid
+              items={[...mainNavItems, ...moreNavItems]}
+              onNavigate={(path) => { setHomeMenuOpen(false); navigate(path); }}
+              isActive={(path) => location.pathname === path || location.pathname.startsWith(`${path}/`)}
+            />
+          </SheetContent>
+        </Sheet>
+
+        <nav className="flex flex-1 flex-col items-center gap-1 pt-2" aria-label={t('nav_dashboard')}>
+          {essentialItems.map((item) => {
+            const isActive = location.pathname === item.path;
+            return (
+              <NavLink
+                key={item.path}
+                to={item.path}
+                title={t(item.key)}
+                aria-label={t(item.key)}
+                className={cn(
+                  "flex h-10 w-10 shrink-0 items-center justify-center rounded-lg transition-colors",
+                  isActive
+                    ? "bg-primary/10 text-primary"
+                    : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground",
+                )}
+              >
+                <item.icon className="w-5 h-5" />
+              </NavLink>
+            );
+          })}
+        </nav>
+
+        <div
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/20"
+          title={displayName}
+          aria-label={displayName}
+        >
+          <span className="text-xs font-medium text-primary">{initials}</span>
+        </div>
+      </aside>
+    );
+  }
 
   return (
     <aside className="relative w-64 h-screen sticky top-0 overflow-hidden bg-sidebar border-r border-sidebar-border flex flex-col">
