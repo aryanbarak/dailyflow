@@ -536,9 +536,10 @@ Governed by [ADR-0012](docs/decisions/adr/ADR-0012-write-capability-layer.md)
 (Accepted) and [ADR-0019](docs/decisions/adr/ADR-0019-permission-key-on-write-intent.md)
 (Accepted, 2026-08-27); no Chat-V2-specific ADR exists — each slice below
 extends that already-accepted architecture rather than introducing a new
-one. **IMPLEMENTED, merged to `main`** for every slice below; see the
-Stabilization Patch bullet for the important caveat on whether the
-*currently deployed* Worker actually runs this code.
+one. **IMPLEMENTED, merged to `main`** for every slice below; the
+Stabilization Patch bullet additionally carries a
+**PRODUCTION-VERIFIED — 2026-09-03** entry, where the Product Owner
+directly smoke-tested that patch's behavior on live chat.
 
 - **Slice 1 — Gemini-first fast conversation path.** PR
   [#200](https://github.com/aryanbarak/smartflow/pull/200) (merged
@@ -674,10 +675,12 @@ Stabilization Patch bullet for the important caveat on whether the
     clarification; the follow-up "ساعت ۱۰" produced the correct pending
     Task with Due 2026-09-04 + Reminder 10:00; approving it created the
     Task; and the Calendar/Tasks UI showed the persisted alarm, not "No
-    alarm." This closes the deploy-freshness question this reconciliation
-    could not answer from git/code evidence alone — the currently deployed
-    Worker does run Production Stabilization Patch 1's code, confirmed by
-    direct live behavior, not merely inferred from `main`.
+    alarm." This is a direct, evidence-based confirmation that Production
+    Stabilization Patch 1's *behavior* is live in production today — the
+    smoke test proves the observed behavior matches this patch, not a
+    deployment-artifact identity check (e.g. no build hash/version was
+    compared); it answers the deploy-freshness question this
+    reconciliation could not answer from git/code evidence alone.
 
 ### 2.9 AI Learning Foundation (ALF-0 / ALF-1A / ALF-1B)
 
@@ -789,9 +792,13 @@ Confirmed from code, not assumed (full detail in the reconciliation doc §6):
   single-action ask-mode still depend on the client reasoning overlay's
   own history-blind proposal path — deliberately not extended, per that
   patch's own explicit scope boundary, not an oversight.
-- **`AI_SHADOW_ENABLED` (§2.9, ALF-1A/1B).** Shadow-prediction capture is
-  implemented but off in the current `agent/worker/wrangler.toml`; ALF-1B's
-  evaluation CLI therefore has no live data to compare yet.
+- **`AI_SHADOW_ENABLED` (§2.9, ALF-1A/1B).** Current repo config has
+  `AI_SHADOW_ENABLED = "false"` in `agent/worker/wrangler.toml`, so the
+  currently configured runtime is not intended to emit NEW
+  `shadow_prediction` rows. Production ledger contents were not
+  independently queried in this reconciliation — this is not a claim that
+  zero `shadow_prediction` rows exist in production (live or historical),
+  only that today's config isn't generating new ones.
 
 ## 4. Current blockers / open decisions
 
