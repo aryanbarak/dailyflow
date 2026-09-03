@@ -399,6 +399,20 @@ describe("Frozen handoff: desktop grid and the chat layout contract (composer al
   });
 });
 
+// Mobile responsive pass (PO: "the mobile section must be fixed too --
+// the design must be responsive"): below lg Home lives in the app's
+// scrollable mobile shell (search row above, fixed bottom nav below), so
+// the chat wrapper can't be flex-sized by the page -- it takes a
+// dvh-bound height instead, tuned so the composer lands at the bottom
+// nav's top edge on first paint instead of being clipped behind it.
+describe("Mobile responsive pass: bounded dvh chat wrapper below lg", () => {
+  it("the chat wrapper's mobile height is dvh-bound with a min-height floor for short viewports, and lg still overrides back to the desktop flex contract", () => {
+    expect(dashboardSource).toMatch(
+      /h-\[calc\(100dvh-318px\)\] min-h-\[420px\] flex-col[^"]*lg:h-auto lg:min-h-0 lg:flex-1/,
+    );
+  });
+});
+
 // Navigation cross-check (full behavioral coverage lives in
 // Sidebar.test.tsx): Dashboard renders no nav chrome of its own.
 describe("Frozen handoff: navigation rail presentation", () => {

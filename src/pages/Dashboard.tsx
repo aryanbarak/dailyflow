@@ -920,11 +920,18 @@ export default function Dashboard() {
           scrolls ONLY inside the transcript; the composer stays
           permanently visible; the page never scrolls because the
           transcript grew. Below lg (the app's separate mobile shell,
-          which scrolls the page) the wrapper keeps a bounded 560px height
-          so the same internal contract holds there too. Nothing renders
+          which scrolls the page) the wrapper keeps a bounded height so
+          the same internal contract holds there too -- sized so that with
+          the shell's search row (~42px) + the v2 hero (196px at <=760px)
+          above and the fixed bottom nav (pb-20, 80px) below, the composer
+          lands exactly at the nav's top edge on first paint instead of
+          being clipped behind it (mobile responsive pass); dvh also
+          shrinks with the on-screen keyboard, keeping the composer
+          visible while typing. min-h keeps the chat usable on short
+          viewports (the page then scrolls, as before). Nothing renders
           after the chat except the mobile-stacked Assistant Rail. */}
       <WorkspaceRevealSection order={1} className="lg:flex lg:min-h-0 lg:flex-1 lg:flex-col">
-        <div className="flex h-[560px] flex-col px-4 pb-4 pt-3 max-[760px]:px-2.5 max-[760px]:pb-2.5 sm:px-7 sm:pb-5 lg:h-auto lg:min-h-0 lg:flex-1">
+        <div className="flex h-[calc(100dvh-318px)] min-h-[420px] flex-col px-4 pb-4 pt-3 max-[760px]:px-2.5 max-[760px]:pb-2.5 sm:px-7 sm:pb-5 lg:h-auto lg:min-h-0 lg:flex-1">
           {/* SmartFlow Home v2 §metrics: the metric capsules moved OUT of
               the hero to a flex-none row directly above the chat shell,
               each stretching equally (flex-1, min-width 150px), and v2
