@@ -2444,11 +2444,13 @@ export default function ChatPage({ embedded = false, onOpenAssistantPanel }: Cha
     setSendError(null)
     wasNearBottomRef.current = true
     setShowJumpToLatest(false)
-    // Task 17f, C1b: an explicit New Chat is a deliberate "start fresh"
-    // action -- clear persistence too, so an accidental reload right after
-    // (before anything is sent) doesn't drag back the PREVIOUS session.
-    // Once something is actually sent, handleSend's own persistence effect
-    // (below) takes back over with the new session's real id.
+    // Task 17f, C1b + PO decision (v2 follow-up): an explicit New Chat is
+    // a deliberate "start fresh" action -- persist that (null writes the
+    // NEW_CHAT_PERSISTED_MARKER, see activeSessionResolver.ts) so a reload
+    // right after (before anything is sent) lands back on the NEW empty
+    // chat instead of dragging back the PREVIOUS session. Once something
+    // is actually sent, the persistence effect (below) takes back over
+    // with the new session's real id.
     persistActiveSessionId(null)
   }, [])
 
@@ -2482,7 +2484,15 @@ export default function ChatPage({ embedded = false, onOpenAssistantPanel }: Cha
   // actually active, from WHATEVER path set it (drawer selection,
   // handleSend creating a new session, or the restoration effect above) --
   // one write site, not duplicated at each call site.
+  // PO decision (v2 follow-up) guard: do NOT write before the mount
+  // resolution has run. Without the guard, this effect's very first run
+  // (activeSessionId still its initial null, sessions still loading)
+  // overwrote the persisted value BEFORE resolveActiveSessionOnMount could
+  // read it -- previously masked by the resolver's most-recent fallback,
+  // but fatal once null persists the new-chat marker: every reload would
+  // look like an explicit New Chat.
   useEffect(() => {
+    if (!hasResolvedInitialSession.current) return
     persistActiveSessionId(activeSessionId)
   }, [activeSessionId])
 
