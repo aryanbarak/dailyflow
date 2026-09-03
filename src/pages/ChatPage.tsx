@@ -3600,7 +3600,10 @@ export default function ChatPage({ embedded = false, onOpenAssistantPanel }: Cha
           <div
             ref={messagesScrollRef}
             onScroll={handleMessagesScroll}
-            className={cn('min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 sm:px-6', compact ? 'space-y-2 py-3' : 'space-y-3 py-4')}
+            // v2 rev-2 mobile rules (#sfTranscript): 14px vertical
+            // transcript padding at <=760px (density still governs
+            // above that width).
+            className={cn('min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 max-[760px]:py-3.5 sm:px-6', compact ? 'space-y-2 py-3' : 'space-y-3 py-4')}
           >
             {/* Task 17b (conversation-first architecture): the mockup's
                 lobby page, distilled into the empty-state of THIS chat

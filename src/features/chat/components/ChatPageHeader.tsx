@@ -74,7 +74,9 @@ export function ChatPageHeader({
     <motion.header
       initial={prefersReducedMotion ? false : { opacity: 0, y: -10 }}
       animate={{ opacity: 1, y: 0 }}
-      className={cn("shrink-0 border-b border-border px-3 sm:px-6", compact ? "py-2" : "py-3")}
+      // v2 rev-2 mobile rules (#sfChatHead): the header compacts to
+      // 10px vertical padding at <=760px.
+      className={cn("shrink-0 border-b border-border px-3 max-[760px]:py-2.5 sm:px-6", compact ? "py-2" : "py-3")}
     >
       <div className="flex items-center justify-between gap-2">
         {/* Mobile responsive pass: min-w-0 + overflow-hidden let this
@@ -140,9 +142,12 @@ export function ChatPageHeader({
           >
             <History className="h-4 w-4" />
           </Button>
-          <Button size="sm" variant="outline" className="gap-1.5" onClick={onStartNewChat}>
+          {/* v2 rev-2 mobile rules (#sfNewChatBtn/#sfNewChatLabel): the
+              New Chat button is icon-only up to 760px (not just below
+              sm), so the compacted mobile header row always fits. */}
+          <Button size="sm" variant="outline" className="gap-1.5" onClick={onStartNewChat} aria-label={t("flow_new_chat")}>
             <Plus className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">{t("flow_new_chat")}</span>
+            <span className="hidden min-[761px]:inline">{t("flow_new_chat")}</span>
           </Button>
         </div>
       </div>

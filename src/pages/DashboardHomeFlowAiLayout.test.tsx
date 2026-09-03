@@ -283,10 +283,10 @@ describe("Frozen handoff: hero is the approved star-field composition -- NO moun
     expect(dashboardSource).not.toMatch(/--flow-bg-deep/);
   });
 
-  it("the hero SVG is the 1200x300 canvas with the v2 crop (xMidYMax slice) and the v2 heights: 190px, 196px at <=760px", () => {
+  it("the hero SVG is the 1200x300 canvas with the v2 crop (xMidYMax slice) and the v2 heights: 190px, 132px at <=760px (v2 rev-2 file compacted the mobile hero)", () => {
     const hero = heroBlock();
     expect(dashboardSource).toMatch(/min-h-\[190px\]/);
-    expect(dashboardSource).toMatch(/max-\[760px\]:min-h-\[196px\]/);
+    expect(dashboardSource).toMatch(/max-\[760px\]:min-h-\[132px\]/);
     expect(dashboardSource).not.toMatch(/min-h-\[248px\]/);
     expect(hero).toMatch(/viewBox="0 0 1200 300"/);
     expect(hero).toMatch(/preserveAspectRatio="xMidYMax slice"/);
@@ -322,12 +322,12 @@ describe("Frozen handoff: hero is the approved star-field composition -- NO moun
     expect(heroBlock()).not.toMatch(/<FlowAIOrb/);
   });
 
-  it("SmartFlow Home v2: the hero overlay is date eyebrow + greeting H1 ONLY (32px, 23px at <=760px) -- no supporting sentence and no capsules inside the hero", () => {
+  it("SmartFlow Home v2: the hero overlay is date eyebrow + greeting H1 ONLY (32px, 22px at <=760px per the v2 rev-2 file) -- no supporting sentence and no capsules inside the hero", () => {
     const hero = heroBlock();
     expect(hero).toMatch(/<h1/);
     expect(hero).toMatch(/workspace\.hero\.title/);
     expect(hero).toMatch(/text-\[32px\]/);
-    expect(hero).toMatch(/max-\[760px\]:text-\[23px\]/);
+    expect(hero).toMatch(/max-\[760px\]:text-\[22px\]/);
     expect(hero).toMatch(/workspace\.today\.label/);
     expect(hero).not.toMatch(/workspace\.hero\.summary/);
     expect(hero).not.toMatch(/Open Tasks/);
@@ -406,9 +406,18 @@ describe("Frozen handoff: desktop grid and the chat layout contract (composer al
 // dvh-bound height instead, tuned so the composer lands at the bottom
 // nav's top edge on first paint instead of being clipped behind it.
 describe("Mobile responsive pass: bounded dvh chat wrapper below lg", () => {
-  it("the chat wrapper's mobile height is dvh-bound with a min-height floor for short viewports, and lg still overrides back to the desktop flex contract", () => {
+  it("the chat wrapper's mobile height is dvh-bound with a min-height floor for short viewports (318px constant for 761-1023, 254px at <=760px where the v2 rev-2 hero is 132px), and lg still overrides back to the desktop flex contract", () => {
     expect(dashboardSource).toMatch(
-      /h-\[calc\(100dvh-318px\)\] min-h-\[420px\] flex-col[^"]*lg:h-auto lg:min-h-0 lg:flex-1/,
+      /h-\[calc\(100dvh-318px\)\] min-h-\[420px\] flex-col[^"]*max-\[760px\]:h-\[calc\(100dvh-254px\)\][^"]*lg:h-auto lg:min-h-0 lg:flex-1/,
+    );
+  });
+
+  it("the metric row pins the v2 rev-2 mobile grid: explicit 2x2 (grid-cols-2, 8px gap, 10px bottom margin) with min-w-0 compact capsules at <=760px", () => {
+    expect(dashboardSource).toMatch(
+      /max-\[760px\]:mb-2\.5 max-\[760px\]:grid max-\[760px\]:grid-cols-2 max-\[760px\]:gap-2/,
+    );
+    expect(dashboardSource).toMatch(
+      /max-\[760px\]:min-w-0 max-\[760px\]:py-\[7px\] max-\[760px\]:pr-2\.5/,
     );
   });
 });
