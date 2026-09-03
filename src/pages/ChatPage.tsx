@@ -2209,7 +2209,18 @@ function TypingIndicator({ label }: Readonly<{ label: string }>) {
   )
 }
 
-export default function ChatPage() {
+export interface ChatPageProps {
+  // Home / Flow AI v2 design cleanup: when true, this page is mounted
+  // INSIDE another route's layout (Dashboard's chat panel) rather than as
+  // the full-height `/chat` route itself -- the only difference is sizing.
+  // The route element (`<Route path="/chat" element={<ChatPage />} />`)
+  // never passes this, so `/chat` itself is pixel-identical to before this
+  // prop existed. No chat/execution logic reads this flag -- it only
+  // changes the root element's own height/sticky classes, below.
+  readonly embedded?: boolean
+}
+
+export default function ChatPage({ embedded = false }: ChatPageProps = {}) {
   const { user } = useAuth()
   const { profile } = useProfile()
   const { tasks, isLoading: tasksLoading, error: tasksError } = useTasks()
@@ -3462,6 +3473,19 @@ export default function ChatPage() {
       data-chat-theme={theme}
       data-chat-density={density}
       className="flex h-full flex-col overflow-hidden bg-background text-foreground lg:sticky lg:top-0 lg:h-screen"
+      // Home / Flow AI v2 design cleanup: `lg:sticky lg:top-0 lg:h-screen`
+      // (className above, kept as a static literal -- ChatPagePwaScroll.
+      // test.tsx and ChatPageChromeCleanup.test.tsx both pin its exact
+      // source text) is what makes the standalone /chat route claim the
+      // full viewport height regardless of its ancestor's own sizing (see
+      // AppLayout.tsx's own comment on why -- Y5's double-scrollbar fix
+      // relies on it). Embedded on Home, the parent panel already supplies
+      // an explicit bounded height, so this page must fill THAT instead of
+      // the viewport -- an inline style, which always wins over a utility
+      // class regardless of breakpoint, overrides just the two properties
+      // that matter (`position`, `height`) rather than touching the
+      // className string at all.
+      style={embedded ? { position: 'static', height: '100%' } : undefined}
     >
       {/* Header -- task 17c, PO decision D4, final single-row layout:
           [More menu] [Conversations] -- "Flow AI" -- [theme/density] [New].
