@@ -243,14 +243,35 @@ describe("PO correction: Home action-bar cards removed -- approval capability pr
     expect(dashboardSource).not.toMatch(/border-\[#7078B4\]\/25 bg-\[#0F1128\]\/\[0\.55\]/);
   });
 
-  it("nothing replaced the bars: between the hero section and the chat panel only the v2 metric-capsule row renders -- no interactive bar/button", () => {
+  it("nothing replaced the bars: between the hero section and the chat panel only the v2 metric-capsule row renders -- its ONLY interactive elements are the four capsule buttons (PO: capsules are clickable), never a bar/CTA", () => {
     const heroEnd = dashboardSource.indexOf("</WorkspaceRevealSection>", dashboardSource.indexOf("min-h-[190px]"));
     const chatIndex = dashboardSource.indexOf("<ChatPage");
     expect(heroEnd).toBeGreaterThan(-1);
     expect(chatIndex).toBeGreaterThan(heroEnd);
     const between = dashboardSource.slice(heroEnd, chatIndex);
     expect(between).toMatch(/Habit Streak/);
-    expect(between).not.toMatch(/<Button|<button|onClick/);
+    // Exactly the four capsule buttons -- no fifth interactive element
+    // (a bar or CTA would add more).
+    expect(between.match(/<button/g)).toHaveLength(4);
+    expect(between).not.toMatch(/<Button/);
+    // And they stay pure navigation/dialog-opening -- no run/execute copy.
+    expect(between).not.toMatch(/Run|Execute|Review active work/);
+  });
+
+  it("PO: the four metric capsules are clickable -- Open Tasks -> /tasks, Today's Events -> /calendar, Habit Streak -> /habits (tracked hero navigations), and Approvals opens the rail's SAME first pending-approval dialog, disabled when nothing is pending", () => {
+    const heroEnd = dashboardSource.indexOf("</WorkspaceRevealSection>", dashboardSource.indexOf("min-h-[190px]"));
+    const chatIndex = dashboardSource.indexOf("<ChatPage");
+    const between = dashboardSource.slice(heroEnd, chatIndex);
+    expect(between).toMatch(/\{ route: "\/tasks" \}/);
+    expect(between).toMatch(/\{ route: "\/calendar" \}/);
+    // /habits is not in the WorkspaceRoute union (deliberately untouched
+    // shared type) -- that capsule tracks + navigates directly.
+    expect(between).toMatch(/navigate\("\/habits"\)/);
+    expect(between).toMatch(/domain: "habits"/);
+    expect(between).toMatch(/trackAndNavigateToWorkspaceTarget/);
+    expect(between).toMatch(/source: "hero"/);
+    expect(between).toMatch(/disabled=\{railPendingApprovals\.length === 0\}/);
+    expect(between).toMatch(/railPendingApprovals\[0\]\?\.onReview\(\)/);
   });
 
   it("the approval surfaces stay: StepApprovalDialog still renders with the same generic/taskComplete targets, opened from the rail's Pending Approvals rows via the SAME runtime predicates", () => {
