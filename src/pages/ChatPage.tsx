@@ -2108,11 +2108,18 @@ export function AssistantContent({ content }: Readonly<{ content: string }>) {
 // ambient direction normally, with no independent auto-detection of their
 // own to go wrong.
 
-export function ChatBubble({ role, content, language, compact = false, undo, onUndo }: Readonly<{
+export function ChatBubble({ role, content, language, compact = false, embedded = false, undo, onUndo }: Readonly<{
   role: 'user' | 'assistant'
   content: string
   language?: SupportedAiResponseLanguage
   compact?: boolean
+  // SmartFlow Home REV 2 §7: inside Home's embedded chat shell the
+  // transcript spans the full shell width (no centred column cap), so the
+  // per-bubble lg+ caps switch from the standalone route's 70ch reading
+  // measure to the approved percentage widths (assistant <=86%, user
+  // <=64% of the shell). Default false keeps standalone /chat byte-
+  // identical.
+  embedded?: boolean
   undo?: ChatMsg['undo']
   onUndo?: (undoId: string) => void
 }>) {
@@ -2133,12 +2140,16 @@ export function ChatBubble({ role, content, language, compact = false, undo, onU
           // FULL column width (100%, task 17g removed the avatar gutter
           // this used to reserve -- the bubble starts flush at the column
           // edge). The 70ch reading-measure cap only applies at lg+, where
-          // the column is wide (task 17g, Y3: the column itself is now
+          // the column is wide (task 17g, Y3: the STANDALONE column is
           // ALSO capped to a reading measure -- see this page's root
           // render below -- so this per-bubble cap and the column cap
           // never fight: 70ch is comfortably narrower than the column's
           // own max-w-3xl, so the bubble cap is always the binding one).
-          role === 'user' ? 'max-w-[92%] lg:max-w-[70ch]' : 'max-w-full lg:max-w-[70ch]',
+          // REV 2 §7: embedded (Home) swaps the lg+ caps to the approved
+          // percentage widths of the now-uncapped shell-wide column.
+          role === 'user'
+            ? (embedded ? 'max-w-[92%] lg:max-w-[64%]' : 'max-w-[92%] lg:max-w-[70ch]')
+            : (embedded ? 'max-w-full lg:max-w-[86%]' : 'max-w-full lg:max-w-[70ch]'),
           'rounded-xl text-sm leading-relaxed break-words',
           compact ? 'px-3 py-1.5 text-[13px] leading-normal' : 'px-4 py-2.5',
           // Task 17g, Y1: the assistant bubble's decorative
@@ -3518,14 +3529,13 @@ export default function ChatPage({ embedded = false, onOpenAssistantPanel }: Cha
         onOpenMoreMenu={() => setMoreMenuOpen(true)}
         onOpenConversations={() => setConversationsDrawerOpen(true)}
         onStartNewChat={startNewChat}
-        // Home V2 final visual correction: only Home's embedded panel
-        // shows "SmartFlow" -- the standalone /chat route (embedded=false)
-        // passes no override, so its own `chat_title` translation ("Flow
-        // AI") is completely unchanged.
-        titleOverride={embedded ? 'SmartFlow' : undefined}
-        // Frozen handoff §7: the embedded header also carries the ping-dot
-        // "Online" cluster and (<=1120px only) the Assistant-panel button.
-        showOnlineStatus={embedded}
+        // SmartFlow Home REV 2 §7: Home's embedded header is a compact
+        // CONTROLS bar with NO branding cluster (no title/tile, no ping,
+        // no "Online") -- the Assistant Rail owns SmartFlow identity and
+        // presence. The standalone /chat route (embedded=false) keeps its
+        // full header, byte-identical.
+        compactControls={embedded}
+        // Frozen handoff §10: (<=1120px only) the Assistant-panel button.
         onOpenAssistantPanel={embedded ? onOpenAssistantPanel : undefined}
       />
 
@@ -3544,18 +3554,22 @@ export default function ChatPage({ embedded = false, onOpenAssistantPanel }: Cha
           comfortable breathing room around them, not a second reading cap. */}
       <div className="flex min-h-0 flex-1">
         {/* Chat column */}
-        {/* Home V2 visual correction, round 3: `min-h-0` added (appended,
-            not inserted inline, so the pinned "relative flex min-w-0
-            flex-1 flex-col lg:mx-auto lg:max-w-3xl" substring in
-            ChatPageChromeCleanup.test.tsx / ChatPageDesktopLayout.test.tsx
-            stays intact). Without it, this nested flex-col item's
-            automatic minimum height defaults to its content's size, so
-            inside a height-bounded ancestor (Home's embedded panel) it
-            grew past the panel instead of yielding scroll space to the
-            messages region below -- the composer visually drifted out of
-            view as the conversation grew instead of staying pinned while
-            only the message list scrolled. */}
-        <div className="relative flex min-w-0 flex-1 flex-col lg:mx-auto lg:max-w-3xl min-h-0">
+        {/* Home V2 visual correction, round 3: `min-h-0` -- without it,
+            this nested flex-col item's automatic minimum height defaults
+            to its content's size, so inside a height-bounded ancestor
+            (Home's embedded panel) it grew past the panel instead of
+            yielding scroll space to the messages region below -- the
+            composer visually drifted out of view as the conversation grew
+            instead of staying pinned while only the message list
+            scrolled. */}
+        {/* SmartFlow Home REV 2 §7: the centred lg+ reading-measure cap
+            (`lg:mx-auto lg:max-w-3xl`, task 17f B2) applies ONLY to the
+            standalone /chat route. Home's embedded transcript spans the
+            full chat-shell width -- the wider conversational surface is
+            achieved here (no capped column), while ChatBubble's embedded
+            percentage caps keep individual messages from running
+            edge-to-edge. */}
+        <div className={cn('relative flex min-w-0 flex-1 flex-col min-h-0', !embedded && 'lg:mx-auto lg:max-w-3xl')}>
           {/* Task 17a, workstream 2: this is the ONLY scroll container for
               the conversation -- messages/quick-actions/proposals all live
               inside it, the composer below is a non-scrolling flex sibling
@@ -3613,7 +3627,7 @@ export default function ChatPage({ embedded = false, onOpenAssistantPanel }: Cha
             )}
 
             {messages.map(msg => (
-              <ChatBubble key={msg.id} role={msg.role} content={msg.content} language={msg.language} compact={compact} undo={msg.undo} onUndo={handleUndo} />
+              <ChatBubble key={msg.id} role={msg.role} content={msg.content} language={msg.language} compact={compact} embedded={embedded} undo={msg.undo} onUndo={handleUndo} />
             ))}
 
             {sending && <TypingIndicator label={t('chat_typing')} />}

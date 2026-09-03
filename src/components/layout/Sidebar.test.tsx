@@ -75,18 +75,19 @@ describe("Sidebar", () => {
   });
 });
 
-// SmartFlow Home frozen design handoff §4/§9: Home renders the slim,
-// icon-only rail (hamburger · spacer · Home · Chat · Settings · spacer ·
-// avatar), 68px wide, and BOTH the hamburger and the Home icon open the
-// EXISTING full navigation (FullSidebarContent: same navItems, star-field
-// identity, logo, footer) as a 256px overlay drawer. Route-aware
-// presentation of ONE navigation system -- every other route keeps the
-// unchanged full sidebar.
-describe("Sidebar: Home's slim icon-only rail + full-navigation drawer (frozen handoff)", () => {
-  it("on / (Home), Chat and Settings render as icon links, the Home icon and hamburger are drawer triggers, and no full-sidebar text (e.g. 'Journal', 'Finance') leaks into the always-visible markup", () => {
+// SmartFlow Home frozen design handoff §4/§9 (REV 2): Home renders the
+// slim, icon-only rail (hamburger · spacer · Home · Settings · spacer ·
+// avatar -- REV 2 removed the Chat icon: Home IS the conversation), 68px
+// wide, and BOTH the hamburger and the Home icon open the EXISTING full
+// navigation (FullSidebarContent: same navItems, star-field identity,
+// logo, footer) as a 256px overlay drawer -- with the /chat destination
+// filtered out of the drawer on Home (REV 2 §8), while every other route
+// keeps the unchanged full sidebar including its Chat entry.
+describe("Sidebar: Home's slim icon-only rail + full-navigation drawer (frozen handoff, REV 2)", () => {
+  it("on / (Home), Settings renders as an icon link, the Home icon and hamburger are drawer triggers, there is NO Chat destination (REV 2 §8), and no full-sidebar text (e.g. 'Journal', 'Finance') leaks into the always-visible markup", () => {
     const html = renderAt("/");
 
-    expect(html).toMatch(/href="\/chat"/);
+    expect(html).not.toMatch(/href="\/chat"/);
     expect(html).toMatch(/href="\/settings"/);
     // The Home icon is a drawer trigger (frozen §9: it opens the full
     // navigation), not a NavLink -- Home is already the current route.
@@ -116,11 +117,12 @@ describe("Sidebar: Home's slim icon-only rail + full-navigation drawer (frozen h
     expect(html).toMatch(/bg-\[#34D399\]/);
   });
 
-  it("every OTHER route (e.g. /tasks) still renders the full, unchanged text sidebar -- the slim rail is scoped to Home only, not a global redesign", () => {
+  it("every OTHER route (e.g. /tasks) still renders the full, unchanged text sidebar -- INCLUDING its Chat entry (REV 2 removes Chat only from Home's navigation UI; /chat route consolidation is a separate change)", () => {
     const html = renderAt("/tasks");
 
     expect(html).toMatch(/\bw-64\b/);
     expect(html).toContain("Dashboard");
+    expect(html).toMatch(/href="\/chat"/);
     expect(html).toContain("Tasks");
     expect(html).toContain("Calendar");
     expect(html).toContain("Journal");
@@ -138,9 +140,13 @@ describe("Sidebar: Home's slim icon-only rail + full-navigation drawer (frozen h
       fileURLToPath(new URL("./Sidebar.tsx", import.meta.url)),
       "utf-8",
     );
-    expect(sidebarSource).toMatch(/<FullSidebarContent onNavigate=\{\(\) => setHomeMenuOpen\(false\)\} \/>/);
+    expect(sidebarSource).toMatch(/<FullSidebarContent onNavigate=\{\(\) => setHomeMenuOpen\(false\)\} hideChatDestination \/>/);
     // Exactly one navItems declaration -- one navigation data source.
     expect(sidebarSource.match(/const navItems/g)).toHaveLength(1);
+    // REV 2 §8: Home's drawer filters the /chat entry out of that ONE
+    // list (no second, narrower list); non-Home callers pass nothing and
+    // keep the full set.
+    expect(sidebarSource).toMatch(/navItems\.filter\(\(item\) => item\.path !== "\/chat"\)/);
     // Both the hamburger and the Home icon are SheetTriggers for the SAME
     // drawer (two triggers, one Sheet).
     expect(sidebarSource.match(/<SheetTrigger asChild>/g)).toHaveLength(2);

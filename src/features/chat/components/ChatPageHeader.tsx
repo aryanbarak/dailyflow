@@ -38,17 +38,15 @@ export interface ChatPageHeaderProps {
   readonly onOpenMoreMenu: () => void;
   readonly onOpenConversations: () => void;
   readonly onStartNewChat: () => void;
-  // Home V2 final visual correction: Home's embedded chat panel shows
-  // "SmartFlow" as its visible title instead of the standalone /chat
-  // route's own `chat_title` translation ("Flow AI") -- a presentation-
-  // only label swap, not a rename of `chat_title` itself (which would
-  // also change the standalone route). Undefined (every existing caller,
-  // including /chat) falls back to `t("chat_title")`, unchanged.
-  readonly titleOverride?: string;
-  // SmartFlow Home frozen design handoff §7: the embedded chat header
-  // shows a ping dot + "Online" next to the title. Presentation only;
-  // undefined (the standalone /chat route) renders nothing new.
-  readonly showOnlineStatus?: boolean;
+  // SmartFlow Home REV 2 §7: Home's embedded chat header is a compact
+  // CONTROLS bar -- NO branding cluster (no icon tile, no title, no
+  // Online status; those lived here in REV 1 as titleOverride/
+  // showOnlineStatus and are removed -- the Assistant Rail owns SmartFlow
+  // identity + presence). The controls themselves (More on mobile,
+  // theme/density, History, New Chat, and the tablet-window panel button)
+  // all stay. Default false keeps the standalone /chat route's full
+  // header byte-identical.
+  readonly compactControls?: boolean;
   // Frozen handoff §10 (<=1120px): a panel button appears in the chat
   // header that opens the Assistant Rail overlay. Only rendered when a
   // handler is provided (Home's embedded panel); the standalone route
@@ -64,8 +62,7 @@ export function ChatPageHeader({
   onOpenMoreMenu,
   onOpenConversations,
   onStartNewChat,
-  titleOverride,
-  showOnlineStatus,
+  compactControls = false,
   onOpenAssistantPanel,
 }: ChatPageHeaderProps) {
   const { t } = useT();
@@ -74,7 +71,11 @@ export function ChatPageHeader({
     <motion.header
       initial={prefersReducedMotion ? false : { opacity: 0, y: -10 }}
       animate={{ opacity: 1, y: 0 }}
-      className={cn("shrink-0 border-b border-border px-3 sm:px-6", compact ? "py-2" : "py-3")}
+      className={cn(
+        "shrink-0 border-b border-border",
+        compactControls ? "px-3" : "px-3 sm:px-6",
+        compact || compactControls ? "py-2" : "py-3",
+      )}
     >
       <div className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
@@ -88,23 +89,18 @@ export function ChatPageHeader({
           >
             <Menu className="h-4 w-4" />
           </Button>
-          <div className="icon-tile shrink-0">
-            <Bot className="w-4 h-4 text-primary" />
-          </div>
-          <h1 className="whitespace-nowrap text-lg font-semibold leading-tight">{titleOverride ?? t("chat_title")}</h1>
-          {showOnlineStatus && (
-            // Frozen handoff §7 colors via existing palette/tokens (the
-            // chat feature's flowTokenDerivation test forbids raw hex
-            // here): emerald-400 is exactly the frozen online-dot green,
-            // and muted-foreground is the chat theme's secondary text
-            // token the frozen "Online" grey maps to.
-            <span className="flex items-center gap-1.5 ps-1">
-              <span className="relative inline-flex h-2 w-2">
-                <span className="sf-home-ping absolute inset-0 rounded-full bg-emerald-400 motion-safe:animate-[sfPing_2.2s_cubic-bezier(0,0,0.2,1)_infinite]" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-400" />
-              </span>
-              <span className="text-xs text-muted-foreground">Online</span>
-            </span>
+          {/* REV 2 §7: the branding cluster renders only on the
+              standalone route -- Home's embedded compact-controls header
+              leaves the start side empty (bar reads as right-aligned
+              controls) because the Assistant Rail already carries the
+              SmartFlow identity + Online presence. */}
+          {!compactControls && (
+            <>
+              <div className="icon-tile shrink-0">
+                <Bot className="w-4 h-4 text-primary" />
+              </div>
+              <h1 className="whitespace-nowrap text-lg font-semibold leading-tight">{t("chat_title")}</h1>
+            </>
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2">

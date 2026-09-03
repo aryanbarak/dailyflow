@@ -74,10 +74,10 @@ function renderRail(withRuntimeSections = false) {
   );
 }
 
-// The hero section's own source block (frozen §5): from the section's
-// min-height marker through the end of its reveal wrapper.
+// The hero section's own source block (frozen §5, REV 2): from the
+// section's min-height marker through the end of its reveal wrapper.
 function heroBlock() {
-  const start = dashboardSource.indexOf("min-h-[248px]");
+  const start = dashboardSource.indexOf("min-h-[190px]");
   const end = dashboardSource.indexOf("</WorkspaceRevealSection>", start);
   expect(start).toBeGreaterThan(-1);
   expect(end).toBeGreaterThan(start);
@@ -113,14 +113,24 @@ describe("Frozen handoff: ChatPage's `embedded` prop only changes its own root s
     expect(chatPageSource).toMatch(/export default function ChatPage\(\{ embedded = false, onOpenAssistantPanel \}: ChatPageProps = \{\}\)/);
   });
 
-  it("Home's embedded panel passes 'SmartFlow' as the header's titleOverride -- the standalone route (embedded=false) resolves the SAME expression to undefined, so its own chat_title translation ('Flow AI', proven in ChatPageHeader.test.tsx) is unaffected", () => {
-    expect(chatPageSource).toMatch(/titleOverride=\{embedded \? 'SmartFlow' : undefined\}/);
+  it("REV 2 §7: Home's embedded header is the compact controls bar (no branding) -- gated on `embedded`, so the standalone route keeps its full header; the REV 1 titleOverride/showOnlineStatus branding props are gone entirely", () => {
+    expect(chatPageSource).toMatch(/compactControls=\{embedded\}/);
+    expect(chatPageSource).not.toMatch(/titleOverride/);
+    expect(chatPageSource).not.toMatch(/showOnlineStatus/);
   });
 
-  it("the embedded-only extras (Online status, assistant-panel button, 'Ask SmartFlow anything…' placeholder) are all gated on `embedded`, so the standalone route renders none of them", () => {
-    expect(chatPageSource).toMatch(/showOnlineStatus=\{embedded\}/);
+  it("the embedded-only extras (assistant-panel button, 'Ask SmartFlow anything…' placeholder, wide transcript) are all gated on `embedded`, so the standalone route renders none of them", () => {
     expect(chatPageSource).toMatch(/onOpenAssistantPanel=\{embedded \? onOpenAssistantPanel : undefined\}/);
     expect(chatPageSource).toMatch(/placeholderOverride=\{embedded \? 'Ask SmartFlow anything…' : undefined\}/);
+    expect(chatPageSource).toMatch(/embedded=\{embedded\}/);
+  });
+
+  it("REV 2 §7 (wider transcript): the centred lg reading-measure column cap applies ONLY to the standalone route; embedded Home spans the full shell width with percentage bubble caps instead", () => {
+    expect(chatPageSource).toMatch(
+      /'relative flex min-w-0 flex-1 flex-col min-h-0', !embedded && 'lg:mx-auto lg:max-w-3xl'/,
+    );
+    expect(chatPageSource).toMatch(/embedded \? 'max-w-\[92%\] lg:max-w-\[64%\]' : 'max-w-\[92%\] lg:max-w-\[70ch\]'/);
+    expect(chatPageSource).toMatch(/embedded \? 'max-w-full lg:max-w-\[86%\]' : 'max-w-full lg:max-w-\[70ch\]'/);
   });
 });
 
@@ -152,11 +162,11 @@ describe("Frozen handoff: nothing below the chat -- Home's center column ends wi
 // sections, the real FlowAIOrb mount, SmartFlow naming, and an independent
 // scroll container -- proven by rendering the real component.
 describe("Frozen handoff: the FULL Assistant Rail (five sections, real orb, independent scroll)", () => {
-  it("renders the real FlowAIOrb component (never a CSS stand-in), SmartFlow naming, Online state, CTA, and status copy", () => {
+  it("renders the real FlowAIOrb component (never a CSS stand-in), SmartFlow naming, Online state, and status copy -- and NO 'Chat with SmartFlow' CTA (REV 2 §5: Home already IS the conversation)", () => {
     const html = renderRail();
     expect(html).toContain('data-testid="flow-ai-orb"');
     expect(html).toContain("SmartFlow");
-    expect(html).toContain("Chat with SmartFlow");
+    expect(html).not.toContain("Chat with SmartFlow");
     expect(html).not.toContain("Flow AI");
     expect(html).toContain(FIXTURE_RAIL.statusMessage);
     expect(html).toContain("Online");
@@ -203,45 +213,49 @@ describe("Frozen handoff: the FULL Assistant Rail (five sections, real orb, inde
   });
 });
 
-// Frozen handoff §6: conditional action bars stay conditional runtime UI
-// with unchanged behavior.
-describe("Frozen handoff: approval/write/read-only bars stay conditional runtime UI with unchanged handlers", () => {
-  it("all three boundary bars remain conditionally rendered (unchanged execution/state logic) and sit between the hero and the chat panel", () => {
-    expect(dashboardSource).toMatch(/pendingStepApproval && pendingApprovalStep/);
-    expect(dashboardSource).toMatch(/taskCompleteWriteCandidate &&/);
-    expect(dashboardSource).toMatch(/readOnlyRuntimeStep && readOnlyRuntimeResolution/);
-
-    const approvalIndex = dashboardSource.indexOf("pendingStepApproval && pendingApprovalStep");
-    const chatIndex = dashboardSource.indexOf("<ChatPage");
-    expect(approvalIndex).toBeGreaterThan(-1);
-    expect(approvalIndex).toBeLessThan(chatIndex);
+// REV 2 §4/§6: the Home action bars are REMOVED (presentation only) --
+// nothing replaces them, and the hero flows directly into the chat. The
+// approval CAPABILITY stays: the same StepApprovalDialog, the same runtime
+// predicates (now wiring the Assistant Rail's Pending Approvals rows), and
+// the runtime modules themselves (readOnlyRuntime.test.ts /
+// writeRuntime.test.ts / ChatPageAgentExecutionWiring.test.tsx cover
+// execution semantics, which this change never touches).
+describe("REV 2: Home action bars removed -- approval capability preserved through dialog + rail", () => {
+  it("none of the three bar presentations render on Home anymore (no bar copy, no bar-only i18n keys)", () => {
+    expect(dashboardSource).not.toMatch(/approval_card_title/);
+    expect(dashboardSource).not.toMatch(/write_task_title/);
+    expect(dashboardSource).not.toMatch(/agent_run_read_only_action/);
+    expect(dashboardSource).not.toMatch(/border-\[#7D5CFF\]\/30 bg-\[#7C4DFF\]\/\[0\.07\]/);
+    expect(dashboardSource).not.toMatch(/border-\[#7078B4\]\/25 bg-\[#0F1128\]\/\[0\.55\]/);
   });
 
-  it("the bars are the frozen compact single-line treatment (§6 borders/backgrounds), and the old large-card metadata-grid presentation stays gone", () => {
-    const approvalBars = dashboardSource.match(/border-\[#7D5CFF\]\/30 bg-\[#7C4DFF\]\/\[0\.07\]/g) ?? [];
-    expect(approvalBars.length).toBeGreaterThanOrEqual(2);
-    expect(dashboardSource).toMatch(/border-\[#7078B4\]\/25 bg-\[#0F1128\]\/\[0\.55\]/);
+  it("nothing replaced the bars: between the hero section and the chat panel there is only the REV 2 removal note, no rendered module", () => {
+    const heroEnd = dashboardSource.indexOf("</WorkspaceRevealSection>", dashboardSource.indexOf("min-h-[190px]"));
+    const chatIndex = dashboardSource.indexOf("<ChatPage");
+    expect(heroEnd).toBeGreaterThan(-1);
+    expect(chatIndex).toBeGreaterThan(heroEnd);
+    const between = dashboardSource.slice(heroEnd, chatIndex);
+    // Only comments/wrappers -- no interactive elements sit between them.
+    expect(between).not.toMatch(/<Button|<button|onClick/);
+  });
+
+  it("the approval surfaces stay: StepApprovalDialog still renders with the same generic/taskComplete targets, opened from the rail's Pending Approvals rows via the SAME runtime predicates", () => {
+    expect(dashboardSource).toMatch(/<StepApprovalDialog/);
+    expect(dashboardSource).toMatch(/setApprovalDialogTarget\("generic"\);\s*setApprovalDialogOpen\(true\);/);
+    expect(dashboardSource).toMatch(/setApprovalDialogTarget\("taskComplete"\);\s*setApprovalDialogOpen\(true\);/);
+    expect(dashboardSource).toMatch(/pendingStepApproval && pendingApprovalStep/);
+    expect(dashboardSource).toMatch(/getTaskCompleteWriteCandidate/);
+    // The dialog itself still performs approve/reject/close against the
+    // approval service (see StepApprovalDialog.tsx) -- Dashboard only
+    // opens/closes it.
+    expect(dashboardSource).toMatch(/onDecision=\{handleApprovalDialogDecision\}/);
+  });
+
+  it("the old large-card metadata-grid presentation also stays gone (nothing regressed back in)", () => {
     expect(dashboardSource).not.toMatch(/rounded-xl border border-primary\/15/);
     expect(dashboardSource).not.toMatch(/agent_resolved_tool/);
-    expect(dashboardSource).not.toMatch(/agent_execution_mode/);
     expect(dashboardSource).not.toMatch(/reflection_section_label/);
-    expect(dashboardSource).not.toMatch(/safePreviewItems/);
     expect(dashboardSource).not.toMatch(/ReflectionSummary/);
-  });
-
-  it("every action button's exact onClick handler and disabled condition are byte-identical to before -- only the surrounding markup changed", () => {
-    expect(dashboardSource).toMatch(/onClick=\{\(\) => \{\s*setApprovalDialogTarget\("generic"\);\s*setApprovalDialogOpen\(true\);\s*\}\}/);
-    expect(dashboardSource).toMatch(/onClick=\{\(\) => void handleRunTaskCompleteWrite\(\)\}/);
-    expect(dashboardSource).toMatch(/disabled=\{taskCompleteRunStatus === "running" \|\| Boolean\(taskCompleteRunResult\)\}/);
-    expect(dashboardSource).toMatch(/onClick=\{\(\) => \{\s*setApprovalDialogTarget\("taskComplete"\);\s*setApprovalDialogOpen\(true\);\s*\}\}/);
-    expect(dashboardSource).toMatch(/onClick=\{\(\) => void handleRunReadOnlyTool\(\)\}/);
-    expect(dashboardSource).toMatch(/disabled=\{readOnlyRunStatus === "running"\}/);
-  });
-
-  it("sufficient identifying text remains for every surface -- the task title, the approval card title, and the read-only step title are still rendered", () => {
-    expect(dashboardSource).toMatch(/\{t\("approval_card_title"\)\}/);
-    expect(dashboardSource).toMatch(/\{t\("write_task_title"\)\}: \{taskCompleteWriteCandidate\.taskTitle\}/);
-    expect(dashboardSource).toMatch(/\{readOnlyRuntimeStep\.title\}/);
   });
 });
 
@@ -256,12 +270,13 @@ describe("Frozen handoff: hero is the approved star-field composition -- NO moun
     expect(dashboardSource).not.toMatch(/--flow-bg-deep/);
   });
 
-  it("the hero SVG is the frozen 1200x300 canvas with xMidYMax slice, sky/atmo/moon gradients, min-height 248px (196px at <=760px)", () => {
+  it("the hero SVG is the frozen 1200x300 canvas with the REV 2 vertically-centred crop (xMidYMid slice, so the moon survives the shorter hero) and the REV 2 heights: 190px, 150px at <=760px", () => {
     const hero = heroBlock();
-    expect(dashboardSource).toMatch(/min-h-\[248px\]/);
-    expect(dashboardSource).toMatch(/max-\[760px\]:min-h-\[196px\]/);
+    expect(dashboardSource).toMatch(/min-h-\[190px\]/);
+    expect(dashboardSource).toMatch(/max-\[760px\]:min-h-\[150px\]/);
+    expect(dashboardSource).not.toMatch(/min-h-\[248px\]/);
     expect(hero).toMatch(/viewBox="0 0 1200 300"/);
-    expect(hero).toMatch(/preserveAspectRatio="xMidYMax slice"/);
+    expect(hero).toMatch(/preserveAspectRatio="xMidYMid slice"/);
     expect(hero).toMatch(/#0C0F2E/);
     expect(hero).toMatch(/#080A1F/);
     expect(hero).toMatch(/#050615/);
@@ -294,7 +309,17 @@ describe("Frozen handoff: hero is the approved star-field composition -- NO moun
     expect(heroBlock()).not.toMatch(/<FlowAIOrb/);
   });
 
-  it("greeting, subtitle and the three metric capsules render over the scenery from existing workspace signals", () => {
+  it("REV 2 §3: NO large greeting H1 -- the overlay is date eyebrow + ONE supporting sentence (the lead text) + the three metric capsules, from existing workspace signals", () => {
+    const hero = heroBlock();
+    // The hero renders no heading element and no hero.title at all.
+    expect(hero).not.toMatch(/<h1/);
+    expect(hero).not.toMatch(/workspace\.hero\.title/);
+    expect(dashboardSource).not.toMatch(/workspace\.hero\.title/);
+    // The supporting sentence became the lead line (REV 2 prototype:
+    // 15px, #B9BCD4).
+    expect(hero).toMatch(/text-\[15px\] leading-normal text-\[#B9BCD4\]/);
+    expect(hero).toMatch(/workspace\.hero\.summary/);
+    expect(hero).toMatch(/workspace\.today\.label/);
     expect(dashboardSource).toMatch(/max-w-\[720px\]/);
     expect(dashboardSource).toMatch(/Open Tasks/);
     expect(dashboardSource).toMatch(/Today&apos;s Events/);
@@ -317,7 +342,7 @@ describe("Frozen handoff: desktop grid and the chat layout contract (composer al
     expect(dashboardSource).not.toMatch(/calc\(100vh-/);
   });
 
-  it("the center column is a flex column with min-width/min-height 0, hero and bars flex-none rows, and the chat wrapper the flex-1/min-h-0 remainder", () => {
+  it("the center column is a flex column with min-width/min-height 0, the hero a flex-none row, and the chat wrapper the flex-1/min-h-0 remainder (REV 2: hero flows DIRECTLY into chat)", () => {
     expect(dashboardSource).toMatch(/flex min-h-0 min-w-0 flex-col/);
     expect(dashboardSource).toMatch(/lg:flex lg:min-h-0 lg:flex-1 lg:flex-col/);
   });
@@ -332,8 +357,10 @@ describe("Frozen handoff: desktop grid and the chat layout contract (composer al
     expect(chatPageSource).toMatch(/min-h-0 flex-1 overflow-y-auto overscroll-contain px-3/);
     expect(chatPageSource).toMatch(/className="shrink-0 border-t border-border\/60 bg-background\/95"/);
     expect(chatPageSource).toMatch(/className="flex min-h-0 flex-1"/);
+    // REV 2 §7: the flex chain is unchanged; only the lg centred cap
+    // moved behind `!embedded` (see the wider-transcript describe above).
     expect(chatPageSource).toMatch(
-      /relative flex min-w-0 flex-1 flex-col lg:mx-auto lg:max-w-3xl min-h-0/,
+      /'relative flex min-w-0 flex-1 flex-col min-h-0', !embedded && 'lg:mx-auto lg:max-w-3xl'/,
     );
   });
 
