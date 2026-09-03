@@ -3507,6 +3507,11 @@ export default function ChatPage({ embedded = false }: ChatPageProps = {}) {
         onOpenMoreMenu={() => setMoreMenuOpen(true)}
         onOpenConversations={() => setConversationsDrawerOpen(true)}
         onStartNewChat={startNewChat}
+        // Home V2 final visual correction: only Home's embedded panel
+        // shows "SmartFlow" -- the standalone /chat route (embedded=false)
+        // passes no override, so its own `chat_title` translation ("Flow
+        // AI") is completely unchanged.
+        titleOverride={embedded ? 'SmartFlow' : undefined}
       />
 
       {/* Body: the chat column. Task 17f, B1 (PO decision): the persistent

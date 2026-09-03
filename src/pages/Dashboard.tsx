@@ -39,7 +39,6 @@ import {
   type WriteRuntimeStatus,
 } from "@/features/agent/writeRuntime";
 import { StepApprovalDialog } from "@/features/workspace/components/StepApprovalDialog";
-import { ReflectionSummary } from "@/features/workspace/components/ReflectionSummary";
 import { useT } from "@/i18n";
 import type {
   WorkspaceIconKey,
@@ -870,18 +869,26 @@ export default function Dashboard() {
             />
           ) : (
             <>
-      {/* Home V2 final visual alignment: the scenic greeting header (spec
-          section 3). No new image asset/content pipeline -- the "dark
-          premium background" and "moon/orb in the upper-right" are built
-          from tokens/components this project already ships: the mountain
-          silhouette is an inline SVG filled with the existing
-          --flow-primary-900/--flow-bg-deep tokens, the sky is the existing
-          --flow-gradient-background radial, and the moon IS the existing
-          FlowAIOrb component (the same "orb" the Assistant Rail and
-          Sidebar logo already use), sized via its own "hero" preset --
-          not a new visual language. Greeting + compact stats sit above it
-          (z-10); the scenery is purely decorative background, not a
-          separate card. */}
+      {/* Home V2 final visual correction (round 2): a more polished dark
+          futuristic mountain/night landscape -- still no new image asset,
+          backend, or content pipeline, and still built only from tokens/
+          components this project already ships. Depth-layered look:
+          - sky: the existing --flow-gradient-background radial, unchanged
+          - two star layers: the exact dot-pattern technique Sidebar.tsx's
+            own background already uses (radial-gradient tiled at a small
+            size), just static here -- not a new visual language
+          - a soft violet atmospheric glow (--flow-glow-violet) low behind
+            the mountains
+          - FOUR mountain depth layers (was two flat zig-zags): back-to-
+            front from --flow-blue (softest/dimmest, distant) through
+            --flow-primary-700/--flow-primary-900 to --flow-bg-deep
+            (darkest, sharpest, foreground), each with more ridge detail
+          - the moon: still the existing FlowAIOrb component, but sized
+            "xl" instead of "hero" with a lower glow intensity so it reads
+            as a clear glowing moon, not a large blur
+          - a dark radial wash behind the greeting/stats text (its own
+            z-10 layer, below the text) keeps them readable over the
+            scenery regardless of which mountain layer sits behind them. */}
       <WorkspaceRevealSection order={0}>
         <section
           className="relative overflow-hidden rounded-2xl border border-primary/10 px-4 py-6 sm:px-6 lg:px-8 lg:py-8"
@@ -889,19 +896,72 @@ export default function Dashboard() {
         >
           <div
             aria-hidden="true"
-            className="pointer-events-none absolute -right-6 -top-10 opacity-90 sm:right-2 sm:top-[-2.5rem]"
+            className="pointer-events-none absolute inset-0 opacity-70"
+            style={{
+              backgroundImage:
+                "radial-gradient(circle at center, hsl(248 95% 82% / 0.5) 0 0.3px, hsl(var(--primary) / 0.24) 0.42px, transparent 0.72px)",
+              backgroundSize: "16px 16px",
+              backgroundPosition: "0 0",
+            }}
+          />
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 opacity-50"
+            style={{
+              backgroundImage:
+                "radial-gradient(circle at center, hsl(0 0% 100% / 0.4) 0 0.5px, transparent 0.9px)",
+              backgroundSize: "42px 42px",
+              backgroundPosition: "10px 6px",
+            }}
+          />
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-2/3"
+            style={{
+              background:
+                "radial-gradient(ellipse 70% 100% at 50% 100%, var(--flow-glow-violet), transparent 68%)",
+            }}
+          />
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute -right-4 -top-6 opacity-95 sm:right-4 sm:top-[-0.5rem]"
           >
-            <FlowAIOrb size="hero" state="presence" beam={false} particles glowIntensity={0.55} theme="transparent" />
+            <FlowAIOrb size="xl" state="presence" beam={false} particles glowIntensity={0.5} theme="transparent" />
           </div>
           <svg
             aria-hidden="true"
-            viewBox="0 0 400 120"
+            viewBox="0 0 400 160"
             preserveAspectRatio="none"
-            className="pointer-events-none absolute inset-x-0 bottom-0 h-24 w-full opacity-80 sm:h-32"
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-28 w-full sm:h-44"
           >
-            <polygon points="0,120 0,70 60,20 130,90 190,35 260,95 320,50 400,85 400,120" fill="var(--flow-primary-900)" />
-            <polygon points="0,120 0,95 90,55 170,100 250,65 330,105 400,80 400,120" fill="var(--flow-bg-deep)" />
+            <polygon
+              points="0,160 0,110 40,95 80,105 120,88 160,100 200,85 240,98 280,90 320,102 360,92 400,100 400,160"
+              fill="var(--flow-blue)"
+              fillOpacity="0.28"
+            />
+            <polygon
+              points="0,160 0,125 30,108 70,120 110,100 150,115 190,98 230,112 270,102 310,118 350,105 400,115 400,160"
+              fill="var(--flow-primary-700)"
+              fillOpacity="0.5"
+            />
+            <polygon
+              points="0,160 0,140 25,118 65,132 105,110 145,128 185,108 225,124 265,112 305,130 345,116 400,128 400,160"
+              fill="var(--flow-primary-900)"
+              fillOpacity="0.85"
+            />
+            <polygon
+              points="0,160 0,150 20,128 55,145 90,120 125,140 160,115 195,138 230,118 265,142 300,122 335,145 370,125 400,140 400,160"
+              fill="var(--flow-bg-deep)"
+            />
           </svg>
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0"
+            style={{
+              background:
+                "radial-gradient(ellipse 60% 75% at 0% 0%, rgba(3,4,15,0.6), transparent 68%)",
+            }}
+          />
 
           <div className="relative z-10 max-w-2xl">
             <p className="text-[11px] font-semibold uppercase tracking-widest text-primary/75">
@@ -941,103 +1001,70 @@ export default function Dashboard() {
         </section>
       </WorkspaceRevealSection>
 
+      {/* Home V2 final visual correction: these three conditional agent
+          boundary surfaces are compact single-row action bars on Home, not
+          large dashboard cards -- when more than one is present they no
+          longer push SmartFlow Chat below the fold (PO's local screenshot
+          finding). Same conditions, same handlers/onClick targets, same
+          disabled logic, same approval-dialog wiring -- ONLY the JSX/
+          classNames changed. The metadata grids (resolved tool/execution
+          mode/risk/scope) and the reflection/preview detail blocks are
+          dropped from this compact presentation because they aren't
+          needed to make the approve/run decision -- the same detail (risk
+          level, scope, ...) is already shown in StepApprovalDialog when
+          the user clicks Review, before anything executes. Explicit
+          approval and read-only semantics are completely unchanged; no
+          action runs without the same button click as before. */}
       {pendingStepApproval && pendingApprovalStep && (
         <WorkspaceRevealSection order={2}>
-          <section className="rounded-xl border border-primary/15 bg-primary/[0.035] p-3 sm:p-4">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="min-w-0">
-                <p className="text-xs font-semibold uppercase tracking-widest text-primary/75">
-                  {t("approval_boundary_label")}
+          <div className="flex flex-wrap items-center gap-3 rounded-lg border border-primary/20 bg-primary/[0.04] px-3 py-2.5">
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-xs font-medium text-foreground">
+                {t("approval_card_title")}
+              </p>
+              {latestApprovalDecision?.ok && latestApprovalDecision.decision !== "closed" && (
+                <p className="mt-0.5 truncate text-[11px] font-medium text-primary">
+                  {latestApprovalDecision.decision === "approved"
+                    ? t("approval_decision_approved")
+                    : t("approval_decision_rejected")}
                 </p>
-                <h2 className="mt-1 text-sm font-semibold tracking-tight">
-                  {t("approval_card_title")}
-                </h2>
-                <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                  {t("approval_card_description")}
-                </p>
-                {latestApprovalDecision?.ok && latestApprovalDecision.decision !== "closed" && (
-                  <p className="mt-2 text-xs font-medium text-primary">
-                    {latestApprovalDecision.decision === "approved"
-                      ? t("approval_decision_approved")
-                      : t("approval_decision_rejected")}
-                  </p>
-                )}
-              </div>
-              <Button
-                type="button"
-                size="sm"
-                onClick={() => {
-                  setApprovalDialogTarget("generic");
-                  setApprovalDialogOpen(true);
-                }}
-                className="shrink-0"
-              >
-                {t("approval_review_action")}
-              </Button>
+              )}
             </div>
-          </section>
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => {
+                setApprovalDialogTarget("generic");
+                setApprovalDialogOpen(true);
+              }}
+              className="shrink-0"
+            >
+              {t("approval_review_action")}
+            </Button>
+          </div>
         </WorkspaceRevealSection>
       )}
 
       {taskCompleteWriteCandidate && (
         <WorkspaceRevealSection order={2}>
-          <section className="rounded-xl border border-primary/15 bg-card/45 p-3 sm:p-4">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-              <div className="min-w-0 space-y-3">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-widest text-primary/75">
-                    {t("write_task_boundary_label")}
-                  </p>
-                  <h2 className="mt-1 text-sm font-semibold tracking-tight">
-                    {t("write_task_title")}
-                  </h2>
-                  <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                    {t("write_task_description")}
-                  </p>
-                </div>
-
-                <div className="rounded-lg border border-border/30 bg-background/25 px-3 py-2">
-                  <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
-                    {t("write_task_target_label")}
-                  </p>
-                  <p className="mt-1 text-sm font-medium text-foreground">
-                    {taskCompleteWriteCandidate.taskTitle}
-                  </p>
-                </div>
-
-                <div className="grid gap-2 text-xs sm:grid-cols-4">
-                  <div className="rounded-lg border border-border/25 bg-background/25 px-3 py-2">
-                    <p className="font-semibold text-muted-foreground">{t("agent_resolved_tool")}</p>
-                    <p className="mt-1 font-medium text-foreground">tasks.complete</p>
-                  </div>
-                  <div className="rounded-lg border border-border/25 bg-background/25 px-3 py-2">
-                    <p className="font-semibold text-muted-foreground">{t("agent_execution_mode")}</p>
-                    <p className="mt-1 font-medium text-foreground">{t("write_task_mode_write")}</p>
-                  </div>
-                  <div className="rounded-lg border border-border/25 bg-background/25 px-3 py-2">
-                    <p className="font-semibold text-muted-foreground">{t("approval_risk_level")}</p>
-                    <p className="mt-1 font-medium text-foreground">{t("write_task_risk_medium")}</p>
-                  </div>
-                  <div className="rounded-lg border border-border/25 bg-background/25 px-3 py-2">
-                    <p className="font-semibold text-muted-foreground">{t("approval_scope")}</p>
-                    <p className="mt-1 font-medium text-foreground">{t("write_task_scope_this_task")}</p>
-                  </div>
-                </div>
-
+          <div className="rounded-lg border border-primary/20 bg-card/40 px-3 py-2.5">
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-xs font-medium text-foreground">
+                  {t("write_task_title")}: {taskCompleteWriteCandidate.taskTitle}
+                </p>
                 {taskCompleteRunStatus === "approved" && (
-                  <p className="text-xs font-medium text-primary">
+                  <p className="mt-0.5 truncate text-[11px] font-medium text-primary">
                     {t("write_task_approved_ready")}
                   </p>
                 )}
-
                 {taskCompleteRunStatus === "running" && (
-                  <p className="text-xs font-medium text-primary" aria-live="polite">
+                  <p className="mt-0.5 truncate text-[11px] font-medium text-primary" aria-live="polite">
                     {t("write_task_running_state")}
                   </p>
                 )}
-
                 {taskCompleteRunStatus === "denied" && !taskCompleteRunResult && (
-                  <p className="text-xs font-medium text-muted-foreground" aria-live="polite">
+                  <p className="mt-0.5 truncate text-[11px] font-medium text-muted-foreground" aria-live="polite">
                     {t(
                       taskCompleteApprovalDecision?.ok &&
                         taskCompleteApprovalDecision.decision === "rejected"
@@ -1046,40 +1073,15 @@ export default function Dashboard() {
                     )}
                   </p>
                 )}
-
                 {taskCompleteRunResult && (
-                  <div
-                    className="rounded-lg border border-primary/15 bg-primary/10 px-3 py-2"
-                    aria-live="polite"
-                  >
-                    <p className="text-[10px] font-semibold uppercase tracking-widest text-primary/75">
-                      {t("agent_result_label")}
-                    </p>
-                    <p className="mt-1 text-xs font-medium text-foreground">
-                      {t(
-                        taskCompleteResultKey(taskCompleteRunStatus) ??
-                          "write_task_result_failed",
-                      )}
-                    </p>
-                    {(taskCompleteRunStatus === "success" ||
-                      taskCompleteRunStatus === "already_completed") && (
-                      <div className="mt-3 rounded-lg border border-border/30 bg-background/20 px-3 py-2">
-                        <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
-                          {t("reflection_section_label")}
-                        </p>
-                        <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                          {taskCompleteRunStatus === "already_completed"
-                            ? t("write_task_reflection_already_completed")
-                            : t("write_task_reflection_verified")}
-                        </p>
-                      </div>
-                    )}
-                    {taskCompleteRefreshFailed && (
-                      <p className="mt-2 text-xs leading-5 text-muted-foreground">
-                        {t("write_task_refresh_failed")}
-                      </p>
-                    )}
-                  </div>
+                  <p className="mt-0.5 truncate text-[11px] font-medium text-primary" aria-live="polite">
+                    {t(taskCompleteResultKey(taskCompleteRunStatus) ?? "write_task_result_failed")}
+                  </p>
+                )}
+                {taskCompleteRefreshFailed && (
+                  <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                    {t("write_task_refresh_failed")}
+                  </p>
                 )}
               </div>
 
@@ -1110,59 +1112,22 @@ export default function Dashboard() {
                 </Button>
               )}
             </div>
-          </section>
+          </div>
         </WorkspaceRevealSection>
       )}
 
       {readOnlyRuntimeStep && readOnlyRuntimeResolution && (
         <WorkspaceRevealSection order={2}>
-          <section className="rounded-xl border border-primary/15 bg-card/45 p-3 sm:p-4">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-              <div className="min-w-0 space-y-3">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-widest text-primary/75">
-                    {t("agent_vertical_slice_label")}
-                  </p>
-                  <h2 className="mt-1 text-sm font-semibold tracking-tight">
-                    {readOnlyRuntimeStep.title}
-                  </h2>
-                  <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                    {readOnlyRuntimeStep.description}
-                  </p>
-                </div>
-                <div className="grid gap-2 text-xs sm:grid-cols-3">
-                  <div className="rounded-lg border border-border/25 bg-background/25 px-3 py-2">
-                    <p className="font-semibold text-muted-foreground">{t("agent_resolved_tool")}</p>
-                    <p className="mt-1 font-medium text-foreground">{readOnlyRuntimeResolution.toolId}</p>
-                  </div>
-                  <div className="rounded-lg border border-border/25 bg-background/25 px-3 py-2">
-                    <p className="font-semibold text-muted-foreground">{t("agent_execution_mode")}</p>
-                    <p className="mt-1 font-medium text-foreground">{t("agent_read_only")}</p>
-                  </div>
-                  <div className="rounded-lg border border-border/25 bg-background/25 px-3 py-2">
-                    <p className="font-semibold text-muted-foreground">{t("agent_approval_state")}</p>
-                    <p className="mt-1 font-medium text-foreground">
-                      {readOnlyRuntimeApproval?.status ?? t("approval_not_declared")}
-                    </p>
-                  </div>
-                </div>
+          <div className="rounded-lg border border-primary/20 bg-card/40 px-3 py-2.5">
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-xs font-medium text-foreground">
+                  {readOnlyRuntimeStep.title}
+                </p>
                 {readOnlyRunResult && (
-                  <div className="rounded-lg border border-primary/15 bg-primary/10 px-3 py-2">
-                    <p className="text-[10px] font-semibold uppercase tracking-widest text-primary/75">
-                      {t("agent_result_label")}
-                    </p>
-                    <p className="mt-1 text-xs font-medium text-foreground">
-                      {readOnlyRunResult.safeSummary}
-                    </p>
-                    {readOnlyRunResult.safePreviewItems.length > 0 && (
-                      <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
-                        {readOnlyRunResult.safePreviewItems.map((title) => (
-                          <li key={title}>{title}</li>
-                        ))}
-                      </ul>
-                    )}
-                    <ReflectionSummary result={readOnlyRunResult} />
-                  </div>
+                  <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                    {readOnlyRunResult.safeSummary}
+                  </p>
                 )}
               </div>
               <Button
@@ -1177,7 +1142,7 @@ export default function Dashboard() {
                   : t("agent_run_read_only_action")}
               </Button>
             </div>
-          </section>
+          </div>
         </WorkspaceRevealSection>
       )}
 

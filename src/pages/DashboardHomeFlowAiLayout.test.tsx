@@ -90,6 +90,10 @@ describe("Home V2 final contract: ChatPage's `embedded` prop only changes its ow
   it("`embedded` defaults to false, so `<Route path=\"/chat\" element={<ChatPage />} />` (no prop passed) is pixel-identical to before this prop existed", () => {
     expect(chatPageSource).toMatch(/export default function ChatPage\(\{ embedded = false \}: ChatPageProps = \{\}\)/);
   });
+
+  it("round 2 (PO local review): Home's embedded panel passes 'SmartFlow' as the header's titleOverride -- the standalone route (embedded=false) resolves the SAME expression to undefined, so its own chat_title translation ('Flow AI', proven in ChatPageHeader.test.tsx) is unaffected -- this is the minimal extension of the existing `embedded` presentation mode the task asked for, not a new prop/route", () => {
+    expect(chatPageSource).toMatch(/titleOverride=\{embedded \? 'SmartFlow' : undefined\}/);
+  });
 });
 
 // Requirements 2, 3, 4: nothing renders after chat in Home's main column.
@@ -212,6 +216,77 @@ describe("Home V2 final contract: scenic hero header", () => {
     expect(dashboardSource).toMatch(/workspace\.signals\.incompleteTasks/);
     expect(dashboardSource).toMatch(/workspace\.signals\.eventsToday/);
     expect(dashboardSource).toMatch(/approvalsPendingCount/);
+  });
+
+  it("round 2 (PO local review): the mountain silhouette has multiple (4) depth layers, not two flat zig-zag polygons -- back-to-front colors from the existing token palette, darkest/foreground layer opaque", () => {
+    const heroIndex = dashboardSource.indexOf('background: "var(--flow-gradient-background)"');
+    const svgIndex = dashboardSource.indexOf("<svg", heroIndex);
+    const svgEndIndex = dashboardSource.indexOf("</svg>", svgIndex);
+    const svgBlock = dashboardSource.slice(svgIndex, svgEndIndex);
+    const polygonMatches = svgBlock.match(/<polygon\b/g) ?? [];
+    expect(polygonMatches).toHaveLength(4);
+    expect(svgBlock).toMatch(/fill="var\(--flow-blue\)"/);
+    expect(svgBlock).toMatch(/fill="var\(--flow-primary-700\)"/);
+    expect(svgBlock).toMatch(/fill="var\(--flow-primary-900\)"/);
+    expect(svgBlock).toMatch(/fill="var\(--flow-bg-deep\)"/);
+  });
+
+  it("round 2: a star treatment (dot-pattern radial-gradient background, the same technique Sidebar.tsx's own starfield already uses) and a violet atmospheric glow behind the mountains are present", () => {
+    const heroIndex = dashboardSource.indexOf('background: "var(--flow-gradient-background)"');
+    const chatIndex = dashboardSource.indexOf("<ChatPage embedded />");
+    const heroBlock = dashboardSource.slice(heroIndex, chatIndex);
+    const starLayerMatches = heroBlock.match(/radial-gradient\(circle at center,/g) ?? [];
+    expect(starLayerMatches.length).toBeGreaterThanOrEqual(2);
+    expect(heroBlock).toMatch(/var\(--flow-glow-violet\)/);
+  });
+
+  it("round 2: the moon/orb uses a smaller, less-blurred preset (xl, not hero) so it reads as a clear glowing moon rather than a large blur", () => {
+    const heroIndex = dashboardSource.indexOf('background: "var(--flow-gradient-background)"');
+    const chatIndex = dashboardSource.indexOf("<ChatPage embedded />");
+    const heroBlock = dashboardSource.slice(heroIndex, chatIndex);
+    expect(heroBlock).toMatch(/<FlowAIOrb size="xl"/);
+    expect(heroBlock).not.toMatch(/<FlowAIOrb size="hero"/);
+  });
+});
+
+// Round 2 (PO local review): the conditional approval/write/read-only
+// boundary surfaces are compact single-row action bars now, not large
+// dashboard cards -- proven by the ABSENCE of the old bulky presentation
+// (metadata grids, eyebrow labels, reflection/preview detail blocks) and
+// the PRESENCE of the same conditions/handlers this file already proved
+// above (requirement 6's describe block, unchanged by this round).
+describe("Home V2 final contract, round 2: agent boundary surfaces are compact action bars, not large cards", () => {
+  it("the old large-card treatment (rounded-xl cards, metadata grids, eyebrow labels, reflection/preview detail) is gone", () => {
+    expect(dashboardSource).not.toMatch(/rounded-xl border border-primary\/15/);
+    expect(dashboardSource).not.toMatch(/agent_resolved_tool/);
+    expect(dashboardSource).not.toMatch(/agent_execution_mode/);
+    expect(dashboardSource).not.toMatch(/write_task_target_label/);
+    expect(dashboardSource).not.toMatch(/agent_vertical_slice_label/);
+    expect(dashboardSource).not.toMatch(/approval_boundary_label/);
+    expect(dashboardSource).not.toMatch(/write_task_boundary_label/);
+    expect(dashboardSource).not.toMatch(/reflection_section_label/);
+    expect(dashboardSource).not.toMatch(/safePreviewItems/);
+    expect(dashboardSource).not.toMatch(/ReflectionSummary/);
+  });
+
+  it("all three surfaces now share the same compact single-row bar treatment", () => {
+    const matches = dashboardSource.match(/rounded-lg border border-primary\/20/g) ?? [];
+    expect(matches.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("every action button's exact onClick handler and disabled condition are byte-identical to before this round -- only the surrounding markup changed", () => {
+    expect(dashboardSource).toMatch(/onClick=\{\(\) => \{\s*setApprovalDialogTarget\("generic"\);\s*setApprovalDialogOpen\(true\);\s*\}\}/);
+    expect(dashboardSource).toMatch(/onClick=\{\(\) => void handleRunTaskCompleteWrite\(\)\}/);
+    expect(dashboardSource).toMatch(/disabled=\{taskCompleteRunStatus === "running" \|\| Boolean\(taskCompleteRunResult\)\}/);
+    expect(dashboardSource).toMatch(/onClick=\{\(\) => \{\s*setApprovalDialogTarget\("taskComplete"\);\s*setApprovalDialogOpen\(true\);\s*\}\}/);
+    expect(dashboardSource).toMatch(/onClick=\{\(\) => void handleRunReadOnlyTool\(\)\}/);
+    expect(dashboardSource).toMatch(/disabled=\{readOnlyRunStatus === "running"\}/);
+  });
+
+  it("sufficient identifying text remains for every surface -- the task title, the approval card title, and the read-only step title are still rendered", () => {
+    expect(dashboardSource).toMatch(/\{t\("approval_card_title"\)\}/);
+    expect(dashboardSource).toMatch(/\{t\("write_task_title"\)\}: \{taskCompleteWriteCandidate\.taskTitle\}/);
+    expect(dashboardSource).toMatch(/\{readOnlyRuntimeStep\.title\}/);
   });
 });
 

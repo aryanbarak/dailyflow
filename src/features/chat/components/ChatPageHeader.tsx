@@ -38,6 +38,13 @@ export interface ChatPageHeaderProps {
   readonly onOpenMoreMenu: () => void;
   readonly onOpenConversations: () => void;
   readonly onStartNewChat: () => void;
+  // Home V2 final visual correction: Home's embedded chat panel shows
+  // "SmartFlow" as its visible title instead of the standalone /chat
+  // route's own `chat_title` translation ("Flow AI") -- a presentation-
+  // only label swap, not a rename of `chat_title` itself (which would
+  // also change the standalone route). Undefined (every existing caller,
+  // including /chat) falls back to `t("chat_title")`, unchanged.
+  readonly titleOverride?: string;
 }
 
 export function ChatPageHeader({
@@ -46,6 +53,7 @@ export function ChatPageHeader({
   onOpenMoreMenu,
   onOpenConversations,
   onStartNewChat,
+  titleOverride,
 }: ChatPageHeaderProps) {
   const { t } = useT();
 
@@ -70,7 +78,7 @@ export function ChatPageHeader({
           <div className="icon-tile shrink-0">
             <Bot className="w-4 h-4 text-primary" />
           </div>
-          <h1 className="whitespace-nowrap text-lg font-semibold leading-tight">{t("chat_title")}</h1>
+          <h1 className="whitespace-nowrap text-lg font-semibold leading-tight">{titleOverride ?? t("chat_title")}</h1>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <ChatHeaderControls />
