@@ -83,8 +83,10 @@ describe("Home V2 final contract: ChatPage's `embedded` prop only changes its ow
     );
   });
 
-  it("embedding is an inline style override (position/height), not a className swap -- so no chat/execution logic, and no other pinned className assertion, is affected by it", () => {
-    expect(chatPageSource).toMatch(/style=\{embedded \? \{ position: 'static', height: '100%' \} : undefined\}/);
+  it("embedding is an inline style override (position/height/flex growth), not a className swap -- so no chat/execution logic, and no other pinned className assertion, is affected by it", () => {
+    expect(chatPageSource).toMatch(
+      /style=\{embedded \? \{ position: 'static', height: '100%', flex: '1 1 0%', minHeight: 0 \} : undefined\}/,
+    );
   });
 
   it("`embedded` defaults to false, so `<Route path=\"/chat\" element={<ChatPage />} />` (no prop passed) is pixel-identical to before this prop existed", () => {
@@ -316,5 +318,74 @@ describe("Home V2 final contract: existing capabilities preserved elsewhere, not
       fileURLToPath(new URL("../features/habits/components/AddHabitModal.tsx", import.meta.url)),
       "utf-8",
     )).toMatch(/export function AddHabitModal/);
+  });
+});
+
+// Merge-blocker round (PO review), blocker 1: the embedded composer must
+// stay fixed and always visible -- header pinned, transcript the ONLY
+// scrollable region, composer a non-scrolling footer. The contract is a
+// complete flex chain (bounded shell -> flex-1/min-h-0 at every level ->
+// shrink-0 footer); these assertions pin each link so a future edit that
+// silently breaks one (the historical failure mode: a nested flex item's
+// content-based automatic min-height reintroducing growth) fails here.
+describe("Home V2 merge blockers: embedded chat column contract (composer always visible)", () => {
+  it("Home's desktop main column is a viewport-height flex column (100vh minus the shell chrome above it plus a bottom gap, 5.25rem -- measured in a real browser), so the chat card can never extend past the fold", () => {
+    expect(dashboardSource).toMatch(/lg:h-\[calc\(100vh-5\.25rem\)\]/);
+    expect(dashboardSource).toMatch(/lg:flex-col/);
+    expect(dashboardSource).not.toMatch(/lg:h-\[calc\(100vh-230px\)\]/);
+  });
+
+  it("the chat card is a flex-col shell: bounded 560px below lg, flex-grown to the remaining column height at lg+, floored at a usable minimum", () => {
+    expect(dashboardSource).toMatch(
+      /flex h-\[560px\] flex-col overflow-hidden[^"]*lg:h-auto[^"]*lg:flex-1/,
+    );
+  });
+
+  it("ChatPage's embedded root grows by flex (flex: 1 1 0% + minHeight: 0) inside that shell, not by percentage-height resolution alone", () => {
+    expect(chatPageSource).toMatch(/flex: '1 1 0%', minHeight: 0/);
+  });
+
+  it("the transcript viewport is the only scrollable region (min-h-0 flex-1 overflow-y-auto) and the composer is a shrink-0 non-scrolling footer", () => {
+    expect(chatPageSource).toMatch(/min-h-0 flex-1 overflow-y-auto overscroll-contain px-3/);
+    expect(chatPageSource).toMatch(/className="shrink-0 border-t border-border\/60 bg-background\/95"/);
+  });
+
+  it("every intermediate flex level between root and transcript carries min-h-0 (body row, and the chat column -- appended so the pinned column substring other tests rely on stays intact)", () => {
+    expect(chatPageSource).toMatch(/className="flex min-h-0 flex-1"/);
+    expect(chatPageSource).toMatch(
+      /relative flex min-w-0 flex-1 flex-col lg:mx-auto lg:max-w-3xl min-h-0/,
+    );
+  });
+});
+
+// Merge-blocker round (PO review), blocker 2: the hero must read as a real
+// layered mountain composition -- night sky, stars, glowing moon/orb,
+// mountains with depth -- not a thin decorative stripe. The old 400x160
+// viewBox stretched ~12 small zig-zag points across the full hero width;
+// that IS the "meaningless horizontal band" the PO rejected.
+describe("Home V2 merge blockers: hero mountains are a real composition, not a stripe", () => {
+  it("the mountain canvas is wide-aspect (1200x340) with a taller rendered band (h-40 -> lg:h-60), replacing the old 400x160 ribbon entirely", () => {
+    expect(dashboardSource).toMatch(/viewBox="0 0 1200 340"/);
+    expect(dashboardSource).toMatch(/h-40 w-full sm:h-52 lg:h-60/);
+    expect(dashboardSource).not.toMatch(/viewBox="0 0 400 160"/);
+  });
+
+  it("each of the 4 depth layers has a handful of LARGE peaks with long slopes (8-11 points per polygon), not a dozen tightly-spaced zig-zag vertices", () => {
+    const heroIndex = dashboardSource.indexOf('background: "var(--flow-gradient-background)"');
+    const svgIndex = dashboardSource.indexOf("<svg", heroIndex);
+    const svgEndIndex = dashboardSource.indexOf("</svg>", svgIndex);
+    const svgBlock = dashboardSource.slice(svgIndex, svgEndIndex);
+    const pointCounts = [...svgBlock.matchAll(/points="([^"]+)"/g)].map(
+      (match) => match[1].trim().split(/\s+/).length,
+    );
+    expect(pointCounts).toHaveLength(4);
+    for (const count of pointCounts) {
+      expect(count).toBeGreaterThanOrEqual(8);
+      expect(count).toBeLessThanOrEqual(11);
+    }
+  });
+
+  it("the hero reserves a bottom band for the scenery (pb-20 -> sm:pb-24) so the mountains render below the copy instead of hiding behind it", () => {
+    expect(dashboardSource).toMatch(/pb-20 pt-6 sm:px-6 sm:pb-24 lg:px-8/);
   });
 });

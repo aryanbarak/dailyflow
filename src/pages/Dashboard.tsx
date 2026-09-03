@@ -858,7 +858,23 @@ export default function Dashboard() {
   return (
     <WorkspaceReveal className="mx-auto max-w-[1180px] px-4 sm:px-6 lg:px-8 pt-5 lg:pt-6 pb-8 space-y-7 [&_.glass-card]:!bg-card/45 [&_.glass-card]:!border-primary/10 [&_.card-accent]:before:!opacity-25">
       <div className="grid grid-cols-1 gap-7 lg:grid-cols-[minmax(0,1fr)_280px] lg:items-start xl:grid-cols-[minmax(0,1fr)_300px]">
-        <div className="space-y-7">
+        {/* Home V2 blocker fix: on desktop, normal Home's main column is a
+            viewport-height flex column (100vh minus the measured 52px of
+            shell chrome + page padding above it and a pb-8-sized bottom
+            gap = 5.25rem) -- hero and the conditional boundary bars are
+            fixed-size rows, and the chat card takes ALL remaining height
+            via flex-1/min-h-0. That is what pins the composer inside the
+            first viewport: the card can never extend past the fold, so
+            growing the transcript scrolls ONLY the transcript. The
+            cold-start WelcomeWorkspace branch keeps the plain stacked
+            column -- it has no chat card to fit. */}
+        <div
+          className={
+            workspace.isLowData
+              ? "space-y-7"
+              : "space-y-7 lg:flex lg:h-[calc(100vh-5.25rem)] lg:min-h-[560px] lg:flex-col lg:gap-6 lg:space-y-0"
+          }
+        >
           {workspace.isLowData ? (
             <WelcomeWorkspace
               afterHero={
@@ -890,9 +906,9 @@ export default function Dashboard() {
           - a dark radial wash behind the greeting/stats text (its own
             z-10 layer, below the text) keeps them readable over the
             scenery regardless of which mountain layer sits behind them. */}
-      <WorkspaceRevealSection order={0}>
+      <WorkspaceRevealSection order={0} className="lg:shrink-0">
         <section
-          className="relative overflow-hidden rounded-2xl border border-primary/10 px-4 py-6 sm:px-6 lg:px-8 lg:py-8"
+          className="relative overflow-hidden rounded-2xl border border-primary/10 px-4 pb-20 pt-6 sm:px-6 sm:pb-24 lg:px-8 lg:pt-8"
           style={{ background: "var(--flow-gradient-background)" }}
         >
           <div
@@ -925,33 +941,41 @@ export default function Dashboard() {
           />
           <div
             aria-hidden="true"
-            className="pointer-events-none absolute -right-4 -top-6 opacity-95 sm:right-4 sm:top-[-0.5rem]"
+            className="pointer-events-none absolute right-2 top-3 opacity-95 sm:right-10 sm:top-4"
           >
             <FlowAIOrb size="xl" state="presence" beam={false} particles glowIntensity={0.5} theme="transparent" />
           </div>
+          {/* Home V2 blocker fix (hero): the previous 400x160 viewBox
+              stretched a dozen small zig-zag points across the full hero
+              width, which read as a noisy horizontal stripe rather than a
+              mountain range. Same 4 depth layers, same token palette,
+              same back-to-front opacity grading -- but a wide 1200x340
+              canvas, a taller rendered band, and a handful of LARGE peaks
+              per layer with long slopes, so each silhouette reads as an
+              actual mountain ridge with depth. */}
           <svg
             aria-hidden="true"
-            viewBox="0 0 400 160"
+            viewBox="0 0 1200 340"
             preserveAspectRatio="none"
-            className="pointer-events-none absolute inset-x-0 bottom-0 h-28 w-full sm:h-44"
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-40 w-full sm:h-52 lg:h-60"
           >
             <polygon
-              points="0,160 0,110 40,95 80,105 120,88 160,100 200,85 240,98 280,90 320,102 360,92 400,100 400,160"
+              points="0,340 0,170 170,96 340,168 520,84 700,150 880,72 1050,140 1200,104 1200,340"
               fill="var(--flow-blue)"
-              fillOpacity="0.28"
+              fillOpacity="0.32"
             />
             <polygon
-              points="0,160 0,125 30,108 70,120 110,100 150,115 190,98 230,112 270,102 310,118 350,105 400,115 400,160"
+              points="0,340 0,215 150,130 330,205 510,116 690,196 900,124 1080,190 1200,150 1200,340"
               fill="var(--flow-primary-700)"
-              fillOpacity="0.5"
+              fillOpacity="0.55"
             />
             <polygon
-              points="0,160 0,140 25,118 65,132 105,110 145,128 185,108 225,124 265,112 305,130 345,116 400,128 400,160"
+              points="0,340 0,258 190,158 370,240 570,146 760,232 950,168 1200,236 1200,340"
               fill="var(--flow-primary-900)"
-              fillOpacity="0.85"
+              fillOpacity="0.88"
             />
             <polygon
-              points="0,160 0,150 20,128 55,145 90,120 125,140 160,115 195,138 230,118 265,142 300,122 335,145 370,125 400,140 400,160"
+              points="0,340 0,296 210,224 430,282 650,214 870,272 1080,228 1200,258 1200,340"
               fill="var(--flow-bg-deep)"
             />
           </svg>
@@ -1039,7 +1063,7 @@ export default function Dashboard() {
           approval and read-only semantics are completely unchanged; no
           action runs without the same button click as before. */}
       {pendingStepApproval && pendingApprovalStep && (
-        <WorkspaceRevealSection order={2}>
+        <WorkspaceRevealSection order={2} className="lg:shrink-0">
           <div className="flex flex-wrap items-center gap-3 rounded-lg border border-primary/20 bg-primary/[0.04] px-3 py-2.5">
             <div className="min-w-0 flex-1">
               <p className="truncate text-xs font-medium text-foreground">
@@ -1069,7 +1093,7 @@ export default function Dashboard() {
       )}
 
       {taskCompleteWriteCandidate && (
-        <WorkspaceRevealSection order={2}>
+        <WorkspaceRevealSection order={2} className="lg:shrink-0">
           <div className="rounded-lg border border-primary/20 bg-card/40 px-3 py-2.5">
             <div className="flex flex-wrap items-center gap-3">
               <div className="min-w-0 flex-1">
@@ -1140,7 +1164,7 @@ export default function Dashboard() {
       )}
 
       {readOnlyRuntimeStep && readOnlyRuntimeResolution && (
-        <WorkspaceRevealSection order={2}>
+        <WorkspaceRevealSection order={2} className="lg:shrink-0">
           <div className="rounded-lg border border-primary/20 bg-card/40 px-3 py-2.5">
             <div className="flex flex-wrap items-center gap-3">
               <div className="min-w-0 flex-1">
@@ -1182,8 +1206,16 @@ export default function Dashboard() {
           Owner's final contract; none of those underlying components were
           deleted from the codebase, just no longer referenced here (see
           DashboardHomeFlowAiLayout.test.tsx for the exact list). */}
-      <WorkspaceRevealSection order={1}>
-        <div className="h-[560px] overflow-hidden rounded-2xl border border-border/30 bg-card/20 lg:h-[calc(100vh-230px)] lg:min-h-[560px]">
+      {/* Home V2 blocker fix: the reliable column contract, end to end --
+          this section is the main column's flex-1/min-h-0 row on desktop,
+          the card inside it is a flex-col shell (fixed 560px below lg,
+          flex-grown to the remaining viewport at lg+), and ChatPage's own
+          embedded root grows inside it as `flex: 1 1 0%` + `minHeight: 0`
+          (see ChatPage.tsx). Header stays put, the transcript is the only
+          scrollable region, and the composer is a non-scrolling footer
+          that is always visible. */}
+      <WorkspaceRevealSection order={1} className="lg:flex lg:min-h-[280px] lg:flex-1 lg:flex-col">
+        <div className="flex h-[560px] flex-col overflow-hidden rounded-2xl border border-border/30 bg-card/20 lg:h-auto lg:min-h-[280px] lg:flex-1">
           <ChatPage embedded />
         </div>
       </WorkspaceRevealSection>
