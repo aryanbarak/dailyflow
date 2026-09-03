@@ -1,6 +1,54 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { renderToString } from "react-dom/server";
+import { MemoryRouter } from "react-router-dom";
+import { describe, expect, it, vi } from "vitest";
+import type { WorkspaceRightRail } from "@/features/workspace";
+
+// FlowAIAssistantRail renders FlowAIOrb/SmartflowAsciiVisual (decorative,
+// canvas/animation-flavoured) -- mocked out the same way Sidebar.test.tsx
+// already mocks them for its own renderToString-based render, since this
+// test only cares about which TEXT sections render, not their visuals.
+vi.mock("@/components/FlowAIOrb", () => ({ FlowAIOrb: () => null }));
+vi.mock("@/components/smartflow", () => ({ SmartflowAsciiVisual: () => null }));
+// Dashboard.tsx (via useWorkspace's many services -- tasksService,
+// calendarService, financeService, habitsService, ...) transitively
+// imports the real Supabase client, which throws at module-construction
+// time outside a real dev/CI env (VITE_SMARTFLOW_SUPABASE_MODE guard --
+// see supabaseConfig.ts and the same gotcha documented in
+// writeRuntime.test.ts/chatV2Routing.test.ts). FlowAIAssistantRail itself
+// never touches Supabase, so a minimal client stub is enough to let the
+// module graph load -- no per-service mocking needed.
+vi.mock("@/integrations/supabase/client", () => ({
+  supabase: { auth: { getSession: vi.fn() }, from: vi.fn() },
+}));
+
+import { FlowAIAssistantRail } from "./Dashboard";
+
+// Non-empty in every list so a false pass can't hide behind "nothing to
+// render anyway" -- if a gated section's items showed up in the output,
+// these are the exact strings that would catch it.
+const FIXTURE_RAIL: WorkspaceRightRail = {
+  statusMessage: "Ready when you are.",
+  recentLessons: [{ title: "Sorting Algorithms Lesson", progress: 40, icon: "book" }],
+  recommendations: [{
+    title: "Big O Notation Recommendation",
+    reason: "Because you asked about complexity",
+    icon: "sparkles",
+    signalDomain: "learning",
+    target: { route: "/learn-ai" },
+  }],
+  recentConversation: { title: "Yesterday planning chat", relativeTime: "1 day ago" },
+  isChatLoading: false,
+};
+
+function renderRail(showChatEntry?: boolean) {
+  return renderToString(
+    <MemoryRouter>
+      <FlowAIAssistantRail rail={FIXTURE_RAIL} showChatEntry={showChatEntry} />
+    </MemoryRouter>,
+  );
+}
 
 // Home / Flow AI v2 design cleanup. Dashboard.tsx mounts useWorkspace()
 // (itself a composition of useTasks/useEvents/useFinance/useChatSessions/
@@ -58,13 +106,11 @@ describe("Home / Flow AI v2: dashboard-card sections removed from the permanent 
     expect(dashboardSource).not.toMatch(/AgentBriefingCard/);
   });
 
-  it("no permanent 'Continue Learning' (Smart Academy) section", () => {
-    expect(dashboardSource).not.toMatch(/Continue Learning/);
+  it("the standalone 'Continue Learning' (Smart Academy widget) section is gone -- SmartAcademyWidget is no longer imported or rendered by Dashboard.tsx at all", () => {
     expect(dashboardSource).not.toMatch(/SmartAcademyWidget/);
   });
 
-  it("no permanent 'Recommended Today' section", () => {
-    expect(dashboardSource).not.toMatch(/Recommended Today/);
+  it("the standalone 'Recommended Today' section is gone -- RecommendedTopicsWidget is no longer imported or rendered by Dashboard.tsx at all", () => {
     expect(dashboardSource).not.toMatch(/RecommendedTopicsWidget/);
   });
 
@@ -83,13 +129,53 @@ describe("Home / Flow AI v2: compact daily orientation + Smart Context rail", ()
 
   it("HomeTodayContext + the trimmed FlowAIAssistantRail render in both the mobile stack and the desktop sticky rail -- Smart Context stacks below chat on mobile, never squeezing it", () => {
     const matches = dashboardSource.match(/<HomeTodayContext\b/g) ?? [];
-    expect(matches.length).toBe(2);
+    expect(matches).toHaveLength(2);
     expect(dashboardSource).toMatch(/<FlowAIAssistantRail rail=\{workspace\.rightRail\} showChatEntry=\{false\}/);
   });
+});
 
-  it("FlowAIAssistantRail's 'Chat with Flow AI' CTA is conditional (showChatEntry), not always shown -- Home's rail no longer duplicates a link to the chat that is already the dominant surface", () => {
-    expect(dashboardSource).toMatch(/showChatEntry\s*=\s*true/);
-    expect(dashboardSource).toMatch(/showChatEntry \? \(/);
+// Home V2 design contract correction: normal Home's "Relevant Context"
+// group (showChatEntry=false, the two Dashboard.tsx call sites verified
+// above) must be restrained -- Recent conversation only, NOT Continue
+// learning or Recommended today (those are permanent-dashboard-widget
+// content the approved contract removed from Home). The regression this
+// guards: the original implementation only ever HID the CTA/orb block --
+// Continue learning and Recommended today kept rendering unconditionally,
+// which the previous version of this test file failed to catch because it
+// checked for the absence of the wrong (Title Case) strings while the
+// actual rendered text is sentence case ("Continue learning" / "Recommended
+// today"). These assertions render the REAL component (not a regex over
+// its source) and read its actual DOM text, so a similar case mismatch
+// -- or any other way the gate could quietly stop applying -- fails loudly
+// here instead of passing by accident.
+describe("Home V2 design contract: FlowAIAssistantRail's 'Relevant Context' group is restrained for normal Home", () => {
+  it("showChatEntry=false (normal Home): renders 'Relevant Context' and Recent conversation, but NOT Continue learning or Recommended today", () => {
+    const html = renderRail(false);
+
+    expect(html).toContain("Relevant Context");
+    expect(html).toContain("Recent conversation");
+    expect(html).toContain(FIXTURE_RAIL.recentConversation!.title);
+
+    expect(html).not.toContain("Continue learning");
+    expect(html).not.toContain("Recommended today");
+    expect(html).not.toContain(FIXTURE_RAIL.recentLessons[0].title);
+    expect(html).not.toContain(FIXTURE_RAIL.recommendations[0].title);
+  });
+
+  it("showChatEntry=true (cold-start / WelcomeWorkspace, this component's pre-existing default): still renders the CTA plus all three sections, exactly as before this correction", () => {
+    const htmlExplicit = renderRail(true);
+    const htmlDefault = renderRail(undefined);
+
+    for (const html of [htmlExplicit, htmlDefault]) {
+      expect(html).toContain("Chat with Flow AI");
+      expect(html).toContain("Continue learning");
+      expect(html).toContain(FIXTURE_RAIL.recentLessons[0].title);
+      expect(html).toContain("Recommended today");
+      expect(html).toContain(FIXTURE_RAIL.recommendations[0].title);
+      expect(html).toContain("Recent conversation");
+      expect(html).toContain(FIXTURE_RAIL.recentConversation!.title);
+      expect(html).not.toContain("Relevant Context");
+    }
   });
 });
 

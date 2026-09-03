@@ -442,10 +442,17 @@ function HomeTodayContext({
 // "Chat with Flow AI" CTA block. On Home itself the real, working chat
 // panel is already the dominant surface (see Dashboard's own composition
 // below), so that CTA would just point at itself -- `showChatEntry={false}`
-// there renders this as a plain "Relevant Context" supporting card instead.
-// The welcome (cold-start) flow still passes no prop (defaults to true),
-// unchanged from before this task, since it has no inline chat panel yet.
-function FlowAIAssistantRail({
+// there renders this as a plain "Relevant Context" supporting card instead,
+// and ALSO gates out Continue learning / Recommended today (Home V2 design
+// contract correction: those are permanent-dashboard-widget content,
+// approved to be removed/reduced from normal Home -- they only remain on
+// the showChatEntry=true cold-start path). The welcome (cold-start) flow
+// still passes no prop (defaults to true), unchanged from before this
+// task, since it has no inline chat panel yet.
+// Exported (named, alongside the default `Dashboard`) solely so
+// DashboardHomeFlowAiLayout.test.tsx can render it directly and assert on
+// real DOM output instead of source-text regexes for this distinction.
+export function FlowAIAssistantRail({
   rail,
   showChatEntry = true,
 }: Readonly<{ rail: WorkspaceRightRail; showChatEntry?: boolean }>) {
@@ -522,7 +529,18 @@ function FlowAIAssistantRail({
           </p>
         )}
 
-        <div className={cn("pt-3", showChatEntry ? "border-t border-border/35" : "border-t-0")}>
+        {/* Home V2 design contract correction: Continue learning and
+            Recommended today are permanent-dashboard-widget content --
+            approved to be removed/reduced from normal Home (spec's Home V2
+            contract). They stay ONLY on the cold-start/WelcomeWorkspace
+            path (showChatEntry=true, this component's pre-existing default
+            behaviour, deliberately untouched here) and are never rendered
+            for normal Home's "Relevant Context" group
+            (showChatEntry=false) -- see the two `{showChatEntry && (...)}`
+            guards below and the FlowAIAssistantRail usage sites in
+            Dashboard's own return JSX. */}
+        {showChatEntry && (
+        <div className="border-t border-border/35 pt-3">
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
             Continue learning
           </p>
@@ -589,7 +607,9 @@ function FlowAIAssistantRail({
             </button>
           </div>
         </div>
+        )}
 
+        {showChatEntry && (
         <div className="border-t border-border/35 pt-3">
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
             Recommended today
@@ -643,8 +663,17 @@ function FlowAIAssistantRail({
             </button>
           </div>
         </div>
+        )}
 
-        <div className="border-t border-border/35 pt-3">
+        {/* Recent conversation is the ONLY "Relevant Context" content for
+            normal Home (showChatEntry=false) -- Continue learning and
+            Recommended today are gated out above. When showChatEntry is
+            false this is the first block under the "Relevant Context"
+            label, so it gets no top border there (mirrors HomeTodayContext's
+            own first-block treatment); when true it's the third block
+            after the CTA/Continue-learning/Recommended-today stack, same
+            as before this correction. */}
+        <div className={cn("pt-3", showChatEntry ? "border-t border-border/35" : "border-t-0")}>
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
             Recent conversation
           </p>
