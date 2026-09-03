@@ -2218,9 +2218,14 @@ export interface ChatPageProps {
   // prop existed. No chat/execution logic reads this flag -- it only
   // changes the root element's own height/sticky classes, below.
   readonly embedded?: boolean
+  // SmartFlow Home frozen design handoff §10 (<=1120px): Home passes a
+  // handler so the embedded chat header can show the Assistant-panel
+  // button that opens the rail overlay. Presentation-only wiring; the
+  // standalone /chat route never passes it and renders no new control.
+  readonly onOpenAssistantPanel?: () => void
 }
 
-export default function ChatPage({ embedded = false }: ChatPageProps = {}) {
+export default function ChatPage({ embedded = false, onOpenAssistantPanel }: ChatPageProps = {}) {
   const { user } = useAuth()
   const { profile } = useProfile()
   const { tasks, isLoading: tasksLoading, error: tasksError } = useTasks()
@@ -3518,6 +3523,10 @@ export default function ChatPage({ embedded = false }: ChatPageProps = {}) {
         // passes no override, so its own `chat_title` translation ("Flow
         // AI") is completely unchanged.
         titleOverride={embedded ? 'SmartFlow' : undefined}
+        // Frozen handoff §7: the embedded header also carries the ping-dot
+        // "Online" cluster and (<=1120px only) the Assistant-panel button.
+        showOnlineStatus={embedded}
+        onOpenAssistantPanel={embedded ? onOpenAssistantPanel : undefined}
       />
 
       {/* Body: the chat column. Task 17f, B1 (PO decision): the persistent
@@ -3715,6 +3724,8 @@ export default function ChatPage({ embedded = false }: ChatPageProps = {}) {
               onSend={() => void handleSend()}
               disabled={sending || loading}
               compact={compact}
+              // Frozen handoff §7: Home's embedded composer placeholder.
+              placeholderOverride={embedded ? 'Ask SmartFlow anything…' : undefined}
               attachedFile={attachedFile}
               onAttachFile={(file) => void handleAttachFile(file)}
               onRemoveAttachedFile={handleRemoveAttachedFile}
