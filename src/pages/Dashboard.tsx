@@ -12,6 +12,7 @@ import {
   FileText,
   Flame,
   MessageSquare,
+  ShieldCheck,
   Sparkles,
   Wallet,
 } from "lucide-react";
@@ -973,26 +974,48 @@ export default function Dashboard() {
             <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
               {workspace.hero.summary}
             </p>
-            <div className="mt-4 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground">
+            <div className="mt-4 flex flex-wrap gap-2">
               {workspace.signals.isLoading ? (
-                <SkeletonBlock className="h-3.5 w-40" />
+                <>
+                  <SkeletonBlock className="h-[52px] w-28 rounded-xl" />
+                  <SkeletonBlock className="h-[52px] w-28 rounded-xl" />
+                </>
               ) : (
                 <>
-                  <span>
-                    <span className="font-medium text-foreground">{workspace.signals.incompleteTasks}</span> tasks
-                  </span>
-                  <span aria-hidden="true">·</span>
-                  <span>
-                    <span className="font-medium text-foreground">{workspace.signals.eventsToday}</span> events
-                  </span>
+                  <div className="flex items-center gap-2.5 rounded-xl border border-border/25 bg-background/25 px-3 py-2 backdrop-blur-sm">
+                    <div className="icon-tile h-8 w-8 shrink-0 rounded-lg bg-primary/15">
+                      <CheckSquare className="h-4 w-4 text-primary" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-[11px] leading-4 text-muted-foreground">Open Tasks</p>
+                      <p className="text-sm font-semibold leading-4 text-foreground">
+                        {workspace.signals.incompleteTasks}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2.5 rounded-xl border border-border/25 bg-background/25 px-3 py-2 backdrop-blur-sm">
+                    <div className="icon-tile h-8 w-8 shrink-0 rounded-lg bg-primary/15">
+                      <Calendar className="h-4 w-4 text-primary" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-[11px] leading-4 text-muted-foreground">Today&apos;s Events</p>
+                      <p className="text-sm font-semibold leading-4 text-foreground">
+                        {workspace.signals.eventsToday}
+                      </p>
+                    </div>
+                  </div>
                   {approvalsPendingCount > 0 && (
-                    <>
-                      <span aria-hidden="true">·</span>
-                      <span>
-                        <span className="font-medium text-foreground">{approvalsPendingCount}</span> approval
-                        {approvalsPendingCount > 1 ? "s" : ""}
-                      </span>
-                    </>
+                    <div className="flex items-center gap-2.5 rounded-xl border border-primary/25 bg-primary/10 px-3 py-2 backdrop-blur-sm">
+                      <div className="icon-tile h-8 w-8 shrink-0 rounded-lg bg-primary/15">
+                        <ShieldCheck className="h-4 w-4 text-primary" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-[11px] leading-4 text-muted-foreground">Approvals</p>
+                        <p className="text-sm font-semibold leading-4 text-foreground">
+                          {approvalsPendingCount}
+                        </p>
+                      </div>
+                    </div>
                   )}
                 </>
               )}

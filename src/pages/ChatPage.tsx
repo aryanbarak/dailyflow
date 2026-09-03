@@ -3529,7 +3529,18 @@ export default function ChatPage({ embedded = false }: ChatPageProps = {}) {
           comfortable breathing room around them, not a second reading cap. */}
       <div className="flex min-h-0 flex-1">
         {/* Chat column */}
-        <div className="relative flex min-w-0 flex-1 flex-col lg:mx-auto lg:max-w-3xl">
+        {/* Home V2 visual correction, round 3: `min-h-0` added (appended,
+            not inserted inline, so the pinned "relative flex min-w-0
+            flex-1 flex-col lg:mx-auto lg:max-w-3xl" substring in
+            ChatPageChromeCleanup.test.tsx / ChatPageDesktopLayout.test.tsx
+            stays intact). Without it, this nested flex-col item's
+            automatic minimum height defaults to its content's size, so
+            inside a height-bounded ancestor (Home's embedded panel) it
+            grew past the panel instead of yielding scroll space to the
+            messages region below -- the composer visually drifted out of
+            view as the conversation grew instead of staying pinned while
+            only the message list scrolled. */}
+        <div className="relative flex min-w-0 flex-1 flex-col lg:mx-auto lg:max-w-3xl min-h-0">
           {/* Task 17a, workstream 2: this is the ONLY scroll container for
               the conversation -- messages/quick-actions/proposals all live
               inside it, the composer below is a non-scrolling flex sibling
