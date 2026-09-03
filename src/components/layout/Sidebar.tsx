@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { motion, useReducedMotion } from "framer-motion";
 import {
@@ -15,6 +16,8 @@ import {
   BookOpen,
   MessageSquare,
   FolderKanban,
+  Home,
+  Menu,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { GlobalSearch } from "@/features/search/GlobalSearch";
@@ -24,6 +27,7 @@ import { useProfile } from "@/features/profile/useProfile";
 import { FlowAIOrb } from "@/components/FlowAIOrb";
 import { SmartflowAsciiVisual } from "@/components/smartflow";
 import { getSmartAcademyUrl } from "@/config/apps";
+import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { useT } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
 
@@ -52,13 +56,9 @@ const navItems: {
   { icon: Settings, key: 'nav_settings', path: "/settings" },
 ];
 
-export function Sidebar() {
-  const location = useLocation();
+function useSidebarIdentity() {
   const { user } = useAuth();
   const { profile } = useProfile();
-  const { t } = useT();
-  const shouldReduceMotion = useReducedMotion();
-
   const displayName = profile?.displayName?.trim()
     || user?.email?.split("@")[0]
     || "User";
@@ -68,9 +68,25 @@ export function Sidebar() {
     .slice(0, 2)
     .map((part) => part[0]?.toUpperCase())
     .join("") || "U";
+  return { displayName, initials };
+}
+
+// SmartFlow Home frozen design handoff (§9 / spec §2b): the ONE full
+// SmartFlow navigation, extracted so the exact same structure/data renders
+// in BOTH places that show it -- the persistent w-64 sidebar on every
+// non-Home route, and Home's left overlay drawer (opened by the slim
+// rail's hamburger AND its Home icon). Same `navItems`, same star-field
+// identity, same logo header, same active treatment, same footer -- never
+// a second menu system. `onNavigate` (drawer only) closes the drawer when
+// a destination is selected; navigation itself stays NavLink's job.
+export function FullSidebarContent({ onNavigate }: Readonly<{ onNavigate?: () => void }>) {
+  const location = useLocation();
+  const { t } = useT();
+  const shouldReduceMotion = useReducedMotion();
+  const { displayName, initials } = useSidebarIdentity();
 
   return (
-    <aside className="relative w-64 h-screen sticky top-0 overflow-hidden bg-sidebar border-r border-sidebar-border flex flex-col">
+    <>
       <motion.div
         aria-hidden="true"
         className="pointer-events-none absolute -inset-6 z-0 opacity-85"
@@ -140,7 +156,7 @@ export function Sidebar() {
                 particles={false}
                 glowIntensity={0.72}
                 theme="transparent"
-                ariaLabel="Flow AI"
+                ariaLabel="SmartFlow"
               />
             </div>
             <SmartflowAsciiVisual
@@ -187,6 +203,7 @@ export function Sidebar() {
                   href={item.externalUrl}
                   target="_blank"
                   rel="noreferrer"
+                  onClick={onNavigate}
                   className={cn(
                     "nav-link relative z-10",
                     isActive
@@ -200,6 +217,7 @@ export function Sidebar() {
               ) : (
                 <NavLink
                   to={item.path}
+                  onClick={onNavigate}
                   className={cn(
                     "nav-link relative z-10",
                     isActive
@@ -235,6 +253,105 @@ export function Sidebar() {
           </div>
         </div>
       </div>
+    </>
+  );
+}
+
+// SmartFlow Home frozen design handoff §4: the slim rail's shared 42px
+// icon-button treatment.
+const HOME_RAIL_BUTTON_CLASS =
+  "flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-xl text-[#9EA3BF] transition-colors hover:bg-[#7C4DFF]/[0.12] hover:text-[#F3F3FA]";
+
+export function Sidebar() {
+  const location = useLocation();
+  const { t } = useT();
+  const [homeMenuOpen, setHomeMenuOpen] = useState(false);
+  const { displayName, initials } = useSidebarIdentity();
+
+  // SmartFlow Home frozen design handoff §4/§9: route-aware presentation
+  // mode, not a second navigation system. On Home the rail is slim and
+  // icon-only -- hamburger, 12px spacer, Home, Chat, Settings, flex
+  // spacer, avatar -- 68px wide (64px at <=1280px), and BOTH the hamburger
+  // and the Home icon open the EXISTING full navigation (FullSidebarContent
+  // above: same navItems, star field, logo, footer) as a 256px left
+  // overlay drawer over a scrim. Selecting a destination closes the drawer
+  // and navigates; clicking outside closes it. The main content is never
+  // pushed or resized. Every other route renders the unchanged full
+  // sidebar below.
+  if (location.pathname === "/") {
+    return (
+      <aside className="sticky top-0 z-40 flex h-screen w-[68px] shrink-0 flex-col items-center gap-1.5 border-r border-[#7078B4]/[0.14] bg-[#070816]/[0.82] py-3.5 backdrop-blur-[12px] max-[1280px]:w-16">
+        <Sheet open={homeMenuOpen} onOpenChange={setHomeMenuOpen}>
+          <SheetTrigger asChild>
+            <button
+              type="button"
+              aria-label={t('nav_more')}
+              className={HOME_RAIL_BUTTON_CLASS}
+            >
+              <Menu className="h-5 w-5" strokeWidth={1.7} />
+            </button>
+          </SheetTrigger>
+
+          <div aria-hidden="true" className="h-3 shrink-0" />
+
+          <SheetTrigger asChild>
+            <button
+              type="button"
+              aria-label={`${t('nav_dashboard')} — ${t('nav_more')}`}
+              className="flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-xl border border-[#7D5CFF]/40 bg-[#7C4DFF]/[0.16] text-[#A88BFF] shadow-[0_0_14px_rgba(124,77,255,0.28)]"
+            >
+              <Home className="h-5 w-5" strokeWidth={1.7} />
+            </button>
+          </SheetTrigger>
+
+          <SheetContent
+            side="left"
+            aria-label={t('nav_more')}
+            className="z-[90] flex w-64 max-w-[82vw] flex-col gap-0 overflow-hidden border-r border-[#7078B4]/[0.22] bg-[#090B1C]/[0.97] p-0 shadow-[24px_0_60px_rgba(0,0,0,0.5)]"
+          >
+            <div className="relative flex h-full min-h-0 flex-col overflow-hidden">
+              <FullSidebarContent onNavigate={() => setHomeMenuOpen(false)} />
+            </div>
+          </SheetContent>
+        </Sheet>
+
+        <nav className="flex flex-1 flex-col items-center gap-1.5" aria-label={t('nav_dashboard')}>
+          <NavLink
+            to="/chat"
+            title={t('nav_chat')}
+            aria-label={t('nav_chat')}
+            className={HOME_RAIL_BUTTON_CLASS}
+          >
+            <MessageSquare className="h-5 w-5" strokeWidth={1.7} />
+          </NavLink>
+          <NavLink
+            to="/settings"
+            title={t('nav_settings')}
+            aria-label={t('nav_settings')}
+            className={HOME_RAIL_BUTTON_CLASS}
+          >
+            <Settings className="h-5 w-5" strokeWidth={1.7} />
+          </NavLink>
+        </nav>
+
+        <div
+          className="relative flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-full border border-[#7078B4]/[0.35] bg-gradient-to-br from-[#3D1D94] to-[#28155F]"
+          title={displayName}
+          aria-label={displayName}
+        >
+          <span className="text-sm font-semibold text-[#DDD4FF]">{initials}</span>
+          <span
+            aria-hidden="true"
+            className="absolute -bottom-px -right-px h-[11px] w-[11px] rounded-full border-2 border-[#07081A] bg-[#34D399]"
+          />
+        </div>
+      </aside>
+    );
+  }
+
+  return (
+    <aside className="relative w-64 h-screen sticky top-0 overflow-hidden bg-sidebar border-r border-sidebar-border flex flex-col">
+      <FullSidebarContent />
     </aside>
   );
 }

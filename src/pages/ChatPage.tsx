@@ -2218,9 +2218,14 @@ export interface ChatPageProps {
   // prop existed. No chat/execution logic reads this flag -- it only
   // changes the root element's own height/sticky classes, below.
   readonly embedded?: boolean
+  // SmartFlow Home frozen design handoff §10 (<=1120px): Home passes a
+  // handler so the embedded chat header can show the Assistant-panel
+  // button that opens the rail overlay. Presentation-only wiring; the
+  // standalone /chat route never passes it and renders no new control.
+  readonly onOpenAssistantPanel?: () => void
 }
 
-export default function ChatPage({ embedded = false }: ChatPageProps = {}) {
+export default function ChatPage({ embedded = false, onOpenAssistantPanel }: ChatPageProps = {}) {
   const { user } = useAuth()
   const { profile } = useProfile()
   const { tasks, isLoading: tasksLoading, error: tasksError } = useTasks()
@@ -3482,10 +3487,16 @@ export default function ChatPage({ embedded = false }: ChatPageProps = {}) {
       // relies on it). Embedded on Home, the parent panel already supplies
       // an explicit bounded height, so this page must fill THAT instead of
       // the viewport -- an inline style, which always wins over a utility
-      // class regardless of breakpoint, overrides just the two properties
-      // that matter (`position`, `height`) rather than touching the
-      // className string at all.
-      style={embedded ? { position: 'static', height: '100%' } : undefined}
+      // class regardless of breakpoint, overrides just the properties
+      // that matter rather than touching the className string at all.
+      // Home V2 blocker fix: the embedded wrapper is now a flex-col card
+      // (see Dashboard.tsx), so `flex: 1 1 0%` + `minHeight: 0` size this
+      // root by flex growth instead of leaning on percentage-height
+      // resolution against a flex item -- the reliable column contract
+      // (bounded shell -> flex-1 min-h-0 transcript -> flex-none footer)
+      // holds at every level. `height: 100%` is kept as a harmless
+      // fallback for any non-flex host.
+      style={embedded ? { position: 'static', height: '100%', flex: '1 1 0%', minHeight: 0 } : undefined}
     >
       {/* Header -- task 17c, PO decision D4, final single-row layout:
           [More menu] [Conversations] -- "Flow AI" -- [theme/density] [New].
@@ -3507,6 +3518,15 @@ export default function ChatPage({ embedded = false }: ChatPageProps = {}) {
         onOpenMoreMenu={() => setMoreMenuOpen(true)}
         onOpenConversations={() => setConversationsDrawerOpen(true)}
         onStartNewChat={startNewChat}
+        // Home V2 final visual correction: only Home's embedded panel
+        // shows "SmartFlow" -- the standalone /chat route (embedded=false)
+        // passes no override, so its own `chat_title` translation ("Flow
+        // AI") is completely unchanged.
+        titleOverride={embedded ? 'SmartFlow' : undefined}
+        // Frozen handoff §7: the embedded header also carries the ping-dot
+        // "Online" cluster and (<=1120px only) the Assistant-panel button.
+        showOnlineStatus={embedded}
+        onOpenAssistantPanel={embedded ? onOpenAssistantPanel : undefined}
       />
 
       {/* Body: the chat column. Task 17f, B1 (PO decision): the persistent
@@ -3524,7 +3544,18 @@ export default function ChatPage({ embedded = false }: ChatPageProps = {}) {
           comfortable breathing room around them, not a second reading cap. */}
       <div className="flex min-h-0 flex-1">
         {/* Chat column */}
-        <div className="relative flex min-w-0 flex-1 flex-col lg:mx-auto lg:max-w-3xl">
+        {/* Home V2 visual correction, round 3: `min-h-0` added (appended,
+            not inserted inline, so the pinned "relative flex min-w-0
+            flex-1 flex-col lg:mx-auto lg:max-w-3xl" substring in
+            ChatPageChromeCleanup.test.tsx / ChatPageDesktopLayout.test.tsx
+            stays intact). Without it, this nested flex-col item's
+            automatic minimum height defaults to its content's size, so
+            inside a height-bounded ancestor (Home's embedded panel) it
+            grew past the panel instead of yielding scroll space to the
+            messages region below -- the composer visually drifted out of
+            view as the conversation grew instead of staying pinned while
+            only the message list scrolled. */}
+        <div className="relative flex min-w-0 flex-1 flex-col lg:mx-auto lg:max-w-3xl min-h-0">
           {/* Task 17a, workstream 2: this is the ONLY scroll container for
               the conversation -- messages/quick-actions/proposals all live
               inside it, the composer below is a non-scrolling flex sibling
@@ -3544,7 +3575,7 @@ export default function ChatPage({ embedded = false }: ChatPageProps = {}) {
           <div
             ref={messagesScrollRef}
             onScroll={handleMessagesScroll}
-            className={cn('flex-1 overflow-y-auto overscroll-contain px-3 sm:px-6', compact ? 'space-y-2 py-3' : 'space-y-3 py-4')}
+            className={cn('min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 sm:px-6', compact ? 'space-y-2 py-3' : 'space-y-3 py-4')}
           >
             {/* Task 17b (conversation-first architecture): the mockup's
                 lobby page, distilled into the empty-state of THIS chat
@@ -3693,6 +3724,8 @@ export default function ChatPage({ embedded = false }: ChatPageProps = {}) {
               onSend={() => void handleSend()}
               disabled={sending || loading}
               compact={compact}
+              // Frozen handoff §7: Home's embedded composer placeholder.
+              placeholderOverride={embedded ? 'Ask SmartFlow anything…' : undefined}
               attachedFile={attachedFile}
               onAttachFile={(file) => void handleAttachFile(file)}
               onRemoveAttachedFile={handleRemoveAttachedFile}

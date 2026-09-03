@@ -147,6 +147,39 @@ describe("ChatPageHeader composition (task 17c, D4)", () => {
   });
 });
 
+describe("ChatPageHeader title override (Home V2 final visual correction, round 2)", () => {
+  it("renders the provided titleOverride instead of the chat_title translation -- Home's embedded chat panel passes 'SmartFlow' here", async () => {
+    const { ChatPageHeader } = await freshModules();
+    const { container } = render(
+      <ChatPageHeader
+        compact={false}
+        prefersReducedMotion
+        onOpenMoreMenu={vi.fn()}
+        onOpenConversations={vi.fn()}
+        onStartNewChat={vi.fn()}
+        titleOverride="SmartFlow"
+      />,
+    );
+    const heading = within(container).getByRole("heading", { level: 1 });
+    expect(heading.textContent).toBe("SmartFlow");
+  });
+
+  it("falls back to the unchanged chat_title translation ('Flow AI') when titleOverride is omitted -- the standalone /chat route's own call site passes no override, so its behavior is unaffected", async () => {
+    const { ChatPageHeader } = await freshModules();
+    const { container } = render(
+      <ChatPageHeader
+        compact={false}
+        prefersReducedMotion
+        onOpenMoreMenu={vi.fn()}
+        onOpenConversations={vi.fn()}
+        onStartNewChat={vi.fn()}
+      />,
+    );
+    const heading = within(container).getByRole("heading", { level: 1 });
+    expect(heading.textContent).toBe("Flow AI");
+  });
+});
+
 describe("ChatPageHeader RTL mirroring (task 17c, D4)", () => {
   it("renders correctly (labels translate, no crash) under an ancestor dir=rtl -- the actual VISUAL mirroring is native flexbox behavior driven by that ancestor dir, which jsdom does not lay out pixel-for-pixel; this component deliberately has NO hardcoded flex-row-reverse of its own, relying entirely on the ancestor (ChatPage's own root, task 17c's E4 fix) the way the codebase's own RTL convention elsewhere (ConversationsDrawer's side={isRTL?...}) already establishes", async () => {
     const { useAppearance, ChatPageHeader } = await freshModules();

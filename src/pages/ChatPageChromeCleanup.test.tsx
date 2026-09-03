@@ -145,10 +145,11 @@ describe("Y4 (task 17g's gate REVERSED by task 17h): the cursor-following pointe
 });
 
 describe("Y5 (task 17g): exactly one scroll container owns the chat message list on desktop", () => {
-  it("the desktop <main> no longer scrolls for the chat page (redundant outer scroll container removed)", () => {
+  it("the desktop <main> no longer scrolls for the chat page (redundant outer scroll container removed) -- the SmartFlow Home frozen handoff later widened the same per-page branch to a set that also covers Home ('/'), which self-manages its scroll the same way", () => {
     expect(appLayoutSource).toMatch(
-      /className=\{cn\("flex-1 min-h-screen", hideMobileChrome \? "overflow-hidden" : "overflow-auto"\)\}/,
+      /className=\{cn\("flex-1 min-h-screen", PAGES_WITH_SELF_MANAGED_DESKTOP_SCROLL\.has\(location\.pathname\) \? "overflow-hidden" : "overflow-auto"\)\}/,
     );
+    expect(appLayoutSource).toMatch(/PAGES_WITH_SELF_MANAGED_DESKTOP_SCROLL = new Set\(\["\/chat", "\/"\]\)/);
   });
 
   it("every OTHER page still gets the normal scrolling <main> (overflow-auto), unaffected", () => {

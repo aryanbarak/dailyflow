@@ -48,6 +48,12 @@ export interface ChatComposerProps {
   readonly onRemoveAttachedFile?: () => void;
   readonly attachBusy?: boolean;
   readonly attachError?: string | null;
+  // SmartFlow Home frozen design handoff §7: Home's embedded composer says
+  // "Ask SmartFlow anything…". Presentation-only, same pattern as
+  // ChatPageHeader's titleOverride -- undefined (the standalone /chat
+  // route and every existing caller) falls back to the translated
+  // `chat_placeholder`, unchanged.
+  readonly placeholderOverride?: string;
 }
 
 export function ChatComposer({
@@ -61,6 +67,7 @@ export function ChatComposer({
   onRemoveAttachedFile,
   attachBusy = false,
   attachError = null,
+  placeholderOverride,
 }: ChatComposerProps) {
   const { t } = useT();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -230,11 +237,11 @@ export function ChatComposer({
         value={value}
         onChange={(event) => onChange(event.target.value)}
         onKeyDown={handleKeyDown}
-        placeholder={t("chat_placeholder")}
+        placeholder={placeholderOverride ?? t("chat_placeholder")}
         rows={COMPOSER_MIN_LINES}
         disabled={disabled}
         dir="auto"
-        aria-label={t("chat_placeholder")}
+        aria-label={placeholderOverride ?? t("chat_placeholder")}
         // Task 17d, V2: a pure CSS min-height, correct on the FIRST PAINT
         // FRAME with zero JavaScript involved -- the useLayoutEffect/
         // useEffect logic above still owns GROWING the field as the user

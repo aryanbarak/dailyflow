@@ -1,4 +1,4 @@
-import { Bot, History, Menu, Plus } from "lucide-react";
+import { Bot, History, Menu, Plus, Zap } from "lucide-react";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -38,6 +38,24 @@ export interface ChatPageHeaderProps {
   readonly onOpenMoreMenu: () => void;
   readonly onOpenConversations: () => void;
   readonly onStartNewChat: () => void;
+  // Home V2 final visual correction: Home's embedded chat panel shows
+  // "SmartFlow" as its visible title instead of the standalone /chat
+  // route's own `chat_title` translation ("Flow AI") -- a presentation-
+  // only label swap, not a rename of `chat_title` itself (which would
+  // also change the standalone route). Undefined (every existing caller,
+  // including /chat) falls back to `t("chat_title")`, unchanged.
+  readonly titleOverride?: string;
+  // SmartFlow Home frozen design handoff §7: the embedded chat header
+  // shows a ping dot + "Online" next to the title. Presentation only;
+  // undefined (the standalone /chat route) renders nothing new.
+  readonly showOnlineStatus?: boolean;
+  // Frozen handoff §10 (<=1120px): a panel button appears in the chat
+  // header that opens the Assistant Rail overlay. Only rendered when a
+  // handler is provided (Home's embedded panel); the standalone route
+  // passes nothing and is unchanged. Visibility is media-scoped to the
+  // desktop-shell tablet window (1024-1120px) where the rail leaves the
+  // grid.
+  readonly onOpenAssistantPanel?: () => void;
 }
 
 export function ChatPageHeader({
@@ -46,6 +64,9 @@ export function ChatPageHeader({
   onOpenMoreMenu,
   onOpenConversations,
   onStartNewChat,
+  titleOverride,
+  showOnlineStatus,
+  onOpenAssistantPanel,
 }: ChatPageHeaderProps) {
   const { t } = useT();
 
@@ -70,9 +91,35 @@ export function ChatPageHeader({
           <div className="icon-tile shrink-0">
             <Bot className="w-4 h-4 text-primary" />
           </div>
-          <h1 className="whitespace-nowrap text-lg font-semibold leading-tight">{t("chat_title")}</h1>
+          <h1 className="whitespace-nowrap text-lg font-semibold leading-tight">{titleOverride ?? t("chat_title")}</h1>
+          {showOnlineStatus && (
+            // Frozen handoff §7 colors via existing palette/tokens (the
+            // chat feature's flowTokenDerivation test forbids raw hex
+            // here): emerald-400 is exactly the frozen online-dot green,
+            // and muted-foreground is the chat theme's secondary text
+            // token the frozen "Online" grey maps to.
+            <span className="flex items-center gap-1.5 ps-1">
+              <span className="relative inline-flex h-2 w-2">
+                <span className="sf-home-ping absolute inset-0 rounded-full bg-emerald-400 motion-safe:animate-[sfPing_2.2s_cubic-bezier(0,0,0.2,1)_infinite]" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-400" />
+              </span>
+              <span className="text-xs text-muted-foreground">Online</span>
+            </span>
+          )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {onOpenAssistantPanel && (
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="hidden h-8 w-8 shrink-0 text-primary [@media(min-width:1024px)_and_(max-width:1120px)]:flex"
+              onClick={onOpenAssistantPanel}
+              aria-label="Assistant panel"
+            >
+              <Zap className="h-4 w-4" strokeWidth={1.7} />
+            </Button>
+          )}
           <ChatHeaderControls />
           <Button
             type="button"

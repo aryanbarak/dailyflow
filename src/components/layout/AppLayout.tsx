@@ -25,6 +25,13 @@ import { MobilePullToRefreshMain } from "@/features/pull-to-refresh/MobilePullTo
 // mobile shell is completely unchanged.
 const PAGES_WITHOUT_MOBILE_CHROME = new Set(["/chat"]);
 
+// SmartFlow Home frozen design handoff (§3): like /chat, Home manages its
+// own vertical space entirely internally on desktop -- a 100dvh grid whose
+// only scrolling regions are the chat transcript and the Assistant Rail
+// body. This set governs ONLY the desktop <main>'s overflow class below;
+// the mobile shell (and PAGES_WITHOUT_MOBILE_CHROME above) is unaffected.
+const PAGES_WITH_SELF_MANAGED_DESKTOP_SCROLL = new Set(["/chat", "/"]);
+
 function AppLayoutInner() {
   const { shouldShowAppShell } = useLaunch();
   const location = useLocation();
@@ -111,7 +118,7 @@ function AppLayoutInner() {
               (`hideMobileChrome`) -- every other page still needs this
               main to scroll normally, since they don't self-manage an
               internal scroll region the way chat does. */}
-          <main className={cn("flex-1 min-h-screen", hideMobileChrome ? "overflow-hidden" : "overflow-auto")}>
+          <main className={cn("flex-1 min-h-screen", PAGES_WITH_SELF_MANAGED_DESKTOP_SCROLL.has(location.pathname) ? "overflow-hidden" : "overflow-auto")}>
             <Outlet />
           </main>
         </div>
