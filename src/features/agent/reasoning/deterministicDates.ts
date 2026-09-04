@@ -90,8 +90,29 @@ export function parseDeterministicTimeOfDay(message: string): string | undefined
   const text = normalizeDigits(message.toLowerCase());
   const persian = text.match(/\u0633\u0627\u0639\u062a\s+([01]?[0-9]|2[0-3])(?::([0-5][0-9]))?\s*(\u0635\u0628\u062d|\u0639\u0635\u0631|\u0628\u0639\u062f\s+\u0627\u0632\s+\u0638\u0647\u0631|\u0634\u0628)?/);
   const latin = text.match(/\b(?:at|um)\s+([01]?[0-9]|2[0-3])(?::([0-5][0-9]))?\s*(am|pm|uhr)?\b/);
+  // TIME-01 (production, 2026-09): \u00ab\u0633\u0627\u0639\u062a\u0634 \u0631\u0627 \u0628\u06a9\u0646 \u06f5 \u0639\u0635\u0631\u00bb -- the possessive
+  // \u00ab\u0633\u0627\u0639\u062a\u0634\u00bb means the word \u00ab\u0633\u0627\u0639\u062a\u00bb never stands ALONE before the digit, so
+  // the anchored pattern above missed the whole message; intentValidator
+  // then wiped start/end and the calendar update died as a silently
+  // suppressed ask_clarification. These accept a bare "hour + REQUIRED
+  // meridiem" (\u00ab\u06f5 \u0639\u0635\u0631\u00bb, "5 pm", "5:30pm", "17 uhr") -- the MANDATORY
+  // suffix is what keeps a bare number from ever matching, and the
+  // (?<![0-9:]) guard keeps the "5" of "25" (or of a clock's minutes)
+  // from being read as its own hour. Tried AFTER the anchored patterns
+  // (which carry more context) and BEFORE compact, so "5:30 pm" resolves
+  // as 17:30 instead of compact's suffix-blind 05:30.
+  const persianSuffixed = text.match(/(?<![0-9:])([01]?[0-9]|2[0-3])(?::([0-5][0-9]))?\s*(\u0635\u0628\u062d|\u0639\u0635\u0631|\u0628\u0639\u062f\s+\u0627\u0632\s+\u0638\u0647\u0631|\u0634\u0628)/);
+  const latinSuffixed = text.match(/(?<![0-9:])\b([01]?[0-9]|2[0-3])(?::([0-5][0-9]))?\s*(am|pm|uhr)\b/);
   const compact = text.match(/\b([01]?[0-9]|2[0-3]):([0-5][0-9])\b/);
-  const match = persian ?? latin ?? compact;
+  // Between the suffixed form and compact HH:MM, the EARLIEST match wins:
+  // "von 13:00 bis 15:00 Uhr" must keep 13:00 as the start even though
+  // only the 15:00 carries the "uhr" suffix. On an exact tie ("5:30 pm" --
+  // both patterns start at the same index) the suffixed reading wins so
+  // the meridiem is honored instead of compact's suffix-blind 05:30.
+  const suffixed = persianSuffixed ?? latinSuffixed;
+  let unanchored = suffixed ?? compact;
+  if (suffixed && compact && (compact.index ?? 0) < (suffixed.index ?? 0)) unanchored = compact;
+  const match = persian ?? latin ?? unanchored;
   if (!match) return undefined;
   let hour = Number(match[1]);
   const minute = Number(match[2] ?? "0");

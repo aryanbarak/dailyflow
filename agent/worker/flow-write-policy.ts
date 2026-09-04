@@ -519,8 +519,27 @@ export function parseDeterministicTimeOfDay(message: string): string | undefined
   const text = normalizeDigits(message.toLowerCase())
   const persian = text.match(/\u0633\u0627\u0639\u062a\s+([01]?[0-9]|2[0-3])(?::([0-5][0-9]))?\s*(\u0635\u0628\u062d|\u0639\u0635\u0631|\u0628\u0639\u062f\s+\u0627\u0632\s+\u0638\u0647\u0631|\u0634\u0628)?/)
   const latin = text.match(/\b(?:at|um)\s+([01]?[0-9]|2[0-3])(?::([0-5][0-9]))?\s*(am|pm|uhr)?\b/)
+  // TIME-01 (production, 2026-09): \u00ab\u0633\u0627\u0639\u062a\u0634 \u0631\u0627 \u0628\u06a9\u0646 \u06f5 \u0639\u0635\u0631\u00bb -- the possessive
+  // \u00ab\u0633\u0627\u0639\u062a\u0634\u00bb means the word \u00ab\u0633\u0627\u0639\u062a\u00bb never stands ALONE before the digit, so
+  // the anchored pattern above missed the whole message. These accept a
+  // bare "hour + REQUIRED meridiem" (\u00ab\u06f5 \u0639\u0635\u0631\u00bb, "5 pm", "5:30pm", "17 uhr")
+  // -- the MANDATORY suffix is what keeps a bare number from ever
+  // matching, and the (?<![0-9:]) guard keeps the "5" of "25" (or of a
+  // clock's minutes) from being read as its own hour. Hand-synced twin of
+  // src/features/agent/reasoning/deterministicDates.ts -- keep both edits
+  // identical.
+  const persianSuffixed = text.match(/(?<![0-9:])([01]?[0-9]|2[0-3])(?::([0-5][0-9]))?\s*(\u0635\u0628\u062d|\u0639\u0635\u0631|\u0628\u0639\u062f\s+\u0627\u0632\s+\u0638\u0647\u0631|\u0634\u0628)/)
+  const latinSuffixed = text.match(/(?<![0-9:])\b([01]?[0-9]|2[0-3])(?::([0-5][0-9]))?\s*(am|pm|uhr)\b/)
   const compact = text.match(/\b([01]?[0-9]|2[0-3]):([0-5][0-9])\b/)
-  const match = persian ?? latin ?? compact
+  // Between the suffixed form and compact HH:MM, the EARLIEST match wins:
+  // "von 13:00 bis 15:00 Uhr" must keep 13:00 as the start even though
+  // only the 15:00 carries the "uhr" suffix. On an exact tie ("5:30 pm" --
+  // both patterns start at the same index) the suffixed reading wins so
+  // the meridiem is honored instead of compact's suffix-blind 05:30.
+  const suffixed = persianSuffixed ?? latinSuffixed
+  let unanchored = suffixed ?? compact
+  if (suffixed && compact && (compact.index ?? 0) < (suffixed.index ?? 0)) unanchored = compact
+  const match = persian ?? latin ?? unanchored
   if (!match) return undefined
   let hour = Number(match[1])
   const minute = Number(match[2] ?? '0')
@@ -564,6 +583,10 @@ function removeDateAndTimePhrases(value: string) {
     .replace(/\u0628\u0631\u0627\u06cc\s+(?:\u0627\u0645\u0631\u0648\u0632|\u0641\u0631\u062f\u0627|\u067e\u0633(?:\u200c|\s)?\u0641\u0631\u062f\u0627|\u062c\u0645\u0639\u0647|\u0634\u0646\u0628\u0647|\u06cc\u06a9\u0634\u0646\u0628\u0647|\u062f\u0648\u0634\u0646\u0628\u0647|\u0633\u0647[\u200c\s-]?\u0634\u0646\u0628\u0647|\u0686\u0647\u0627\u0631\u0634\u0646\u0628\u0647|\u067e\u0646\u062c\u0634\u0646\u0628\u0647|[0-9]{4}[-/.][0-9]{1,2}[-/.][0-9]{1,2})/g, ' ')
     .replace(/\u0627\u0644\u0628\u062a\u0647\s+\u0633\u0627\u0639\u062a\s+[0-9]{1,2}(?::[0-9]{2})?\s*(?:\u0635\u0628\u062d|\u0639\u0635\u0631|\u0628\u0639\u062f\s+\u0627\u0632\s+\u0638\u0647\u0631|\u0634\u0628)?/g, ' ')
     .replace(/\u0633\u0627\u0639\u062a\s+[0-9]{1,2}(?::[0-9]{2})?\s*(?:\u0635\u0628\u062d|\u0639\u0635\u0631|\u0628\u0639\u062f\s+\u0627\u0632\s+\u0638\u0647\u0631|\u0634\u0628)?/g, ' ')
+    // TIME-01: the bare "hour + meridiem" form the parser now accepts must
+    // be stripped from fallback titles too -- the Latin twin of this line
+    // (\b...am|pm|uhr\b, above) has always done this for "5 pm".
+    .replace(/[0-9]{1,2}(?::[0-9]{2})?\s*(?:\u0635\u0628\u062d|\u0639\u0635\u0631|\u0628\u0639\u062f\s+\u0627\u0632\s+\u0638\u0647\u0631|\u0634\u0628)/g, ' ')
 }
 
 // Task 21-fix6: LAST-RESORT FALLBACK ONLY. Title extraction is now the

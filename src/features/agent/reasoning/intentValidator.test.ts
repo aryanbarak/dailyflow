@@ -491,12 +491,11 @@ describe("intentValidator", () => {
           toolId: "calendar.update_event",
           target: { eventReference: "Standup", start: "2026-08-14T10:00:00.000Z" },
         }),
-        // Task 22-fix (C1): "10:00" (colon format), not bare "10am" -- see
-        // parseDeterministicTimeOfDay in deterministicDates.ts, which (like
-        // its Worker counterpart) only recognizes a bare hour+am/pm when
-        // preceded by "at"/"um"; a colon time needs no prefix. A genuine,
-        // pre-existing parsing gap shared by both the Worker and this
-        // frontend port, out of this fix's scope (not one of C1/C2/C3).
+        // Task 22-fix (C1) originally used "10:00" (colon format) because a
+        // bare hour+am/pm needed an "at"/"um" prefix back then -- TIME-01
+        // has since lifted that (a bare "hour + required meridiem" now
+        // parses; see the TIME-01 test below). Kept as-is: colon times
+        // remain a supported form of their own.
         "Move the Standup event to 10:00",
         context,
       );
@@ -524,6 +523,41 @@ describe("intentValidator", () => {
       );
       expect(result.proposal.type).toBe("update_calendar_event");
       expect(result.proposal.target?.start).toBe("2026-07-16T11:00:00.000Z");
+    });
+
+    // TIME-01 (production, 2026-09): the exact turn-2 follow-up message.
+    // HIST-01 gave the overlay the history to fill eventReference; the
+    // time then died in parseDeterministicTimeOfDay because «ساعتش»
+    // carries a possessive suffix, so no standalone «ساعت» precedes the
+    // digit -- start/end were wiped and the whole update collapsed into a
+    // silently suppressed ask_clarification (calendar unchanged, no card).
+    // The bare "hour + required meridiem" now parses, so the update
+    // survives: the matched event's own date is kept as the anchor and
+    // 17:00 resolves in the caller's timezone.
+    it("TIME-01: «ساعتش را بکن ۵ عصر» resolves to a real update_calendar_event at 17:00 on the matched event's own date", () => {
+      const dentistContext: AgentReasoningSafeContext = {
+        ...context,
+        events: [{ id: "event-dentist", title: "نوبت داکتر دندان", dateTimeStart: "2026-07-16T10:00:00.000Z" }],
+      };
+      const result = validateWithContext(
+        proposal({
+          type: "update_calendar_event",
+          requestedDomain: "calendar",
+          toolId: "calendar.update_event",
+          // The model's own start guess is bogus on purpose -- it must be
+          // re-derived deterministically, never trusted.
+          target: { eventReference: "نوبت داکتر دندان", start: "2020-01-01T00:00:00.000Z" },
+        }),
+        "ساعتش را بکن ۵ عصر",
+        dentistContext,
+        "fa",
+        "Europe/Berlin",
+      );
+      expect(result.proposal.type).toBe("update_calendar_event");
+      expect(result.proposal.target?.eventId).toBe("event-dentist");
+      // 17:00 Europe/Berlin (CEST, UTC+2) on the event's own date = 15:00Z.
+      expect(result.proposal.target?.start).toBe("2026-07-16T15:00:00.000Z");
+      expect(result.proposal.target?.start).not.toBe("2020-01-01T00:00:00.000Z");
     });
 
     // Slice 2B.1.1 -- PO decision: a concrete time-of-day is scheduling
