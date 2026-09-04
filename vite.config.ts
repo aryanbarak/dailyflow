@@ -33,8 +33,10 @@ export default defineConfig(({ mode }) => {
           name: "SmartFlow",
           short_name: "SmartFlow",
           description: "Your personal digital representative: tasks, calendar, finance, documents and an AI assistant in one place.",
-          theme_color: "#07060E",
-          background_color: "#07060E",
+          // DESIGN-AUDIT 0.4: matches --flow-bg-deep (flow-tokens.css) --
+          // manifest values cannot reference CSS custom properties.
+          theme_color: "#03040F",
+          background_color: "#03040F",
           display: "standalone",
           scope: "/",
           start_url: "/",

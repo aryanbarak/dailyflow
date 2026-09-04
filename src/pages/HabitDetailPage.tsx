@@ -14,7 +14,11 @@ import { cn } from '@/lib/utils';
 
 const WEEKDAY_LABELS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'] as const;
 const ICONS = ['⭐', '💪', '📚', '🏃', '🧘', '🧠', '🎯', '🌱', '😴', '🎵'];
-const COLORS = ['#6366f1', '#ec4899', '#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ef4444', '#14b8a6'];
+// DESIGN-AUDIT 1: the pickable habit palette now comes from the flow
+// token palette (flow-tokens.css: primary/plan/career/analyze/blue/study/
+// cyan/review) instead of 8 arbitrary Tailwind hexes. Stored habits keep
+// whatever hex they already saved -- this only changes what NEW picks offer.
+const COLORS = ['#7C4DFF', '#F06AC6', '#F3A044', '#55E38A', '#4F73FF', '#9B5CFF', '#62DDF4', '#5F91FF'];
 
 function getDayLabel(dateStr: string): string {
   const d = new Date(dateStr + 'T00:00:00');
@@ -132,8 +136,8 @@ export default function HabitDetailPage() {
                     {habit.habit_type === 'goal'
                       ? `Goal · ${habit.target_value ?? '?'} ${habit.target_unit ?? 'target'}`
                       : habit.frequency === 'daily' ? 'Every day' : `Weekly · ${habit.target_days}× per week`}
-                    {!habit.is_active && <span className="ml-2 text-orange-400">(Paused)</span>}
-                    {habit.achieved_at && <span className="ml-2 text-emerald-400">(Achieved ✓)</span>}
+                    {!habit.is_active && <span className="ml-2 text-[var(--flow-career)]">(Paused)</span>}
+                    {habit.achieved_at && <span className="ml-2 text-[var(--flow-analyze)]">(Achieved ✓)</span>}
                   </p>
                 </div>
               </div>
@@ -197,7 +201,7 @@ export default function HabitDetailPage() {
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-semibold">Goal Progress</h3>
                 {habit.achieved_at && (
-                  <span className="text-xs font-medium text-emerald-400">Achieved ✓</span>
+                  <span className="text-xs font-medium text-[var(--flow-analyze)]">Achieved ✓</span>
                 )}
               </div>
               <div className="flex items-center gap-4">

@@ -211,7 +211,10 @@ export default function HabitsPage() {
                 </div>
                 <div className="h-2 bg-muted rounded-full overflow-hidden">
                   <motion.div
-                    className="h-full bg-gradient-to-r from-primary to-orange-400 rounded-full"
+                    // DESIGN-AUDIT 1: primary->orange Tailwind gradient
+                    // replaced by the canonical flow gradient token.
+                    className="h-full rounded-full"
+                    style={{ background: 'var(--flow-gradient-primary)' }}
                     initial={{ width: 0 }}
                     animate={{ width: `${progressPct}%` }}
                     transition={{ duration: 0.8, ease: 'easeOut' }}
@@ -358,11 +361,11 @@ export default function HabitsPage() {
               {/* Mini stats */}
               <div className="grid grid-cols-3 gap-2 text-center">
                 <div>
-                  <p className="text-lg font-bold text-emerald-400">{todayDone}</p>
+                  <p className="text-lg font-bold text-[var(--flow-analyze)]">{todayDone}</p>
                   <p className="text-[10px] text-muted-foreground">Completed</p>
                 </div>
                 <div>
-                  <p className="text-lg font-bold text-orange-400">{activeHabits.length - todayDone}</p>
+                  <p className="text-lg font-bold text-[var(--flow-career)]">{activeHabits.length - todayDone}</p>
                   <p className="text-[10px] text-muted-foreground">Remaining</p>
                 </div>
                 <div>

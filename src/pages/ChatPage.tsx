@@ -159,14 +159,19 @@ interface QuickAction {
   prompt: string
 }
 
+// DESIGN-AUDIT 1 (ChatPage quick actions): each card's icon colors now come
+// from the semantic --flow-* accent tokens (flow-tokens.css) that were
+// created for exactly these cards and sat unused -- via Tailwind arbitrary
+// values, so no raw Tailwind palette color (blue/violet/orange/...) remains
+// here. The token matches each entry's own `accent` field.
 const QUICK_ACTIONS: QuickAction[] = [
   {
     id: 'study',
     labelKey: 'flow_action_study',
     descKey: 'flow_action_study_desc',
     icon: BookOpen,
-    iconBg: 'bg-blue-500/15',
-    iconColor: 'text-blue-400',
+    iconBg: 'bg-[var(--flow-study-bg)]',
+    iconColor: 'text-[var(--flow-study)]',
     accent: 'study',
     prompt: 'Help me study and review a concept for my FIAE exam.',
   },
@@ -175,8 +180,8 @@ const QUICK_ACTIONS: QuickAction[] = [
     labelKey: 'flow_action_plan',
     descKey: 'flow_action_plan_desc',
     icon: Calendar,
-    iconBg: 'bg-violet-500/15',
-    iconColor: 'text-violet-400',
+    iconBg: 'bg-[var(--flow-plan-bg)]',
+    iconColor: 'text-[var(--flow-plan)]',
     accent: 'plan',
     prompt: 'Help me plan my day effectively based on my tasks and goals.',
   },
@@ -185,8 +190,8 @@ const QUICK_ACTIONS: QuickAction[] = [
     labelKey: 'flow_action_habits',
     descKey: 'flow_action_habits_desc',
     icon: Flame,
-    iconBg: 'bg-orange-500/15',
-    iconColor: 'text-orange-400',
+    iconBg: 'bg-[var(--flow-analyze-bg)]',
+    iconColor: 'text-[var(--flow-analyze)]',
     accent: 'analyze',
     prompt: 'Analyze my habits and give me insights on my patterns.',
   },
@@ -195,8 +200,8 @@ const QUICK_ACTIONS: QuickAction[] = [
     labelKey: 'flow_action_finance',
     descKey: 'flow_action_finance_desc',
     icon: Wallet,
-    iconBg: 'bg-emerald-500/15',
-    iconColor: 'text-emerald-400',
+    iconBg: 'bg-[var(--flow-review-bg)]',
+    iconColor: 'text-[var(--flow-review)]',
     accent: 'review',
     prompt: 'Review my finances and help me understand my spending.',
   },
@@ -205,8 +210,8 @@ const QUICK_ACTIONS: QuickAction[] = [
     labelKey: 'flow_action_weekly',
     descKey: 'flow_action_weekly_desc',
     icon: FileText,
-    iconBg: 'bg-cyan-500/15',
-    iconColor: 'text-cyan-400',
+    iconBg: 'bg-[var(--flow-report-bg)]',
+    iconColor: 'text-[var(--flow-report)]',
     accent: 'report',
     prompt: 'Give me a weekly summary of my progress and priorities.',
   },
@@ -215,8 +220,8 @@ const QUICK_ACTIONS: QuickAction[] = [
     labelKey: 'flow_action_career',
     descKey: 'flow_action_career_desc',
     icon: Briefcase,
-    iconBg: 'bg-rose-500/15',
-    iconColor: 'text-rose-400',
+    iconBg: 'bg-[var(--flow-career-bg)]',
+    iconColor: 'text-[var(--flow-career)]',
     accent: 'career',
     prompt: 'Help me with my job search and interview preparation.',
   },

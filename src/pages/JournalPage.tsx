@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
-import { BookOpen, Flame, CheckSquare, Smile, Brain, LineChart } from 'lucide-react';
+import { BookOpen, Flame, CheckSquare, Smile, Brain, LineChart, PenLine } from 'lucide-react';
 import { AreaChart, Area, ResponsiveContainer } from 'recharts';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -174,7 +174,7 @@ export default function JournalPage() {
                   <div className="icon-tile w-8 h-8 rounded-md"><Brain className="w-4 h-4 text-primary" /></div>
                   <span className="text-xs font-medium text-muted-foreground">{t('journal_ai_insight')}</span>
                 </div>
-                <p className="text-2xl font-bold tracking-tight text-emerald-400">Positive</p>
+                <p className="text-2xl font-bold tracking-tight text-[var(--flow-analyze)]">Positive</p>
               </CardContent>
             </Card>
           </div>
@@ -212,21 +212,29 @@ export default function JournalPage() {
           {/* Journal Entry */}
           <Card className="glass-card card-accent">
             <CardContent className="p-4 space-y-3">
-              <h3 className="text-sm font-semibold">✍ {t('journal_entry_card')}</h3>
+              {/* DESIGN-AUDIT 1: emoji heading -> icon-tile + lucide icon */}
+              <div className="flex items-center gap-2.5">
+                <div className="icon-tile w-7 h-7 rounded-md"><PenLine className="w-3.5 h-3.5 text-primary" /></div>
+                <h3 className="text-sm font-semibold">{t('journal_entry_card')}</h3>
+              </div>
               {/* Reflection prompts */}
               <div className="flex flex-wrap gap-2">
                 {PROMPTS.map(p => (
                   <motion.button
                     key={p.labelKey}
                     type="button"
-                    whileHover={{ scale: 1.03, boxShadow: '0 0 12px rgba(99,102,241,0.4)' }}
+                    whileHover={{ scale: 1.03 }}
                     whileTap={{ scale: 0.97 }}
                     onClick={() => handlePrompt(p.text)}
-                    className="rounded-full px-3.5 py-1.5 text-xs font-medium transition-all"
+                    // DESIGN-AUDIT 1 (Journal chips): raw indigo -> flow
+                    // tokens. The hover glow moved out of framer-motion
+                    // (which cannot interpolate a var()) into a Tailwind
+                    // arbitrary hover shadow on the same token.
+                    className="rounded-full px-3.5 py-1.5 text-xs font-medium transition-all hover:shadow-[0_0_12px_var(--flow-glow-violet-soft)]"
                     style={{
-                      border: '1px solid rgba(99, 102, 241, 0.3)',
-                      background: 'rgba(99, 102, 241, 0.08)',
-                      color: '#A5B4FC',
+                      border: '1px solid var(--flow-border-active)',
+                      background: 'var(--flow-study-bg)',
+                      color: 'var(--flow-primary-200)',
                     }}
                   >
                     {t(p.labelKey)}
@@ -265,13 +273,14 @@ export default function JournalPage() {
                   <div className="h-20">
                     <ResponsiveContainer width="100%" height="100%">
                       <AreaChart data={moodTrend} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>
+                        {/* DESIGN-AUDIT 1: raw #22D3EE -> --flow-cyan */}
                         <defs>
                           <linearGradient id="moodTrendGrad" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="#22D3EE" stopOpacity={0.3} />
-                            <stop offset="95%" stopColor="#22D3EE" stopOpacity={0} />
+                            <stop offset="5%" stopColor="var(--flow-cyan)" stopOpacity={0.3} />
+                            <stop offset="95%" stopColor="var(--flow-cyan)" stopOpacity={0} />
                           </linearGradient>
                         </defs>
-                        <Area type="monotone" dataKey="value" stroke="#22D3EE" strokeWidth={1.5} fill="url(#moodTrendGrad)" dot={false} />
+                        <Area type="monotone" dataKey="value" stroke="var(--flow-cyan)" strokeWidth={1.5} fill="url(#moodTrendGrad)" dot={false} />
                       </AreaChart>
                     </ResponsiveContainer>
                   </div>
@@ -285,7 +294,11 @@ export default function JournalPage() {
           {/* Memory Timeline */}
           <Card className="glass-card card-accent">
             <CardContent className="p-4 space-y-3">
-              <h3 className="text-sm font-semibold">📚 {t('journal_memory_timeline')}</h3>
+              {/* DESIGN-AUDIT 1: emoji heading -> icon-tile + lucide icon */}
+              <div className="flex items-center gap-2.5">
+                <div className="icon-tile w-7 h-7 rounded-md"><BookOpen className="w-3.5 h-3.5 text-primary" /></div>
+                <h3 className="text-sm font-semibold">{t('journal_memory_timeline')}</h3>
+              </div>
               {recentEntries.length === 0 ? (
                 <p className="text-xs text-muted-foreground">{t('journal_no_entries')}</p>
               ) : (
