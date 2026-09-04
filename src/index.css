@@ -65,7 +65,8 @@
     --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
     --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1);
     --shadow-elevated: 0 8px 24px -4px rgba(0, 0, 0, 0.08), 0 2px 8px -2px rgba(0, 0, 0, 0.06);
-    --shadow-glow: 0 0 20px rgba(56, 189, 248, 0.18);
+    /* DESIGN-AUDIT 0.3: cyan glow -> violet (--flow-glow-violet-soft) */
+    --shadow-glow: 0 0 20px var(--flow-glow-violet-soft);
 
     --sidebar-background: 0 0% 100%;
     --sidebar-foreground: 222 47% 11%;
@@ -87,8 +88,13 @@
     --popover: 222 47% 9%;
     --popover-foreground: 210 40% 98%;
 
-    --primary: 199 92% 60%;
-    --primary-foreground: 222 47% 6%;
+    /* DESIGN-AUDIT 0.1: primary/accent/ring derived from the --flow-primary
+       family (same H S% L% conversions [data-chat-theme="dark"] below
+       already uses -- one source of truth, src/styles/flow-tokens.css),
+       replacing the legacy cyan hsl(199 …) accent that no longer matched
+       the Dark Cosmic identity anywhere outside the chat page. */
+    --primary: 256 100% 65%; /* --flow-primary #7C4DFF */
+    --primary-foreground: 240 45% 98%; /* --flow-text-primary #F7F7FC */
 
     --secondary: 217 33% 14%;
     --secondary-foreground: 210 40% 98%;
@@ -96,15 +102,15 @@
     --muted: 217 33% 14%;
     --muted-foreground: 215 20% 55%;
 
-    --accent: 199 92% 60%;
-    --accent-foreground: 222 47% 6%;
+    --accent: 259 100% 71%; /* --flow-primary-bright #9A6BFF */
+    --accent-foreground: 240 45% 98%;
 
     --destructive: 0 63% 50%;
     --destructive-foreground: 210 40% 98%;
 
     --border: 217 33% 18%;
     --input: 217 33% 18%;
-    --ring: 199 92% 60%;
+    --ring: 252 100% 68%; /* --flow-border-active, alpha dropped for ring use */
 
     /* Custom tokens dark */
     --card-hover: 222 47% 12%;
@@ -128,16 +134,19 @@
     --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4), 0 2px 4px -2px rgba(0, 0, 0, 0.3);
     --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.4), 0 4px 6px -4px rgba(0, 0, 0, 0.3);
     --shadow-elevated: 0 8px 24px -4px rgba(0, 0, 0, 0.5), 0 2px 8px -2px rgba(0, 0, 0, 0.4);
-    --shadow-glow: 0 0 30px rgba(56, 189, 248, 0.25);
+    /* DESIGN-AUDIT 0.3: cyan glow -> violet (--flow-glow-violet-soft) */
+    --shadow-glow: 0 0 30px var(--flow-glow-violet-soft);
 
     --sidebar-background: 225 50% 8%;
     --sidebar-foreground: 210 40% 98%;
-    --sidebar-primary: 199 92% 60%;
-    --sidebar-primary-foreground: 222 47% 6%;
+    /* DESIGN-AUDIT 0.1: sidebar accent follows the same violet derivation
+       as --primary/--ring above -- the hsl(199 …) cyan is removed. */
+    --sidebar-primary: 256 100% 65%;
+    --sidebar-primary-foreground: 240 45% 98%;
     --sidebar-accent: 217 33% 14%;
     --sidebar-accent-foreground: 210 40% 98%;
     --sidebar-border: 213 36% 18%;
-    --sidebar-ring: 199 92% 60%;
+    --sidebar-ring: 252 100% 68%;
   }
 
   /* ── Chat page (task 17a: Chat Experience v2) ──────────────────────────
@@ -271,11 +280,22 @@
     @apply border-border;
   }
 
+  /* DESIGN-AUDIT 0.4: the app shell now paints the Dark Cosmic gradient
+     on EVERY page (previously only the chat page had it, via
+     [data-chat-theme="dark"] above). The gradient lives on body as a
+     fixed background-image over the --flow-bg-deep base color; html keeps
+     the same base color and #root goes transparent so it never occludes
+     the body gradient. The raw #07060E is gone -- --flow-bg-deep is the
+     single deep-background source of truth. */
   html,
-  body,
+  body {
+    min-height: 100%;
+    background: var(--flow-bg-deep);
+  }
+
   #root {
     min-height: 100%;
-    background: #07060E;
+    background: transparent;
   }
 
   /* Task 17f, C1a added an overscroll-containment rule here (html/body) to
@@ -295,13 +315,18 @@
 
   body {
     @apply text-foreground font-sans antialiased;
-    background: #07060E;
+    /* DESIGN-AUDIT 0.4: background-color + fixed gradient image, kept as
+       separate longhands (same never-compete-with-bg-background reasoning
+       as the [data-chat-theme="dark"] rule above). */
+    background-color: var(--flow-bg-deep);
+    background-image: var(--flow-gradient-background);
+    background-attachment: fixed;
     overflow-x: hidden;
   }
 
   html {
     font-family: 'Sora', 'Inter', system-ui, sans-serif;
-    background: #07060E;
+    background: var(--flow-bg-deep);
   }
 }
 
@@ -341,14 +366,20 @@
     @apply flex items-center gap-3 px-3 py-2.5 rounded-lg text-muted-foreground transition-all duration-200 hover:bg-secondary hover:text-foreground;
   }
 
+  /* DESIGN-AUDIT 0.2: pill style instead of a physical border-left --
+     a directional border renders on the WRONG side under RTL (fa), and
+     the cyan accent is gone app-wide. Rounded, violet-tinted background,
+     active flow border. */
   .nav-link-active {
-    @apply text-primary font-medium rounded-none;
-    background: rgba(56, 189, 248, 0.08);
-    border-left: 3px solid #38BDF8;
+    @apply text-primary font-medium rounded-lg;
+    background: rgba(124, 77, 255, 0.14); /* --flow-primary @ .14 */
+    border: 1px solid var(--flow-border-active);
   }
 
+  /* DESIGN-AUDIT 0.3: tokenized -- --flow-blue-deep -> --flow-primary-900
+     (was the visually similar raw #0F1E3A -> #1A1040). */
   .hero-surface {
-    background: linear-gradient(135deg, #0F1E3A 0%, #1A1040 100%);
+    background: linear-gradient(135deg, var(--flow-blue-deep) 0%, var(--flow-primary-900) 100%);
   }
 
   .card-accent {
@@ -365,15 +396,20 @@
     opacity: 0.7;
   }
 
+  /* DESIGN-AUDIT 0.3: the cyan radial (rgba(56,189,248,…)) becomes the
+     violet glow token; the loose lavender becomes --flow-blue at the same
+     soft alpha (no soft-blue token exists and flow-tokens.css is imported
+     verbatim, never hand-edited -- so the alpha variant is spelled out
+     with its source token named). */
   .auth-shell {
     background:
-      radial-gradient(1200px circle at 12% 12%, rgba(56, 189, 248, 0.14), transparent 55%),
-      radial-gradient(900px circle at 88% 0%, rgba(167, 139, 250, 0.11), transparent 45%),
+      radial-gradient(1200px circle at 12% 12%, var(--flow-glow-violet-soft), transparent 55%),
+      radial-gradient(900px circle at 88% 0%, rgba(79, 115, 255, 0.11), transparent 45%), /* --flow-blue @ .11 */
       hsl(var(--background));
   }
 
   .auth-card-banner {
-    background: linear-gradient(135deg, rgba(56, 189, 248, 0.18), rgba(167, 139, 250, 0.06));
+    background: linear-gradient(135deg, var(--flow-glow-violet-soft), rgba(79, 115, 255, 0.06)); /* --flow-blue @ .06 */
   }
 
   /* Gradient text — clips --gradient-primary onto text fill */

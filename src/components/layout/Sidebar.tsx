@@ -191,9 +191,13 @@ export function FullSidebarContent({ onNavigate }: Readonly<{ onNavigate?: () =>
                 <motion.div
                   layoutId="sidebar-active-pill"
                   className="absolute inset-0 rounded-lg"
+                  // DESIGN-AUDIT 0.2: pill, not a physical borderLeft -- a
+                  // directional border sits on the WRONG side under RTL
+                  // (fa). Violet-tinted fill + the active flow border,
+                  // derived from --primary (now the --flow-primary family).
                   style={{
-                    background: "hsl(var(--primary) / 0.08)",
-                    borderLeft: "2px solid hsl(var(--primary))",
+                    background: "hsl(var(--primary) / 0.14)",
+                    border: "1px solid var(--flow-border-active)",
                   }}
                   transition={{ type: "spring", stiffness: 350, damping: 30 }}
                 />
