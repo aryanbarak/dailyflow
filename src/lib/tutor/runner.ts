@@ -1,9 +1,16 @@
+import { createId } from "@/lib/id";
 import { fetchTutorIndex } from "@/lib/tutor/client";
 import type { TutorRunExecution, TutorRunRequestPayload, TutorRunLang, TutorVariant } from "@/lib/tutor/types";
 
+// TUTOR-ADAPTER-01: VITE_TUTOR_API_URL ONLY. The old fallback to
+// VITE_AI_AGENT_URL dated from when "the AI agent" was the same local
+// :8000 python service; today VITE_AI_AGENT_URL is the general AI agent
+// (TTS/translation/OCR/bank import -- see src/config/aiAgent.ts) and
+// serves NO /v1/topics or /v1/run, so inheriting it only ever turned
+// "no tutor adapter configured" (which has a working static-content
+// mode) into a guaranteed dead adapter and a FAILED run on every lesson.
 const rawApiUrl =
   (import.meta.env.VITE_TUTOR_API_URL as string | undefined)?.trim() ||
-  (import.meta.env.VITE_AI_AGENT_URL as string | undefined)?.trim() ||
   "";
 const API_URL = rawApiUrl.replace(/\/+$/, "");
 const API_TOKEN = (import.meta.env.VITE_TUTOR_API_TOKEN as string | undefined)?.trim() || "";
@@ -131,7 +138,10 @@ export async function fetchTutorVariants(topic: string, lang: TutorRunLang): Pro
 
   const payload = {
     api_version: "v1",
-    request_id: crypto.randomUUID(),
+    // createId, not crypto.randomUUID(): randomUUID exists only in secure
+    // contexts, and LAN dev (http://192.168.x.x:8080) is not one -- the
+    // bare call threw before the request was even sent (TUTOR-ADAPTER-01).
+    request_id: createId(),
     topic,
     lang,
   };
@@ -320,7 +330,8 @@ export async function runTutorRequest(
 
   const payload: TutorRunRequestPayload = {
     api_version: "v1",
-    request_id: crypto.randomUUID(),
+    // See fetchTutorVariants -- secure-context-safe id for LAN dev.
+    request_id: createId(),
     topic: request.topic,
     mode: request.mode,
     lang: request.lang,
