@@ -46,7 +46,8 @@ function getInitials(name: string): string {
   return (parts[0][0] + parts[1][0]).toUpperCase();
 }
 
-const defaultColors = ['bg-pink-500', 'bg-blue-500', 'bg-emerald-500', 'bg-amber-500'];
+// DESIGN-AUDIT 1: member colors from the flow tokens.
+const defaultColors = ['bg-[var(--flow-plan)]', 'bg-[var(--flow-review)]', 'bg-[var(--flow-analyze)]', 'bg-[var(--flow-career)]'];
 const DAYS_OF_WEEK = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
 function todayIso(): string {
@@ -58,10 +59,10 @@ function todayWeekday(): string {
 }
 
 const CATEGORY_COLORS: Record<string, string> = {
-  school: 'bg-blue-500/15 text-blue-400',
-  health: 'bg-emerald-500/15 text-emerald-400',
-  sports: 'bg-orange-500/15 text-orange-400',
-  meeting: 'bg-violet-500/15 text-violet-400',
+  school: 'bg-[var(--flow-review-bg)] text-[var(--flow-review)]',
+  health: 'bg-[var(--flow-analyze-bg)] text-[var(--flow-analyze)]',
+  sports: 'bg-[var(--flow-career-bg)] text-[var(--flow-career)]',
+  meeting: 'bg-[var(--flow-study-bg)] text-[var(--flow-study)]',
 };
 
 export default function FamilyPage() {
@@ -457,7 +458,7 @@ export default function FamilyPage() {
             <Card className="glass-card card-accent surface-elevated">
               <CardContent className="p-3.5">
                 <div className="flex items-center gap-2.5 mb-2">
-                  <div className="icon-tile w-8 h-8 rounded-md bg-violet-500/15"><Users className="w-4 h-4 text-violet-400" /></div>
+                  <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-study-bg)]"><Users className="w-4 h-4 text-[var(--flow-study)]" /></div>
                   <span className="text-xs font-medium text-muted-foreground">{t('family_children')}</span>
                 </div>
                 <p className="text-2xl font-bold tracking-tight">{children.length}</p>
@@ -467,7 +468,7 @@ export default function FamilyPage() {
             <Card className="glass-card card-accent surface-elevated">
               <CardContent className="p-3.5">
                 <div className="flex items-center gap-2.5 mb-2">
-                  <div className="icon-tile w-8 h-8 rounded-md bg-blue-500/15"><Calendar className="w-4 h-4 text-blue-400" /></div>
+                  <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-review-bg)]"><Calendar className="w-4 h-4 text-[var(--flow-review)]" /></div>
                   <span className="text-xs font-medium text-muted-foreground">{t('family_events')}</span>
                 </div>
                 <p className="text-2xl font-bold tracking-tight">{todayEvents.length > 0 ? todayEvents.length : totalEvents}</p>
@@ -477,7 +478,7 @@ export default function FamilyPage() {
             <Card className="glass-card card-accent surface-elevated">
               <CardContent className="p-3.5">
                 <div className="flex items-center gap-2.5 mb-2">
-                  <div className="icon-tile w-8 h-8 rounded-md bg-amber-500/15"><GraduationCap className="w-4 h-4 text-amber-400" /></div>
+                  <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-career-bg)]"><GraduationCap className="w-4 h-4 text-[var(--flow-career)]" /></div>
                   <span className="text-xs font-medium text-muted-foreground">{t('family_homework')}</span>
                 </div>
                 <p className="text-2xl font-bold tracking-tight">{allPendingHw.length}</p>
@@ -487,7 +488,7 @@ export default function FamilyPage() {
             <Card className="glass-card card-accent surface-elevated">
               <CardContent className="p-3.5">
                 <div className="flex items-center gap-2.5 mb-2">
-                  <div className="icon-tile w-8 h-8 rounded-md bg-emerald-500/15"><CheckSquare className="w-4 h-4 text-emerald-400" /></div>
+                  <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-analyze-bg)]"><CheckSquare className="w-4 h-4 text-[var(--flow-analyze)]" /></div>
                   <span className="text-xs font-medium text-muted-foreground">{t('family_tasks')}</span>
                 </div>
                 <p className="text-2xl font-bold tracking-tight">{openTasks}</p>
@@ -736,7 +737,7 @@ export default function FamilyPage() {
                                   <p className="text-[10px] text-muted-foreground">{t('family_due')}: {hw.due_date}</p>
                                 </div>
                                 <Badge variant="outline" className={cn('text-[10px]',
-                                  hw.priority === 'high' ? 'border-rose-400 text-rose-400' :
+                                  hw.priority === 'high' ? 'border-destructive text-destructive' :
                                   hw.priority === 'low' ? 'border-muted-foreground' : ''
                                 )}>{hw.priority}</Badge>
                                 <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => void handleDeleteHomework(hw.id)}>
@@ -927,7 +928,7 @@ export default function FamilyPage() {
                   <ul className="space-y-2">
                     {assistantItems.map((item, i) => (
                       <li key={i} className="flex items-start gap-2 rounded-lg bg-secondary/20 px-3 py-2">
-                        <span className={cn('mt-0.5', item.priority <= 1 ? 'text-rose-400' : 'text-primary')}>•</span>
+                        <span className={cn('mt-0.5', item.priority <= 1 ? 'text-destructive' : 'text-primary')}>•</span>
                         <span className="text-xs leading-relaxed">{item.text}</span>
                       </li>
                     ))}
@@ -969,16 +970,16 @@ export default function FamilyPage() {
               <CardContent className="p-4 space-y-2">
                 <h3 className="text-sm font-semibold mb-1">{t('family_quick_actions')}</h3>
                 <Button size="sm" variant="outline" className="w-full justify-start gap-2 text-xs" onClick={quickAddEvent}>
-                  <Plus className="w-3.5 h-3.5 text-blue-400" /> {t('family_add_event')}
+                  <Plus className="w-3.5 h-3.5 text-[var(--flow-review)]" /> {t('family_add_event')}
                 </Button>
                 <Button size="sm" variant="outline" className="w-full justify-start gap-2 text-xs" onClick={quickAddHomework}>
-                  <Plus className="w-3.5 h-3.5 text-amber-400" /> {t('family_add_homework')}
+                  <Plus className="w-3.5 h-3.5 text-[var(--flow-career)]" /> {t('family_add_homework')}
                 </Button>
                 <Button size="sm" variant="outline" className="w-full justify-start gap-2 text-xs" onClick={quickAddNote}>
-                  <Plus className="w-3.5 h-3.5 text-emerald-400" /> {t('family_add_note')}
+                  <Plus className="w-3.5 h-3.5 text-[var(--flow-analyze)]" /> {t('family_add_note')}
                 </Button>
                 <Button size="sm" variant="outline" className="w-full justify-start gap-2 text-xs" onClick={quickAddShopping}>
-                  <ShoppingCart className="w-3.5 h-3.5 text-violet-400" /> {t('family_add_to_shopping')}
+                  <ShoppingCart className="w-3.5 h-3.5 text-[var(--flow-study)]" /> {t('family_add_to_shopping')}
                 </Button>
               </CardContent>
             </Card>

@@ -232,7 +232,7 @@ export default function TutorWisoPage() {
               <h3 className="text-4xl font-semibold">{toStr(item.topic) || "Topic"}</h3>
               <p className="whitespace-pre-wrap text-lg text-muted-foreground">{toStr(item.explain_de)}</p>
               {toStrList(item.typische_pruefungsfallen).length > 0 && (
-                <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
+                <div className="rounded-md border border-exam/30 bg-exam/10 p-3">
                   <div className="font-medium mb-2">Typische Pruefungsfallen</div>
                   <ul className="list-disc pl-5 space-y-1">
                     {toStrList(item.typische_pruefungsfallen).map((line) => (
@@ -242,7 +242,7 @@ export default function TutorWisoPage() {
                 </div>
               )}
               {toStr(item.explain_fa) && (
-                <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3" dir="rtl">
+                <div className="rounded-md border border-exam/40 bg-exam/10 p-3" dir="rtl">
                   <div className="font-medium mb-2 text-right">توضیح فارسی</div>
                   <p className="whitespace-pre-wrap leading-8">{toStr(item.explain_fa)}</p>
                 </div>
@@ -306,7 +306,7 @@ export default function TutorWisoPage() {
               )}
               {toStr(q.erklaerung_de) && <div className="text-muted-foreground">{toStr(q.erklaerung_de)}</div>}
               {toStr(q.erklaerung_fa) && (
-                <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3" dir="rtl">
+                <div className="rounded-md border border-exam/40 bg-exam/10 p-3" dir="rtl">
                   <div className="font-medium mb-2 text-right">توضیح فارسی</div>
                   <p className="whitespace-pre-wrap leading-8">{toStr(q.erklaerung_fa)}</p>
                 </div>

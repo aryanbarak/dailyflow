@@ -89,6 +89,17 @@ export default {
             },
           },
         },
+        // DESIGN-AUDIT Tutor decision (option A, the audit's own
+        // recommendation): the tutor pages' amber "exam mode" sub-theme is
+        // KEPT as a useful context cue but collapses to ONE token --
+        // --flow-exam-hsl in index.css, the HSL of --flow-career #F3A044
+        // (flow-tokens.css itself is imported verbatim, never edited).
+        // hsl(<var> / <alpha-value>) so every existing utility+alpha form
+        // (bg-exam/10, border-exam/40, focus:ring-exam/50, ...) works.
+        exam: "hsl(var(--flow-exam-hsl) / <alpha-value>)",
+        // Same channels, general-purpose name: non-tutor amber accents
+        // (warnings, due-soon markers) that need utility+alpha forms.
+        career: "hsl(var(--flow-career-hsl) / <alpha-value>)",
       },
       borderRadius: {
         lg: "var(--radius)",

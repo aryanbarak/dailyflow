@@ -76,12 +76,12 @@ async function fetchYTInfo(id: string) {
 
 // Quick Modes
 const QUICK_MODES = [
-  { id: 'deep-focus', icon: Zap, label: 'mf_mode_deep_focus', desc: 'mf_mode_deep_focus_desc', query: 'Deep Focus Coding Music', color: 'bg-indigo-500/15 text-indigo-400' },
-  { id: 'study', icon: BookOpen, label: 'mf_mode_study', desc: 'mf_mode_study_desc', query: 'Study Music Concentration', color: 'bg-blue-500/15 text-blue-400' },
-  { id: 'relax', icon: Headphones, label: 'mf_mode_relax', desc: 'mf_mode_relax_desc', query: 'Calm Relaxing Music', color: 'bg-emerald-500/15 text-emerald-400' },
-  { id: 'sleep', icon: Moon, label: 'mf_mode_sleep', desc: 'mf_mode_sleep_desc', query: 'Sleep Music Deep Calm', color: 'bg-violet-500/15 text-violet-400' },
-  { id: 'workout', icon: Dumbbell, label: 'mf_mode_workout', desc: 'mf_mode_workout_desc', query: 'Workout Motivation Music', color: 'bg-rose-500/15 text-rose-400' },
-  { id: 'family', icon: Users, label: 'mf_mode_family', desc: 'mf_mode_family_desc', query: 'Kids Music Family Friendly', color: 'bg-amber-500/15 text-amber-400' },
+  { id: 'deep-focus', icon: Zap, label: 'mf_mode_deep_focus', desc: 'mf_mode_deep_focus_desc', query: 'Deep Focus Coding Music', color: 'bg-[var(--flow-study-bg)] text-[var(--flow-study)]' },
+  { id: 'study', icon: BookOpen, label: 'mf_mode_study', desc: 'mf_mode_study_desc', query: 'Study Music Concentration', color: 'bg-[var(--flow-review-bg)] text-[var(--flow-review)]' },
+  { id: 'relax', icon: Headphones, label: 'mf_mode_relax', desc: 'mf_mode_relax_desc', query: 'Calm Relaxing Music', color: 'bg-[var(--flow-analyze-bg)] text-[var(--flow-analyze)]' },
+  { id: 'sleep', icon: Moon, label: 'mf_mode_sleep', desc: 'mf_mode_sleep_desc', query: 'Sleep Music Deep Calm', color: 'bg-[var(--flow-study-bg)] text-[var(--flow-study)]' },
+  { id: 'workout', icon: Dumbbell, label: 'mf_mode_workout', desc: 'mf_mode_workout_desc', query: 'Workout Motivation Music', color: 'bg-[var(--flow-plan-bg)] text-[var(--flow-plan)]' },
+  { id: 'family', icon: Users, label: 'mf_mode_family', desc: 'mf_mode_family_desc', query: 'Kids Music Family Friendly', color: 'bg-[var(--flow-career-bg)] text-[var(--flow-career)]' },
 ] as const;
 
 // ─── localStorage migration ─────────────────────────────────────────────────
@@ -323,10 +323,10 @@ export default function MusicPage() {
       {/* KPI Cards */}
       <motion.div variants={stagger} initial="hidden" animate="show" className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         {[
-          { icon: Timer, label: t('mf_kpi_listening'), value: listeningLabel, sub: t('mf_kpi_listening_sub'), color: 'bg-indigo-500/15 text-indigo-400' },
-          { icon: Zap, label: t('mf_kpi_focus'), value: String(pomodoroRunning ? 1 : 0), sub: t('mf_kpi_focus_sub'), color: 'bg-emerald-500/15 text-emerald-400' },
-          { icon: BookOpen, label: t('mf_kpi_study'), value: String(likedTracks.length), sub: t('mf_kpi_study_sub'), color: 'bg-rose-500/15 text-rose-400' },
-          { icon: FolderOpen, label: t('mf_kpi_playlists'), value: String(dbPlaylists.length), sub: t('mf_kpi_playlists_sub'), color: 'bg-cyan-500/15 text-cyan-400' },
+          { icon: Timer, label: t('mf_kpi_listening'), value: listeningLabel, sub: t('mf_kpi_listening_sub'), color: 'bg-[var(--flow-study-bg)] text-[var(--flow-study)]' },
+          { icon: Zap, label: t('mf_kpi_focus'), value: String(pomodoroRunning ? 1 : 0), sub: t('mf_kpi_focus_sub'), color: 'bg-[var(--flow-analyze-bg)] text-[var(--flow-analyze)]' },
+          { icon: BookOpen, label: t('mf_kpi_study'), value: String(likedTracks.length), sub: t('mf_kpi_study_sub'), color: 'bg-[var(--flow-plan-bg)] text-[var(--flow-plan)]' },
+          { icon: FolderOpen, label: t('mf_kpi_playlists'), value: String(dbPlaylists.length), sub: t('mf_kpi_playlists_sub'), color: 'bg-[var(--flow-report-bg)] text-[var(--flow-report)]' },
         ].map(kpi => (
           <motion.div key={kpi.label} variants={fadeUp}>
             <Card className="glass-card card-accent surface-elevated"><CardContent className="p-3.5">
@@ -362,7 +362,7 @@ export default function MusicPage() {
       <TabsContent value="youtube" className="mt-0 space-y-5">
         {/* Search results */}
         {isSearching && <div className="grid grid-cols-2 gap-3">{[0,1,2,3].map(i => <div key={i} className="rounded-lg bg-secondary/30 animate-pulse"><div className="aspect-video bg-secondary/50 rounded-t-lg" /><div className="p-3 space-y-2"><div className="h-3 bg-secondary/50 rounded w-4/5" /><div className="h-3 bg-secondary/50 rounded w-3/5" /></div></div>)}</div>}
-        {!isSearching && searchError && <p className="text-sm text-amber-400 text-center py-3">{searchError}</p>}
+        {!isSearching && searchError && <p className="text-sm text-[var(--flow-career)] text-center py-3">{searchError}</p>}
         {!isSearching && searchResults.length > 0 && (
           <div className="grid grid-cols-2 gap-3">{searchResults.map(v => (
             <button key={v.videoId} type="button" onClick={() => handlePlay(v.videoId, v.title, v.author)}
@@ -497,8 +497,8 @@ export default function MusicPage() {
         <Card className="glass-card card-accent"><CardContent className="p-4 space-y-2">
           <h3 className="text-sm font-semibold mb-1">{t('mf_quick_actions')}</h3>
           <Button size="sm" variant="outline" className="w-full justify-start gap-2 text-xs" onClick={() => document.getElementById('mf-upload')?.click()}><Upload className="w-3.5 h-3.5 text-primary" /> {t('mf_upload_audio')}</Button>
-          <Button size="sm" variant="outline" className="w-full justify-start gap-2 text-xs" onClick={() => setShowNewPlaylist(true)}><Plus className="w-3.5 h-3.5 text-cyan-400" /> {t('mf_new_playlist')}</Button>
-          <Button size="sm" variant="outline" className="w-full justify-start gap-2 text-xs" onClick={() => navigate('/documents')}><Brain className="w-3.5 h-3.5 text-violet-400" /> {t('mf_generate_study_audio')}</Button>
+          <Button size="sm" variant="outline" className="w-full justify-start gap-2 text-xs" onClick={() => setShowNewPlaylist(true)}><Plus className="w-3.5 h-3.5 text-[var(--flow-report)]" /> {t('mf_new_playlist')}</Button>
+          <Button size="sm" variant="outline" className="w-full justify-start gap-2 text-xs" onClick={() => navigate('/documents')}><Brain className="w-3.5 h-3.5 text-[var(--flow-study)]" /> {t('mf_generate_study_audio')}</Button>
         </CardContent></Card>
 
         {/* Audio Library */}

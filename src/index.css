@@ -10,6 +10,18 @@
 @tailwind components;
 @tailwind utilities;
 
+/* DESIGN-AUDIT Tutor decision (option A): the exam-mode amber, as ONE
+   derived token. 32 88% 61% is the HSL of --flow-career #F3A044 -- spelled
+   out because Tailwind's alpha-value composition needs bare H S% L%
+   channels, and flow-tokens.css (hex, imported verbatim) is never edited.
+   tailwind.config.ts's `exam` color reads this. */
+:root {
+  --flow-career-hsl: 32 88% 61%; /* H S% L% of --flow-career #F3A044 */
+  --flow-exam-hsl: var(--flow-career-hsl);
+  --flow-exam: var(--flow-career);
+  --flow-exam-bg: var(--flow-career-bg);
+}
+
 @layer base {
   :root {
     /* Light mode - clean and minimal */

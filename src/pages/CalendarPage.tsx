@@ -129,12 +129,13 @@ function getEventState(now: Date, start: Date | null, end: Date | null) {
   return "future" as const;
 }
 
+// DESIGN-AUDIT 1 (Calendar): category dots from the semantic flow tokens.
 const CATEGORY_COLORS: Record<string, string> = {
-  personal: 'bg-blue-400',
-  work: 'bg-emerald-400',
-  study: 'bg-orange-400',
-  family: 'bg-violet-400',
-  health: 'bg-rose-400',
+  personal: 'bg-[var(--flow-review)]',
+  work: 'bg-[var(--flow-analyze)]',
+  study: 'bg-[var(--flow-study)]',
+  family: 'bg-[var(--flow-plan)]',
+  health: 'bg-[var(--flow-career)]',
 };
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -833,7 +834,7 @@ export default function CalendarPage() {
                     {taskCount > 0 && (
                       <span className={cn(
                         "w-1.5 h-1.5 rounded-full",
-                        hasOverdue ? "bg-red-500" : "bg-amber-400",
+                        hasOverdue ? "bg-destructive" : "bg-[var(--flow-career)]",
                       )} />
                     )}
                   </div>
@@ -942,10 +943,10 @@ export default function CalendarPage() {
                   {(tasksByDay[dayKey] ?? []).map(task => (
                     <div key={task.id} className={cn(
                       "flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-sm",
-                      task.isOverdue ? "border-red-500/30 bg-red-500/5" : "border-amber-500/30 bg-amber-500/5",
+                      task.isOverdue ? "border-destructive/30 bg-destructive/5" : "border-career/30 bg-career/5",
                     )}>
                       <div className="flex items-center gap-2 min-w-0">
-                        <span className={cn("text-xs font-semibold", task.isOverdue ? "text-red-400" : "text-amber-400")}>
+                        <span className={cn("text-xs font-semibold", task.isOverdue ? "text-destructive" : "text-[var(--flow-career)]")}>
                           ✓ Task
                         </span>
                         <span className="truncate">{task.title}</span>
@@ -1262,10 +1263,10 @@ export default function CalendarPage() {
                             clickable && "cursor-pointer transition-colors hover:bg-secondary/40 hover:border-primary/25"
                           )}
                         >
-                          <div className={cn("icon-tile w-7 h-7 rounded-lg shrink-0 mt-0.5", s.type === 'recommendation' ? 'bg-emerald-500/15' : 'bg-violet-500/15')}>
+                          <div className={cn("icon-tile w-7 h-7 rounded-lg shrink-0 mt-0.5", s.type === 'recommendation' ? 'bg-[var(--flow-analyze-bg)]' : 'bg-[var(--flow-study-bg)]')}>
                             {s.type === 'recommendation'
-                              ? <ArrowRight className="w-3.5 h-3.5 text-emerald-400" />
-                              : <Lightbulb className="w-3.5 h-3.5 text-violet-400" />}
+                              ? <ArrowRight className="w-3.5 h-3.5 text-[var(--flow-analyze)]" />
+                              : <Lightbulb className="w-3.5 h-3.5 text-[var(--flow-study)]" />}
                           </div>
                           <p className="text-xs leading-relaxed">{s.text}</p>
                         </Row>
