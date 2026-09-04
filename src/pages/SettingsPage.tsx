@@ -936,6 +936,7 @@ function NotificationsTab() {
 // ── Tab: Data ──────────────────────────────────────────────────────────────
 
 function DataTab() {
+  const { t } = useT();
   const { signOut } = useAuth();
   const navigate = useNavigate();
   const installPromptRef = useRef<(Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: string }> }) | null>(null);
@@ -987,10 +988,10 @@ function DataTab() {
 
   return (
     <div className="space-y-4">
-      <SectionCard title="Install app">
+      <SectionCard title={t('settings_install_app')}>
         <div className="py-4">
           {isStandalone ? (
-            <p className="text-sm text-[var(--flow-analyze)]">SmartFlow is already installed on this device.</p>
+            <p className="text-sm text-[var(--flow-analyze)]">{t('settings_installed')}</p>
           ) : canInstall ? (
             <button
               type="button"
@@ -998,16 +999,12 @@ function DataTab() {
               className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition-opacity"
             >
               <Smartphone size={15} />
-              Install SmartFlow
+              {t('settings_install_btn')}
             </button>
           ) : isIos ? (
-            <p className="text-sm text-muted-foreground">
-              Tap <strong>Share</strong> in Safari, then <strong>Add to Home Screen</strong>.
-            </p>
+            <p className="text-sm text-muted-foreground">{t('settings_install_ios')}</p>
           ) : (
-            <p className="text-sm text-muted-foreground">
-              Open in Chrome or Edge to install the app on your device.
-            </p>
+            <p className="text-sm text-muted-foreground">{t('settings_install_browser')}</p>
           )}
         </div>
       </SectionCard>
@@ -1049,13 +1046,13 @@ function DataTab() {
 
       <SectionCard title="Infrastructure">
         <SettingRow label="Supabase" desc="Database & Auth">
-          <span className="text-xs text-[var(--flow-analyze)] flex items-center gap-1"><Check size={12} /> Connected</span>
+          <span className="text-xs text-[var(--flow-analyze)] flex items-center gap-1"><Check size={12} /> {t('settings_connected')}</span>
         </SettingRow>
         <SettingRow label="Cloudflare" desc="Workers & CDN">
-          <span className="text-xs text-[var(--flow-analyze)] flex items-center gap-1"><Check size={12} /> Connected</span>
+          <span className="text-xs text-[var(--flow-analyze)] flex items-center gap-1"><Check size={12} /> {t('settings_connected')}</span>
         </SettingRow>
         <SettingRow label="Gemini AI" desc="AI analysis & suggestions">
-          <span className="text-xs text-[var(--flow-analyze)] flex items-center gap-1"><Check size={12} /> Connected</span>
+          <span className="text-xs text-[var(--flow-analyze)] flex items-center gap-1"><Check size={12} /> {t('settings_connected')}</span>
         </SettingRow>
       </SectionCard>
 

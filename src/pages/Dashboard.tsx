@@ -27,6 +27,7 @@ import { SmartflowAsciiVisual } from "@/components/smartflow";
 import { useWorkspace } from "@/features/workspace";
 import { trackWorkspaceInteraction } from "@/features/workspace";
 import { useHabits } from "@/features/habits/useHabits";
+import { useT } from "@/i18n";
 import type { ToolResolutionResult } from "@/features/agent/toolResolverTypes";
 import { StepApprovalDialog } from "@/features/workspace/components/StepApprovalDialog";
 import type {
@@ -240,6 +241,7 @@ export function FlowAIAssistantRail({
   onClosePanel?: () => void;
 }>) {
   const navigate = useNavigate();
+  const { t } = useT();
   const visibleLessons = rail.recentLessons.slice(0, 6);
   const visibleRecommendations = rail.recommendations.slice(0, 6);
   const visibleConversations = rail.recentConversation
@@ -517,7 +519,7 @@ export function FlowAIAssistantRail({
                     });
                     navigate("/chat");
                   }}
-                  className="block w-full rounded-[11px] border border-[#7078B4]/[0.18] bg-[#0B0D20]/40 px-3 py-[11px] text-left transition-colors hover:border-[#7D5CFF]/40 hover:bg-[#7C4DFF]/[0.08]"
+                  className="block w-full rounded-[11px] border border-[#7078B4]/[0.18] bg-[#0B0D20]/40 px-3 py-[11px] text-start transition-colors hover:border-[#7D5CFF]/40 hover:bg-[#7C4DFF]/[0.08]"
                 >
                   <span className="block truncate text-[12.5px] font-medium text-[#F7F7FC]" dir="auto">
                     {conversation.title}
@@ -530,9 +532,9 @@ export function FlowAIAssistantRail({
             </div>
           ) : (
             <div className="rounded-[11px] border border-[#7078B4]/[0.18] bg-[#0B0D20]/40 p-3">
-              <p className="text-[12.5px] font-medium text-[#F7F7FC]">No recent conversation yet.</p>
+              <p className="text-[12.5px] font-medium text-[#F7F7FC]">{t("dashboard_no_recent_conversation")}</p>
               <p className="mt-1 text-[11.5px] leading-4 text-[#A5A8C2]">
-                Your latest SmartFlow thread will appear here.
+                {t("dashboard_no_recent_conversation_hint")}
               </p>
             </div>
           )}
@@ -1101,7 +1103,7 @@ export default function Dashboard() {
               <aside
                 aria-label="Assistant panel"
                 className={cn(
-                  "hidden border-l border-[#7078B4]/[0.14] bg-[#070816]/[0.78] backdrop-blur-[14px] lg:flex lg:min-h-0 lg:flex-col",
+                  "hidden border-s border-[#7078B4]/[0.14] bg-[#070816]/[0.78] backdrop-blur-[14px] lg:flex lg:min-h-0 lg:flex-col",
                   "lg:max-[1120px]:fixed lg:max-[1120px]:inset-y-0 lg:max-[1120px]:right-0 lg:max-[1120px]:z-[70] lg:max-[1120px]:w-[372px] lg:max-[1120px]:max-w-[92vw] lg:max-[1120px]:shadow-[-24px_0_60px_rgba(0,0,0,0.55)] lg:max-[1120px]:transition-transform lg:max-[1120px]:duration-[320ms] lg:max-[1120px]:ease-[cubic-bezier(0.32,0.72,0.28,1)] motion-reduce:transition-none",
                   assistantPanelOpen
                     ? "lg:max-[1120px]:translate-x-0"
