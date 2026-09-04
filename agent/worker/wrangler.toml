@@ -22,7 +22,13 @@ SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS
 # comment for the model choice/rationale, and createProviders.ts for the
 # selection logic. Structured generation and embeddings are unaffected
 # (ADR-0018 Decision 5: Gemini-only, fail-closed, regardless of this var).
-AI_TEXT_PROVIDER = "workers-ai"
+# 2026-09: back to 'gemini' -- the workers-ai flip put Gemma in front of
+# every legacy chat turn against provider-contract-smoke's committed
+# default, and production showed both Gemma and the Gemini fallback
+# failing (PROVIDER_UNAVAILABLE_CHAT) plus Gemma's literal-instruction
+# language refusals (LANG-01). Workers AI remains available as the
+# FALLBACK via AI_TEXT_FALLBACK below.
+AI_TEXT_PROVIDER = "gemini"
 # ADR-0018 S1c: 'on' | absent/anything else (default off). 'on' wraps the
 # AI_TEXT_PROVIDER-selected TextGenerationProvider as the PRIMARY of a
 # fallback chain, with the other text provider as secondary -- one
