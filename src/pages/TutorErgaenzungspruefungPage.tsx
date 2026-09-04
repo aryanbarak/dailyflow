@@ -70,7 +70,7 @@ const THEMEN = [
       "HTTP/HTTPS: Methoden (GET, POST, PUT, DELETE), Statuscodes (2xx, 3xx, 4xx, 5xx)",
       "IT-Sicherheit: CIA-Triad (Confidentiality, Integrity, Availability), Verschlüsselung (symmetrisch/asymmetrisch), Firewall, VPN",
     ],
-    farbe: "border-orange-500/40 bg-orange-500/10",
+    farbe: "border-exam/40 bg-exam/10",
     fallen: [
       "TCP = verbindungsorientiert, zuverlässig; UDP = verbindungslos, schnell (Video, DNS)",
       "Port 80 = HTTP, Port 443 = HTTPS, Port 22 = SSH, Port 3306 = MySQL",
@@ -99,7 +99,7 @@ const BEISPIELFRAGEN = [
   {
     kategorie: "Algorithmen — MEP Prüfungsfragen",
     badge: "MEP",
-    badgeColor: "bg-amber-500/20 text-amber-300 border-amber-500/40",
+    badgeColor: "bg-exam/20 text-exam border-exam/40",
     fragen: [
       {
         frage: "Wie funktioniert die Suche nach dem Maximum in einem Array?",
@@ -363,7 +363,7 @@ function SpeakButton({ text, ttsKey, playingKey, speak, supported }: Readonly<{
       className={cn(
         "shrink-0 rounded p-1.5 transition-colors",
         isPlaying
-          ? "text-amber-400 bg-amber-500/20 hover:bg-amber-500/30"
+          ? "text-exam bg-exam/20 hover:bg-exam/30"
           : "text-slate-400 hover:text-slate-200 hover:bg-slate-700/50",
       )}
     >
@@ -403,7 +403,7 @@ function FaPlayButton({ id, text, playingId, isAnyPlaying, onToggle }: Readonly<
       className={cn(
         "shrink-0 rounded border px-2 py-0.5 text-xs font-medium transition-colors",
         isThis
-          ? "border-amber-500/40 bg-amber-500/20 text-amber-300"
+          ? "border-exam/40 bg-exam/20 text-exam"
           : "border-slate-600 bg-slate-800 text-slate-400 hover:text-slate-200",
       )}
     >
@@ -479,20 +479,20 @@ export default function TutorErgaenzungspruefungPage() {
         <Link to="/tutor/app" className="rounded border border-slate-600 bg-slate-900 px-3 py-1.5 text-sm font-medium hover:bg-slate-800">Tutor</Link>
         <Link to="/tutor" className="rounded border border-slate-600 bg-slate-900 px-3 py-1.5 text-sm font-medium hover:bg-slate-800">Exam Bank (AP2)</Link>
         <Link to="/tutor/wiso" className="rounded border border-slate-600 bg-slate-900 px-3 py-1.5 text-sm font-medium hover:bg-slate-800">WISO</Link>
-        <Link to="/tutor/ergaenzungspruefung" className="rounded border border-amber-400/60 bg-amber-500/10 px-3 py-1.5 text-sm font-medium text-amber-300">Ergänzungsprüfung</Link>
-        <Link to="/tutor/mep-simulation" className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-sm font-medium text-amber-400 hover:bg-amber-500/20">MEP-Simulation</Link>
+        <Link to="/tutor/ergaenzungspruefung" className="rounded border border-exam/60 bg-exam/10 px-3 py-1.5 text-sm font-medium text-exam">Ergänzungsprüfung</Link>
+        <Link to="/tutor/mep-simulation" className="rounded border border-exam/40 bg-exam/10 px-3 py-1.5 text-sm font-medium text-exam hover:bg-exam/20">MEP-Simulation</Link>
       </div>
 
       {/* Header */}
       <div>
-        <h1 className="text-3xl sm:text-4xl font-semibold text-amber-300">Ergänzungsprüfung FIAE</h1>
+        <h1 className="text-3xl sm:text-4xl font-semibold text-exam">Ergänzungsprüfung FIAE</h1>
         <p className="text-muted-foreground mt-1">Mündliche Ergänzungsprüfung nach § 36 BBiG — Vorbereitung, Themen und Beispielfragen</p>
       </div>
 
       {/* Tabs */}
       <div className="flex flex-wrap gap-2">
         {tabs.map((t) => (
-          <Button key={t.id} variant={tab === t.id ? "secondary" : "outline"} onClick={() => setTab(t.id)} className={tab === t.id ? "border-amber-500/40" : ""}>
+          <Button key={t.id} variant={tab === t.id ? "secondary" : "outline"} onClick={() => setTab(t.id)} className={tab === t.id ? "border-exam/40" : ""}>
             {t.label}
           </Button>
         ))}
@@ -503,12 +503,12 @@ export default function TutorErgaenzungspruefungPage() {
         <div className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {[
-              { titel: "Was ist die Ergänzungsprüfung?", text: "Eine mündliche Prüfung, die Auszubildende beantragen können, wenn sie die schriftliche AP2-Prüfung knapp nicht bestanden haben (45–49,5 Punkte von 100). Das Ergebnis fließt gewichtet in die Gesamtnote ein und kann zum Bestehen führen.", farbe: "border-amber-500/40 bg-amber-500/10" },
+              { titel: "Was ist die Ergänzungsprüfung?", text: "Eine mündliche Prüfung, die Auszubildende beantragen können, wenn sie die schriftliche AP2-Prüfung knapp nicht bestanden haben (45–49,5 Punkte von 100). Das Ergebnis fließt gewichtet in die Gesamtnote ein und kann zum Bestehen führen.", farbe: "border-exam/40 bg-exam/10" },
               { titel: "Zulassungsvoraussetzungen", text: "Gesamtpunktzahl im schriftlichen Teil zwischen 45 und unter 50 Punkten. Der Antrag muss fristgerecht beim IHK-Prüfungsausschuss gestellt werden. Die genaue Frist variiert je nach IHK-Bezirk.", farbe: "border-blue-500/40 bg-blue-500/10" },
               { titel: "Dauer & Ablauf", text: "Dauer: ca. 15 Minuten. Format: Fachgespräch mit 2-3 Prüfern des Prüfungsausschusses. Die Prüfer stellen Fragen aus allen Prüfungsbereichen des Ausbildungsberufs.", farbe: "border-emerald-500/40 bg-emerald-500/10" },
               { titel: "Bewertung & Gewichtung", text: "Das Ergebnis der mündlichen Prüfung wird mit dem schriftlichen Ergebnis verrechnet. Mit einer sehr guten mündlichen Leistung ist das Bestehen möglich.", farbe: "border-violet-500/40 bg-violet-500/10" },
               { titel: "Rechtsgrundlage", text: "§ 36 BBiG: Auf Antrag des Prüflings soll die Prüfung durch eine mündliche Prüfung ergänzt werden, wenn dies für das Bestehen der Prüfung den Ausschlag geben kann.", farbe: "border-rose-500/40 bg-rose-500/10" },
-              { titel: "Tipp: Antrag stellen", text: "Den Antrag SOFORT nach Bekanntgabe der schriftlichen Ergebnisse stellen! Die Fristen sind kurz (oft 5 Werktage). Kontaktieren Sie Ihre IHK direkt.", farbe: "border-orange-500/40 bg-orange-500/10" },
+              { titel: "Tipp: Antrag stellen", text: "Den Antrag SOFORT nach Bekanntgabe der schriftlichen Ergebnisse stellen! Die Fristen sind kurz (oft 5 Werktage). Kontaktieren Sie Ihre IHK direkt.", farbe: "border-exam/40 bg-exam/10" },
             ].map((karte) => (
               <div key={karte.titel} className={cn("rounded-md border p-4 space-y-2", karte.farbe)}>
                 <h3 className="font-semibold text-base">{karte.titel}</h3>
@@ -517,8 +517,8 @@ export default function TutorErgaenzungspruefungPage() {
             ))}
           </div>
 
-          <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-4 space-y-2">
-            <h3 className="font-semibold text-amber-300">Prüfungsbereiche AP2 (FIAE)</h3>
+          <div className="rounded-md border border-exam/30 bg-exam/5 p-4 space-y-2">
+            <h3 className="font-semibold text-exam">Prüfungsbereiche AP2 (FIAE)</h3>
             <div className="grid gap-2 sm:grid-cols-2 text-sm">
               {[
                 { bereich: "Entwicklung von Anwendungssystemen", punkte: "50 Punkte" },
@@ -529,7 +529,7 @@ export default function TutorErgaenzungspruefungPage() {
               ].map((row) => (
                 <div key={row.bereich} className="flex items-start justify-between gap-2 rounded border border-slate-700/40 bg-slate-900/50 px-3 py-2">
                   <span className="text-muted-foreground">{row.bereich}</span>
-                  <span className="shrink-0 font-mono text-amber-300">{row.punkte}</span>
+                  <span className="shrink-0 font-mono text-exam">{row.punkte}</span>
                 </div>
               ))}
             </div>
@@ -654,8 +654,8 @@ export default function TutorErgaenzungspruefungPage() {
               {thema.titel.includes("Netzwerke") && (
                 <div className="space-y-2 pl-1">
                   <div className="flex items-center gap-3">
-                    <h2 className="text-xl font-semibold text-orange-300">Netzwerke Prüfungsfragen</h2>
-                    <span className="rounded border border-orange-500/40 bg-orange-500/20 px-1.5 py-0.5 text-xs font-semibold text-orange-300">
+                    <h2 className="text-xl font-semibold text-exam">Netzwerke Prüfungsfragen</h2>
+                    <span className="rounded border border-exam/40 bg-exam/20 px-1.5 py-0.5 text-xs font-semibold text-exam">
                       {NETZWERKE_QUESTIONS.length} Fragen
                     </span>
                   </div>
@@ -672,7 +672,7 @@ export default function TutorErgaenzungspruefungPage() {
                             className="flex-1 text-left flex items-start justify-between gap-3 px-4 py-3 hover:bg-slate-800/40 transition-colors"
                           >
                             <span className="text-sm font-medium">
-                              <span className="mr-2 font-mono text-xs text-orange-400/70">{idx + 1}.</span>
+                              <span className="mr-2 font-mono text-xs text-exam/70">{idx + 1}.</span>
                               {item.question}
                             </span>
                             <span className="shrink-0 text-muted-foreground text-xs mt-0.5">{istOffen ? "▲" : "▼"}</span>
@@ -681,9 +681,9 @@ export default function TutorErgaenzungspruefungPage() {
                         </div>
                         {istOffen && (
                           <div className="px-4 pb-4 pt-1 border-t border-slate-700/40">
-                            <div className="rounded-md border border-orange-500/30 bg-orange-500/10 p-3 mt-2">
+                            <div className="rounded-md border border-exam/30 bg-exam/10 p-3 mt-2">
                               <div className="flex items-center justify-between mb-2">
-                                <span className="text-xs font-medium text-orange-400">Musterantwort</span>
+                                <span className="text-xs font-medium text-exam">Musterantwort</span>
                                 <SpeakButton text={item.answer} ttsKey={`${netKey}-antwort`} playingKey={playingKey} speak={speak} supported={supported} />
                               </div>
                               <p className="text-sm leading-relaxed whitespace-pre-line">{item.answer}</p>
@@ -745,8 +745,8 @@ export default function TutorErgaenzungspruefungPage() {
           {/* MEP Prüfungsfragen am Ende des Themen-Tabs */}
           <div className="space-y-2 pt-2">
             <div className="flex items-center gap-3">
-              <h2 className="text-xl font-semibold text-amber-300">Mündliche Prüfungsfragen (MEP)</h2>
-              <span className="rounded border border-amber-500/40 bg-amber-500/20 px-1.5 py-0.5 text-xs font-semibold text-amber-300">
+              <h2 className="text-xl font-semibold text-exam">Mündliche Prüfungsfragen (MEP)</h2>
+              <span className="rounded border border-exam/40 bg-exam/20 px-1.5 py-0.5 text-xs font-semibold text-exam">
                 {BEISPIELFRAGEN[0].fragen.length} Fragen
               </span>
             </div>
@@ -766,7 +766,7 @@ export default function TutorErgaenzungspruefungPage() {
                       className="flex-1 text-left flex items-start justify-between gap-3 px-4 py-3 hover:bg-slate-800/40 transition-colors"
                     >
                       <span className="text-sm font-medium">
-                        <span className="mr-2 font-mono text-xs text-amber-400/70">{idx + 1}.</span>
+                        <span className="mr-2 font-mono text-xs text-exam/70">{idx + 1}.</span>
                         {item.frage}
                       </span>
                       <span className="shrink-0 text-muted-foreground text-xs mt-0.5">{istOffen ? "▲" : "▼"}</span>
@@ -806,7 +806,7 @@ export default function TutorErgaenzungspruefungPage() {
       {/* ─── Vorbereitung ────────────────────────────────────── */}
       {tab === "vorbereitung" && (
         <div className="space-y-4">
-          <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-4">
+          <div className="rounded-md border border-exam/30 bg-exam/5 p-4">
             <p className="text-sm text-muted-foreground leading-relaxed">
               Die Ergänzungsprüfung ist eine Chance — nicht nur ein zweiter Versuch. Mit gezielter Vorbereitung in 1–2 Wochen können Sie die Lücken schließen, die zum Nichtbestehen geführt haben.
             </p>
@@ -835,7 +835,7 @@ export default function TutorErgaenzungspruefungPage() {
                 { tag: "Tag 10",  aufgabe: "Generalprobe: Alle Themen kompakt wiederholen. Früh schlafen gehen." },
               ].map((row) => (
                 <div key={row.tag} className="flex gap-3 text-sm">
-                  <span className="shrink-0 w-20 font-mono text-amber-300">{row.tag}</span>
+                  <span className="shrink-0 w-20 font-mono text-exam">{row.tag}</span>
                   <span className="text-muted-foreground">{row.aufgabe}</span>
                 </div>
               ))}
@@ -862,7 +862,7 @@ export default function TutorErgaenzungspruefungPage() {
                   value={selectedVoiceName}
                   onChange={(e) => setSelectedVoiceName(e.target.value)}
                   title="Deutsche Stimme auswählen"
-                  className="rounded border border-slate-600 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-amber-500/50 max-w-[210px]"
+                  className="rounded border border-slate-600 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-exam/50 max-w-[210px]"
                 >
                   {germanVoices.map((v) => (
                     <option key={v.name} value={v.name}>
@@ -886,7 +886,7 @@ export default function TutorErgaenzungspruefungPage() {
             <div key={gruppe.kategorie} className="space-y-2">
               {/* Kategorie-Header */}
               <div className="flex items-center gap-2">
-                <h3 className="text-lg font-semibold text-amber-300">{gruppe.kategorie}</h3>
+                <h3 className="text-lg font-semibold text-exam">{gruppe.kategorie}</h3>
                 {gruppe.badge && (
                   <span className={cn("rounded border px-1.5 py-0.5 text-xs font-semibold", gruppe.badgeColor)}>
                     {gruppe.badge}
@@ -979,9 +979,9 @@ export default function TutorErgaenzungspruefungPage() {
                         </div>
                         <p className="text-sm leading-relaxed whitespace-pre-line">{item.answer}</p>
                       </div>
-                      <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3">
+                      <div className="rounded-md border border-exam/30 bg-exam/5 p-3">
                         <div className="flex items-center justify-between mb-2">
-                          <span className="text-xs font-medium text-amber-400">توضیح فارسی</span>
+                          <span className="text-xs font-medium text-exam">توضیح فارسی</span>
                           <FaPlayButton
                             id={key}
                             text={item.explainFa}
@@ -1036,9 +1036,9 @@ export default function TutorErgaenzungspruefungPage() {
                         </div>
                         <p className="text-sm leading-relaxed whitespace-pre-line">{item.answer}</p>
                       </div>
-                      <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3">
+                      <div className="rounded-md border border-exam/30 bg-exam/5 p-3">
                         <div className="flex items-center justify-between mb-2">
-                          <span className="text-xs font-medium text-amber-400">توضیح فارسی</span>
+                          <span className="text-xs font-medium text-exam">توضیح فارسی</span>
                           <FaPlayButton
                             id={key}
                             text={item.explainFa}
@@ -1061,8 +1061,8 @@ export default function TutorErgaenzungspruefungPage() {
           {/* Netzwerke (25 Fragen) mit explainFa */}
           <div className="space-y-2">
             <div className="flex items-center gap-2">
-              <h3 className="text-lg font-semibold text-orange-300">Netzwerke Prüfungsfragen (25 Fragen)</h3>
-              <span className="rounded border border-orange-500/40 bg-orange-500/20 px-1.5 py-0.5 text-xs font-semibold text-orange-300">NET</span>
+              <h3 className="text-lg font-semibold text-exam">Netzwerke Prüfungsfragen (25 Fragen)</h3>
+              <span className="rounded border border-exam/40 bg-exam/20 px-1.5 py-0.5 text-xs font-semibold text-exam">NET</span>
             </div>
             {NETZWERKE_QUESTIONS.map((item, idx) => {
               const key = `bsp-net-${item.id}`;
@@ -1077,7 +1077,7 @@ export default function TutorErgaenzungspruefungPage() {
                       className="flex-1 text-left flex items-start justify-between gap-3 px-4 py-3 hover:bg-slate-800/40 transition-colors"
                     >
                       <span className="text-sm font-medium">
-                        <span className="mr-2 font-mono text-xs text-orange-400/70">{idx + 1}.</span>
+                        <span className="mr-2 font-mono text-xs text-exam/70">{idx + 1}.</span>
                         {item.question}
                       </span>
                       <span className="shrink-0 text-muted-foreground text-xs mt-0.5">{istOffen ? "▲" : "▼"}</span>
@@ -1086,16 +1086,16 @@ export default function TutorErgaenzungspruefungPage() {
                   </div>
                   {istOffen && (
                     <div className="px-4 pb-4 pt-1 border-t border-slate-700/40 space-y-3">
-                      <div className="rounded-md border border-orange-500/30 bg-orange-500/10 p-3 mt-2">
+                      <div className="rounded-md border border-exam/30 bg-exam/10 p-3 mt-2">
                         <div className="flex items-center justify-between mb-2">
-                          <span className="text-xs font-medium text-orange-400">Musterantwort</span>
+                          <span className="text-xs font-medium text-exam">Musterantwort</span>
                           <SpeakButton text={item.answer} ttsKey={`${key}-antwort`} playingKey={playingKey} speak={speak} supported={supported} />
                         </div>
                         <p className="text-sm leading-relaxed whitespace-pre-line">{item.answer}</p>
                       </div>
-                      <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3">
+                      <div className="rounded-md border border-exam/30 bg-exam/5 p-3">
                         <div className="flex items-center justify-between mb-2">
-                          <span className="text-xs font-medium text-amber-400">توضیح فارسی</span>
+                          <span className="text-xs font-medium text-exam">توضیح فارسی</span>
                           <FaPlayButton
                             id={key}
                             text={item.explainFa}
@@ -1150,9 +1150,9 @@ export default function TutorErgaenzungspruefungPage() {
                         </div>
                         <p className="text-sm leading-relaxed whitespace-pre-line">{item.answer}</p>
                       </div>
-                      <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3">
+                      <div className="rounded-md border border-exam/30 bg-exam/5 p-3">
                         <div className="flex items-center justify-between mb-2">
-                          <span className="text-xs font-medium text-amber-400">توضیح فارسی</span>
+                          <span className="text-xs font-medium text-exam">توضیح فارسی</span>
                           <FaPlayButton
                             id={key}
                             text={item.explainFa}
@@ -1187,7 +1187,7 @@ export default function TutorErgaenzungspruefungPage() {
                 className={cn(
                   "flex items-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium transition-colors",
                   saLang === l
-                    ? "border-amber-500/60 bg-amber-500/10 text-amber-300"
+                    ? "border-exam/60 bg-exam/10 text-exam"
                     : "border-slate-700 bg-slate-900 hover:bg-slate-800 text-muted-foreground",
                 )}
               >
@@ -1208,7 +1208,7 @@ export default function TutorErgaenzungspruefungPage() {
                 title="Stimme auswählen"
                 value={saVoiceName}
                 onChange={(e) => setSaVoiceName(e.target.value)}
-                className="w-full rounded-md border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-1 focus:ring-amber-500/50"
+                className="w-full rounded-md border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-1 focus:ring-exam/50"
               >
                 {saVoices.map((v) => (
                   <option key={v.name} value={v.name}>{v.name} ({v.lang})</option>
@@ -1232,7 +1232,7 @@ export default function TutorErgaenzungspruefungPage() {
               rows={10}
               className={cn(
                 "w-full rounded-lg border border-slate-700 bg-slate-900/60 p-4 text-sm resize-y",
-                "placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-amber-500/40",
+                "placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-exam/40",
                 saLang === "fa" && "text-right",
               )}
             />
@@ -1260,7 +1260,7 @@ export default function TutorErgaenzungspruefungPage() {
               <input id="sa-rate" type="range" min={0.5} max={2} step={0.05} value={saRate}
                 title="Geschwindigkeit"
                 onChange={(e) => setSaRate(Number(e.target.value))}
-                className="w-full accent-amber-400" />
+                className="w-full accent-exam" />
               <div className="flex justify-between text-xs text-muted-foreground">
                 <span>0.5×</span><span>1.0×</span><span>2.0×</span>
               </div>
@@ -1273,7 +1273,7 @@ export default function TutorErgaenzungspruefungPage() {
               <input id="sa-pitch" type="range" min={0.5} max={2} step={0.1} value={saPitch}
                 title="Tonhöhe"
                 onChange={(e) => setSaPitch(Number(e.target.value))}
-                className="w-full accent-amber-400" />
+                className="w-full accent-exam" />
               <div className="flex justify-between text-xs text-muted-foreground">
                 <span>بم / Tief</span><span>Normal</span><span>زیر / Hoch</span>
               </div>
@@ -1284,7 +1284,7 @@ export default function TutorErgaenzungspruefungPage() {
           <div className="flex gap-3">
             <Button size="lg" onClick={saPlay}
               disabled={saText.trim().length === 0 || saPlaying}
-              className="flex-1 gap-2 bg-amber-500 hover:bg-amber-400 text-black font-semibold">
+              className="flex-1 gap-2 bg-exam hover:bg-exam text-black font-semibold">
               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                 <polygon points="5 3 19 12 5 21 5 3" />
               </svg>
@@ -1304,10 +1304,10 @@ export default function TutorErgaenzungspruefungPage() {
           {saProgress && (
             <div className="space-y-2">
               <div className="flex items-center justify-between text-sm">
-                <div className="flex items-center gap-2 text-amber-400">
+                <div className="flex items-center gap-2 text-exam">
                   <span className="relative flex h-2.5 w-2.5" aria-hidden="true">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" />
-                    <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-amber-400" />
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-exam opacity-75" />
+                    <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-exam" />
                   </span>
                   <span>{saLang === "de" ? "Abschnitt" : "بخش"} {saProgress.current} / {saProgress.total}</span>
                 </div>
@@ -1318,7 +1318,7 @@ export default function TutorErgaenzungspruefungPage() {
               <progress
                 value={saProgress.current}
                 max={saProgress.total}
-                className="w-full h-1.5 rounded-full [&::-webkit-progress-bar]:rounded-full [&::-webkit-progress-bar]:bg-slate-800 [&::-webkit-progress-value]:rounded-full [&::-webkit-progress-value]:bg-amber-400 [&::-moz-progress-bar]:rounded-full [&::-moz-progress-bar]:bg-amber-400"
+                className="w-full h-1.5 rounded-full [&::-webkit-progress-bar]:rounded-full [&::-webkit-progress-bar]:bg-slate-800 [&::-webkit-progress-value]:rounded-full [&::-webkit-progress-value]:bg-exam [&::-moz-progress-bar]:rounded-full [&::-moz-progress-bar]:bg-exam"
               />
             </div>
           )}
@@ -1336,7 +1336,7 @@ export default function TutorErgaenzungspruefungPage() {
           )}
 
           {!supported && (
-            <p className="text-sm text-amber-400">Ihr Browser unterstützt keine Text-to-Speech-Funktion.</p>
+            <p className="text-sm text-exam">Ihr Browser unterstützt keine Text-to-Speech-Funktion.</p>
           )}
         </div>
       )}

@@ -774,12 +774,12 @@ export default function FinancePage() {
         <Card className="glass-card card-accent surface-elevated">
           <CardContent className="p-3.5">
             <div className="flex items-center gap-2.5 mb-2">
-              <div className="icon-tile w-8 h-8 rounded-md bg-emerald-500/15">
-                <TrendingUp className="w-4 h-4 text-emerald-400" />
+              <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-analyze-bg)]">
+                <TrendingUp className="w-4 h-4 text-[var(--flow-analyze)]" />
               </div>
               <span className="text-xs font-medium text-muted-foreground">{t('finance_income')}</span>
             </div>
-            <p className="text-2xl font-bold tracking-tight text-emerald-400">
+            <p className="text-2xl font-bold tracking-tight text-[var(--flow-analyze)]">
               {isInitialLoading ? '...' : formatCurrency(totals.income)}
             </p>
           </CardContent>
@@ -787,12 +787,12 @@ export default function FinancePage() {
         <Card className="glass-card card-accent surface-elevated">
           <CardContent className="p-3.5">
             <div className="flex items-center gap-2.5 mb-2">
-              <div className="icon-tile w-8 h-8 rounded-md bg-rose-500/15">
-                <TrendingDown className="w-4 h-4 text-rose-400" />
+              <div className="icon-tile w-8 h-8 rounded-md bg-destructive/15">
+                <TrendingDown className="w-4 h-4 text-destructive" />
               </div>
               <span className="text-xs font-medium text-muted-foreground">{t('finance_expenses')}</span>
             </div>
-            <p className="text-2xl font-bold tracking-tight text-rose-400">
+            <p className="text-2xl font-bold tracking-tight text-destructive">
               {isInitialLoading ? '...' : formatCurrency(totals.expense)}
             </p>
           </CardContent>
@@ -805,7 +805,7 @@ export default function FinancePage() {
               </div>
               <span className="text-xs font-medium text-muted-foreground">{t('finance_balance')}</span>
             </div>
-            <p className={cn("text-2xl font-bold tracking-tight", totals.net >= 0 ? "text-emerald-400" : "text-rose-400")}>
+            <p className={cn("text-2xl font-bold tracking-tight", totals.net >= 0 ? "text-[var(--flow-analyze)]" : "text-destructive")}>
               {isInitialLoading ? '...' : formatCurrency(totals.net)}
             </p>
           </CardContent>
@@ -813,8 +813,8 @@ export default function FinancePage() {
         <Card className="glass-card card-accent surface-elevated">
           <CardContent className="p-3.5">
             <div className="flex items-center gap-2.5 mb-2">
-              <div className="icon-tile w-8 h-8 rounded-md bg-cyan-500/15">
-                <Tag className="w-4 h-4 text-cyan-400" />
+              <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-report-bg)]">
+                <Tag className="w-4 h-4 text-[var(--flow-report)]" />
               </div>
               <span className="text-xs font-medium text-muted-foreground">{t('finance_top_spend')}</span>
             </div>
@@ -1035,8 +1035,8 @@ export default function FinancePage() {
                         className={cn(
                           "w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-xs font-bold",
                           tx.type === "income"
-                            ? "bg-emerald-500/15 text-emerald-400"
-                            : "bg-rose-500/15 text-rose-400"
+                            ? "bg-[var(--flow-analyze-bg)] text-[var(--flow-analyze)]"
+                            : "bg-destructive/15 text-destructive"
                         )}
                       >
                         {initial}
@@ -1052,8 +1052,8 @@ export default function FinancePage() {
                           className={cn(
                             "text-sm font-semibold",
                             tx.type === "income"
-                              ? "text-emerald-400"
-                              : "text-rose-400"
+                              ? "text-[var(--flow-analyze)]"
+                              : "text-destructive"
                           )}
                         >
                           {tx.type === "income" ? "+" : "-"}
@@ -1155,7 +1155,7 @@ export default function FinancePage() {
                 (categoryStats.items.length > 0 && categoryStats.items[0].expenseShare < 0.5 ? 15 : 0) +
                 (filteredTransactions.length > 3 ? 15 : 0);
               const label = score >= 85 ? t('finance_health_excellent') : score >= 65 ? t('finance_health_stable') : score >= 40 ? t('finance_health_caution') : t('finance_health_at_risk');
-              const color = score >= 65 ? 'text-emerald-400' : score >= 40 ? 'text-orange-400' : 'text-rose-400';
+              const color = score >= 65 ? 'text-[var(--flow-analyze)]' : score >= 40 ? 'text-[var(--flow-career)]' : 'text-destructive';
               const strokeColor = score >= 65 ? 'hsl(142, 76%, 42%)' : score >= 40 ? 'hsl(38, 92%, 55%)' : 'hsl(0, 84%, 55%)';
               return (
                 <>
@@ -1204,10 +1204,10 @@ export default function FinancePage() {
               <ul className="space-y-2">
                 {finSuggestions.map((s, i) => (
                   <li key={i} className="flex items-start gap-3 rounded-lg bg-secondary/20 px-3 py-2.5">
-                    <div className={cn("icon-tile w-7 h-7 rounded-lg shrink-0 mt-0.5", s.type === 'action' ? 'bg-emerald-500/15' : 'bg-violet-500/15')}>
+                    <div className={cn("icon-tile w-7 h-7 rounded-lg shrink-0 mt-0.5", s.type === 'action' ? 'bg-[var(--flow-analyze-bg)]' : 'bg-[var(--flow-study-bg)]')}>
                       {s.type === 'action'
-                        ? <ArrowRight className="w-3.5 h-3.5 text-emerald-400" />
-                        : <Lightbulb className="w-3.5 h-3.5 text-violet-400" />}
+                        ? <ArrowRight className="w-3.5 h-3.5 text-[var(--flow-analyze)]" />
+                        : <Lightbulb className="w-3.5 h-3.5 text-[var(--flow-study)]" />}
                     </div>
                     <p className="text-xs leading-relaxed">{s.text}</p>
                   </li>
@@ -1238,7 +1238,7 @@ export default function FinancePage() {
               {expenseChangePct !== null && (
                 <div className="flex items-center justify-between text-xs">
                   <span className="text-muted-foreground">{t('finance_vs_last_month')}</span>
-                  <span className={cn("font-medium", expenseChangePct <= 0 ? "text-emerald-400" : "text-rose-400")}>
+                  <span className={cn("font-medium", expenseChangePct <= 0 ? "text-[var(--flow-analyze)]" : "text-destructive")}>
                     Expenses {expenseChangePct >= 0 ? '↑' : '↓'} {Math.abs(expenseChangePct)}%
                   </span>
                 </div>
@@ -1246,7 +1246,7 @@ export default function FinancePage() {
               {incomeSpentPct !== null && (
                 <div className="flex items-center justify-between text-xs">
                   <span className="text-muted-foreground">{t('finance_income_spent')}</span>
-                  <span className={cn("font-medium", incomeSpentPct <= 80 ? "text-emerald-400" : "text-rose-400")}>
+                  <span className={cn("font-medium", incomeSpentPct <= 80 ? "text-[var(--flow-analyze)]" : "text-destructive")}>
                     {incomeSpentPct}%
                   </span>
                 </div>
@@ -1260,10 +1260,10 @@ export default function FinancePage() {
           <CardContent className="p-4 space-y-2">
             <h3 className="text-sm font-semibold mb-1">{t('finance_quick_actions')}</h3>
             <Button size="sm" variant="outline" className="w-full justify-start gap-2 text-xs" onClick={() => { setType('income'); openNew(); }}>
-              <Plus className="w-3.5 h-3.5 text-emerald-400" /> {t('finance_add_income')}
+              <Plus className="w-3.5 h-3.5 text-[var(--flow-analyze)]" /> {t('finance_add_income')}
             </Button>
             <Button size="sm" variant="outline" className="w-full justify-start gap-2 text-xs" onClick={() => { setType('expense'); openNew(); }}>
-              <Plus className="w-3.5 h-3.5 text-rose-400" /> {t('finance_add_expense')}
+              <Plus className="w-3.5 h-3.5 text-destructive" /> {t('finance_add_expense')}
             </Button>
             <Button size="sm" variant="outline" className="w-full justify-start gap-2 text-xs" onClick={() => setShowImport(true)}>
               <Upload className="w-3.5 h-3.5" /> {t('finance_import_statement')}

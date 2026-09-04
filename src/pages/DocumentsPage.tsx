@@ -131,14 +131,16 @@ function fileCategory(mime: string | null, fn: string): FileCategory {
 }
 
 const FILE_TYPE_ICON_COLORS: Record<FileCategory, string> = {
-  pdf: 'bg-rose-500/15 text-rose-400',
-  image: 'bg-amber-500/15 text-amber-400',
-  audio: 'bg-violet-500/15 text-violet-400',
-  doc: 'bg-blue-500/15 text-blue-400',
+  pdf: 'bg-[var(--flow-plan-bg)] text-[var(--flow-plan)]',
+  image: 'bg-[var(--flow-career-bg)] text-[var(--flow-career)]',
+  audio: 'bg-[var(--flow-study-bg)] text-[var(--flow-study)]',
+  doc: 'bg-[var(--flow-review-bg)] text-[var(--flow-review)]',
   other: 'bg-slate-500/15 text-slate-400',
 };
 
-const STORAGE_PIE_COLORS = ['#f43f5e', '#f59e0b', '#3b82f6', '#8b5cf6', '#64748b'];
+// DESIGN-AUDIT 1: pie palette from the flow tokens (plan/career/blue/
+// study, with --flow-text-tertiary as the neutral "other" slice).
+const STORAGE_PIE_COLORS = ['#F06AC6', '#F3A044', '#4F73FF', '#9B5CFF', '#777C9A'];
 
 function formatStorageSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -918,7 +920,7 @@ export default function DocumentsPage() {
             <Card className="glass-card card-accent surface-elevated">
               <CardContent className="p-3.5">
                 <div className="flex items-center gap-2.5 mb-2">
-                  <div className="icon-tile w-8 h-8 rounded-md bg-indigo-500/15"><FolderOpen className="w-4 h-4 text-indigo-400" /></div>
+                  <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-study-bg)]"><FolderOpen className="w-4 h-4 text-[var(--flow-study)]" /></div>
                   <span className="text-xs font-medium text-muted-foreground">{t('docs_kpi_total')}</span>
                 </div>
                 <p className="text-2xl font-bold tracking-tight">{kpiStats.total}</p>
@@ -927,7 +929,7 @@ export default function DocumentsPage() {
             <Card className="glass-card card-accent surface-elevated">
               <CardContent className="p-3.5">
                 <div className="flex items-center gap-2.5 mb-2">
-                  <div className="icon-tile w-8 h-8 rounded-md bg-rose-500/15"><FileText className="w-4 h-4 text-rose-400" /></div>
+                  <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-plan-bg)]"><FileText className="w-4 h-4 text-[var(--flow-plan)]" /></div>
                   <span className="text-xs font-medium text-muted-foreground">{t('docs_kpi_pdf')}</span>
                 </div>
                 <p className="text-2xl font-bold tracking-tight">{kpiStats.pdfCount}</p>
@@ -936,7 +938,7 @@ export default function DocumentsPage() {
             <Card className="glass-card card-accent surface-elevated">
               <CardContent className="p-3.5">
                 <div className="flex items-center gap-2.5 mb-2">
-                  <div className="icon-tile w-8 h-8 rounded-md bg-blue-500/15"><PenLine className="w-4 h-4 text-blue-400" /></div>
+                  <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-review-bg)]"><PenLine className="w-4 h-4 text-[var(--flow-review)]" /></div>
                   <span className="text-xs font-medium text-muted-foreground">{t('docs_kpi_notes')}</span>
                 </div>
                 <p className="text-2xl font-bold tracking-tight">{kpiStats.noteCount}</p>
@@ -945,7 +947,7 @@ export default function DocumentsPage() {
             <Card className="glass-card card-accent surface-elevated">
               <CardContent className="p-3.5">
                 <div className="flex items-center gap-2.5 mb-2">
-                  <div className="icon-tile w-8 h-8 rounded-md bg-violet-500/15"><Music className="w-4 h-4 text-violet-400" /></div>
+                  <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-study-bg)]"><Music className="w-4 h-4 text-[var(--flow-study)]" /></div>
                   <span className="text-xs font-medium text-muted-foreground">{t('docs_kpi_audio')}</span>
                 </div>
                 <p className="text-2xl font-bold tracking-tight">{kpiStats.audioCount}</p>
@@ -954,7 +956,7 @@ export default function DocumentsPage() {
             <Card className="glass-card card-accent surface-elevated">
               <CardContent className="p-3.5">
                 <div className="flex items-center gap-2.5 mb-2">
-                  <div className="icon-tile w-8 h-8 rounded-md bg-emerald-500/15"><Sparkles className="w-4 h-4 text-emerald-400" /></div>
+                  <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-analyze-bg)]"><Sparkles className="w-4 h-4 text-[var(--flow-analyze)]" /></div>
                   <span className="text-xs font-medium text-muted-foreground">{t('docs_kpi_ai')}</span>
                 </div>
                 <p className="text-2xl font-bold tracking-tight">{kpiStats.aiCount}</p>
@@ -963,7 +965,7 @@ export default function DocumentsPage() {
             <Card className="glass-card card-accent surface-elevated">
               <CardContent className="p-3.5">
                 <div className="flex items-center gap-2.5 mb-2">
-                  <div className="icon-tile w-8 h-8 rounded-md bg-cyan-500/15"><HardDrive className="w-4 h-4 text-cyan-400" /></div>
+                  <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-report-bg)]"><HardDrive className="w-4 h-4 text-[var(--flow-report)]" /></div>
                   <span className="text-xs font-medium text-muted-foreground">{t('docs_kpi_storage')}</span>
                 </div>
                 <p className="text-lg font-bold tracking-tight">{formatStorageSize(kpiStats.totalBytes)}</p>
@@ -1046,8 +1048,9 @@ export default function DocumentsPage() {
                         </div>
                       )}
                       <div className="flex items-center gap-2 flex-wrap">
-                        {doc.aiSummary && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-500/15 text-indigo-400">✨ {t('docs_ai_summary')}</span>}
-                        {doc.extractedTasksCount > 0 && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400">📋 {doc.extractedTasksCount}</span>}
+                        {/* DESIGN-AUDIT 1: emoji badges -> lucide icons */}
+                        {doc.aiSummary && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--flow-study-bg)] text-[var(--flow-study)] inline-flex items-center gap-1"><Sparkles className="w-2.5 h-2.5" /> {t('docs_ai_summary')}</span>}
+                        {doc.extractedTasksCount > 0 && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--flow-analyze-bg)] text-[var(--flow-analyze)] inline-flex items-center gap-1"><ClipboardList className="w-2.5 h-2.5" /> {doc.extractedTasksCount}</span>}
                       </div>
                       <p className="text-[10px] text-muted-foreground">{timeAgo(doc.lastOpenedAt ?? doc.createdAt)}</p>
                     </motion.button>
@@ -1207,10 +1210,10 @@ export default function DocumentsPage() {
                   <Plus className="w-3.5 h-3.5 text-primary" /> {t('docs_quick_upload')}
                 </Button>
                 <Button size="sm" variant="outline" className="w-full justify-start gap-2 text-xs" onClick={() => setActiveTab('editor')}>
-                  <PenLine className="w-3.5 h-3.5 text-blue-400" /> {t('docs_quick_note')}
+                  <PenLine className="w-3.5 h-3.5 text-[var(--flow-review)]" /> {t('docs_quick_note')}
                 </Button>
                 <Button size="sm" variant="outline" className="w-full justify-start gap-2 text-xs" onClick={() => setActiveTab('pdf-tools')}>
-                  <Scan className="w-3.5 h-3.5 text-amber-400" /> {t('docs_quick_scan')}
+                  <Scan className="w-3.5 h-3.5 text-[var(--flow-career)]" /> {t('docs_quick_scan')}
                 </Button>
               </CardContent>
             </Card>
@@ -1344,13 +1347,13 @@ export default function DocumentsPage() {
                 {aiSummaryResult && (
                   <Card className="glass-card card-accent">
                     <CardContent className="p-4 space-y-2">
-                      <h4 className="text-sm font-semibold flex items-center gap-2"><Sparkles className="w-3.5 h-3.5 text-emerald-400" /> {t('docs_ai_summary')}</h4>
+                      <h4 className="text-sm font-semibold flex items-center gap-2"><Sparkles className="w-3.5 h-3.5 text-[var(--flow-analyze)]" /> {t('docs_ai_summary')}</h4>
                       <p className="text-xs leading-relaxed">{aiSummaryResult.summary}</p>
                       {aiSummaryResult.points.length > 0 && (
                         <ul className="space-y-1 mt-2">
                           {aiSummaryResult.points.map((pt, i) => (
                             <li key={i} className="text-xs text-muted-foreground flex items-start gap-1.5">
-                              <span className="text-emerald-400 mt-0.5">•</span>{pt}
+                              <span className="text-[var(--flow-analyze)] mt-0.5">•</span>{pt}
                             </li>
                           ))}
                         </ul>
@@ -1363,7 +1366,7 @@ export default function DocumentsPage() {
                 {aiTasks.length > 0 && (
                   <Card className="glass-card card-accent">
                     <CardContent className="p-4 space-y-3">
-                      <h4 className="text-sm font-semibold flex items-center gap-2"><ClipboardList className="w-3.5 h-3.5 text-emerald-400" /> {t('docs_ai_extracted_tasks')}</h4>
+                      <h4 className="text-sm font-semibold flex items-center gap-2"><ClipboardList className="w-3.5 h-3.5 text-[var(--flow-analyze)]" /> {t('docs_ai_extracted_tasks')}</h4>
                       <div className="space-y-1.5">
                         {aiTasks.map((task, i) => (
                           <label key={i} className="flex items-start gap-2 text-xs cursor-pointer">
@@ -1374,7 +1377,7 @@ export default function DocumentsPage() {
                               className="mt-0.5"
                             />
                             <span className={task.checked ? '' : 'text-muted-foreground line-through'}>{task.title}</span>
-                            {task.priority === 'high' && <span className="text-[10px] text-rose-400 shrink-0">HIGH</span>}
+                            {task.priority === 'high' && <span className="text-[10px] text-[var(--flow-plan)] shrink-0">HIGH</span>}
                           </label>
                         ))}
                       </div>
@@ -1448,7 +1451,7 @@ export default function DocumentsPage() {
                           disabled={aiLoading !== null}
                           onClick={() => void handleAiSummarize()}
                         >
-                          {aiLoading === 'summary' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 text-indigo-400" />}
+                          {aiLoading === 'summary' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 text-[var(--flow-study)]" />}
                           {aiSelectedDoc.aiSummary ? t('docs_ai_regenerate_summary') : t('docs_ai_generate_summary')}
                         </Button>
 
@@ -1458,7 +1461,7 @@ export default function DocumentsPage() {
                           disabled={aiLoading !== null}
                           onClick={() => void handleAiExtractTasks()}
                         >
-                          {aiLoading === 'tasks' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ClipboardList className="w-3.5 h-3.5 text-emerald-400" />}
+                          {aiLoading === 'tasks' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ClipboardList className="w-3.5 h-3.5 text-[var(--flow-analyze)]" />}
                           {t('docs_ai_extract_tasks')}
                         </Button>
 
@@ -1490,7 +1493,7 @@ export default function DocumentsPage() {
                           disabled={aiLoading !== null}
                           onClick={() => void handleAiAutoTag()}
                         >
-                          {aiLoading === 'tag' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Tag className="w-3.5 h-3.5 text-amber-400" />}
+                          {aiLoading === 'tag' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Tag className="w-3.5 h-3.5 text-[var(--flow-career)]" />}
                           {t('docs_ai_auto_tag')}
                         </Button>
 
@@ -1529,7 +1532,7 @@ export default function DocumentsPage() {
                                 disabled={aiLoading !== null}
                                 onClick={() => void handleExtractToPersonalMemory()}
                               >
-                                {aiLoading === 'memory-extract' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Bot className="w-3.5 h-3.5 text-violet-400" />}
+                                {aiLoading === 'memory-extract' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Bot className="w-3.5 h-3.5 text-[var(--flow-study)]" />}
                                 {aiLoading === 'memory-extract' ? t('doc_memory_extracting') : t('doc_memory_extract_action')}
                               </Button>
                             )}
@@ -1564,7 +1567,7 @@ export default function DocumentsPage() {
                             size="sm" variant="outline" className="w-full justify-start gap-2 text-xs"
                             onClick={() => setActiveTab('audio')}
                           >
-                            <Volume2 className="w-3.5 h-3.5 text-violet-400" /> {t('docs_ai_convert_audio')}
+                            <Volume2 className="w-3.5 h-3.5 text-[var(--flow-study)]" /> {t('docs_ai_convert_audio')}
                           </Button>
                         )}
                       </div>

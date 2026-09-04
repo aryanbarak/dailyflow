@@ -77,9 +77,11 @@ const SUGGESTED_TOPIC_LABELS: { value: LearnAIMode; label: string }[] = [
   { value: 'planner', label: 'Planner' },
 ];
 
+// DESIGN-AUDIT 1: avatar palette from the flow tokens (primary/study/plan/
+// career/analyze/blue/cyan/review). Stored picks keep their saved hex.
 const AVATAR_COLORS = [
-  '#0EA5E9', '#8B5CF6', '#EC4899', '#F59E0B',
-  '#10B981', '#EF4444', '#6366F1', '#14B8A6',
+  '#7C4DFF', '#9B5CFF', '#F06AC6', '#F3A044',
+  '#55E38A', '#4F73FF', '#62DDF4', '#5F91FF',
 ];
 
 // Task 17h: pointer-glow colour choices, restricted to the existing
@@ -162,7 +164,7 @@ function ProfileTab() {
   const { profile, isLoading, isSaving, save } = useProfile();
   const [displayName, setDisplayName] = useState('');
   const [avatarColor, setAvatarColor] = useState<string>(() =>
-    safeGet(storageKey('avatar-color'), '#0EA5E9'),
+    safeGet(storageKey('avatar-color'), '#4F73FF'), /* --flow-blue */
   );
 
   useEffect(() => {
@@ -265,7 +267,9 @@ function SecurityTab() {
     setStrength(s);
   }
 
-  const strengthColors = ['#ef4444', '#f97316', '#f59e0b', '#3b82f6', '#10b981'];
+  // DESIGN-AUDIT 1: flow-derived strength scale -- destructive red, then
+  // career amber, cyan, blue, analyze green (weak -> strong).
+  const strengthColors = ['hsl(var(--destructive))', 'var(--flow-career)', 'var(--flow-cyan)', 'var(--flow-blue)', 'var(--flow-analyze)'];
   const strengthLabels = ['Very weak', 'Weak', 'Fair', 'Strong', 'Very strong'];
 
   async function handleChangePassword() {
@@ -839,8 +843,8 @@ function NotificationsTab() {
   return (
     <div className="space-y-4">
       {permState !== 'granted' && (
-        <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl px-4 py-3 flex items-center gap-3">
-          <AlertTriangle size={16} className="text-amber-500 flex-shrink-0" />
+        <div className="bg-career/10 border border-career/20 rounded-xl px-4 py-3 flex items-center gap-3">
+          <AlertTriangle size={16} className="text-career flex-shrink-0" />
           <div className="flex-1 min-w-0">
             <p className="text-sm font-medium">Browser notifications disabled</p>
             <p className="text-xs text-muted-foreground">Grant permission to receive reminders</p>
@@ -848,7 +852,7 @@ function NotificationsTab() {
           <button
             type="button"
             onClick={requestPermission}
-            className="text-xs px-3 py-1.5 rounded-lg bg-amber-500 text-white hover:opacity-90 transition-opacity flex-shrink-0"
+            className="text-xs px-3 py-1.5 rounded-lg bg-career text-white hover:opacity-90 transition-opacity flex-shrink-0"
           >
             Enable
           </button>
@@ -986,7 +990,7 @@ function DataTab() {
       <SectionCard title="Install app">
         <div className="py-4">
           {isStandalone ? (
-            <p className="text-sm text-emerald-400">SmartFlow is already installed on this device.</p>
+            <p className="text-sm text-[var(--flow-analyze)]">SmartFlow is already installed on this device.</p>
           ) : canInstall ? (
             <button
               type="button"
@@ -1045,13 +1049,13 @@ function DataTab() {
 
       <SectionCard title="Infrastructure">
         <SettingRow label="Supabase" desc="Database & Auth">
-          <span className="text-xs text-emerald-400 flex items-center gap-1"><Check size={12} /> Connected</span>
+          <span className="text-xs text-[var(--flow-analyze)] flex items-center gap-1"><Check size={12} /> Connected</span>
         </SettingRow>
         <SettingRow label="Cloudflare" desc="Workers & CDN">
-          <span className="text-xs text-emerald-400 flex items-center gap-1"><Check size={12} /> Connected</span>
+          <span className="text-xs text-[var(--flow-analyze)] flex items-center gap-1"><Check size={12} /> Connected</span>
         </SettingRow>
         <SettingRow label="Gemini AI" desc="AI analysis & suggestions">
-          <span className="text-xs text-emerald-400 flex items-center gap-1"><Check size={12} /> Connected</span>
+          <span className="text-xs text-[var(--flow-analyze)] flex items-center gap-1"><Check size={12} /> Connected</span>
         </SettingRow>
       </SectionCard>
 
@@ -1190,7 +1194,7 @@ export default function SettingsPage() {
 
   const displayName = user?.user_metadata?.full_name ?? user?.email?.split('@')[0] ?? '';
   const initials = getInitials(displayName, user?.email ?? '');
-  const avatarColor = safeGet(storageKey('avatar-color'), '#6366F1');
+  const avatarColor = safeGet(storageKey('avatar-color'), '#7C4DFF'); /* --flow-primary */
   const memberSince = user?.created_at ? new Date(user.created_at).toLocaleDateString('en', { month: 'long', year: 'numeric' }) : '';
 
   function timeAgo(iso: string): string {
@@ -1243,7 +1247,7 @@ export default function SettingsPage() {
         <Card className="glass-card card-accent surface-elevated">
           <CardContent className="p-3.5">
             <div className="flex items-center gap-2.5 mb-2">
-              <div className="icon-tile w-8 h-8 rounded-md bg-emerald-500/15"><CheckSquare className="w-4 h-4 text-emerald-400" /></div>
+              <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-analyze-bg)]"><CheckSquare className="w-4 h-4 text-[var(--flow-analyze)]" /></div>
               <span className="text-xs font-medium text-muted-foreground">Tasks</span>
             </div>
             <p className="text-2xl font-bold tracking-tight">{tasks.length}</p>
@@ -1252,7 +1256,7 @@ export default function SettingsPage() {
         <Card className="glass-card card-accent surface-elevated">
           <CardContent className="p-3.5">
             <div className="flex items-center gap-2.5 mb-2">
-              <div className="icon-tile w-8 h-8 rounded-md bg-blue-500/15"><FileText className="w-4 h-4 text-blue-400" /></div>
+              <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-review-bg)]"><FileText className="w-4 h-4 text-[var(--flow-review)]" /></div>
               <span className="text-xs font-medium text-muted-foreground">Documents</span>
             </div>
             <p className="text-2xl font-bold tracking-tight">{(documents as unknown[]).length}</p>
@@ -1261,7 +1265,7 @@ export default function SettingsPage() {
         <Card className="glass-card card-accent surface-elevated">
           <CardContent className="p-3.5">
             <div className="flex items-center gap-2.5 mb-2">
-              <div className="icon-tile w-8 h-8 rounded-md bg-amber-500/15"><Camera className="w-4 h-4 text-amber-400" /></div>
+              <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-career-bg)]"><Camera className="w-4 h-4 text-[var(--flow-career)]" /></div>
               <span className="text-xs font-medium text-muted-foreground">Photos</span>
             </div>
             <p className="text-2xl font-bold tracking-tight">{photos.length}</p>
@@ -1270,7 +1274,7 @@ export default function SettingsPage() {
         <Card className="glass-card card-accent surface-elevated">
           <CardContent className="p-3.5">
             <div className="flex items-center gap-2.5 mb-2">
-              <div className="icon-tile w-8 h-8 rounded-md bg-violet-500/15"><Brain className="w-4 h-4 text-violet-400" /></div>
+              <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-study-bg)]"><Brain className="w-4 h-4 text-[var(--flow-study)]" /></div>
               <span className="text-xs font-medium text-muted-foreground">AI Memory</span>
             </div>
             <p className="text-2xl font-bold tracking-tight">{memoryCount}</p>

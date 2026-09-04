@@ -702,10 +702,10 @@ export default function TasksPage() {
                   <ul className="space-y-2">
                     {aiSuggestions.map((s, i) => (
                       <li key={i} className="flex items-start gap-3 rounded-lg bg-secondary/20 px-3 py-2.5">
-                        <div className={cn("icon-tile w-7 h-7 rounded-lg shrink-0 mt-0.5", s.type === 'recommendation' ? 'bg-emerald-500/15' : 'bg-violet-500/15')}>
+                        <div className={cn("icon-tile w-7 h-7 rounded-lg shrink-0 mt-0.5", s.type === 'recommendation' ? 'bg-[var(--flow-analyze-bg)]' : 'bg-[var(--flow-study-bg)]')}>
                           {s.type === 'recommendation'
-                            ? <ArrowRight className="w-3.5 h-3.5 text-emerald-400" />
-                            : <Lightbulb className="w-3.5 h-3.5 text-violet-400" />}
+                            ? <ArrowRight className="w-3.5 h-3.5 text-[var(--flow-analyze)]" />
+                            : <Lightbulb className="w-3.5 h-3.5 text-[var(--flow-study)]" />}
                         </div>
                         <p className="text-xs leading-relaxed">{s.text}</p>
                       </li>
@@ -789,8 +789,8 @@ export default function TasksPage() {
               {prodStats.hasData ? (
                 <ul className="space-y-3">
                   <li className="flex items-center gap-3">
-                    <div className="icon-tile w-8 h-8 rounded-full bg-emerald-500/15">
-                      <CheckSquare className="w-3.5 h-3.5 text-emerald-400" />
+                    <div className="icon-tile w-8 h-8 rounded-full bg-[var(--flow-analyze-bg)]">
+                      <CheckSquare className="w-3.5 h-3.5 text-[var(--flow-analyze)]" />
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="text-xs font-medium">{prodStats.currentLabel}</p>
@@ -799,7 +799,7 @@ export default function TasksPage() {
                       </p>
                     </div>
                     {prodStats.pct !== null && (
-                      <div className={cn("flex items-center gap-1 text-[10px] font-medium", prodStats.pct >= 0 ? "text-emerald-400" : "text-rose-400")}>
+                      <div className={cn("flex items-center gap-1 text-[10px] font-medium", prodStats.pct >= 0 ? "text-[var(--flow-analyze)]" : "text-destructive")}>
                         {prodStats.pct >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
                         {prodStats.pct >= 0 ? '+' : ''}{prodStats.pct}%
                       </div>
@@ -807,8 +807,8 @@ export default function TasksPage() {
                   </li>
                   {prodStats.previous !== null && (
                     <li className="flex items-center gap-3">
-                      <div className="icon-tile w-8 h-8 rounded-full bg-violet-500/15">
-                        <Calendar className="w-3.5 h-3.5 text-violet-400" />
+                      <div className="icon-tile w-8 h-8 rounded-full bg-[var(--flow-study-bg)]">
+                        <Calendar className="w-3.5 h-3.5 text-[var(--flow-study)]" />
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className="text-xs font-medium">{prodStats.previousLabel}</p>

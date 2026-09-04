@@ -91,7 +91,8 @@ function groupByMonth(photos: Photo[]): Array<{ month: string; label: string; ph
   });
 }
 
-const PERSON_COLORS = ['bg-pink-500', 'bg-blue-500', 'bg-emerald-500', 'bg-amber-500', 'bg-violet-500', 'bg-rose-500', 'bg-cyan-500', 'bg-orange-500'];
+// DESIGN-AUDIT 1: avatar palette from the flow tokens (8 distinct hues).
+const PERSON_COLORS = ['bg-[var(--flow-primary)]', 'bg-[var(--flow-plan)]', 'bg-[var(--flow-analyze)]', 'bg-[var(--flow-career)]', 'bg-[var(--flow-study)]', 'bg-[var(--flow-blue)]', 'bg-[var(--flow-cyan)]', 'bg-[var(--flow-review)]'];
 
 export default function PhotosPage() {
   const { t } = useT();
@@ -271,7 +272,7 @@ export default function PhotosPage() {
           <Card className="glass-card card-accent surface-elevated">
             <CardContent className="p-3.5">
               <div className="flex items-center gap-2.5 mb-2">
-                <div className="icon-tile w-8 h-8 rounded-md bg-cyan-500/15"><Camera className="w-4 h-4 text-cyan-400" /></div>
+                <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-report-bg)]"><Camera className="w-4 h-4 text-[var(--flow-report)]" /></div>
                 <span className="text-xs font-medium text-muted-foreground">{t('photos_kpi_total')}</span>
               </div>
               <p className="text-2xl font-bold tracking-tight">{photos.length}</p>
@@ -281,7 +282,7 @@ export default function PhotosPage() {
           <Card className="glass-card card-accent surface-elevated">
             <CardContent className="p-3.5">
               <div className="flex items-center gap-2.5 mb-2">
-                <div className="icon-tile w-8 h-8 rounded-md bg-violet-500/15"><Users className="w-4 h-4 text-violet-400" /></div>
+                <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-study-bg)]"><Users className="w-4 h-4 text-[var(--flow-study)]" /></div>
                 <span className="text-xs font-medium text-muted-foreground">{t('photos_kpi_family')}</span>
               </div>
               <p className="text-2xl font-bold tracking-tight">{personTags.length}</p>
@@ -291,7 +292,7 @@ export default function PhotosPage() {
           <Card className="glass-card card-accent surface-elevated">
             <CardContent className="p-3.5">
               <div className="flex items-center gap-2.5 mb-2">
-                <div className="icon-tile w-8 h-8 rounded-md bg-blue-500/15"><FolderOpen className="w-4 h-4 text-blue-400" /></div>
+                <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-review-bg)]"><FolderOpen className="w-4 h-4 text-[var(--flow-review)]" /></div>
                 <span className="text-xs font-medium text-muted-foreground">{t('photos_kpi_albums')}</span>
               </div>
               <p className="text-2xl font-bold tracking-tight">{albums.length}</p>
@@ -301,7 +302,7 @@ export default function PhotosPage() {
           <Card className="glass-card card-accent surface-elevated">
             <CardContent className="p-3.5">
               <div className="flex items-center gap-2.5 mb-2">
-                <div className="icon-tile w-8 h-8 rounded-md bg-amber-500/15"><CalendarDays className="w-4 h-4 text-amber-400" /></div>
+                <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-career-bg)]"><CalendarDays className="w-4 h-4 text-[var(--flow-career)]" /></div>
                 <span className="text-xs font-medium text-muted-foreground">{t('photos_kpi_month')}</span>
               </div>
               <p className="text-2xl font-bold tracking-tight">{thisMonthCount}</p>
@@ -540,9 +541,9 @@ export default function PhotosPage() {
         <div className="w-full lg:w-[280px] shrink-0 space-y-4 lg:sticky lg:top-4 lg:self-start">
 
           {/* On This Day */}
-          <Card className="glass-card card-accent border-amber-500/20">
+          <Card className="glass-card card-accent border-career/20">
             <CardContent className="p-4 space-y-3">
-              <h3 className="text-sm font-semibold flex items-center gap-2"><CalendarDays className="w-3.5 h-3.5 text-amber-400" /> {t('photos_on_this_day')}</h3>
+              <h3 className="text-sm font-semibold flex items-center gap-2"><CalendarDays className="w-3.5 h-3.5 text-[var(--flow-career)]" /> {t('photos_on_this_day')}</h3>
               {onThisDay.length > 0 ? (
                 <>
                   <div className="flex gap-2">
@@ -636,13 +637,13 @@ export default function PhotosPage() {
             <CardContent className="p-4 space-y-2">
               <h3 className="text-sm font-semibold mb-1">{t('photos_quick_actions')}</h3>
               <Button size="sm" variant="outline" className="w-full justify-start gap-2 text-xs" onClick={() => setShowUploader(true)}>
-                <Upload className="w-3.5 h-3.5 text-cyan-400" /> {t('photos_upload')}
+                <Upload className="w-3.5 h-3.5 text-[var(--flow-report)]" /> {t('photos_upload')}
               </Button>
               <Button size="sm" variant="outline" className="w-full justify-start gap-2 text-xs" onClick={() => { setCreatingAlbum(true); setTab('albums'); }}>
-                <Plus className="w-3.5 h-3.5 text-blue-400" /> {t('photos_create_album')}
+                <Plus className="w-3.5 h-3.5 text-[var(--flow-review)]" /> {t('photos_create_album')}
               </Button>
               <Button size="sm" variant="outline" className="w-full justify-start gap-2 text-xs" onClick={() => setTab('favorites')}>
-                <Heart className="w-3.5 h-3.5 text-rose-400" /> {t('photos_tab_favorites')}
+                <Heart className="w-3.5 h-3.5 text-[var(--flow-plan)]" /> {t('photos_tab_favorites')}
               </Button>
             </CardContent>
           </Card>

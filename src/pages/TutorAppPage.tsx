@@ -354,7 +354,7 @@ export default function TutorAppPage() {
       </motion.div>
 
       {!apiConfigured && (
-        <div className="mb-4 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+        <div className="mb-4 rounded-md border border-exam/40 bg-exam/10 px-3 py-2 text-sm text-exam">
           Tutor API not configured. Set <code>VITE_TUTOR_API_URL</code> to enable Run/Test.
         </div>
       )}

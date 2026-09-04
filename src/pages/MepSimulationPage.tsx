@@ -314,7 +314,7 @@ function TtsBtn({
       className={cn(
         "shrink-0 rounded border px-2 py-0.5 text-xs font-medium transition-colors",
         isThis
-          ? "border-amber-500/40 bg-amber-500/20 text-amber-300"
+          ? "border-exam/40 bg-exam/20 text-exam"
           : "border-slate-600 bg-slate-800 text-slate-400 hover:text-slate-200",
       )}
     >
@@ -367,7 +367,7 @@ export default function MepSimulationPage() {
           <span>/</span>
           <span>MEP-Simulation</span>
         </div>
-        <h1 className="text-3xl font-bold text-amber-300">MEP-Simulation</h1>
+        <h1 className="text-3xl font-bold text-exam">MEP-Simulation</h1>
         <p className="text-muted-foreground text-sm mt-1">
           Algorithmen & Datenstrukturen · 21 zweisprachige Lernkarten · Quellen: fachinformatiker.de, ap2-fiae.de
         </p>
@@ -383,7 +383,7 @@ export default function MepSimulationPage() {
             className={cn(
               "flex-1 rounded-md px-3 py-2 text-sm font-medium transition-colors",
               tab === t.id
-                ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                ? "bg-exam/20 text-exam border border-exam/40"
                 : "text-muted-foreground hover:text-slate-200",
             )}
           >
@@ -396,8 +396,8 @@ export default function MepSimulationPage() {
       {tab === "info" && (
         <div className="space-y-5">
           {/* MEP-Format */}
-          <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-4 space-y-2">
-            <h2 className="text-lg font-semibold text-amber-300">MEP-Format</h2>
+          <div className="rounded-md border border-exam/30 bg-exam/10 p-4 space-y-2">
+            <h2 className="text-lg font-semibold text-exam">MEP-Format</h2>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
               <div className="space-y-1">
                 <div className="text-muted-foreground text-xs uppercase tracking-wide">Dauer</div>
@@ -476,7 +476,7 @@ export default function MepSimulationPage() {
                     ["Bewerten", "Welcher Algorithmus für 1 Mio Elemente?", "Binäre Suche O(log n) — aber nur wenn sortiert!"],
                   ].map(([typ, bsp, tipp]) => (
                     <tr key={typ}>
-                      <td className="py-2 pr-4 font-medium text-amber-400">{typ}</td>
+                      <td className="py-2 pr-4 font-medium text-exam">{typ}</td>
                       <td className="py-2 pr-4 text-muted-foreground">{bsp}</td>
                       <td className="py-2">{tipp}</td>
                     </tr>
@@ -523,8 +523,8 @@ export default function MepSimulationPage() {
                   className="w-full text-left flex items-start justify-between gap-3 px-4 py-3 hover:bg-slate-800/40 transition-colors"
                 >
                   <span className="text-sm font-medium">
-                    <span className="mr-2 font-mono text-xs text-amber-400/70">{idx + 1}.</span>
-                    <span className="text-xs text-amber-400/60 mr-2">[{karte.thema}]</span>
+                    <span className="mr-2 font-mono text-xs text-exam/70">{idx + 1}.</span>
+                    <span className="text-xs text-exam/60 mr-2">[{karte.thema}]</span>
                     {karte.frage}
                   </span>
                   <span className="shrink-0 text-muted-foreground text-xs mt-0.5">{istOffen ? "▲" : "▼"}</span>
@@ -547,9 +547,9 @@ export default function MepSimulationPage() {
                       <p className="text-sm leading-relaxed whitespace-pre-line">{karte.antwortDe}</p>
                     </div>
                     {/* Persian explanation */}
-                    <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3">
+                    <div className="rounded-md border border-exam/30 bg-exam/5 p-3">
                       <div className="flex items-center justify-between mb-2">
-                        <span className="text-xs font-medium text-amber-400">توضیح فارسی</span>
+                        <span className="text-xs font-medium text-exam">توضیح فارسی</span>
                         <TtsBtn
                           id={faId}
                           text={karte.erklaerungFa}
@@ -579,15 +579,15 @@ export default function MepSimulationPage() {
       {/* ─── 10 Schlüsselantworten ──────────────────────────────────────── */}
       {tab === "tipps" && (
         <div className="space-y-4">
-          <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-4">
-            <p className="text-sm font-medium text-amber-300">
+          <div className="rounded-md border border-exam/30 bg-exam/10 p-4">
+            <p className="text-sm font-medium text-exam">
               Diese 10 Antworten solltest du auswendig kennen — sie kommen in fast jeder MEP.
             </p>
           </div>
           {SCHLUESSEL_ANTWORTEN.map((item) => (
             <div key={item.nr} className="rounded-md border border-slate-700/60 p-4 space-y-2">
               <div className="flex items-start gap-3">
-                <span className="shrink-0 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-300 font-bold text-xs w-7 h-7 flex items-center justify-center">
+                <span className="shrink-0 rounded-full bg-exam/20 border border-exam/40 text-exam font-bold text-xs w-7 h-7 flex items-center justify-center">
                   {item.nr}
                 </span>
                 <div className="space-y-1.5">
