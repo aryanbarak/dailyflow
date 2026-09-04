@@ -158,6 +158,30 @@ export interface WriteIntentPreviewLabels {
   // line label. Reuses the existing "Reminder" translation (family_reminder
   // -- already present in en/de/fa) rather than adding a new i18n key.
   readonly reminder: string
+  // PREVIEW-01: optional formatter for calendar start/end INSTANT values
+  // (UTC ISO strings). Production evidence: the proposal preview showed
+  // "Start: 2026-09-05T10:00:00.000Z" to a user who had asked for 12:00
+  // (local) -- the raw UTC instant reads as the wrong time to a person,
+  // even though it is the right instant. The frontend passes the same
+  // formatDateTime helper (src/lib/date.ts) the execution cards already
+  // render these exact fields with (chatToolExecutionProjection.ts), so
+  // the proposal preview and the execution card can never disagree about
+  // how a time is displayed. Optional BECAUSE of the shared-module
+  // constraint above: this module cannot import a formatter itself, and a
+  // caller that passes none (or a value that is not a parseable instant)
+  // still gets the verbatim string -- display-only, never changes what is
+  // bound or executed. Task dueDate/timeOfDay stay verbatim on purpose
+  // (FIX A2: date-only/clock-only values, no timezone conversion to get
+  // wrong, and their verbatim display is a recorded decision).
+  readonly formatDateTime?: (isoInstant: string) => string
+}
+
+// PREVIEW-01: display-only wrapper for calendar start/end preview lines.
+// Falls back to the verbatim string when no formatter was provided (the
+// Worker-side and legacy callers) -- never throws, never alters the value
+// actually bound for execution.
+function displayInstant(value: string, labels: WriteIntentPreviewLabels): string {
+  return labels.formatDateTime ? labels.formatDateTime(value) : value
 }
 
 // Task 30, mirroring 4995b29 (agent/worker/flow-write-policy.ts's own
@@ -370,8 +394,11 @@ export const writeIntentRegistry: readonly WriteIntentDescriptor[] = [
       'create_calendar_event and update_calendar_event require explicit user approval before anything runs -- you are proposing the action, not performing it. Never claim the event was created or updated.',
     previewLines: (target, labels) => [
       `${labels.title}: ${target?.eventTitle as string | undefined}`,
-      `${labels.start}: ${target?.start as string | undefined}`,
-      target?.end ? `${labels.end}: ${target.end as string}` : null,
+      // PREVIEW-01: start/end are UTC ISO instants -- displayed via the
+      // caller's formatter (local time) when one was passed, verbatim
+      // otherwise. See WriteIntentPreviewLabels.formatDateTime.
+      `${labels.start}: ${target?.start ? displayInstant(target.start as string, labels) : target?.start as string | undefined}`,
+      target?.end ? `${labels.end}: ${displayInstant(target.end as string, labels)}` : null,
     ],
     buildHandlerInput: ({ actorId, target }) => ({
       userId: actorId,
@@ -409,8 +436,10 @@ export const writeIntentRegistry: readonly WriteIntentDescriptor[] = [
       'create_calendar_event and update_calendar_event require explicit user approval before anything runs -- you are proposing the action, not performing it. Never claim the event was created or updated.',
     previewLines: (target, labels) => [
       target?.eventTitle ? `${labels.title}: ${target.eventTitle as string}` : null,
-      target?.start ? `${labels.start}: ${target.start as string}` : null,
-      target?.end ? `${labels.end}: ${target.end as string}` : null,
+      // PREVIEW-01: same display-only instant formatting as
+      // create_calendar_event above.
+      target?.start ? `${labels.start}: ${displayInstant(target.start as string, labels)}` : null,
+      target?.end ? `${labels.end}: ${displayInstant(target.end as string, labels)}` : null,
     ],
     buildHandlerInput: ({ actorId, targetId, target }) => ({
       userId: actorId,

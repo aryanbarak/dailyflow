@@ -144,6 +144,32 @@ describe('buildChatSystemPrompt', () => {
     expect(prompt).toContain('Flow AI')
   })
 
+  // PREVIEW-02 (self-lecture): production evidence -- asked in Persian for
+  // a reminder, the model appended "خودم به‌طور مستقیم نمی‌توانم یادآوری را
+  // ایجاد یا ذخیره کنم؛ سیستم عملیاتی ثبت و اجرای برنامه‌ها را مدیریت
+  // می‌کند" DIRECTLY ABOVE the app's own action card with its approve
+  // button -- a contradiction the prompt itself caused: CHAT_IDENTITY's own
+  // "Right" example modeled exactly that disclaimer sentence. The Task 20
+  // no-completion-claim prohibition is untouched (it governs CLAIMS); the
+  // identity block now also says never to VOLUNTEER the limitation, and the
+  // old disclaimer moved from the Right example to the Wrong list.
+  it.each([
+    ['en', 'never volunteer an explanation of your own limitations', "I can't create reminders myself; I can describe them"],
+    ['de', 'Erkläre dem Nutzer niemals ungefragt deine eigenen Grenzen', 'Ich kann Erinnerungen nicht selbst erstellen; ich kann sie beschreiben'],
+    ['fa', 'محدودیت‌های خودت یا سازوکار درونی اپلیکیشن را برای کاربر توضیح نده', 'می‌توانم توصیفشان کنم'],
+  ] as const)('%s: CHAT_IDENTITY forbids volunteering self-limitations and no longer models the disclaimer as a Right example', (language, noLecturePhrase, retiredRightExample) => {
+    const prompt = buildChatSystemPrompt(language, [], FIXED_CLOCK, FIXED_TIMEZONE)
+    expect(prompt).toContain(noLecturePhrase)
+    expect(prompt).not.toContain(retiredRightExample)
+    // Task 20's completion-claim prohibition must survive untouched -- this
+    // narrows what the model TALKS ABOUT, never what it may CLAIM.
+    expect(prompt).toContain(language === 'en'
+      ? 'You must NEVER state or imply that an action was performed'
+      : language === 'de'
+        ? 'Du darfst NIEMALS behaupten oder andeuten'
+        : 'هرگز نباید بگویی یا القا کنی')
+  })
+
   it('(b) the identity block is present regardless of whether confirmed memory exists -- not conditional on memory content', () => {
     const withMemory = buildChatSystemPrompt('en', [confirmedSkill('React')], FIXED_CLOCK, FIXED_TIMEZONE)
     const withoutMemory = buildChatSystemPrompt('en', [], FIXED_CLOCK, FIXED_TIMEZONE)

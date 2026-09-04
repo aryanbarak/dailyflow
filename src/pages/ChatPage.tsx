@@ -36,6 +36,7 @@ import { mainNavItems, moreNavItems } from '@/components/layout/mobileNavItems'
 // classification, proposal handling) is UNCHANGED by this task.
 import { ChatComposer } from '@/features/chat/components/ChatComposer'
 import { validateChatAttachment } from '@/features/chat/chatAttachmentValidation'
+import { formatDateTime } from '@/lib/date'
 import { createDocument, uploadToStorage, type Document } from '@/features/documents/documentsService'
 import { ChatPageHeader } from '@/features/chat/components/ChatPageHeader'
 import { ChatEmptyState, type ChatEmptyStateAction } from '@/features/chat/components/ChatEmptyState'
@@ -1326,6 +1327,15 @@ function writeResolutionForStep(step: WorkspacePlanStep, toolId: string): ToolRe
 }
 
 // Generalized for EPIC-07 (Write Light) -- see docs/adr/ADR-0004-write-boundaries.md.
+// PREVIEW-01: the safe instant formatter handed to the registry's
+// previewLines via WriteIntentPreviewLabels.formatDateTime. An unparseable
+// value falls back to VERBATIM -- at an approval boundary a wrong-looking
+// exact value beats a misleading "Invalid Date", and the verbatim string is
+// still the exact value that would execute.
+export function displayInstantForProposalPreview(isoInstant: string): string {
+  return Number.isNaN(Date.parse(isoInstant)) ? isoInstant : formatDateTime(isoInstant)
+}
+
 // Previously hardcoded to tasks.complete only. previewText carries the exact
 // pending write content (comment body, or a title/body/label diff) so the
 // approval dialog can show it before Run is enabled -- the ADR's mandatory
@@ -1393,6 +1403,15 @@ function approvalForReasoningStep(
       // Stabilization patch 1, FIX A2: reuses the existing "Reminder"
       // translation rather than adding a new i18n key.
       reminder: t('family_reminder'),
+      // PREVIEW-01: calendar start/end are UTC ISO instants -- rendered in
+      // local time via the same src/lib/date.ts formatDateTime the
+      // execution cards already use for these exact fields
+      // (chatToolExecutionProjection.ts's executionArgumentLines), instead
+      // of the raw "2026-09-05T10:00:00.000Z" a user cannot read as their
+      // own clock time. Display-only: the bound target.start/end values
+      // are untouched. See displayInstantForProposalPreview for the
+      // unparseable-value fallback.
+      formatDateTime: displayInstantForProposalPreview,
     }
     return {
       stepId: step.id,
