@@ -26,12 +26,9 @@ import { useAuth } from "@/hooks/useAuth";
 import { useProfile } from "@/features/profile/useProfile";
 import { FlowAIOrb } from "@/components/FlowAIOrb";
 import { SmartflowAsciiVisual } from "@/components/smartflow";
-import { getSmartAcademyUrl } from "@/config/apps";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { useT } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
-
-const smartAcademyUrl = getSmartAcademyUrl();
 
 const navItems: {
   externalUrl?: string | null;
@@ -43,7 +40,11 @@ const navItems: {
   { icon: LayoutDashboard, key: 'nav_dashboard', path: "/" },
   { icon: MessageSquare, key: 'nav_chat', path: "/chat" },
   { icon: FolderKanban, key: 'nav_projects', path: "/projects", activeMatch: "prefix" },
-  { icon: Bot, key: 'nav_tutor_app', path: "/tutor/app", externalUrl: smartAcademyUrl },
+  // Smart Academy points back at the INTERNAL tutor page. The
+  // VITE_SMART_ACADEMY_URL external override (config/apps.ts) is
+  // deliberately not wired here anymore -- the nav stays internal
+  // regardless of what any environment sets.
+  { icon: Bot, key: 'nav_tutor_app', path: "/tutor/app" },
   { icon: CheckSquare, key: 'nav_tasks', path: "/tasks" },
   { icon: Calendar, key: 'nav_calendar', path: "/calendar" },
   { icon: Flame, key: 'nav_habits', path: "/habits" },
