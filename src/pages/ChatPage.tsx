@@ -74,6 +74,7 @@ import {
   approveWorkspaceStep,
   withTimeout,
   type AgentReasoningResult,
+  type AgentReasoningRecentTurn,
   type AgentReasoningGitHubInventory,
   type ReadOnlyRuntimeResult,
   type WriteRuntimeResult,
@@ -1630,17 +1631,15 @@ export interface ChatTurnOutcome {
 // for all of those; see hasSupportedActionableOverlay above for the
 // exhaustive type-level definition of "actionable."
 //
-// KNOWN DEAD END (task 42, reported per that task's own instruction, not
-// fixed here): if the user answers this surfaced clarification in their
-// NEXT message ("expense" / "هزینه"), that reply alone will not resolve
-// anything. reasonAboutUserMessage/buildReasoningPrompt carries no prior
-// chat turns at all (only safeContext + the single current userMessage), so
-// the follow-up is reasoned about with zero memory of the amount/category
-// from the turn that prompted the question -- it will most likely produce
-// its OWN ask_clarification (this time for the missing amount), which this
-// same branch surfaces again, looking like a loop rather than progress.
-// Multi-turn intent completion (giving the overlay access to recent turns)
-// is separate, larger work, out of this task's scope.
+// Task 42's KNOWN DEAD END, now addressed by HIST-01: handleSend passes
+// the session's recent prior turns (recentTurnsForReasoning) into
+// reasonAboutUserMessage, so a follow-up answer to this surfaced
+// clarification ("expense" / "هزینه") is reasoned about WITH the turn that
+// prompted it -- the model can now carry the amount/category forward
+// instead of producing a fresh ask_clarification for a field the user
+// already stated. Deterministic validation (intentValidator.ts) stays
+// authoritative over whatever the model does with that history, so this
+// improves resolution, it does not bypass any gate.
 export function resolveChatTurnOutcome(input: ChatTurnOverlayInput, t: Translate): ChatTurnOutcome {
   const overlayResult = input.overlayResult
   const serverTerminalWrite = input.serverWritePolicyMode === 'auto' || input.serverWritePolicyMode === 'off' || Boolean(input.serverWriteExecution) || Boolean(input.hasServerPendingAction)
@@ -1992,6 +1991,17 @@ export function liveTaskReasoningContext(
     dueDate: task.dueDate ?? undefined,
     createdAt: task.createdAt,
   }))
+}
+
+// HIST-01: the session's prior turns as handed to the reasoning overlay --
+// role + content ONLY (never ids, undo descriptors, or any other ChatMsg
+// field), capped here at the same bound buildReasoningPrompt itself
+// enforces so what leaves this function is already what the prompt will
+// carry. Called with the `messages` state BEFORE the current turn's user
+// message is appended (handleSend appends via setMessages after the lanes
+// resolve), so the current message is never duplicated into the history.
+export function recentTurnsForReasoning(messages: readonly ChatMsg[]): AgentReasoningRecentTurn[] {
+  return messages.slice(-6).map((message) => ({ role: message.role, content: message.content }))
 }
 
 function dateKey(date: Date) {
@@ -2991,6 +3001,14 @@ export default function ChatPage({ embedded = false, onOpenAssistantPanel }: Cha
             },
             githubRepositoryInventory,
           },
+          // HIST-01: the session's prior turns (role+content only, capped)
+          // -- `messages` here is the pre-turn state: the current user
+          // message is appended via setMessages only after the lanes
+          // resolve, so it is never duplicated into this history.
+          // `messages` was added to this callback's deps for exactly this
+          // read; without it the closure would hand the overlay a stale
+          // transcript.
+          recentTurns: recentTurnsForReasoning(messages),
           sessionId,
           timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         }, {
@@ -3286,7 +3304,7 @@ export default function ChatPage({ embedded = false, onOpenAssistantPanel }: Cha
     } finally {
       setSending(false)
     }
-  }, [draft, sending, workerUrl, t, activeSessionId, createSession, refreshSessions, interfaceLanguage, workspace, tasks, tasksLoading, tasksError, githubRepositoryInventory, attachedDocument, user])
+  }, [draft, sending, workerUrl, t, activeSessionId, createSession, refreshSessions, interfaceLanguage, workspace, tasks, tasksLoading, tasksError, githubRepositoryInventory, attachedDocument, user, messages])
 
   useEffect(() => {
     const prompt = (location.state as { initialPrompt?: string } | null)?.initialPrompt

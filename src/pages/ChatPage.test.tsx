@@ -1,5 +1,7 @@
 
 
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { renderToString } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
@@ -36,6 +38,7 @@ import {
   proposalsToStates,
   proposalToState,
   ReasoningProposalCard,
+  recentTurnsForReasoning,
   resolveAutoReadTurnContent,
   resolveChatTurnOutcome,
   liveTwoActionExecutionViewModel,
@@ -2435,14 +2438,14 @@ describe("Production stabilization patch 1, follow-up: real ask-mode reminder co
       { callLlmReasoning },
     );
 
-    // ROOT CAUSE: buildReasoningPrompt (reasoningPrompt.ts) has no chat-
-    // history parameter at all -- AgentReasoningInput carries only the
-    // single current userMessage plus live app state (safeContext), never
-    // prior turns (see reasoningTypes.ts's AgentReasoningInput and
-    // ChatPage.tsx's own "KNOWN DEAD END" comment above
-    // resolveChatTurnOutcome, task 42, already documenting this exact
-    // limitation for a different domain). The prompt actually sent to the
-    // model for turn 2 contains no trace of turn 1's content.
+    // ROOT CAUSE (pre-HIST-01, preserved as the back-compat proof):
+    // AgentReasoningInput used to carry only the single current
+    // userMessage plus live app state (safeContext), never prior turns.
+    // HIST-01 added the optional recentTurns field -- but THIS call passes
+    // none, which stays fully supported: a caller without history (or a
+    // session's first message) must still produce a prompt with no trace
+    // of any prior turn. The WITH-history behavior is the companion test
+    // below.
     expect(capturedPrompt).not.toContain("دندان");
     expect(capturedPrompt).not.toContain(TURN1_MESSAGE);
 
@@ -2479,6 +2482,85 @@ describe("Production stabilization patch 1, follow-up: real ask-mode reminder co
     // client renders directly, bypassing this overlay path entirely for a
     // turn where the server already resolved the write.
     expect(outcome.reasoningStates).toBeNull();
+  });
+
+  // HIST-01 companion: the SAME turn-2 message through the SAME real
+  // reasonAboutUserMessage, now with the recent turns handleSend actually
+  // passes (recentTurnsForReasoning). The prompt the model receives
+  // finally contains turn 1 -- the overlay is no longer structurally
+  // incapable of resolving the continuation. What the model DOES with that
+  // memory stays its own output, still subject to intentValidator's
+  // unmodified gates; this test proves the memory reaches the prompt, not
+  // that any particular proposal now succeeds.
+  it("HIST-01: with recentTurns passed the turn-2 prompt carries turn 1's content -- the overlay's zero-memory dead end is structural no more", async () => {
+    let capturedPrompt = "";
+    const callLlmReasoning = vi.fn(async (request: { prompt: string }) => {
+      capturedPrompt = request.prompt;
+      return { rawText: "" };
+    });
+
+    await reasonAboutUserMessage(
+      {
+        userMessage: TURN2_MESSAGE,
+        configuredResponseLanguage: "en",
+        safeContext: { tasks: [], events: [], learningProgress: null, workspace: null },
+        recentTurns: recentTurnsForReasoning([
+          { id: "u-1", role: "user", content: TURN1_MESSAGE },
+          { id: "a-1", role: "assistant", content: "چه ساعتی یادآوری شود؟" },
+        ]),
+        sessionId: "session-reminder-continuation",
+        timeZone: "Europe/Berlin",
+      },
+      { callLlmReasoning },
+    );
+
+    expect(capturedPrompt).toContain(TURN1_MESSAGE);
+    expect(capturedPrompt).toContain("دندان");
+    // The discipline line travels with the turns: history resolves
+    // references; the current message alone decides the intent.
+    expect(capturedPrompt).toContain("ONLY to resolve what the current user message refers to");
+  });
+});
+
+// HIST-01: the ChatMsg -> AgentReasoningRecentTurn projection handleSend
+// hands to the overlay.
+describe("recentTurnsForReasoning (HIST-01)", () => {
+  it("projects role and content ONLY -- ids, undo descriptors, and language never reach the overlay", () => {
+    const turns = recentTurnsForReasoning([
+      { id: "u-1", role: "user", content: "hello", language: "en" },
+      { id: "a-1", role: "assistant", content: "hi", undo: { id: "undo:x", label: "Undo", expiresAt: "2026-09-05T00:00:00.000Z" } },
+    ]);
+    expect(turns).toEqual([
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "hi" },
+    ]);
+    expect(Object.keys(turns[0])).toEqual(["role", "content"]);
+  });
+
+  it("caps at the last 6 messages, newest kept, order preserved", () => {
+    const messages = Array.from({ length: 9 }, (_, i) => ({ id: `m-${i}`, role: (i % 2 === 0 ? "user" : "assistant") as "user" | "assistant", content: `msg-${i}` }));
+    const turns = recentTurnsForReasoning(messages);
+    expect(turns).toHaveLength(6);
+    expect(turns[0].content).toBe("msg-3");
+    expect(turns[5].content).toBe("msg-8");
+  });
+
+  it("an empty session yields an empty array -- buildReasoningPrompt then renders no history block at all", () => {
+    expect(recentTurnsForReasoning([])).toEqual([]);
+  });
+});
+
+// HIST-01 source pins: ChatPage is never mounted in tests (repo
+// convention), so handleSend's own wiring is pinned against the source.
+describe("ChatPage source: reasoning overlay receives recent turns (HIST-01)", () => {
+  const pageSource = readFileSync(path.join(__dirname, "ChatPage.tsx"), "utf8");
+
+  it("the reasonAboutUserMessage call passes recentTurns built from the live messages state", () => {
+    expect(pageSource).toMatch(/recentTurns: recentTurnsForReasoning\(messages\)/);
+  });
+
+  it("handleSend's dependency array includes `messages` -- without it the closure would hand the overlay a stale transcript", () => {
+    expect(pageSource).toMatch(/\}, \[draft, sending,[^\]]*\bmessages\b[^\]]*\]\)/);
   });
 });
 
