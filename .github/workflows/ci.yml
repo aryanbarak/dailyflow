@@ -24,6 +24,12 @@ jobs:
         with:
           node-version-file: ".nvmrc"
           cache: "npm"
+          # CI-02: without this, the npm cache key covers only the root
+          # package-lock.json -- agent/worker's own `npm ci` below
+          # (wrangler/workerd, the heaviest downloads in the job) never hit
+          # the cache and were observed taking 6-7 minutes on registry-slow
+          # runners. This keys the cache on every lockfile in the repo.
+          cache-dependency-path: "**/package-lock.json"
 
       - name: Install dependencies
         run: npm ci

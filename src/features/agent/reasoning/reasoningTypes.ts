@@ -145,11 +145,32 @@ export interface AgentReasoningSafeContext {
   githubRepositoryInventory?: AgentReasoningGitHubInventory;
 }
 
+// HIST-01: one prior turn of the CURRENT chat session, as the reasoning
+// overlay is allowed to see it -- role + content only, never ids, undo
+// descriptors, or any other ChatMsg field. Deliberately its own minimal
+// shape (not ChatMsg, not the Worker's ChatMessage) so widening what the
+// overlay sees is always an explicit type change here, never an accident
+// of passing a richer object through.
+export interface AgentReasoningRecentTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
 export interface AgentReasoningInput {
   userMessage: string;
   configuredResponseLanguage?: AiResponseLanguage;
   interfaceLanguage?: string;
   safeContext: AgentReasoningSafeContext;
+  // HIST-01: the session's most recent prior turns, oldest first, NOT
+  // including the current userMessage. Optional -- absent renders a prompt
+  // byte-identical to the pre-HIST-01 one (see buildReasoningPrompt), so
+  // every existing caller/test is unaffected. This closes the documented
+  // "KNOWN DEAD END" (task 42 / ChatPage.tsx): the overlay used to reason
+  // about a follow-up ("make it 5pm", "هزینه") with zero memory of the
+  // turn that prompted it. Privacy: these are the same session turns the
+  // /chat conversational lane already sends to the same provider (its
+  // 20-message history read) -- no new data class leaves the client.
+  recentTurns?: AgentReasoningRecentTurn[];
   now?: Date;
   sessionId?: string;
   // Task 22-fix (C1): the caller's IANA timezone, threaded through to
