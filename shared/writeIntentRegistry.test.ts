@@ -191,6 +191,46 @@ describe('writeIntentRegistry completeness (task 23)', () => {
       expect(entry.previewLines({}, labels).filter(Boolean)).toEqual([])
     })
 
+    // PREVIEW-01: calendar start/end are UTC ISO instants. Production
+    // evidence: the proposal preview showed "Start: 2026-09-05T10:00:00.000Z"
+    // to a user who asked for 12:00 local -- correct instant, unreadable
+    // display. When the caller passes labels.formatDateTime the lines use
+    // it; without one (Worker-side/legacy callers) the value stays VERBATIM.
+    it('PREVIEW-01: create_calendar_event.previewLines renders start/end through labels.formatDateTime when provided', () => {
+      const entry = findWriteIntentDescriptor('create_calendar_event')!
+      const labels = { ...PREVIEW_LABELS_FIXTURE, formatDateTime: (iso: string) => `LOCAL(${iso})` }
+      expect(entry.previewLines({ eventTitle: 'Dentist', start: '2026-09-05T10:00:00.000Z', end: '2026-09-05T11:00:00.000Z' }, labels).filter(Boolean)).toEqual([
+        'Title: Dentist',
+        'Start: LOCAL(2026-09-05T10:00:00.000Z)',
+        'End: LOCAL(2026-09-05T11:00:00.000Z)',
+      ])
+    })
+
+    it('PREVIEW-01: without labels.formatDateTime the calendar start/end values stay verbatim (Worker/legacy callers unchanged)', () => {
+      const entry = findWriteIntentDescriptor('create_calendar_event')!
+      const labels = { ...PREVIEW_LABELS_FIXTURE }
+      expect(entry.previewLines({ eventTitle: 'Dentist', start: '2026-09-05T10:00:00.000Z' }, labels).filter(Boolean)).toEqual([
+        'Title: Dentist',
+        'Start: 2026-09-05T10:00:00.000Z',
+      ])
+    })
+
+    it('PREVIEW-01: update_calendar_event.previewLines formats start/end the same way, and only formats lines that exist', () => {
+      const entry = findWriteIntentDescriptor('update_calendar_event')!
+      const labels = { ...PREVIEW_LABELS_FIXTURE, formatDateTime: (iso: string) => `LOCAL(${iso})` }
+      expect(entry.previewLines({ start: '2026-09-05T10:00:00.000Z' }, labels).filter(Boolean)).toEqual([
+        'Start: LOCAL(2026-09-05T10:00:00.000Z)',
+      ])
+    })
+
+    it('PREVIEW-01: the formatter never sees the title -- only start/end instants are routed through it', () => {
+      const entry = findWriteIntentDescriptor('create_calendar_event')!
+      const seen: string[] = []
+      const labels = { ...PREVIEW_LABELS_FIXTURE, formatDateTime: (iso: string) => { seen.push(iso); return iso } }
+      entry.previewLines({ eventTitle: 'Dentist', start: '2026-09-05T10:00:00.000Z', end: '2026-09-05T11:00:00.000Z' }, labels)
+      expect(seen).toEqual(['2026-09-05T10:00:00.000Z', '2026-09-05T11:00:00.000Z'])
+    })
+
     it('create_finance_transaction.buildHandlerInput maps direction to type, never persists iban, and defaults category to null when unmentioned', () => {
       const entry = findWriteIntentDescriptor('create_finance_transaction')!
       expect(entry.buildHandlerInput({

@@ -25,6 +25,7 @@ import {
   CHAT_REQUEST_TIMEOUT_MS,
   ChatBubble,
   classifyMessageIntentSignal,
+  displayInstantForProposalPreview,
   getAmbiguousOfferHint,
   getAmbiguousOfferText,
   isAutoExecutableReadOnlyProposal,
@@ -2325,6 +2326,39 @@ describe("Chat V2 Slice 2B.2 correction 2, BLOCKER 1: twoActionPendingPreviewLin
     expect(state.approval?.previewText).toBe(
       "agent_intent_preview_title: Call Ahmad\nagent_intent_preview_due: 2026-07-16\nagent_intent_preview_notes: Follow up",
     );
+  });
+
+  // PREVIEW-01: the reasoning-proposal preview used to show calendar
+  // start/end as raw UTC ISO instants ("Start: 2026-09-05T10:00:00.000Z"
+  // for a user who asked for 12:00 local -- production screenshot) while
+  // the execution cards already rendered the SAME fields via formatDateTime
+  // (chatToolExecutionProjection.ts) -- two approval surfaces disagreeing
+  // about how to display one instant. The registry previewLines now accept
+  // an optional display formatter and approvalForReasoningStep passes the
+  // same src/lib/date.ts helper the execution cards use.
+  it("PREVIEW-01: a create_calendar_event proposal's preview shows start/end as local-formatted times, never the raw UTC ISO instant", () => {
+    const base = reasoningResult("create_calendar_event", "calendar.create_event");
+    const result: AgentReasoningResult = {
+      ...base,
+      proposal: {
+        ...base.proposal,
+        target: { eventTitle: "Dentist", start: "2026-09-05T10:00:00.000Z", end: "2026-09-05T11:00:00.000Z" },
+        requiresApproval: true,
+      },
+    };
+    const state = proposalToState(result, t);
+    // Locale-formatted, not a hardcoded literal -- proves derivation from
+    // the bound target.start/end, independent of this machine's locale and
+    // timezone (same pattern the 2B.2 preview test above established).
+    expect(state.approval?.previewText).toBe(
+      `agent_intent_preview_title: Dentist\nagent_intent_preview_start: ${new Date("2026-09-05T10:00:00.000Z").toLocaleString()}\nagent_intent_preview_end: ${new Date("2026-09-05T11:00:00.000Z").toLocaleString()}`,
+    );
+    expect(state.approval?.previewText).not.toContain("2026-09-05T10:00:00.000Z");
+  });
+
+  it("PREVIEW-01: displayInstantForProposalPreview falls back to the VERBATIM string for an unparseable value -- never 'Invalid Date' at an approval boundary", () => {
+    expect(displayInstantForProposalPreview("2026-09-05T10:00:00.000Z")).toBe(new Date("2026-09-05T10:00:00.000Z").toLocaleString());
+    expect(displayInstantForProposalPreview("not-an-instant")).toBe("not-an-instant");
   });
 
   it("CORRECTION 3, item 4: never labels previewText as Title when arguments.title is absent -- previewText is a separate, display-only value, never the immutable execution argument", () => {
