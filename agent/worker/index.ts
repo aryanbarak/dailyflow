@@ -61,7 +61,7 @@ import { AttachmentsUnsupportedError } from './providers/workers-ai/WorkersAITex
 import { resolveGeminiModel } from './geminiModel'
 import { recordProposalOutcome } from './proposal-outcome-recording'
 import { parseProposalOutcomeRequestBody } from './proposal-outcome-endpoint'
-import { handleAgentToolExecutionApprove, handleAgentToolExecutionRequest } from './agent-tool-execution'
+import { handleAgentToolExecutionApprove, handleAgentToolExecutionRequest, handleAgentToolExecutionRevoke } from './agent-tool-execution'
 import type { WriteIntentType } from '../../shared/writeIntentRegistry'
 import { parseBankStatement } from '../../shared/bankStatementParser'
 import { buildBatchImportPreview, selectImportableRows } from '../../shared/bankImportBatchPreview'
@@ -172,6 +172,13 @@ export default {
 
     if (pathname === '/agent/execution/approve') {
       return handleAgentToolExecutionApprove(request, env)
+    }
+
+    // Chat Runtime Truth V1 (frozen PO decision, Reject -> revoked): the
+    // explicit-rejection sibling of request/approve above -- accepts an
+    // executionId only, executes nothing. See the handler's own comment.
+    if (pathname === '/agent/execution/revoke') {
+      return handleAgentToolExecutionRevoke(request, env)
     }
 
     if (pathname === '/finance/import-batch/preview') {
@@ -2113,7 +2120,9 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
       await supabasePost(env, 'agent_chat_messages', { id: userMessageId, user_id: userId, session_id: sessionId, role: 'user', content: message })
       scheduleStagedLearningCapture()
       await supabasePost(env, 'agent_chat_messages', { user_id: userId, session_id: sessionId, role: 'assistant', content: reply })
-      return json(pendingWritePolicy ? { reply, writePolicy: pendingWritePolicy, ...(pendingAction ? { pendingAction } : {}) } : { reply }, 200, origin)
+      // Chat Runtime Truth V1 (correlation): userMessageId -- see the
+      // identical field on the main success return below.
+      return json(pendingWritePolicy ? { reply, writePolicy: pendingWritePolicy, userMessageId, ...(pendingAction ? { pendingAction } : {}) } : { reply, userMessageId }, 200, origin)
     }
 
     // Task 20, Part A2: deterministic post-check -- see
@@ -2157,7 +2166,17 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
       )
     }
 
-    return json(pendingWritePolicy ? { reply, writePolicy: pendingWritePolicy, ...(pendingAction ? { pendingAction } : {}) } : { reply }, 200, origin)
+    // Chat Runtime Truth V1 (correlation): userMessageId is the durable
+    // agent_chat_messages id this turn's user message was persisted under
+    // (ALF-1A's pre-generated id, inserted just above on every branch that
+    // reaches here). Returned so the browser can thread it -- together
+    // with session_id -- into agent_tool_executions' EXISTING
+    // chat_message_id correlation column for the generic reasoning/write
+    // path (writeRuntime.ts's requestWriteExecution), the same way the
+    // 2B.2/pendingAction descriptors above already carry it. Purely an
+    // identifier of the caller's own just-persisted message -- no new
+    // authority, nothing execution-related is decided by it.
+    return json(pendingWritePolicy ? { reply, writePolicy: pendingWritePolicy, userMessageId, ...(pendingAction ? { pendingAction } : {}) } : { reply, userMessageId }, 200, origin)
   } catch (err) {
     console.error('[Chat] Error:', err)
     // Task 22-fix2 (D2): defense-in-depth for any turn failure this

@@ -132,6 +132,16 @@ export interface WriteRuntimeRequest {
   requestedAt?: string;
   currentTime?: Date;
   reflectionStorage?: Storage;
+  // Chat Runtime Truth V1 (correlation): the chat session and durable
+  // user-message id this write proposal originated from, threaded into
+  // agent_tool_executions' EXISTING session_id/chat_message_id columns by
+  // requestWriteExecution below -- the same explicit correlation fields
+  // the 2B.2 decomposed path already populates. Optional: a write invoked
+  // outside a chat turn (tests, future non-chat surfaces) simply leaves
+  // the row uncorrelated, exactly as before. Never parsed back out of
+  // requestId strings, and never used for anything but correlation.
+  sessionId?: string;
+  chatMessageId?: string;
 }
 
 export interface WriteRuntimeAuditCorrelation {
@@ -1139,6 +1149,11 @@ export async function requestWriteExecution(
       targetId,
       arguments: workerArgumentsFromHandlerInput(handlerInput),
       requestId: request.requestId,
+      // Chat Runtime Truth V1 (correlation): see WriteRuntimeRequest's own
+      // comment -- populates the durable row's existing session/message
+      // correlation columns; absent fields store as null, same as before.
+      sessionId: request.sessionId,
+      chatMessageId: request.chatMessageId,
       timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     });
     return { status: "requested", executionId: result.executionId, serverStatus: result.status, reply: result.reply, errorCode: result.errorCode };

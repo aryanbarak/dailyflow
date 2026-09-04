@@ -102,6 +102,81 @@ export type Database = {
           },
         ]
       }
+      agent_tool_executions: {
+        Row: {
+          action: string
+          approval_requested_at: string | null
+          approved_at: string | null
+          canonical_hash: string
+          chat_message_id: string | null
+          completed_at: string | null
+          created_at: string
+          domain: string
+          error_code: string | null
+          execution_started_at: string | null
+          id: string
+          intent_id: string
+          language: string
+          normalized_arguments: Json
+          request_id: string
+          session_id: string | null
+          status: string
+          target_id: string | null
+          target_type: string | null
+          time_zone: string | null
+          tool_id: string
+          user_id: string
+        }
+        Insert: {
+          action: string
+          approval_requested_at?: string | null
+          approved_at?: string | null
+          canonical_hash: string
+          chat_message_id?: string | null
+          completed_at?: string | null
+          created_at?: string
+          domain: string
+          error_code?: string | null
+          execution_started_at?: string | null
+          id?: string
+          intent_id: string
+          language?: string
+          normalized_arguments?: Json
+          request_id: string
+          session_id?: string | null
+          status?: string
+          target_id?: string | null
+          target_type?: string | null
+          time_zone?: string | null
+          tool_id: string
+          user_id: string
+        }
+        Update: {
+          action?: string
+          approval_requested_at?: string | null
+          approved_at?: string | null
+          canonical_hash?: string
+          chat_message_id?: string | null
+          completed_at?: string | null
+          created_at?: string
+          domain?: string
+          error_code?: string | null
+          execution_started_at?: string | null
+          id?: string
+          intent_id?: string
+          language?: string
+          normalized_arguments?: Json
+          request_id?: string
+          session_id?: string | null
+          status?: string
+          target_id?: string | null
+          target_type?: string | null
+          time_zone?: string | null
+          tool_id?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       flow_write_permissions: {
         Row: {
           action: string

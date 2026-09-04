@@ -757,6 +757,73 @@ export async function handleAgentToolExecutionRequest(request: Request, env: Env
   return json({ executionId: row.id, status: row.status }, 200, origin)
 }
 
+// Chat Runtime Truth V1, frozen PO decision (Reject -> revoked): the ONLY
+// lifecycle transition this endpoint can ever make is
+// approval_pending -> revoked. It executes nothing, re-accepts no
+// arguments/toolId/domain/target (the body is read exactly like approve's:
+// executionId and nothing else), and never rewrites an already-terminal
+// row. approved/executing rows are NOT revocable here either -- once the
+// approve call has begun advancing a row, "reject" is no longer a truthful
+// description of what stopping it would mean (the domain write may already
+// be in flight), so those return the same honest WRONG_LIFECYCLE_STATE
+// conflict as terminal rows. The transition itself is the same conditional
+// PATCH every other lifecycle move uses (transitionStatus), so a
+// concurrent approve and revoke can never both win: whichever conditional
+// UPDATE matches the approval_pending row first wins, the other sees zero
+// rows and reports the row's actual current state instead.
+export async function handleAgentToolExecutionRevoke(request: Request, env: Env): Promise<Response> {
+  const origin = request.headers.get('Origin') ?? ''
+  const { userId, error: authError } = await requireAuthenticatedUser(request, env)
+  if (authError || !userId) return json({ error: authError ?? 'Unauthorized' }, 401, origin)
+
+  let body: unknown
+  try {
+    body = await request.json()
+  } catch {
+    return json({ error: 'Invalid JSON body' }, 400, origin)
+  }
+
+  // Deliberately the ONLY field this endpoint reads from the request body,
+  // same as approve -- no argument value here could ever influence what
+  // gets revoked beyond naming the row.
+  if (!isRecord(body) || typeof body.executionId !== 'string' || !body.executionId.trim()) {
+    return json({ error: 'MALFORMED_ARGUMENTS' }, 400, origin)
+  }
+  const executionId = body.executionId.trim()
+
+  const row = await loadExecutionRow(env, executionId)
+  if (!row) return json({ error: 'UNKNOWN_EXECUTION_ID' }, 404, origin)
+  if (row.user_id !== userId) return json({ error: 'ACTOR_MISMATCH' }, 403, origin)
+
+  if (row.status !== 'approval_pending') {
+    // Honest already-terminal (or already-advancing) result: a duplicate
+    // revoke of an already-revoked row reports 'revoked' truthfully via
+    // this same branch; nothing is ever rewritten, and nothing executes.
+    return json({ error: 'WRONG_LIFECYCLE_STATE', status: row.status }, 409, origin)
+  }
+
+  // No completed_at patch: like the existing approval_pending -> denied /
+  // -> expired transitions, this row never executed, so the
+  // execution-completion timestamp stays null. attemptTransition (never
+  // transitionStatus directly) so a transport failure on the PATCH itself
+  // cannot escape as an unhandled throw.
+  const attempt = await attemptTransition(env, executionId, 'approval_pending', 'revoked', {})
+  if (attempt === 'applied') return json({ status: 'revoked', executionId }, 200, origin)
+
+  // 'not_applied' (a concurrent call moved the row first) or
+  // 'transport_unknown' (the PATCH request itself failed): one readback,
+  // then report the durable truth -- never a fabricated 'revoked'.
+  const reread = await loadExecutionRow(env, executionId)
+  if (reread?.status === 'revoked') return json({ status: 'revoked', executionId }, 200, origin)
+  if (reread && reread.status !== 'approval_pending') {
+    return json({ error: 'WRONG_LIFECYCLE_STATE', status: reread.status }, 409, origin)
+  }
+  // Still approval_pending (or unreadable): the revoke could not be
+  // durably recorded. Fail closed with a retryable error -- retrying a
+  // revoke can never trigger execution.
+  return json({ error: 'REQUEST_FAILED' }, 500, origin)
+}
+
 export async function handleAgentToolExecutionApprove(request: Request, env: Env): Promise<Response> {
   const origin = request.headers.get('Origin') ?? ''
   const { userId, error: authError } = await requireAuthenticatedUser(request, env)

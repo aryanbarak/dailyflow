@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import {
@@ -90,7 +90,21 @@ import { createGitHubWorkflowRunsClient } from '@/features/integrations/github/g
 import { createGitHubIssuesCommentClient } from '@/features/integrations/github/githubIssuesCommentClient'
 import { createGitHubIssuesUpdateClient } from '@/features/integrations/github/githubIssuesUpdateClient'
 import { createEngineeringTaskClient } from '@/features/integrations/engineering/engineeringTaskClient'
-import { createAgentToolExecutionClient } from '@/features/agent/agentToolExecutionClient'
+import { createAgentToolExecutionClient, revokeAgentToolExecution } from '@/features/agent/agentToolExecutionClient'
+// Chat Runtime Truth / Tool Timeline V1: the owner-scoped, SELECT-only
+// execution reader plus the pure row -> view-model projection layer and the
+// ONE shared execution card both live and reconstructed state render
+// through -- see chatToolExecutionProjection.ts's own header comment.
+import { listSessionToolExecutions } from '@/features/agent/agentToolExecutionReader'
+import {
+  applyProjectedExecutionUpdate,
+  correlateExecutionsToMessages,
+  executionArgumentLines,
+  type ChatToolExecutionStatus,
+  type ChatToolExecutionViewModel,
+  type ExecutionPreviewLabels,
+} from '@/features/agent/chatToolExecutionProjection'
+import { ChatToolExecutionCard } from '@/features/chat/components/ChatToolExecutionCard'
 import { pollEngineeringTaskUntilDone, formatEngineeringTaskResultMessage } from '@/features/agent/engineeringTaskStatusPoller'
 import { createGitHubRepositoryInventoryClient } from '@/features/integrations/github/githubRepositoryInventoryClient'
 import { useWorkspace } from '@/features/workspace'
@@ -110,7 +124,6 @@ import {
 } from '@/features/ai/responseLanguage'
 import { findWriteIntentDescriptor, writeIntentRegistry } from '../../shared/writeIntentRegistry'
 import { reportProposalOutcome, writeProposalTargetFields, type ProposalOutcomeDomain } from '@/features/agent/proposalOutcomeReporting'
-import { formatDateTime } from '@/lib/date'
 
 export interface ChatMsg {
   id: string
@@ -296,6 +309,34 @@ interface ReasoningProposalState {
   // Absent otherwise -- see the pre-approval useEffect and
   // ReasoningProposalCard's own rendering of this.
   executionRequestReply?: string
+  // Chat Runtime Truth V1 (correlation): the chat session and the durable
+  // user-message id (ChatWorkerResponse.userMessageId) this proposal's turn
+  // belongs to -- stamped in handleSend, forwarded by the pre-approval
+  // binding effect into requestWriteExecution so the durable
+  // agent_tool_executions row carries the existing explicit
+  // session_id/chat_message_id correlation columns. Absent for
+  // hand-built/test states -- the request simply stores null correlation,
+  // exactly as before this slice.
+  sessionId?: string
+  chatMessageId?: string
+  // Chat Runtime Truth V1, review blocker fix: what this proposal's bound
+  // agent_tool_executions row's lifecycle state is KNOWN to be -- either
+  // straight from a Worker response (the pre-approval effect's terminal
+  // auto outcome, or a revoke result/conflict), or the in-flight
+  // transient 'revoking' while that explicit user action awaits its
+  // answer, or 'error' when the Worker could not be reached at all (row
+  // state unknown -- presented as exactly that, never as a guessed
+  // lifecycle status). Set ONLY from those authoritative moments, never
+  // from a local decision alone -- the runtime-truth invariant: local
+  // approval UI may INITIATE a transition, but it may not independently
+  // declare the durable lifecycle result. When set, the shared
+  // ChatToolExecutionCard (the same renderer reload reconstruction uses)
+  // is the SOLE presenter of this proposal's execution status -- see
+  // boundProposalExecutionViewModel and ReasoningProposalCard below.
+  // Absent for unbound proposals (github.*, engineering.task.propose --
+  // no agent_tool_executions row exists for them) and for a bound
+  // proposal nothing has happened to yet.
+  boundExecutionStatus?: ChatToolExecutionStatus
 }
 
 // Chat V2 Slice 2B.2: when the Worker's deterministic decomposer resolves
@@ -367,6 +408,13 @@ interface ChatWorkerResponse {
   undo?: ChatMsg['undo']
   actions?: ChatWorkerAction[]
   pendingAction?: ChatWorkerPendingAction
+  // Chat Runtime Truth V1 (correlation): the durable agent_chat_messages id
+  // this turn's user message was persisted under (the Worker's ALF-1A
+  // pre-generated id) -- threaded into the generic reasoning/write path's
+  // requestWriteExecution so its agent_tool_executions row carries the same
+  // explicit chat_message_id correlation the 2B.2/pendingAction paths
+  // already do. An identifier only; nothing execution-related reads it.
+  userMessageId?: string
 }
 
 // Pure builder for a decomposed multi-action turn's RESOLVED-only message
@@ -400,12 +448,16 @@ export function buildTwoActionMessages(
 // pending decomposed action. Deliberately a small, additive, standalone
 // shape (not a ReasoningProposalState) -- see ChatWorkerActionPending's own
 // comment for why. `status` mirrors agent_tool_executions' own lifecycle
-// (approval_pending -> executing -> succeeded/failed/uncertain) plus two
-// client-only transient states ('requesting' before the initial
-// requestExecution() call resolves, 'approving' while approveExecution()
-// is in flight) and one client-only failure state ('error', a network/auth
-// failure talking to the Worker at all, never a domain outcome).
-export type TwoActionPendingStatus = 'requesting' | 'approval_pending' | 'approving' | 'succeeded' | 'failed' | 'uncertain' | 'error'
+// plus the client-only transient states ('requesting' before the initial
+// requestExecution() call resolves, 'approving'/'revoking' while that
+// explicit user action is in flight) and one client-only failure state
+// ('error', a network/auth failure talking to the Worker at all, never a
+// domain outcome). Chat Runtime Truth V1: now exactly the shared
+// ChatToolExecutionStatus vocabulary (chatToolExecutionProjection.ts) --
+// one status language for live and reconstructed cards, so a revoke
+// response reporting the row's honest current state ('denied', 'expired',
+// ...) can always be reconciled into a live card verbatim.
+export type TwoActionPendingStatus = ChatToolExecutionStatus
 
 export interface TwoActionPendingState {
   requestId: string
@@ -461,6 +513,25 @@ export function applyTwoActionRequestResult(
   })
 }
 
+// Chat Runtime Truth V1 (frozen PO decision, Reject -> revoked): pure
+// state transition for one action's revokeAgentToolExecution() outcome --
+// same requestId-only matching discipline as the two appliers around it.
+// `status` accepts any lifecycle status because the Worker's honest
+// WRONG_LIFECYCLE_STATE conflict reports the row's actual current state
+// (already approved, expired, ...) and the card must reconcile to THAT
+// durable truth, never stay stuck showing an approvable state that no
+// longer exists.
+export function applyTwoActionRevokeResult(
+  prev: TwoActionPendingState[],
+  requestId: string,
+  result: { status: 'revoking' | 'error' } | { status: ChatToolExecutionStatus },
+): TwoActionPendingState[] {
+  return prev.map((entry) => {
+    if (entry.requestId !== requestId) return entry
+    return { ...entry, status: result.status }
+  })
+}
+
 // Pure state transition for one action's approveExecution() outcome --
 // same requestId-only matching discipline as applyTwoActionRequestResult.
 // Approving action A calling this with A's own requestId can structurally
@@ -510,30 +581,126 @@ export function applyTwoActionApproveResult(
 // always present here -- but this function does not fall back to
 // previewText even defensively, since doing so would mislabel a
 // display-only fallback as the exact value that will be submitted.
-export function twoActionPendingPreviewLines(pending: TwoActionPendingState, t: Translate): string[] {
-  const title = pending.arguments.title as string | undefined
-  const notes = pending.arguments.notes as string | undefined
-  if (pending.toolId === 'tasks.create') {
-    const dueDate = pending.arguments.dueDate as string | null | undefined
-    // Stabilization patch 1, FIX A2: shown VERBATIM, same discipline as
-    // dueDate above -- a consequential, immutable execution argument that
-    // must be visible before approval.
-    const timeOfDay = pending.arguments.timeOfDay as string | undefined
-    return [
-      title ? `${t('agent_intent_preview_title')}: ${title}` : null,
-      dueDate ? `${t('agent_intent_preview_due')}: ${dueDate}` : null,
-      timeOfDay ? `${t('family_reminder')}: ${timeOfDay}` : null,
-      notes ? `${t('agent_intent_preview_notes')}: ${notes}` : null,
-    ].filter((line): line is string => Boolean(line))
+// Chat Runtime Truth V1: the actual line-building rules now live in
+// chatToolExecutionProjection.ts's executionArgumentLines (this function
+// delegates verbatim -- same fields, same verbatim-date discipline, same
+// order) so the reconstructed-after-reload cards and this live path can
+// never drift apart. Signature and behavior for the existing callers/tests
+// are unchanged.
+export function executionPreviewLabelsFor(t: Translate): ExecutionPreviewLabels {
+  return {
+    title: t('agent_intent_preview_title'),
+    due: t('agent_intent_preview_due'),
+    reminder: t('family_reminder'),
+    notes: t('agent_intent_preview_notes'),
+    start: t('agent_intent_preview_start'),
+    end: t('agent_intent_preview_end'),
   }
-  const dateTimeStart = pending.arguments.dateTimeStart as string | undefined
-  const dateTimeEnd = pending.arguments.dateTimeEnd as string | undefined
-  return [
-    title ? `${t('agent_intent_preview_title')}: ${title}` : null,
-    dateTimeStart ? `${t('agent_intent_preview_start')}: ${formatDateTime(dateTimeStart)}` : null,
-    dateTimeEnd ? `${t('agent_intent_preview_end')}: ${formatDateTime(dateTimeEnd)}` : null,
-    notes ? `${t('agent_intent_preview_notes')}: ${notes}` : null,
-  ].filter((line): line is string => Boolean(line))
+}
+
+export function twoActionPendingPreviewLines(pending: Pick<TwoActionPendingState, 'toolId' | 'arguments'>, t: Translate): string[] {
+  return executionArgumentLines(pending.toolId, pending.arguments, executionPreviewLabelsFor(t))
+}
+
+// Chat Runtime Truth V1: adapts one live TwoActionPendingState entry into
+// the shared ChatToolExecutionViewModel the ONE execution card renders --
+// the same shape reload reconstruction produces from a durable
+// agent_tool_executions row (projectExecutionRow). The headline stays
+// previewText (the 2B.2 card's existing display headline); the Requested
+// block stays the immutable execution arguments, via the exact same
+// line-builder.
+export function liveTwoActionExecutionViewModel(pending: TwoActionPendingState, t: Translate): ChatToolExecutionViewModel {
+  return {
+    key: pending.requestId,
+    executionId: pending.executionId,
+    requestId: pending.requestId,
+    chatMessageId: pending.chatMessageId,
+    toolId: pending.toolId,
+    domain: pending.domain,
+    action: 'create',
+    status: pending.status,
+    title: pending.previewText || undefined,
+    argumentLines: twoActionPendingPreviewLines(pending, t),
+    resultReply: pending.resultReply,
+    errorCode: null,
+    targetType: null,
+    targetId: null,
+    completedAt: null,
+  }
+}
+
+// Chat Runtime Truth V1, review blocker fix -- the three pure pieces of
+// the bound-proposal rejection orchestration (handleApprovalDecision /
+// revokeBoundProposalExecution below), extracted so the state transitions
+// are independently testable exactly like applyTwoAction* are.
+
+// Step 1 of an explicit rejection of a proposal WITH an
+// agent_tool_executions binding: record the user's rejected approval
+// decision and mark the bound row's presentation 'revoking' -- and
+// deliberately DO NOT touch runStatus. The local UI has only INITIATED a
+// transition; it may not declare 'rejected' until the Worker durably
+// confirms approval_pending -> revoked (applyBoundRevocationOutcome).
+export function beginBoundProposalRevocation(
+  prev: ReasoningProposalState[],
+  rejectedApproval: WorkspaceStepApproval,
+): ReasoningProposalState[] {
+  return prev.map((p, i) => (i === 0 ? { ...p, approval: rejectedApproval, boundExecutionStatus: 'revoking' } : p))
+}
+
+// Step 2: reconcile to the Worker's authoritative answer, matched by the
+// bound row's own serverExecutionId (never by index alone). Only a
+// durably confirmed 'revoked' may ever produce the local terminal
+// 'rejected'; every other answer -- an honest WRONG_LIFECYCLE_STATE
+// conflict reporting 'approved'/'executing'/an existing terminal state,
+// or 'error' for a transport failure whose row state is simply unknown --
+// reconciles the presentation to exactly that answer and leaves runStatus
+// alone. An approve-vs-revoke race the revoke loses therefore can never
+// leave the UI claiming rejected while the row says approved/executing.
+export function applyBoundRevocationOutcome(
+  prev: ReasoningProposalState[],
+  serverExecutionId: string,
+  status: ChatToolExecutionStatus,
+): ReasoningProposalState[] {
+  return prev.map((p) => {
+    if (p.approval?.serverExecutionId !== serverExecutionId) return p
+    return { ...p, boundExecutionStatus: status, runStatus: status === 'revoked' ? 'rejected' : p.runStatus }
+  })
+}
+
+// The generic proposal's bound-execution presentation, rendered through
+// the SAME ChatToolExecutionCard reload reconstruction and the 2B.2/
+// pendingAction live cards already use -- one renderer for the same
+// runtime truth, here too. argumentLines stay empty on purpose: the
+// proposal card directly above this region already shows the exact bound
+// preview (approval.previewText, built once by the shared registry);
+// re-deriving a second copy of the arguments here would create exactly
+// the duplicate presentation path this slice forbids. Returns null when
+// no bound lifecycle state is known -- the card region simply doesn't
+// exist then.
+export function boundProposalExecutionViewModel(proposal: ReasoningProposalState): ChatToolExecutionViewModel | null {
+  const status = proposal.boundExecutionStatus
+  if (!status) return null
+  return {
+    key: `bound:${proposal.requestId}`,
+    executionId: proposal.approval?.serverExecutionId,
+    requestId: proposal.requestId,
+    chatMessageId: proposal.chatMessageId ?? null,
+    toolId: proposal.resolution?.toolId ?? proposal.result.proposal.toolId ?? '',
+    domain: proposal.step?.domain ?? '',
+    action: proposal.step?.actionType ?? '',
+    status,
+    title: undefined,
+    argumentLines: [],
+    // The Worker's own bounded reply for a terminal auto-resolved outcome
+    // (the pre-approval effect stores it in executionRequestReply) --
+    // shown by the shared card the same way a live 2B.2 card shows its
+    // approve response's reply.
+    resultReply: proposal.executionRequestReply,
+    errorCode: null,
+    targetType: null,
+    targetId: null,
+    completedAt: null,
+  }
 }
 
 // Task 40: WorkspacePlanStep['domain'] is broader (habits/documents/
@@ -1908,7 +2075,18 @@ export function ReasoningProposalCard({
   // the read-only run button/handler instead of the approval dialog.
   const isWriteProposal = WRITE_PROPOSAL_TYPES.has(result.proposal.type)
   const isApproved = approval?.status === 'approved'
-  const isRejected = approval?.status === 'rejected' || runStatus === 'rejected'
+  // Chat Runtime Truth V1, review blocker fix: once a bound-execution
+  // lifecycle presentation exists (boundProposalExecutionViewModel), the
+  // shared execution card below is the SOLE presenter of this proposal's
+  // execution status -- including rejection. The local "This action was
+  // rejected." line must never appear ahead of (or instead of) what the
+  // authoritative agent_tool_executions row actually says: while the
+  // revoke is in flight the card says "Rejecting...", and if the Worker's
+  // honest answer is that the row is approved/executing/some other
+  // terminal state, THAT is what renders -- never a locally declared
+  // rejection.
+  const boundExecution = boundProposalExecutionViewModel(proposal)
+  const isRejected = (approval?.status === 'rejected' || runStatus === 'rejected') && !boundExecution
   const canRunReadOnly = Boolean(
     !isWriteProposal &&
     proposal.step &&
@@ -2048,14 +2226,34 @@ export function ReasoningProposalCard({
         </div>
       )}
 
+      {/* Chat Runtime Truth V1, review blocker fix: the bound
+          agent_tool_executions row's KNOWN lifecycle state renders through
+          the exact same ChatToolExecutionCard reload reconstruction uses
+          -- one renderer for the same runtime truth (a terminal
+          auto-resolved outcome from the pre-approval effect, or the
+          revoking/revoked/conflict-reconciled/error states of an explicit
+          rejection). No approve/reject handlers are passed, so the nested
+          card can never offer a second execution affordance. */}
+      {boundExecution && (
+        <div className="mt-3">
+          <ChatToolExecutionCard execution={boundExecution} />
+        </div>
+      )}
+
       {/* BLOCKER C CORRECTION: server policy resolved 'auto' and the write
           already concluded during the pre-approval request call itself --
           this proposal never went through runWriteTool (runtimeResult is
           unset), so this is the ONLY place its outcome is ever shown. The
           button row above is already gated off (canReviewApproval excludes
           every terminal executionRequestStatus) -- an auto write can never
-          execute a second time from this card. */}
-      {!runtimeResult && proposal.executionRequestReply && (
+          execute a second time from this card. Runtime Truth V1 blocker
+          fix: when a bound lifecycle state is known (boundExecution above)
+          the shared card carries this same reply as its resultReply, so
+          this bare paragraph now renders ONLY for states with no durable
+          lifecycle claim to make -- e.g. the pre-approval request itself
+          being blocked client-side, where labeling the outcome with a
+          lifecycle status would over-claim what is actually known. */}
+      {!runtimeResult && !boundExecution && proposal.executionRequestReply && (
         <p
           className="mt-3 rounded-lg border border-border/25 bg-background/30 px-3 py-2 text-xs leading-5 text-muted-foreground"
           dir="auto"
@@ -2283,6 +2481,14 @@ export default function ChatPage({ embedded = false, onOpenAssistantPanel }: Cha
   // purpose -- see ChatWorkerActionPending's own comment on why this is a
   // small, additive, standalone shape rather than a ReasoningProposalState.
   const [twoActionPending, setTwoActionPending] = useState<TwoActionPendingState[] | null>(null)
+  // Chat Runtime Truth V1: durable execution state reconstructed on
+  // session load from the authoritative agent_tool_executions rows, keyed
+  // by the chat message id each row correlates to
+  // (correlateExecutionsToMessages). Presentation-only: rendering this map
+  // never executes, approves, retries, or replays anything -- every status
+  // here IS the row's own status until an explicit user action on a card
+  // goes back through the Worker.
+  const [reconstructedExecutions, setReconstructedExecutions] = useState<Record<string, ChatToolExecutionViewModel[]>>({})
   const [approvalDialogOpen, setApprovalDialogOpen] = useState(false)
   const [githubRepositoryInventory, setGithubRepositoryInventory] = useState<AgentReasoningGitHubInventory>({ status: 'unknown' })
   // Task 17a: replaces the old bottomRef/scrollIntoView sentinel -- the
@@ -2374,6 +2580,12 @@ export default function ChatPage({ embedded = false, onOpenAssistantPanel }: Cha
         step: proposalStep,
         toolResolution: proposalResolution,
         target: proposal.result.proposal.target,
+        // Chat Runtime Truth V1 (correlation): stamped onto the proposal
+        // state in handleSend -- see ReasoningProposalState's own comment.
+        // The durable row this call creates now carries the same explicit
+        // session_id/chat_message_id the 2B.2 path always has.
+        sessionId: proposal.sessionId,
+        chatMessageId: proposal.chatMessageId,
         executionContext: {
           agentToolExecutionClient: createAgentToolExecutionClient({
             workerBaseUrl: workerUrl,
@@ -2395,6 +2607,14 @@ export default function ChatPage({ embedded = false, onOpenAssistantPanel }: Cha
                 ...p,
                 executionRequestStatus: outcome.serverStatus,
                 executionRequestReply: outcome.reply,
+                // Runtime Truth V1 blocker fix: this status came from the
+                // Worker's own response for the durable row it just
+                // executed -- record it as the bound lifecycle state so
+                // the shared execution card presents it (see
+                // boundProposalExecutionViewModel). The 'blocked' branch
+                // below deliberately does NOT set this: no durable
+                // lifecycle state is known there.
+                boundExecutionStatus: outcome.serverStatus,
                 runStatus: outcome.serverStatus === 'succeeded' ? 'success' : p.runStatus,
               }
             }
@@ -2414,6 +2634,14 @@ export default function ChatPage({ embedded = false, onOpenAssistantPanel }: Cha
     if (!user?.id) return
     setLoading(true)
     setMessages([])
+    // Chat Runtime Truth V1: a session (re)load replaces the transcript, so
+    // any still-mounted LIVE turn state belongs to a turn that is no longer
+    // on screen -- cleared here, then rebuilt below from the durable rows.
+    // This is presentation state only; the durable rows themselves are
+    // untouched by clearing it.
+    setTwoActionPending(null)
+    setReasoningProposal(null)
+    setReconstructedExecutions({})
     const { data, error } = await supabase
       .from('agent_chat_messages')
       .select('id, role, content')
@@ -2422,16 +2650,29 @@ export default function ChatPage({ embedded = false, onOpenAssistantPanel }: Cha
       .order('created_at', { ascending: true })
 
     if (!error && data) {
-      setMessages(
-        data.map((r: { id: string; role: string; content: string }) => ({
-          id: r.id,
-          role: r.role as 'user' | 'assistant',
-          content: r.content,
-        }))
-      )
+      const loaded = data.map((r: { id: string; role: string; content: string }) => ({
+        id: r.id,
+        role: r.role as 'user' | 'assistant',
+        content: r.content,
+      }))
+      setMessages(loaded)
+      // Chat Runtime Truth V1 (reload reconstruction): the durable
+      // execution rows for THIS session, correlated to the messages just
+      // loaded -- agent_chat_messages + agent_tool_executions -> the
+      // conversation projection. Best-effort read: a failed fetch renders
+      // the transcript exactly as before this slice (no cards), never an
+      // error state, and never a fabricated status.
+      try {
+        const executionRows = await listSessionToolExecutions(user.id, sessionId)
+        setReconstructedExecutions(
+          correlateExecutionsToMessages(loaded.map((m) => m.id), executionRows, executionPreviewLabelsFor(t)),
+        )
+      } catch (executionReadError) {
+        console.error('[ChatPage] execution reconstruction read failed (non-fatal):', executionReadError)
+      }
     }
     setLoading(false)
-  }, [user?.id])
+  }, [user?.id, t])
 
   const selectSession = useCallback((sessionId: string) => {
     setActiveSessionId(sessionId)
@@ -2442,6 +2683,11 @@ export default function ChatPage({ embedded = false, onOpenAssistantPanel }: Cha
     setActiveSessionId(null)
     setMessages([])
     setSendError(null)
+    // Chat Runtime Truth V1: same clearing rule as loadSessionMessages --
+    // a fresh chat starts with no other session's cards on screen.
+    setTwoActionPending(null)
+    setReasoningProposal(null)
+    setReconstructedExecutions({})
     wasNearBottomRef.current = true
     setShowJumpToLatest(false)
     // Task 17f, C1b + PO decision (v2 follow-up): an explicit New Chat is
@@ -2740,7 +2986,7 @@ export default function ChatPage({ embedded = false, onOpenAssistantPanel }: Cha
         })
       }
 
-      const [{ reply, writePolicy, writeExecution, undo, actions, pendingAction }, overlayResult] = await Promise.all([chatCallPromise, overlayPromise])
+      const [{ reply, writePolicy, writeExecution, undo, actions, pendingAction, userMessageId }, overlayResult] = await Promise.all([chatCallPromise, overlayPromise])
 
       // Chat V2 Slice 2B.2: two independently decomposed actions -- skip
       // the single-proposal overlay/outcome machinery entirely (see
@@ -2903,7 +3149,15 @@ export default function ChatPage({ embedded = false, onOpenAssistantPanel }: Cha
       const outcome = autoReadContent !== null
         ? { content: autoReadContent, reasoningStates: null }
         : resolveChatTurnOutcome({ intentSignal, message: text, responseLanguage, reply, overlayResult, serverWritePolicyMode: writePolicy?.mode, serverWriteExecution: writeExecution, hasServerPendingAction: Boolean(pendingAction) }, t)
-      setReasoningProposal(outcome.reasoningStates)
+      // Chat Runtime Truth V1 (correlation): stamp this turn's session and
+      // durable user-message id onto each proposal state, so the
+      // pre-approval binding effect's requestWriteExecution call stores
+      // them in the row's existing session_id/chat_message_id columns --
+      // pure decoration of already-decided states, never a change to WHAT
+      // was proposed.
+      setReasoningProposal(outcome.reasoningStates
+        ? outcome.reasoningStates.map((state) => ({ ...state, sessionId: sessionId ?? undefined, chatMessageId: userMessageId }))
+        : null)
 
       setMessages(prev => [
         ...prev,
@@ -3108,6 +3362,90 @@ export default function ChatPage({ embedded = false, onOpenAssistantPanel }: Cha
     }
   }, [twoActionPending, workerUrl])
 
+  // Chat Runtime Truth V1 (frozen PO decision, Reject -> revoked): the
+  // explicit-rejection sibling of handleApproveTwoAction above, for one
+  // LIVE card's own executionId only. The browser sends the executionId
+  // and nothing else; the Worker owns the conditional
+  // approval_pending -> revoked transition (agent-tool-execution.ts's
+  // handleAgentToolExecutionRevoke). A WRONG_LIFECYCLE_STATE answer comes
+  // back as the row's honest current status and the card reconciles to
+  // that durable truth.
+  const handleRejectTwoAction = useCallback(async (requestId: string) => {
+    const entry = twoActionPending?.find(p => p.requestId === requestId)
+    if (!entry || !entry.executionId || entry.status !== 'approval_pending') return
+
+    setTwoActionPending(prev => prev ? applyTwoActionRevokeResult(prev, requestId, { status: 'revoking' }) : prev)
+    try {
+      const result = await revokeAgentToolExecution({
+        workerBaseUrl: workerUrl,
+        getAccessToken: async () => {
+          const { data: { session } } = await supabase.auth.getSession()
+          return session?.access_token
+        },
+      }, entry.executionId)
+      setTwoActionPending(prev => prev ? applyTwoActionRevokeResult(prev, requestId, { status: result.status }) : prev)
+    } catch (error) {
+      console.error('[ChatPage] runtime truth V1: revokeExecution failed for a live action:', error)
+      setTwoActionPending(prev => prev ? applyTwoActionRevokeResult(prev, requestId, { status: 'error' }) : prev)
+    }
+  }, [twoActionPending, workerUrl])
+
+  // Chat Runtime Truth V1: explicit approval of a RECONSTRUCTED
+  // approval_pending card -- the exact same approve-by-execution-ID-only
+  // call the live path makes (never arguments again), against the durable
+  // row reload found. The card then reconciles to the Worker's own
+  // authoritative outcome; a known non-executable answer (expired/denied)
+  // reconciles to that honest status rather than a generic error.
+  const handleApproveReconstructedExecution = useCallback(async (executionId: string) => {
+    const current = Object.values(reconstructedExecutions).flat().find(card => card.executionId === executionId)
+    if (!current || current.status !== 'approval_pending') return
+
+    setReconstructedExecutions(prev => applyProjectedExecutionUpdate(prev, executionId, { status: 'approving' }))
+    try {
+      const client = createAgentToolExecutionClient({
+        workerBaseUrl: workerUrl,
+        getAccessToken: async () => {
+          const { data: { session } } = await supabase.auth.getSession()
+          return session?.access_token
+        },
+      })
+      const result = await client.approveExecution(executionId)
+      setReconstructedExecutions(prev => applyProjectedExecutionUpdate(prev, executionId, {
+        status: result.status,
+        resultReply: result.reply,
+        errorCode: result.errorCode ?? null,
+      }))
+    } catch (error) {
+      const code = (error as { code?: unknown }).code
+      const reconciled: ChatToolExecutionStatus = code === 'INTENT_EXPIRED' ? 'expired' : code === 'POLICY_DENIED' ? 'denied' : 'error'
+      console.error('[ChatPage] runtime truth V1: approveExecution failed for a reconstructed action:', error)
+      setReconstructedExecutions(prev => applyProjectedExecutionUpdate(prev, executionId, { status: reconciled }))
+    }
+  }, [reconstructedExecutions, workerUrl])
+
+  // Chat Runtime Truth V1: explicit rejection of a RECONSTRUCTED
+  // approval_pending card -- same revoke endpoint and same
+  // reconcile-to-durable-truth rule as handleRejectTwoAction above.
+  const handleRejectReconstructedExecution = useCallback(async (executionId: string) => {
+    const current = Object.values(reconstructedExecutions).flat().find(card => card.executionId === executionId)
+    if (!current || current.status !== 'approval_pending') return
+
+    setReconstructedExecutions(prev => applyProjectedExecutionUpdate(prev, executionId, { status: 'revoking' }))
+    try {
+      const result = await revokeAgentToolExecution({
+        workerBaseUrl: workerUrl,
+        getAccessToken: async () => {
+          const { data: { session } } = await supabase.auth.getSession()
+          return session?.access_token
+        },
+      }, executionId)
+      setReconstructedExecutions(prev => applyProjectedExecutionUpdate(prev, executionId, { status: result.status }))
+    } catch (error) {
+      console.error('[ChatPage] runtime truth V1: revokeExecution failed for a reconstructed action:', error)
+      setReconstructedExecutions(prev => applyProjectedExecutionUpdate(prev, executionId, { status: 'error' }))
+    }
+  }, [reconstructedExecutions, workerUrl])
+
   const handleRunReasoningProposal = useCallback(async (index: number) => {
     const current = reasoningProposal?.[index]
     if (!current?.step || !current.resolution?.resolved) return
@@ -3230,31 +3568,84 @@ export default function ChatPage({ embedded = false, onOpenAssistantPanel }: Cha
     })
   }, [workerUrl])
 
+  // Chat Runtime Truth V1, review blocker fix: the async half of a bound
+  // proposal's explicit rejection -- the ONLY place the revoke network
+  // call happens, deliberately its own orchestration function so the side
+  // effect can never live inside a setState updater again. Sends the
+  // executionId and nothing else; then reconciles the proposal's
+  // presentation to whatever the Worker authoritatively answered
+  // (applyBoundRevocationOutcome): a durable 'revoked' becomes the local
+  // rejected state; an honest conflict ('approved'/'executing'/a terminal
+  // state) becomes exactly that; a transport failure becomes 'error' --
+  // never a fabricated 'revoked', never a guessed lifecycle status, and
+  // the row's own authority is left unchanged in every case.
+  const revokeBoundProposalExecution = useCallback(async (serverExecutionId: string) => {
+    try {
+      const result = await revokeAgentToolExecution({
+        workerBaseUrl: workerUrl,
+        getAccessToken: async () => {
+          const { data: { session } } = await supabase.auth.getSession()
+          return session?.access_token
+        },
+      }, serverExecutionId)
+      setReasoningProposal(prev => prev ? applyBoundRevocationOutcome(prev, serverExecutionId, result.status) : prev)
+    } catch (error) {
+      console.error('[ChatPage] runtime truth V1 blocker fix: revoke for a bound proposal could not be confirmed:', error)
+      setReasoningProposal(prev => prev ? applyBoundRevocationOutcome(prev, serverExecutionId, 'error') : prev)
+    }
+  }, [workerUrl])
+
   // complete_task proposals are always a single-element reasoningProposal
   // array -- disambiguation candidates are deliberately never complete_task
   // (see resolveDisambiguationCandidates) -- so the approval flow only ever
   // needs to address index 0.
+  //
+  // Chat Runtime Truth V1, review blocker fix: restructured so that every
+  // side effect (the Task 40 outcome report, and the durable revoke) runs
+  // in this handler's own body, NEVER inside a setState updater -- and so
+  // that a proposal with an agent_tool_executions binding is never marked
+  // locally 'rejected' before the Worker's revoke has actually resolved.
+  // The runtime-truth invariant this enforces: local approval UI may
+  // initiate a transition, but it may not independently declare the
+  // durable lifecycle result.
   const handleApprovalDecision = useCallback((decision: ApprovalInteractionResult) => {
     if (!decision.ok || decision.decision === 'closed') return
-    setReasoningProposal(prev => {
-      if (!prev || prev.length === 0) return prev
-      const current = prev[0]
+    const current = reasoningProposal?.[0]
+    if (!current) return
+
+    if (decision.decision === 'rejected') {
       // Task 40: only the REJECTED decision is reported here -- an
       // APPROVED decision via the full dialog still needs a separate Run
       // click (handleRunWriteProposal) before the write actually happens,
       // so its outcome (with the write's own success/failure) is reported
       // from runWriteProposalWithApproval instead, once both facts are
       // known together.
-      if (decision.decision === 'rejected') {
-        reportCurrentProposalOutcome(current, 'rejected', null)
+      reportCurrentProposalOutcome(current, 'rejected', null)
+      const serverExecutionId = current.approval?.serverExecutionId
+      const rejectedApproval = decision.approval ?? current.approval
+      if (serverExecutionId && rejectedApproval) {
+        // Bound (frozen PO decision, Reject -> revoked): record the user's
+        // decision and a transient 'revoking' presentation ONLY --
+        // runStatus is deliberately not touched (see
+        // beginBoundProposalRevocation) -- then let the async
+        // orchestration above reconcile to the Worker's answer.
+        setReasoningProposal(prev => prev ? beginBoundProposalRevocation(prev, rejectedApproval) : prev)
+        void revokeBoundProposalExecution(serverExecutionId)
+        return
       }
-      return prev.map((p, i) => i === 0 ? {
-        ...p,
-        approval: decision.approval,
-        runStatus: decision.decision === 'approved' ? 'approved' : 'rejected',
-      } : p)
-    })
-  }, [reportCurrentProposalOutcome])
+      // Unbound (github.*, engineering.task.propose -- no
+      // agent_tool_executions row exists): the existing local-only
+      // rejection, unchanged.
+      setReasoningProposal(prev => prev
+        ? prev.map((p, i) => i === 0 ? { ...p, approval: decision.approval, runStatus: 'rejected' } : p)
+        : prev)
+      return
+    }
+
+    setReasoningProposal(prev => prev
+      ? prev.map((p, i) => i === 0 ? { ...p, approval: decision.approval, runStatus: 'approved' } : p)
+      : prev)
+  }, [reasoningProposal, reportCurrentProposalOutcome, revokeBoundProposalExecution])
 
   // Generalized for EPIC-07 (Write Light) -- runs any resolved write proposal
   // (tasks.complete, github.issues.comment, github.issues.update), not just
@@ -3645,8 +4036,27 @@ export default function ChatPage({ embedded = false, onOpenAssistantPanel }: Cha
               </div>
             )}
 
+            {/* Chat Runtime Truth V1: after each loaded message, its
+                correlated durable execution cards (zero, one, or many --
+                each rendered independently, never collapsed). Only
+                session-loaded messages carry durable ids that can match
+                (live-appended messages use local `u-`/`a-` ids), so this
+                never double-renders a turn that twoActionPending is
+                already showing live. Reload reconstruction is
+                presentation-only: an 'approved'/'executing' card renders
+                with no buttons and nothing auto-runs. */}
             {messages.map(msg => (
-              <ChatBubble key={msg.id} role={msg.role} content={msg.content} language={msg.language} compact={compact} embedded={embedded} undo={msg.undo} onUndo={handleUndo} />
+              <Fragment key={msg.id}>
+                <ChatBubble role={msg.role} content={msg.content} language={msg.language} compact={compact} embedded={embedded} undo={msg.undo} onUndo={handleUndo} />
+                {reconstructedExecutions[msg.id]?.map(execution => (
+                  <ChatToolExecutionCard
+                    key={execution.key}
+                    execution={execution}
+                    onApprove={execution.executionId ? () => void handleApproveReconstructedExecution(execution.executionId!) : undefined}
+                    onReject={execution.executionId ? () => void handleRejectReconstructedExecution(execution.executionId!) : undefined}
+                  />
+                ))}
+              </Fragment>
             ))}
 
             {sending && <TypingIndicator label={t('chat_typing')} />}
@@ -3664,44 +4074,23 @@ export default function ChatPage({ embedded = false, onOpenAssistantPanel }: Cha
             ))}
 
             {/* Chat V2 Slice 2B.2 correction 1: one small card per pending
-                decomposed action, each with its OWN independent approve
-                control -- approving one never touches the other (see
-                handleApproveTwoAction's own comment). Intentionally not a
-                ReasoningProposalCard -- see ChatWorkerActionPending's
-                comment for why this is a small, standalone shape instead. */}
+                decomposed action, each with its OWN independent
+                approve/reject controls -- acting on one never touches the
+                other (see handleApproveTwoAction/handleRejectTwoAction).
+                Chat Runtime Truth V1: rendered through the SAME
+                ChatToolExecutionCard reload reconstruction uses (one
+                renderer for the same runtime truth), adapted via
+                liveTwoActionExecutionViewModel -- the transient
+                requesting/approving/revoking/error states are the only
+                thing that distinguishes a live card from a reconstructed
+                one. */}
             {twoActionPending?.map(pending => (
-              <div key={pending.requestId} className="rounded-lg border border-border bg-card p-3 text-sm">
-                <div className="font-medium">{pending.previewText}</div>
-                {/* Chat V2 Slice 2B.2 correction 2, BLOCKER 1: the exact
-                    consequential arguments (title/due date/notes for tasks;
-                    title/start/end/notes for calendar) this action will
-                    submit, so the user can see them BEFORE clicking Approve
-                    -- not only the title above. See
-                    twoActionPendingPreviewLines' own comment. */}
-                <div className="mt-2 rounded-lg border border-border/25 bg-background/30 px-3 py-2">
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                    {t('approval_preview_label')}
-                  </p>
-                  <p className="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-foreground/90" dir="auto">
-                    {twoActionPendingPreviewLines(pending, t).join('\n')}
-                  </p>
-                </div>
-                {pending.status === 'requesting' && <div className="text-muted-foreground">{t('chat_typing') ?? 'Preparing…'}</div>}
-                {pending.status === 'approval_pending' && (
-                  <button
-                    type="button"
-                    className="mt-2 rounded-md border border-primary px-3 py-1 text-primary"
-                    onClick={() => void handleApproveTwoAction(pending.requestId)}
-                  >
-                    Approve
-                  </button>
-                )}
-                {pending.status === 'approving' && <div className="text-muted-foreground">Approving…</div>}
-                {(pending.status === 'succeeded' || pending.status === 'failed' || pending.status === 'uncertain') && (
-                  <div className="text-muted-foreground">{pending.resultReply}</div>
-                )}
-                {pending.status === 'error' && <div className="text-destructive">Could not reach the server for this action.</div>}
-              </div>
+              <ChatToolExecutionCard
+                key={pending.requestId}
+                execution={liveTwoActionExecutionViewModel(pending, t)}
+                onApprove={pending.executionId ? () => void handleApproveTwoAction(pending.requestId) : undefined}
+                onReject={pending.executionId ? () => void handleRejectTwoAction(pending.requestId) : undefined}
+              />
             ))}
           </div>
 

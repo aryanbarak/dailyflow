@@ -13,8 +13,12 @@ vi.mock("@/integrations/supabase/client", () => ({
 }));
 
 import {
+  applyBoundRevocationOutcome,
   applyTwoActionApproveResult,
   applyTwoActionRequestResult,
+  applyTwoActionRevokeResult,
+  beginBoundProposalRevocation,
+  boundProposalExecutionViewModel,
   buildChatTimeoutFailureMessages,
   buildTwoActionMessages,
   buildTwoActionPendingStates,
@@ -33,11 +37,15 @@ import {
   ReasoningProposalCard,
   resolveAutoReadTurnContent,
   resolveChatTurnOutcome,
+  liveTwoActionExecutionViewModel,
   resultMessage,
   runtimeSummaryMessage,
   shouldUseReasoningForMessage,
   twoActionPendingPreviewLines,
+  type TwoActionPendingState,
 } from "./ChatPage";
+import { ChatToolExecutionCard } from "@/features/chat/components/ChatToolExecutionCard";
+import type { ChatToolExecutionViewModel } from "@/features/agent/chatToolExecutionProjection";
 import { shouldAutoRunReadOnlyOverlay } from "@/features/chat/autoReadOverlayGate";
 import { ENGINEERING_TASK_NOT_PROPOSED_REASON_MARKER, getStrongReadDomainEvidence, getToolById, isAutoExecutableReadOnlyToolId, PROVIDER_UNAVAILABLE_REASON_MARKER, reasonAboutUserMessage, withTimeout } from "@/features/agent";
 import type {
@@ -2514,5 +2522,301 @@ describe("Production stabilization patch 1 follow-up: server-resolved pendingAct
       t,
     );
     expect(outcome.reasoningStates).not.toBeNull();
+  });
+});
+
+describe("Chat Runtime Truth V1: live/reconstructed shared execution card and reject -> revoked wiring", () => {
+  const t = (key: string) => key;
+
+  function pendingState(overrides: Partial<TwoActionPendingState> = {}): TwoActionPendingState {
+    return {
+      requestId: "req-live-1",
+      toolId: "tasks.create",
+      domain: "tasks",
+      chatMessageId: "msg-1",
+      arguments: { title: "Call Ahmad", dueDate: "2026-09-01", timeOfDay: "09:00" },
+      previewText: "Call Ahmad",
+      status: "approval_pending",
+      executionId: "exec-1",
+      ...overrides,
+    };
+  }
+
+  it("applyTwoActionRevokeResult transitions ONLY the named request's entry -- the sibling is untouched (multi-action tests 25/26)", () => {
+    const prev = [pendingState(), pendingState({ requestId: "req-live-2", executionId: "exec-2" })];
+    const revoking = applyTwoActionRevokeResult(prev, "req-live-1", { status: "revoking" });
+    expect(revoking[0].status).toBe("revoking");
+    expect(revoking[1].status).toBe("approval_pending");
+    const revoked = applyTwoActionRevokeResult(revoking, "req-live-1", { status: "revoked" });
+    expect(revoked[0].status).toBe("revoked");
+    expect(revoked[1].status).toBe("approval_pending");
+  });
+
+  it("applyTwoActionRevokeResult reconciles an honest WRONG_LIFECYCLE_STATE answer (row already approved/expired) to that durable status, never leaving the card approvable", () => {
+    const prev = [pendingState()];
+    expect(applyTwoActionRevokeResult(prev, "req-live-1", { status: "approved" })[0].status).toBe("approved");
+    expect(applyTwoActionRevokeResult(prev, "req-live-1", { status: "expired" })[0].status).toBe("expired");
+  });
+
+  it("liveTwoActionExecutionViewModel produces the same shared view-model shape reload reconstruction produces, with the exact live argument lines", () => {
+    const vm = liveTwoActionExecutionViewModel(pendingState(), t);
+    expect(vm).toMatchObject({
+      key: "req-live-1",
+      executionId: "exec-1",
+      requestId: "req-live-1",
+      chatMessageId: "msg-1",
+      toolId: "tasks.create",
+      domain: "tasks",
+      status: "approval_pending",
+      title: "Call Ahmad",
+    });
+    expect(vm.argumentLines).toEqual([
+      "agent_intent_preview_title: Call Ahmad",
+      "agent_intent_preview_due: 2026-09-01",
+      "family_reminder: 09:00",
+    ]);
+  });
+
+  function cardVm(status: ChatToolExecutionViewModel["status"], overrides: Partial<ChatToolExecutionViewModel> = {}): ChatToolExecutionViewModel {
+    return {
+      key: "exec-1",
+      executionId: "exec-1",
+      requestId: "req-1",
+      chatMessageId: "msg-1",
+      toolId: "tasks.create",
+      domain: "tasks",
+      action: "create",
+      status,
+      title: "Call Ahmad",
+      argumentLines: ["Title: Call Ahmad", "Due: 2026-09-01"],
+      errorCode: null,
+      targetType: null,
+      targetId: null,
+      completedAt: null,
+      ...overrides,
+    };
+  }
+
+  function renderCard(vm: ChatToolExecutionViewModel, withHandlers = true) {
+    return renderToString(
+      <ChatToolExecutionCard
+        execution={vm}
+        onApprove={withHandlers ? () => {} : undefined}
+        onReject={withHandlers ? () => {} : undefined}
+      />,
+    );
+  }
+
+  it("status 6: approval_pending reconstructs as approvable AND rejectable -- both buttons, plus the bound arguments under the Requested label", () => {
+    const html = renderCard(cardVm("approval_pending"));
+    expect(html).toContain("Approve");
+    expect(html).toContain("Reject");
+    expect(html).toContain("Requested");
+    expect(html).toContain("Due: 2026-09-01");
+    expect(html).toContain("Waiting for your approval.");
+  });
+
+  it("statuses 7/8: succeeded and failed reconstruct as terminal -- honest outcome text, target facts where present, and NO buttons", () => {
+    const succeeded = renderCard(cardVm("succeeded", { targetType: "task", targetId: "task-9", completedAt: "2026-09-01T10:00:00.000Z" }));
+    expect(succeeded).toContain("Completed.");
+    expect(succeeded).toContain("task-9");
+    expect(succeeded).not.toContain("<button");
+
+    const failed = renderCard(cardVm("failed", { errorCode: "TARGET_NOT_FOUND" }));
+    expect(failed).toContain("This action failed.");
+    expect(failed).toContain("TARGET_NOT_FOUND");
+    expect(failed).not.toContain("<button");
+  });
+
+  it("statuses 9/10/11: denied, expired and revoked reconstruct honestly with no approval/execution affordance", () => {
+    expect(renderCard(cardVm("denied"))).toContain("Denied by server policy.");
+    expect(renderCard(cardVm("denied"))).not.toContain("<button");
+    expect(renderCard(cardVm("expired"))).toContain("The approval window expired.");
+    expect(renderCard(cardVm("expired"))).not.toContain("<button");
+    expect(renderCard(cardVm("revoked"))).toContain("This action was rejected.");
+    expect(renderCard(cardVm("revoked"))).not.toContain("<button");
+  });
+
+  it("status 12: uncertain never renders as success or failure -- its own honest text, no retry/approve/reject affordance", () => {
+    const html = renderCard(cardVm("uncertain"));
+    expect(html).toContain("could not be confirmed");
+    expect(html).not.toContain("Completed.");
+    expect(html).not.toContain("This action failed.");
+    expect(html).not.toContain("<button");
+  });
+
+  it("status 13: approved and executing reconstruct as in-progress statements with NO buttons -- nothing on a reloaded card can re-approve or replay them", () => {
+    const approved = renderCard(cardVm("approved"));
+    expect(approved).toContain("not yet confirmed");
+    expect(approved).not.toContain("<button");
+    const executing = renderCard(cardVm("executing"));
+    expect(executing).toContain("Execution in progress.");
+    expect(executing).not.toContain("<button");
+  });
+
+  it("the transient live states render as progress text, never as outcomes", () => {
+    expect(renderCard(cardVm("requesting"))).not.toContain("<button");
+    expect(renderCard(cardVm("approving"))).toContain("Approving...");
+    expect(renderCard(cardVm("revoking"))).toContain("Rejecting...");
+    expect(renderCard(cardVm("error"))).toContain("Could not reach the server for this action.");
+  });
+});
+
+// Chat Runtime Truth V1, REVIEW BLOCKER FIX: a generic proposal with an
+// agent_tool_executions binding may never independently declare its own
+// durable lifecycle result. Local approval UI initiates the revoke; the
+// presentation reconciles ONLY to what the Worker authoritatively
+// answered.
+describe("Chat Runtime Truth V1, review blocker fix: bound proposal rejection reconciles to authoritative runtime truth", () => {
+  const EXEC_ID = "exec-bound-1";
+
+  function boundProposalState(overrides: Record<string, unknown> = {}) {
+    return {
+      result: reasoningResult("complete_task"),
+      step: step("complete_task"),
+      resolution: resolution("tasks.complete"),
+      approval: { ...approval("pending"), serverExecutionId: EXEC_ID },
+      runStatus: "approval_required" as const,
+      requestId: "req-bound-1",
+      executionRequestStatus: "approval_pending" as const,
+      ...overrides,
+    };
+  }
+
+  // The card's own prop type, so states widened by the pure transition
+  // helpers (which return ReasoningProposalState[]) render without
+  // narrowing friction.
+  type CardProposal = Parameters<typeof ReasoningProposalCard>[0]["proposal"];
+
+  function renderProposal(proposal: CardProposal) {
+    return renderToString(
+      <ReasoningProposalCard
+        proposal={proposal}
+        onRunReadOnly={vi.fn()}
+        onReviewApproval={vi.fn()}
+        onRunWrite={vi.fn()}
+        onConfirmAndRunWrite={vi.fn()}
+      />,
+    );
+  }
+
+  it("1. beginBoundProposalRevocation records the decision and 'revoking' ONLY -- runStatus is untouched, so nothing is locally terminal before the Worker resolves", () => {
+    const rejectedApproval = { ...approval("rejected"), serverExecutionId: EXEC_ID };
+    const [state] = beginBoundProposalRevocation([boundProposalState()], rejectedApproval);
+    expect(state.boundExecutionStatus).toBe("revoking");
+    expect(state.runStatus).toBe("approval_required");
+    expect(state.approval).toBe(rejectedApproval);
+  });
+
+  it("1b. while the revoke is in flight, the card presents 'Rejecting...' and never 'This action was rejected.' -- even though the local approval decision already says rejected", () => {
+    const rejectedApproval = { ...approval("rejected"), serverExecutionId: EXEC_ID };
+    const [state] = beginBoundProposalRevocation([boundProposalState()], rejectedApproval);
+    const html = renderProposal(state);
+    expect(html).toContain("Rejecting...");
+    expect(html).not.toContain("This action was rejected.");
+  });
+
+  it("2. a successful revoke reconciles to 'revoked' -- only THEN does the local rejected state exist, and the card shows the rejected text via the shared renderer", () => {
+    const rejectedApproval = { ...approval("rejected"), serverExecutionId: EXEC_ID };
+    const began = beginBoundProposalRevocation([boundProposalState()], rejectedApproval);
+    const [state] = applyBoundRevocationOutcome(began, EXEC_ID, "revoked");
+    expect(state.boundExecutionStatus).toBe("revoked");
+    expect(state.runStatus).toBe("rejected");
+    expect(renderProposal(state)).toContain("This action was rejected.");
+  });
+
+  it("3. a revoke transport failure reconciles to 'error' -- never a fabricated revoked/rejected, and the card says exactly that the server could not be reached", () => {
+    const rejectedApproval = { ...approval("rejected"), serverExecutionId: EXEC_ID };
+    const began = beginBoundProposalRevocation([boundProposalState()], rejectedApproval);
+    const [state] = applyBoundRevocationOutcome(began, EXEC_ID, "error");
+    expect(state.boundExecutionStatus).toBe("error");
+    expect(state.runStatus).toBe("approval_required");
+    const html = renderProposal(state);
+    expect(html).toContain("Could not reach the server for this action.");
+    expect(html).not.toContain("This action was rejected.");
+  });
+
+  it("4/5. an honest WRONG_LIFECYCLE_STATE conflict reporting 'approved' or 'executing' reconciles the UI to THAT status -- never to rejected", () => {
+    const rejectedApproval = { ...approval("rejected"), serverExecutionId: EXEC_ID };
+    const began = beginBoundProposalRevocation([boundProposalState()], rejectedApproval);
+
+    const [approvedState] = applyBoundRevocationOutcome(began, EXEC_ID, "approved");
+    expect(approvedState.boundExecutionStatus).toBe("approved");
+    expect(approvedState.runStatus).toBe("approval_required");
+    const approvedHtml = renderProposal(approvedState);
+    expect(approvedHtml).toContain("not yet confirmed");
+    expect(approvedHtml).not.toContain("This action was rejected.");
+
+    const [executingState] = applyBoundRevocationOutcome(began, EXEC_ID, "executing");
+    expect(executingState.boundExecutionStatus).toBe("executing");
+    expect(executingState.runStatus).toBe("approval_required");
+    const executingHtml = renderProposal(executingState);
+    expect(executingHtml).toContain("Execution in progress.");
+    expect(executingHtml).not.toContain("This action was rejected.");
+  });
+
+  it("6. a conflict reporting an existing terminal state (succeeded/expired/denied) reconciles to exactly that terminal state", () => {
+    const rejectedApproval = { ...approval("rejected"), serverExecutionId: EXEC_ID };
+    const began = beginBoundProposalRevocation([boundProposalState()], rejectedApproval);
+
+    const [succeededState] = applyBoundRevocationOutcome(began, EXEC_ID, "succeeded");
+    expect(succeededState.runStatus).toBe("approval_required");
+    expect(renderProposal(succeededState)).toContain("Completed.");
+
+    const [expiredState] = applyBoundRevocationOutcome(began, EXEC_ID, "expired");
+    expect(renderProposal(expiredState)).toContain("The approval window expired.");
+
+    const [deniedState] = applyBoundRevocationOutcome(began, EXEC_ID, "denied");
+    expect(renderProposal(deniedState)).toContain("Denied by server policy.");
+  });
+
+  it("9. approve-vs-revoke race: even after a local rejected approval decision, a revoke answered with 'approved'/'executing' can never leave the UI claiming rejection", () => {
+    // The exact race shape: user clicked Reject, decision.approval says
+    // rejected, revoke lost the conditional-transition race to a
+    // concurrent approve -- the Worker's answer IS the truth.
+    const rejectedApproval = { ...approval("rejected"), serverExecutionId: EXEC_ID };
+    const raced = applyBoundRevocationOutcome(
+      beginBoundProposalRevocation([boundProposalState()], rejectedApproval),
+      EXEC_ID,
+      "executing",
+    );
+    expect(raced[0].runStatus).not.toBe("rejected");
+    expect(renderProposal(raced[0])).not.toContain("This action was rejected.");
+  });
+
+  it("applyBoundRevocationOutcome matches by the bound row's own serverExecutionId -- an outcome for a different execution leaves the state untouched", () => {
+    const rejectedApproval = { ...approval("rejected"), serverExecutionId: EXEC_ID };
+    const began = beginBoundProposalRevocation([boundProposalState()], rejectedApproval);
+    const [state] = applyBoundRevocationOutcome(began, "exec-somebody-else", "revoked");
+    expect(state.boundExecutionStatus).toBe("revoking");
+    expect(state.runStatus).toBe("approval_required");
+  });
+
+  it("8. an unbound proposal (no serverExecutionId) never gets a bound-execution presentation -- boundProposalExecutionViewModel is null and the plain rejected text still renders as before", () => {
+    const unbound = { ...boundProposalState({ runStatus: "rejected" as const }), approval: approval("rejected") };
+    expect(boundProposalExecutionViewModel(unbound)).toBeNull();
+    expect(renderProposal(unbound)).toContain("This action was rejected.");
+  });
+
+  it("one-renderer: a terminal auto-resolved outcome from the pre-approval effect renders through the shared execution card, carrying the Worker's own reply", () => {
+    const state = boundProposalState({
+      runStatus: "success" as const,
+      executionRequestStatus: "succeeded" as const,
+      executionRequestReply: "✓ Task completed: Submit application",
+      boundExecutionStatus: "succeeded" as const,
+    });
+    const html = renderProposal(state);
+    expect(html).toContain('data-execution-status="succeeded"');
+    expect(html).toContain("Completed.");
+    expect(html).toContain("Task completed: Submit application");
+  });
+
+  it("the nested shared card never offers a second execution affordance -- no buttons, whatever the bound status", () => {
+    const rejectedApproval = { ...approval("rejected"), serverExecutionId: EXEC_ID };
+    const began = beginBoundProposalRevocation([boundProposalState()], rejectedApproval);
+    for (const status of ["revoking", "approved", "executing", "revoked", "error"] as const) {
+      const [state] = applyBoundRevocationOutcome(began, EXEC_ID, status);
+      expect(renderProposal(state)).not.toContain("<button");
+    }
   });
 });
