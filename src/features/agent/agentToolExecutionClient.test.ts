@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createAgentToolExecutionClient } from "./agentToolExecutionClient";
+import { createAgentToolExecutionClient, revokeAgentToolExecution } from "./agentToolExecutionClient";
 
 const BASE_INPUT = {
   toolId: "tasks.create" as const,
@@ -150,6 +150,66 @@ describe("agent tool execution client (Chat V2 Slice 2A, Blocker 1 correction: s
         fetcher: async () => { throw new Error("network down") },
       });
       await expect(client.approveExecution("exec-1")).rejects.toMatchObject({ code: "AGENT_EXECUTION_APPROVE_UNAVAILABLE", retryable: false });
+    });
+  });
+
+  // Chat Runtime Truth V1 (frozen PO decision, Reject -> revoked).
+  describe("revokeAgentToolExecution", () => {
+    it("calls only /agent/execution/revoke, with the body carrying ONLY the executionId -- never arguments, never toolId", async () => {
+      const calls: Array<{ url: string; init?: RequestInit }> = [];
+      const fetcher = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+        calls.push({ url: String(url), init });
+        return new Response(JSON.stringify({ status: "revoked", executionId: "exec-1" }), { status: 200 });
+      });
+
+      const result = await revokeAgentToolExecution({
+        workerBaseUrl: "http://127.0.0.1:8787",
+        getAccessToken: async () => "session-token",
+        fetcher: fetcher as unknown as typeof fetch,
+      }, "exec-1");
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0].url).toBe("http://127.0.0.1:8787/agent/execution/revoke");
+      expect(new Headers(calls[0].init?.headers).get("Authorization")).toBe("Bearer session-token");
+      expect(JSON.parse(calls[0].init?.body as string)).toEqual({ executionId: "exec-1" });
+      expect(result).toEqual({ status: "revoked" });
+    });
+
+    it("a WRONG_LIFECYCLE_STATE conflict is returned as the row's honest current status, not thrown", async () => {
+      const fetcher = vi.fn(async () => new Response(JSON.stringify({ error: "WRONG_LIFECYCLE_STATE", status: "approved" }), { status: 409 }));
+      const result = await revokeAgentToolExecution({
+        workerBaseUrl: "https://worker.example.com",
+        getAccessToken: async () => "session",
+        fetcher: fetcher as unknown as typeof fetch,
+      }, "exec-1");
+      expect(result).toEqual({ status: "approved" });
+    });
+
+    it("requires authentication before calling the worker at all", async () => {
+      const fetcher = vi.fn();
+      await expect(revokeAgentToolExecution({
+        workerBaseUrl: "https://worker.example.com",
+        getAccessToken: async () => undefined,
+        fetcher: fetcher as unknown as typeof fetch,
+      }, "exec-1")).rejects.toMatchObject({ code: "AUTH_REQUIRED" });
+      expect(fetcher).not.toHaveBeenCalled();
+    });
+
+    it("surfaces the Worker's specific error code from a rejected revoke (e.g. actor mismatch)", async () => {
+      const fetcher = vi.fn(async () => new Response(JSON.stringify({ error: "ACTOR_MISMATCH" }), { status: 403 }));
+      await expect(revokeAgentToolExecution({
+        workerBaseUrl: "https://worker.example.com",
+        getAccessToken: async () => "session",
+        fetcher: fetcher as unknown as typeof fetch,
+      }, "exec-1")).rejects.toMatchObject({ code: "ACTOR_MISMATCH" });
+    });
+
+    it("a network failure is reported as a distinct, non-retryable unavailability error, not thrown raw", async () => {
+      await expect(revokeAgentToolExecution({
+        workerBaseUrl: "https://worker.example.com",
+        getAccessToken: async () => "session",
+        fetcher: async () => { throw new Error("network down") },
+      }, "exec-1")).rejects.toMatchObject({ code: "AGENT_EXECUTION_REVOKE_UNAVAILABLE", retryable: false });
     });
   });
 });

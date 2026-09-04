@@ -20,7 +20,11 @@ const pageSource = readFileSync(path.resolve(process.cwd(), "src", "pages", "Cha
 
 describe("ChatPage: agentToolExecutionClient wiring (Chat V2 Slice 2A, Blocker A correction)", () => {
   it("imports createAgentToolExecutionClient from the Slice 2A client module", () => {
-    expect(pageSource).toMatch(/import \{ createAgentToolExecutionClient \} from '@\/features\/agent\/agentToolExecutionClient'/);
+    // Chat Runtime Truth V1: the same import line now also carries
+    // revokeAgentToolExecution (the frozen Reject -> revoked wiring) --
+    // the pin verifies createAgentToolExecutionClient still comes from
+    // this exact module, whatever siblings share the statement.
+    expect(pageSource).toMatch(/import \{ createAgentToolExecutionClient[^}]*\} from '@\/features\/agent\/agentToolExecutionClient'/);
   });
 
   it("there is exactly ONE runWriteTool call site, and its executionContext supplies agentToolExecutionClient", () => {
@@ -139,5 +143,74 @@ describe("ChatPage: approval is gated on the server-execution binding, not just 
     const confirmFnStart = pageSource.indexOf("const handleConfirmAndRunWrite = useCallback");
     const confirmFnEnd = pageSource.indexOf("const approvedApproval = decision.approval", confirmFnStart);
     expect(pageSource.slice(confirmFnStart, confirmFnEnd)).toMatch(/if \(!isExecutionBindingReady\(current\.executionRequestStatus\)\) return/);
+  });
+});
+
+// Chat Runtime Truth V1, REVIEW BLOCKER FIX: the explicit-rejection
+// orchestration for a bound proposal must (a) never run its network side
+// effect inside a React setState updater, and (b) never locally declare
+// the durable lifecycle result -- the Worker's answer is what the UI
+// reconciles to. Verified against the real source, per this file's own
+// established convention.
+describe("ChatPage: bound rejection orchestration + correlation wiring (Runtime Truth V1 review blocker)", () => {
+  const decisionFnStart = pageSource.indexOf("const handleApprovalDecision = useCallback");
+  const decisionFnEnd = pageSource.indexOf("}, [reasoningProposal, reportCurrentProposalOutcome, revokeBoundProposalExecution])", decisionFnStart);
+  const decisionBody = pageSource.slice(decisionFnStart, decisionFnEnd);
+
+  it("7. the revoke side effect is not executed inside a state updater -- handleApprovalDecision contains no network call, and every setReasoningProposal callback in it is a pure transition", () => {
+    expect(decisionFnStart).toBeGreaterThan(-1);
+    expect(decisionFnEnd).toBeGreaterThan(decisionFnStart);
+    // No network call anywhere in the decision handler itself.
+    expect(decisionBody).not.toContain("revokeAgentToolExecution(");
+    expect(decisionBody).not.toContain("await ");
+    // The bound branch delegates to the pure transition + the separate
+    // async orchestration, in the handler body -- outside any updater.
+    expect(decisionBody).toMatch(/setReasoningProposal\(prev => prev \? beginBoundProposalRevocation\(prev, rejectedApproval\) : prev\)/);
+    expect(decisionBody).toMatch(/void revokeBoundProposalExecution\(serverExecutionId\)/);
+  });
+
+  it("1. the bound branch never declares the local terminal 'rejected' -- only the unbound branch (no agent_tool_executions row) keeps the pre-existing local rejection", () => {
+    const boundBranchStart = decisionBody.indexOf("if (serverExecutionId && rejectedApproval)");
+    expect(boundBranchStart).toBeGreaterThan(-1);
+    const boundBranchEnd = decisionBody.indexOf("return", decisionBody.indexOf("void revokeBoundProposalExecution(", boundBranchStart));
+    const boundBranch = decisionBody.slice(boundBranchStart, boundBranchEnd);
+    expect(boundBranch).not.toContain("runStatus: 'rejected'");
+    // 8. Unbound behavior unchanged: the plain local rejection still
+    // exists, after (outside) the bound branch.
+    expect(decisionBody.slice(boundBranchEnd)).toMatch(/runStatus: 'rejected'/);
+  });
+
+  it("revokeBoundProposalExecution awaits the Worker with the executionId only and reconciles via applyBoundRevocationOutcome -- transport failure becomes 'error', never a fabricated revoked", () => {
+    const fnStart = pageSource.indexOf("const revokeBoundProposalExecution = useCallback(async");
+    expect(fnStart).toBeGreaterThan(-1);
+    const fnEnd = pageSource.indexOf("}, [workerUrl])", fnStart);
+    const body = pageSource.slice(fnStart, fnEnd);
+    expect(body).toMatch(/await revokeAgentToolExecution\(/);
+    expect(body).toMatch(/applyBoundRevocationOutcome\(prev, serverExecutionId, result\.status\)/);
+    expect(body).toMatch(/applyBoundRevocationOutcome\(prev, serverExecutionId, 'error'\)/);
+    // No hardcoded lifecycle claim anywhere in the orchestration -- the
+    // only statuses it can ever apply are the Worker's own answer and the
+    // explicit transport-failure 'error'.
+    expect(body).not.toContain("'revoked'");
+    expect(body).not.toContain("'rejected'");
+  });
+
+  // Chat Runtime Truth V1 (correlation, tests 22/23): the full client
+  // chain /chat userMessageId -> proposal state -> requestWriteExecution.
+  // The writeRuntime half (forwarding into client.requestExecution) and
+  // the Worker half (storing the columns) are covered by real behavioral
+  // tests in writeRuntime.test.ts and agent-tool-execution.test.ts; this
+  // pins the ChatPage wiring between them, which is never mounted in
+  // tests (this file's own established convention).
+  it("correlation: handleSend destructures /chat's userMessageId, stamps it (with sessionId) onto the reasoning states, and the binding effect forwards both into requestWriteExecution", () => {
+    expect(pageSource).toMatch(/pendingAction, userMessageId \}, overlayResult\] = await Promise\.all\(\[chatCallPromise, overlayPromise\]\)/);
+    expect(pageSource).toMatch(/\{ \.\.\.state, sessionId: sessionId \?\? undefined, chatMessageId: userMessageId \}/);
+
+    const effectCallStart = pageSource.indexOf("void requestWriteExecution({");
+    expect(effectCallStart).toBeGreaterThan(-1);
+    const effectCallEnd = pageSource.indexOf("executionContext", effectCallStart);
+    const effectCall = pageSource.slice(effectCallStart, effectCallEnd);
+    expect(effectCall).toMatch(/sessionId: proposal\.sessionId/);
+    expect(effectCall).toMatch(/chatMessageId: proposal\.chatMessageId/);
   });
 });

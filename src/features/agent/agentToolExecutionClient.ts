@@ -133,6 +133,61 @@ export function createAgentToolExecutionClient(options: AgentToolExecutionClient
   });
 }
 
+// Chat Runtime Truth V1 (frozen PO decision, Reject -> revoked): the
+// browser half of POST /agent/execution/revoke. Deliberately a standalone
+// function rather than a third method on AgentToolExecutionClient --
+// that interface is what write HANDLERS receive through ExecutionContext,
+// and no handler may ever revoke; rejection is exclusively a direct user
+// action wired from the Chat UI (ChatPage.tsx). Sends the executionId and
+// nothing else, mirroring approveExecution's own accepts-nothing-else
+// contract on the server side.
+export type AgentToolExecutionRevokeStatus =
+  | "revoked"
+  | "approval_pending"
+  | "approved"
+  | "executing"
+  | "succeeded"
+  | "failed"
+  | "denied"
+  | "expired"
+  | "uncertain";
+
+const REVOKE_STATUSES: ReadonlySet<string> = new Set([
+  "revoked", "approval_pending", "approved", "executing", "succeeded", "failed", "denied", "expired", "uncertain",
+]);
+
+export interface AgentToolExecutionRevokeResult {
+  // 'revoked' on a successful (or already-revoked, honest-duplicate)
+  // transition; otherwise the row's actual current lifecycle status as the
+  // Worker reported it in its WRONG_LIFECYCLE_STATE conflict -- returned
+  // (not thrown) so the caller can reconcile its card to that durable
+  // truth instead of showing a generic error for an honest answer.
+  status: AgentToolExecutionRevokeStatus;
+}
+
+export async function revokeAgentToolExecution(
+  options: AgentToolExecutionClientOptions,
+  executionId: string,
+): Promise<AgentToolExecutionRevokeResult> {
+  const revokeEndpoint = endpoint(options.workerBaseUrl, "/agent/execution/revoke");
+  const fetcher = options.fetcher ?? fetch;
+  const accessToken = await options.getAccessToken();
+  if (!accessToken) throw safeExecutionError("AUTH_REQUIRED", "Authentication is required.");
+
+  const revoked = await postJson(fetcher, revokeEndpoint, accessToken, { executionId }, "AGENT_EXECUTION_REVOKE_UNAVAILABLE");
+  const bodyStatus = typeof revoked.body.status === "string" && REVOKE_STATUSES.has(revoked.body.status)
+    ? (revoked.body.status as AgentToolExecutionRevokeStatus)
+    : undefined;
+  if (revoked.status < 400) {
+    if (bodyStatus === "revoked") return { status: "revoked" };
+    throw safeExecutionError("AGENT_EXECUTION_REVOKE_FAILED", "The action could not be rejected.");
+  }
+  // 409 WRONG_LIFECYCLE_STATE carries the row's real current status --
+  // an honest already-terminal/already-advancing answer, not a failure.
+  if (revoked.status === 409 && bodyStatus) return { status: bodyStatus };
+  throw safeExecutionError(safeString(revoked.body.error) ?? "AGENT_EXECUTION_REVOKE_FAILED", "The action could not be rejected.");
+}
+
 function adaptOutcome(body: Record<string, unknown>, status: "succeeded" | "failed" | "uncertain"): AgentToolExecutionResult {
   return {
     status,

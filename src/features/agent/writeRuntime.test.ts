@@ -1710,6 +1710,50 @@ describe("writeRuntime", () => {
       expect(requestExecution).toHaveBeenCalledWith(expect.objectContaining({ requestId: "write:the-one-true-id" }));
     });
 
+    // Chat Runtime Truth V1 (correlation, slice tests 22/23 client half):
+    // the generic reasoning/write path now forwards the originating chat
+    // session id and durable user-message id into the Worker request, so
+    // the durable agent_tool_executions row carries the same EXPLICIT
+    // session_id/chat_message_id correlation columns the 2B.2 path always
+    // populated -- never derived by parsing requestId strings.
+    it("forwards sessionId and chatMessageId verbatim to the Worker request when the caller supplies them", async () => {
+      const sourceStep = step({ id: "step:corr", domain: "tasks", actionType: "create", targetId: "step:corr" });
+      const requestExecution = vi.fn().mockResolvedValue({ status: "approval_pending", executionId: "exec-corr-1" });
+
+      await requestWriteExecution({
+        requestId: "write:corr-1",
+        step: sourceStep,
+        toolResolution: resolution(sourceStep, "tasks.create", { requiredInput: ["title"] }),
+        target: { title: "Call Ahmad" },
+        sessionId: "session-uuid-1",
+        chatMessageId: "message-uuid-1",
+        executionContext: { agentToolExecutionClient: { requestExecution, approveExecution: vi.fn() } } as ExecutionContext,
+      }, { authorityContext });
+
+      expect(requestExecution).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: "session-uuid-1",
+        chatMessageId: "message-uuid-1",
+      }));
+    });
+
+    it("omitting the correlation fields keeps the request shape unchanged (undefined, stored as null server-side) -- existing callers unaffected", async () => {
+      const sourceStep = step({ id: "step:no-corr", domain: "tasks", actionType: "create", targetId: "step:no-corr" });
+      const requestExecution = vi.fn().mockResolvedValue({ status: "approval_pending", executionId: "exec-no-corr-1" });
+
+      await requestWriteExecution({
+        requestId: "write:no-corr-1",
+        step: sourceStep,
+        toolResolution: resolution(sourceStep, "tasks.create", { requiredInput: ["title"] }),
+        target: { title: "Call Ahmad" },
+        executionContext: { agentToolExecutionClient: { requestExecution, approveExecution: vi.fn() } } as ExecutionContext,
+      }, { authorityContext });
+
+      expect(requestExecution).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: undefined,
+        chatMessageId: undefined,
+      }));
+    });
+
     it("is not_applicable for a tool that isn't one of the five Worker-execution-backed tools -- never calls the Worker", async () => {
       const sourceStep = step({ id: "step:github", domain: "github", actionType: "create", targetId: "aryan/smartflow#5" });
       const requestExecution = vi.fn();

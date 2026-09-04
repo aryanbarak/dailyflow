@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Env } from './types'
-import { handleAgentToolExecutionApprove, handleAgentToolExecutionRequest } from './agent-tool-execution'
+import { handleAgentToolExecutionApprove, handleAgentToolExecutionRequest, handleAgentToolExecutionRevoke } from './agent-tool-execution'
 
 function mockEnv(): Env {
   return {
@@ -1229,5 +1229,153 @@ describe('Production stabilization patch 1, FIX A2: reminder time survives the r
     await withFetch(fetchMock, () => handleAgentToolExecutionApprove(authRequest('/agent/execution/approve', { executionId }), mockEnv()))
 
     expect(calls.filter((c) => c.url.includes('/rest/v1/alarms'))).toHaveLength(0)
+  })
+})
+
+// Chat Runtime Truth V1 -- frozen PO decision: explicit user rejection of
+// an approval_pending execution durably transitions the row to 'revoked'.
+// POST /agent/execution/revoke accepts an executionId and NOTHING else,
+// executes nothing, and can only ever move approval_pending -> revoked.
+describe('Chat Runtime Truth V1: explicit reject -> revoked lifecycle', () => {
+  function insertPendingRow(table: FakeExecutionsTable, overrides: Partial<Row> = {}) {
+    return table.insert({
+      user_id: USER_ID, domain: 'tasks', action: 'create', tool_id: 'tasks.create',
+      request_id: 'req-revoke-1', intent_id: 'intent:rrr', canonical_hash: 'rrr',
+      normalized_arguments: { title: 'Call Ahmad' }, time_zone: 'Europe/Berlin',
+      status: 'approval_pending', approval_requested_at: new Date().toISOString(),
+      ...overrides,
+    })
+  }
+
+  it('14. explicit reject transitions approval_pending -> revoked durably, with no domain write', async () => {
+    const table = new FakeExecutionsTable()
+    const { fetchMock, calls } = buildFetchMock({ table, policyMode: 'ask' })
+    const row = insertPendingRow(table)
+    const response = await withFetch(fetchMock, () => handleAgentToolExecutionRevoke(authRequest('/agent/execution/revoke', { executionId: row.id }), mockEnv()))
+    expect(response.status).toBe(200)
+    const body = await response.json() as { status: string; executionId: string }
+    expect(body.status).toBe('revoked')
+    expect(body.executionId).toBe(row.id)
+    expect(table.rows[0].status).toBe('revoked')
+    // Nothing executed: no tasks/calendar/undo write of any kind happened.
+    expect(calls.some((c) => c.url.includes('/rest/v1/tasks') || c.url.includes('/rest/v1/calendar_events') || c.url.includes('/rest/v1/flow_write_undo_records'))).toBe(false)
+  })
+
+  it('15. revoke requires authentication', async () => {
+    const table = new FakeExecutionsTable()
+    const { fetchMock } = buildFetchMock({ table, policyMode: 'ask' })
+    const row = insertPendingRow(table)
+    const response = await withFetch(fetchMock, () => handleAgentToolExecutionRevoke(authRequest('/agent/execution/revoke', { executionId: row.id }, null), mockEnv()))
+    expect(response.status).toBe(401)
+    expect(table.rows[0].status).toBe('approval_pending')
+  })
+
+  it('16. actor mismatch fails closed -- another authenticated user cannot revoke this row', async () => {
+    const table = new FakeExecutionsTable()
+    const { fetchMock } = buildFetchMock({ table, policyMode: 'ask' })
+    const row = insertPendingRow(table)
+    const response = await withFetch(fetchMock, () => handleAgentToolExecutionRevoke(authRequest('/agent/execution/revoke', { executionId: row.id }, OTHER_USER_ID), mockEnv()))
+    expect(response.status).toBe(403)
+    expect((await response.json() as { error: string }).error).toBe('ACTOR_MISMATCH')
+    expect(table.rows[0].status).toBe('approval_pending')
+  })
+
+  it('17. revoke accepts no replacement arguments -- extra body fields are ignored entirely, and the stored intent is untouched', async () => {
+    const table = new FakeExecutionsTable()
+    const { fetchMock } = buildFetchMock({ table, policyMode: 'ask' })
+    const row = insertPendingRow(table)
+    const response = await withFetch(fetchMock, () => handleAgentToolExecutionRevoke(authRequest('/agent/execution/revoke', {
+      executionId: row.id,
+      // None of these may ever be read, re-trusted, or stored.
+      arguments: { title: 'SOMETHING ELSE ENTIRELY' },
+      toolId: 'calendar.create_event',
+      domain: 'calendar',
+      targetId: 'other-target',
+    }), mockEnv()))
+    expect(response.status).toBe(200)
+    expect(table.rows[0].status).toBe('revoked')
+    expect(table.rows[0].normalized_arguments).toEqual({ title: 'Call Ahmad' })
+    expect(table.rows[0].tool_id).toBe('tasks.create')
+  })
+
+  it('18. approved rows cannot be revoked -- honest WRONG_LIFECYCLE_STATE, row unchanged', async () => {
+    const table = new FakeExecutionsTable()
+    const { fetchMock } = buildFetchMock({ table, policyMode: 'ask' })
+    const row = insertPendingRow(table, { status: 'approved' })
+    const response = await withFetch(fetchMock, () => handleAgentToolExecutionRevoke(authRequest('/agent/execution/revoke', { executionId: row.id }), mockEnv()))
+    expect(response.status).toBe(409)
+    const body = await response.json() as { error: string; status: string }
+    expect(body.error).toBe('WRONG_LIFECYCLE_STATE')
+    expect(body.status).toBe('approved')
+    expect(table.rows[0].status).toBe('approved')
+  })
+
+  it('19. executing rows cannot be revoked', async () => {
+    const table = new FakeExecutionsTable()
+    const { fetchMock } = buildFetchMock({ table, policyMode: 'ask' })
+    const row = insertPendingRow(table, { status: 'executing' })
+    const response = await withFetch(fetchMock, () => handleAgentToolExecutionRevoke(authRequest('/agent/execution/revoke', { executionId: row.id }), mockEnv()))
+    expect(response.status).toBe(409)
+    expect((await response.json() as { status: string }).status).toBe('executing')
+    expect(table.rows[0].status).toBe('executing')
+  })
+
+  it('20. terminal rows (succeeded/failed/denied/expired/uncertain) cannot be revived or rewritten through revoke', async () => {
+    for (const terminal of ['succeeded', 'failed', 'denied', 'expired', 'uncertain'] as const) {
+      const table = new FakeExecutionsTable()
+      const { fetchMock } = buildFetchMock({ table, policyMode: 'ask' })
+      const row = insertPendingRow(table, { status: terminal })
+      const response = await withFetch(fetchMock, () => handleAgentToolExecutionRevoke(authRequest('/agent/execution/revoke', { executionId: row.id }), mockEnv()))
+      expect(response.status).toBe(409)
+      const body = await response.json() as { error: string; status: string }
+      expect(body.error).toBe('WRONG_LIFECYCLE_STATE')
+      expect(body.status).toBe(terminal)
+      expect(table.rows[0].status).toBe(terminal)
+    }
+  })
+
+  it('21. duplicate revoke fails safely with an honest already-terminal answer, and a revoked row can never be approved or executed afterward', async () => {
+    const table = new FakeExecutionsTable()
+    const { fetchMock, calls } = buildFetchMock({ table, policyMode: 'ask' })
+    const row = insertPendingRow(table)
+    const first = await withFetch(fetchMock, () => handleAgentToolExecutionRevoke(authRequest('/agent/execution/revoke', { executionId: row.id }), mockEnv()))
+    expect(first.status).toBe(200)
+
+    const second = await withFetch(fetchMock, () => handleAgentToolExecutionRevoke(authRequest('/agent/execution/revoke', { executionId: row.id }), mockEnv()))
+    expect(second.status).toBe(409)
+    const secondBody = await second.json() as { error: string; status: string }
+    expect(secondBody.error).toBe('WRONG_LIFECYCLE_STATE')
+    expect(secondBody.status).toBe('revoked')
+
+    // Decision 9 unchanged: a revoked row is not an approvable entry state.
+    const approveAfterRevoke = await withFetch(fetchMock, () => handleAgentToolExecutionApprove(authRequest('/agent/execution/approve', { executionId: row.id }), mockEnv()))
+    expect(approveAfterRevoke.status).toBe(409)
+    expect((await approveAfterRevoke.json() as { error: string }).error).toBe('DUPLICATE_EXECUTION')
+    expect(table.rows[0].status).toBe('revoked')
+    expect(calls.some((c) => c.url.includes('/rest/v1/tasks') || c.url.includes('/rest/v1/calendar_events'))).toBe(false)
+  })
+
+  it('unknown executionId is a 404, and a malformed body (no executionId) is a 400', async () => {
+    const table = new FakeExecutionsTable()
+    const { fetchMock } = buildFetchMock({ table, policyMode: 'ask' })
+    const missing = await withFetch(fetchMock, () => handleAgentToolExecutionRevoke(authRequest('/agent/execution/revoke', { executionId: 'exec-does-not-exist' }), mockEnv()))
+    expect(missing.status).toBe(404)
+    const malformed = await withFetch(fetchMock, () => handleAgentToolExecutionRevoke(authRequest('/agent/execution/revoke', {}), mockEnv()))
+    expect(malformed.status).toBe(400)
+  })
+
+  it('correlation baseline: a request carrying sessionId/chatMessageId stores them on the durable row verbatim (existing columns, no parsing)', async () => {
+    const table = new FakeExecutionsTable()
+    const { fetchMock } = buildFetchMock({ table, policyMode: 'ask' })
+    const response = await withFetch(fetchMock, () => handleAgentToolExecutionRequest(authRequest('/agent/execution/request', {
+      ...TASK_CREATE_REQUEST_BODY,
+      requestId: 'req-corr-1',
+      sessionId: 'session-uuid-1',
+      chatMessageId: 'message-uuid-1',
+    }), mockEnv()))
+    expect(response.status).toBe(200)
+    const stored = table.rows[0] as Row & { session_id?: string; chat_message_id?: string }
+    expect(stored.session_id).toBe('session-uuid-1')
+    expect(stored.chat_message_id).toBe('message-uuid-1')
   })
 })
