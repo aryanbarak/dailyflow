@@ -115,8 +115,29 @@ describe('flow write policy and deterministic dates', () => {
     ['um 7:05 Uhr', '07:05'],
     ['\u0633\u0627\u0639\u062a \u06f1\u06f1 \u0635\u0628\u062d', '11:00'],
     ['\u0633\u0627\u0639\u062a \u06f3 \u0639\u0635\u0631', '15:00'],
+    // TIME-01 (production, 2026-09): bare "hour + REQUIRED meridiem" --
+    // \u00ab\u0633\u0627\u0639\u062a\u0634 \u0631\u0627 \u0628\u06a9\u0646 \u06f5 \u0639\u0635\u0631\u00bb carried no standalone \u00ab\u0633\u0627\u0639\u062a\u00bb before the digit
+    // and parsed as nothing, killing the calendar update downstream.
+    // Hand-synced twin of the same cases in
+    // src/features/agent/reasoning/deterministicDates.test.ts.
+    ['\u0633\u0627\u0639\u062a\u0634 \u0631\u0627 \u0628\u06a9\u0646 \u06f5 \u0639\u0635\u0631', '17:00'],
+    ['\u06f5 \u0639\u0635\u0631', '17:00'],
+    ['\u06f5:\u06f3\u06f0 \u0639\u0635\u0631', '17:30'],
+    ['make it 5 pm', '17:00'],
+    ['move it to 5pm', '17:00'],
+    ['5:30 pm', '17:30'],
+    ['mach es auf 17 uhr', '17:00'],
   ])('parses time of day %s', (phrase, expected) => {
     expect(parseDeterministicTimeOfDay(phrase)).toBe(expected)
+  })
+
+  it.each([
+    ['\u06f5'],
+    ['make it 5'],
+    ['\u06f2\u06f5 \u0639\u0635\u0631'],
+    ['\u0641\u0631\u062f\u0627'],
+  ])('TIME-01: a bare number (or the tail of a larger number) still parses no time: %s', (phrase) => {
+    expect(parseDeterministicTimeOfDay(phrase)).toBeUndefined()
   })
 
   it('keeps a command-only mixed Persian task request under-specified instead of inventing a title', () => {
@@ -603,8 +624,12 @@ describe('task 22 / Slice 2B.1.1: calendar write slice + task/event routing', ()
       expect(parseDeterministicTimeRange('von 13:00 bis 15:00 Uhr')).toEqual({ start: '13:00', end: '15:00' })
     })
 
-    it('parses a bare-hour English range ("to 3pm") -- start time still needs a recognized prefix ("at"/"um"/Persian "ساعت"), same as parseDeterministicTimeOfDay always required', () => {
+    it('parses a bare-hour English range ("to 3pm") -- TIME-01 lifted the old prefix requirement, but the anchored "at" form keeps its precedence unchanged', () => {
       expect(parseDeterministicTimeRange('at 1pm to 3pm')).toEqual({ start: '13:00', end: '15:00' })
+    })
+
+    it('TIME-01: a German range keeps its FIRST time as the start even though only the last carries "Uhr" -- earliest match wins between suffixed and compact', () => {
+      expect(parseDeterministicTimeRange('von 13:00 bis 15:00 Uhr')).toEqual({ start: '13:00', end: '15:00' })
     })
 
     it('returns no result at all when no time is present', () => {
