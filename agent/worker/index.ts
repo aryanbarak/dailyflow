@@ -1578,10 +1578,22 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
   }
 
   try {
-    const [language, confirmedMemory] = await Promise.all([
+    const [storedLanguage, confirmedMemory] = await Promise.all([
       fetchUserLanguage(userId, env),
       fetchConfirmedPersonalMemory(userId, env),
     ])
+    // LANG-02: the turn's language. The client resolves a concrete
+    // responseLanguage for every /chat turn (configured AI language ->
+    // detected message language -> UI language, resolveAiResponseLanguage
+    // in src/features/ai/responseLanguage.ts) and has always sent it in
+    // the body -- but this handler used to key EVERY deterministic reply
+    // (PROVIDER_UNAVAILABLE_CHAT_REPLY, WRITE_OFF_REPLY, the two-action
+    // strings, ...) off user_settings.language alone, which defaults to
+    // 'en' -- so a Persian conversation got English error strings
+    // (production screenshot, 2026-09). The stored setting remains the
+    // fallback for clients that send nothing ('auto'), which also keeps
+    // /briefing and other fetchUserLanguage consumers untouched.
+    const language: Language = responseLanguage === 'auto' ? storedLanguage : responseLanguage
 
     const undoMatch = message.match(/\bundo:([0-9a-f-]{36})\b/i)
     if (undoIdFromBody || undoMatch) {

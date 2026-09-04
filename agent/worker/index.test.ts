@@ -713,6 +713,45 @@ describe('handleChat mode routing', () => {
     expect(body.reply).not.toBe('Something went wrong on my end. Please try again.')
   })
 
+  // LANG-02: production screenshot (2026-09) -- a Persian conversation got
+  // the ENGLISH provider-unavailable sentence, because deterministic /chat
+  // replies were keyed off user_settings.language alone (default 'en'),
+  // ignoring the responseLanguage the client resolves and sends on every
+  // turn. The turn language is now responseLanguage first, stored setting
+  // only as the 'auto'/absent fallback.
+  it('LANG-02: a provider failure on a Persian turn (responseLanguage=fa) replies in Persian even though user_settings has no language row', async () => {
+    installFetchMock([], null, 'Gemini should not be called', null, new Map(), [], null, null, false, false, 429)
+    const ctx = fakeExecutionContext()
+    const env = testEnv()
+
+    const response = await worker.fetch(
+      chatRequest({ message: 'سلام، حال من خوب است', responseLanguage: 'fa' }),
+      env,
+      ctx,
+    )
+    const body = await response.json() as { reply?: string }
+
+    expect(response.status).toBe(200)
+    expect(body.reply).toBe('دستیار هوش مصنوعی موقتاً در دسترس نیست. لطفاً کمی بعد دوباره امتحان کنید.')
+    expect(body.reply).not.toBe('The AI assistant is temporarily unavailable. Please try again in a moment.')
+  })
+
+  it('LANG-02: responseLanguage "auto" still falls back to the stored user_settings language (default en) -- no behavior change for clients that do not resolve a language', async () => {
+    installFetchMock([], null, 'Gemini should not be called', null, new Map(), [], null, null, false, false, 429)
+    const ctx = fakeExecutionContext()
+    const env = testEnv()
+
+    const response = await worker.fetch(
+      chatRequest({ message: 'Hello there', responseLanguage: 'auto' }),
+      env,
+      ctx,
+    )
+    const body = await response.json() as { reply?: string }
+
+    expect(response.status).toBe(200)
+    expect(body.reply).toBe('The AI assistant is temporarily unavailable. Please try again in a moment.')
+  })
+
   it('injects confirmed personal memory into the chat system prompt when it exists (ADR-0011)', async () => {
     const log = installFetchMock([
       { kind: 'preference', content: { summary: 'Prefers async written updates', strength: 'strong' }, created_at: '2026-08-01T00:00:00.000Z' },
