@@ -123,7 +123,7 @@ export default function HabitsPage() {
       >
         <div>
           <h1 className="text-2xl lg:text-3xl font-semibold mb-1">{t('habits_title')}</h1>
-          <p className="text-sm text-muted-foreground">Build better habits, shape your life</p>
+          <p className="text-sm text-muted-foreground">{t('habits_subtitle')}</p>
         </div>
         <div className="flex items-center gap-2">
           {isSupported && permission !== 'granted' && (
@@ -155,10 +155,10 @@ export default function HabitsPage() {
                   <div className="icon-tile w-8 h-8 rounded-md">
                     <Flame className="w-4 h-4 text-primary" />
                   </div>
-                  <span className="text-xs font-medium text-muted-foreground">Current Streak</span>
+                  <span className="text-xs font-medium text-muted-foreground">{t('habits_current_streak')}</span>
                 </div>
                 <p className="text-2xl font-bold tracking-tight">
-                  {bestCurrentStreak} <span className="text-sm font-normal text-muted-foreground">days</span>
+                  {bestCurrentStreak} <span className="text-sm font-normal text-muted-foreground">{t('habits_days_unit')}</span>
                 </p>
               </CardContent>
             </Card>
@@ -168,7 +168,7 @@ export default function HabitsPage() {
                   <div className="icon-tile w-8 h-8 rounded-md">
                     <CheckCircle2 className="w-4 h-4 text-primary" />
                   </div>
-                  <span className="text-xs font-medium text-muted-foreground">Completion Rate</span>
+                  <span className="text-xs font-medium text-muted-foreground">{t('habits_completion_rate')}</span>
                 </div>
                 <p className="text-2xl font-bold tracking-tight">{avgRate}%</p>
               </CardContent>
@@ -179,7 +179,7 @@ export default function HabitsPage() {
                   <div className="icon-tile w-8 h-8 rounded-md">
                     <Calendar className="w-4 h-4 text-primary" />
                   </div>
-                  <span className="text-xs font-medium text-muted-foreground">Habits Today</span>
+                  <span className="text-xs font-medium text-muted-foreground">{t('habits_today_label')}</span>
                 </div>
                 <p className="text-2xl font-bold tracking-tight">
                   {todayDone} <span className="text-sm font-normal text-muted-foreground">/ {activeHabits.length}</span>
@@ -192,10 +192,10 @@ export default function HabitsPage() {
                   <div className="icon-tile w-8 h-8 rounded-md">
                     <Trophy className="w-4 h-4 text-primary" />
                   </div>
-                  <span className="text-xs font-medium text-muted-foreground">Best Streak</span>
+                  <span className="text-xs font-medium text-muted-foreground">{t('habits_best_streak')}</span>
                 </div>
                 <p className="text-2xl font-bold tracking-tight">
-                  {bestEverStreak} <span className="text-sm font-normal text-muted-foreground">days</span>
+                  {bestEverStreak} <span className="text-sm font-normal text-muted-foreground">{t('habits_days_unit')}</span>
                 </p>
               </CardContent>
             </Card>
@@ -228,8 +228,8 @@ export default function HabitsPage() {
           {activeHabits.length > 0 && (
             <div className="space-y-3">
               <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold">Today&apos;s Habits</h3>
-                <span className="text-xs text-muted-foreground">{todayDone} / {activeHabits.length} completed · {progressPct}%</span>
+                <h3 className="text-sm font-semibold">{t('habits_todays_habits')}</h3>
+                <span className="text-xs text-muted-foreground">{t('habits_completed_line', { done: todayDone, total: activeHabits.length, pct: progressPct })}</span>
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
                 {activeHabits.map(habit => (
@@ -329,7 +329,7 @@ export default function HabitsPage() {
                 <div className="icon-tile w-7 h-7 rounded-md">
                   <Flame className="w-3.5 h-3.5 text-primary" />
                 </div>
-                <span className="text-sm font-semibold">Today&apos;s Progress</span>
+                <span className="text-sm font-semibold">{t('habits_todays_progress')}</span>
               </div>
 
               {/* Progress ring */}

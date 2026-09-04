@@ -340,6 +340,14 @@
     font-family: 'Sora', 'Inter', system-ui, sans-serif;
     background: var(--flow-bg-deep);
   }
+
+  /* DESIGN-AUDIT 3: Vazirmatn as the explicit body font for Persian, not
+     merely an implicit glyph fallback. LanguageProvider sets lang="fa"
+     (and the font-vazirmatn class, which was never defined until now). */
+  html[lang='fa'],
+  html.font-vazirmatn {
+    font-family: 'Vazirmatn', 'Sora', 'Inter', system-ui, sans-serif;
+  }
 }
 
 @layer components {

@@ -11,6 +11,7 @@ import { useAllHabits, useToggleHabit } from '@/features/habits/useHabits';
 import { habitsService } from '@/features/habits/habitsService';
 import { useQueryClient } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
+import { useT } from '@/i18n';
 
 const WEEKDAY_LABELS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'] as const;
 const ICONS = ['⭐', '💪', '📚', '🏃', '🧘', '🧠', '🎯', '🌱', '😴', '🎵'];
@@ -28,6 +29,7 @@ function getDayLabel(dateStr: string): string {
 export default function HabitDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { t } = useT();
   const { data: allHabits = [], isLoading } = useAllHabits();
   const { mutate: toggle } = useToggleHabit();
 
@@ -136,8 +138,8 @@ export default function HabitDetailPage() {
                     {habit.habit_type === 'goal'
                       ? `Goal · ${habit.target_value ?? '?'} ${habit.target_unit ?? 'target'}`
                       : habit.frequency === 'daily' ? 'Every day' : `Weekly · ${habit.target_days}× per week`}
-                    {!habit.is_active && <span className="ml-2 text-[var(--flow-career)]">(Paused)</span>}
-                    {habit.achieved_at && <span className="ml-2 text-[var(--flow-analyze)]">(Achieved ✓)</span>}
+                    {!habit.is_active && <span className="ms-2 text-[var(--flow-career)]">{t('habits_paused')}</span>}
+                    {habit.achieved_at && <span className="ms-2 text-[var(--flow-analyze)]">{t('habits_achieved_suffix')}</span>}
                   </p>
                 </div>
               </div>
@@ -171,7 +173,7 @@ export default function HabitDetailPage() {
                 <Flame className="w-4 h-4 text-primary" />
               </div>
               <p className="text-2xl font-bold">{habit.currentStreak}</p>
-              <p className="text-[10px] text-muted-foreground">Current Streak</p>
+              <p className="text-[10px] text-muted-foreground">{t('habits_current_streak')}</p>
             </CardContent>
           </Card>
           <Card className="glass-card card-accent">
@@ -180,7 +182,7 @@ export default function HabitDetailPage() {
                 <Trophy className="w-4 h-4 text-primary" />
               </div>
               <p className="text-2xl font-bold">{habit.longestStreak}</p>
-              <p className="text-[10px] text-muted-foreground">Best Streak</p>
+              <p className="text-[10px] text-muted-foreground">{t('habits_best_streak')}</p>
             </CardContent>
           </Card>
           <Card className="glass-card card-accent">
@@ -189,7 +191,7 @@ export default function HabitDetailPage() {
                 <Calendar className="w-4 h-4 text-primary" />
               </div>
               <p className="text-2xl font-bold">{habit.completionRate}%</p>
-              <p className="text-[10px] text-muted-foreground">Completion Rate</p>
+              <p className="text-[10px] text-muted-foreground">{t('habits_completion_rate')}</p>
             </CardContent>
           </Card>
         </div>
@@ -199,9 +201,9 @@ export default function HabitDetailPage() {
           <Card className="glass-card card-accent surface-elevated">
             <CardContent className="p-4">
               <div className="flex items-center justify-between mb-3">
-                <h3 className="text-sm font-semibold">Goal Progress</h3>
+                <h3 className="text-sm font-semibold">{t('habits_goal_progress')}</h3>
                 {habit.achieved_at && (
-                  <span className="text-xs font-medium text-[var(--flow-analyze)]">Achieved ✓</span>
+                  <span className="text-xs font-medium text-[var(--flow-analyze)]">{t('habits_achieved')}</span>
                 )}
               </div>
               <div className="flex items-center gap-4">

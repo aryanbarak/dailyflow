@@ -11,16 +11,20 @@ import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
 import { AppLoader } from "@/components/AppLoader";
 import { SmartFlowIcon } from "@/components/SmartFlowLogo";
-
-const authSchema = z.object({
-  email: z.string().email("Please enter a valid email address"),
-  password: z.string().min(6, "Password must be at least 6 characters"),
-});
+import { useT } from "@/i18n";
 
 export default function AuthPage() {
   const navigate = useNavigate();
   const { user, isLoading: authLoading, signIn, signUp } = useAuth();
   const { toast } = useToast();
+  const { t } = useT();
+
+  // DESIGN-AUDIT 3: schema built per render so zod messages follow the
+  // active UI language (the module-level schema froze them in English).
+  const authSchema = z.object({
+    email: z.string().email(t("auth_validation_email")),
+    password: z.string().min(6, t("auth_validation_password")),
+  });
 
   const [isSignUp, setIsSignUp] = useState(false);
   const [email, setEmail] = useState("");
@@ -56,10 +60,10 @@ export default function AuthPage() {
         if (error) {
           setError(error.message);
         } else {
-          setSuccess("Account created! You're now signed in.");
+          setSuccess(t("auth_success_created"));
           toast({
-            title: "Welcome",
-            description: "You're signed in.",
+            title: t("auth_toast_welcome"),
+            description: t("auth_toast_signed_in"),
           });
           navigate("/");
         }
@@ -72,7 +76,7 @@ export default function AuthPage() {
         }
       }
     } catch (err) {
-      setError("An unexpected error occurred. Please try again.");
+      setError(t("auth_error_unexpected"));
     } finally {
       setIsSubmitting(false);
     }
@@ -98,30 +102,28 @@ export default function AuthPage() {
                   SmartFlow
                 </p>
                 <h2 className="text-lg font-semibold font-display">
-                  Organize with clarity.
+                  {t("auth_banner_tagline")}
                 </h2>
               </div>
               <SmartFlowIcon size={40} />
             </div>
           </div>
-          <CardHeader className="text-left space-y-2">
+          <CardHeader className="text-start space-y-2">
             <CardTitle className="text-2xl font-bold font-display">
-              {isSignUp ? "Create Account" : "Welcome Back"}
+              {isSignUp ? t("auth_create_account") : t("auth_welcome_back")}
             </CardTitle>
             <CardDescription>
-              {isSignUp
-                ? "Sign up to start organizing your life"
-                : "Sign in to continue to SmartFlow"}
+              {isSignUp ? t("auth_signup_subtitle") : t("auth_signin_subtitle")}
             </CardDescription>
             <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
               <span className="rounded-full border border-border/60 px-2 py-1">
-                Plan smarter
+                {t("auth_chip_plan")}
               </span>
               <span className="rounded-full border border-border/60 px-2 py-1">
-                Track money
+                {t("auth_chip_money")}
               </span>
               <span className="rounded-full border border-border/60 px-2 py-1">
-                Learn faster
+                {t("auth_chip_learn")}
               </span>
             </div>
           </CardHeader>
@@ -143,13 +145,13 @@ export default function AuthPage() {
 
               <div className="space-y-2">
                 <div className="relative">
-                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Mail className="absolute start-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                   <Input
                     type="email"
-                    placeholder="Email address"
+                    placeholder={t("auth_email_placeholder")}
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    className="pl-10"
+                    className="ps-10"
                     disabled={isSubmitting}
                     autoComplete="email"
                   />
@@ -158,13 +160,13 @@ export default function AuthPage() {
 
               <div className="space-y-2">
                 <div className="relative">
-                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Lock className="absolute start-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                   <Input
                     type="password"
-                    placeholder="Password"
+                    placeholder={t("auth_password_placeholder")}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    className="pl-10"
+                    className="ps-10"
                     disabled={isSubmitting}
                     autoComplete={isSignUp ? "new-password" : "current-password"}
                   />
@@ -174,13 +176,13 @@ export default function AuthPage() {
               <Button type="submit" className="w-full" disabled={isSubmitting}>
                 {isSubmitting ? (
                   <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    {isSignUp ? "Creating Account..." : "Signing In..."}
+                    <Loader2 className="me-2 h-4 w-4 animate-spin" />
+                    {isSignUp ? t("auth_creating_account") : t("auth_signing_in")}
                   </>
                 ) : isSignUp ? (
-                  "Create Account"
+                  t("auth_create_account")
                 ) : (
-                  "Sign In"
+                  t("auth_sign_in")
                 )}
               </Button>
 
@@ -194,9 +196,7 @@ export default function AuthPage() {
                   }}
                   className="text-sm text-muted-foreground hover:text-foreground transition-colors"
                 >
-                  {isSignUp
-                    ? "Already have an account? Sign in"
-                    : "Don't have an account? Sign up"}
+                  {isSignUp ? t("auth_switch_to_signin") : t("auth_switch_to_signup")}
                 </button>
               </div>
             </form>
@@ -204,7 +204,7 @@ export default function AuthPage() {
         </Card>
 
         <p className="text-center text-xs text-muted-foreground mt-4">
-          By continuing, you agree to our terms of service and privacy policy.
+          {t("auth_terms")}
         </p>
       </motion.div>
     </div>

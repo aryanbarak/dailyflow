@@ -285,7 +285,7 @@ export function Sidebar() {
   // sidebar below.
   if (location.pathname === "/") {
     return (
-      <aside className="sticky top-0 z-40 flex h-screen w-[68px] shrink-0 flex-col items-center gap-1.5 border-r border-[#7078B4]/[0.14] bg-[#070816]/[0.82] py-3.5 backdrop-blur-[12px] max-[1280px]:w-16">
+      <aside className="sticky top-0 z-40 flex h-screen w-[68px] shrink-0 flex-col items-center gap-1.5 border-e border-[#7078B4]/[0.14] bg-[#070816]/[0.82] py-3.5 backdrop-blur-[12px] max-[1280px]:w-16">
         <Sheet open={homeMenuOpen} onOpenChange={setHomeMenuOpen}>
           <SheetTrigger asChild>
             <button
@@ -312,7 +312,7 @@ export function Sidebar() {
           <SheetContent
             side="left"
             aria-label={t('nav_more')}
-            className="z-[90] flex w-64 max-w-[82vw] flex-col gap-0 overflow-hidden border-r border-[#7078B4]/[0.22] bg-[#090B1C]/[0.97] p-0 shadow-[24px_0_60px_rgba(0,0,0,0.5)]"
+            className="z-[90] flex w-64 max-w-[82vw] flex-col gap-0 overflow-hidden border-e border-[#7078B4]/[0.22] bg-[#090B1C]/[0.97] p-0 shadow-[24px_0_60px_rgba(0,0,0,0.5)]"
           >
             <div className="relative flex h-full min-h-0 flex-col overflow-hidden">
               <FullSidebarContent onNavigate={() => setHomeMenuOpen(false)} />
@@ -347,7 +347,7 @@ export function Sidebar() {
           <span className="text-sm font-semibold text-[#DDD4FF]">{initials}</span>
           <span
             aria-hidden="true"
-            className="absolute -bottom-px -right-px h-[11px] w-[11px] rounded-full border-2 border-[#07081A] bg-[#34D399]"
+            className="absolute -bottom-px -end-px h-[11px] w-[11px] rounded-full border-2 border-[#07081A] bg-[#34D399]"
           />
         </div>
       </aside>
@@ -355,7 +355,7 @@ export function Sidebar() {
   }
 
   return (
-    <aside className="relative w-64 h-screen sticky top-0 overflow-hidden bg-sidebar border-r border-sidebar-border flex flex-col">
+    <aside className="relative w-64 h-screen sticky top-0 overflow-hidden bg-sidebar border-e border-sidebar-border flex flex-col">
       <FullSidebarContent />
     </aside>
   );
