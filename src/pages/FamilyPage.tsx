@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { IconTile } from '@/components/common/IconTile';
 import { motion } from 'framer-motion';
 import {
   Plus, Calendar, CalendarDays, FileText, Trash2, ShoppingCart, Users, GraduationCap,
@@ -6,6 +7,7 @@ import {
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { StatCard } from '@/components/common/StatCard';
+import { CollapsibleRail } from '@/components/common/CollapsibleRail';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -908,12 +910,12 @@ export default function FamilyPage() {
           </div>
 
           {/* Right sidebar */}
-          <div className="w-full lg:w-[300px] shrink-0 space-y-4 lg:sticky lg:top-4 lg:self-start">
+          <CollapsibleRail>
             {/* Flow AI Family Assistant */}
             <Card className="glass-card card-accent">
               <CardContent className="p-4 space-y-3">
                 <div className="flex items-center gap-2.5">
-                  <div className="icon-tile w-7 h-7 rounded-md"><Bot className="w-3.5 h-3.5 text-primary" /></div>
+                  <IconTile className="w-7 h-7 rounded-md"><Bot className="w-3.5 h-3.5" /></IconTile>
                   <span className="text-sm font-semibold">{t('family_ai_assistant')}</span>
                 </div>
 
@@ -976,7 +978,7 @@ export default function FamilyPage() {
                 </Button>
               </CardContent>
             </Card>
-          </div>
+          </CollapsibleRail>
           </div>
         </>
       )}

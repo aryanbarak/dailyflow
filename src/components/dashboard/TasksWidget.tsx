@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { IconTile } from "@/components/common/IconTile";
 import { CheckSquare } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatePanel } from "@/components/common/StatePanel";
@@ -36,9 +37,7 @@ export function TasksWidget() {
     <Card className="glass-card card-accent">
       <CardHeader className="px-4 py-3">
         <CardTitle className="text-sm font-semibold flex items-center gap-2.5">
-          <div className="icon-tile w-7 h-7 rounded-md">
-            <CheckSquare className="w-3.5 h-3.5 text-primary" />
-          </div>
+          <IconTile className="w-7 h-7 rounded-md"><CheckSquare className="w-3.5 h-3.5" /></IconTile>
           Tasks
         </CardTitle>
       </CardHeader>

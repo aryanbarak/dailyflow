@@ -137,6 +137,8 @@ const en = {
   dashboard_rail_recommended_today: 'Recommended Today',
   dashboard_status_learning: "I'm learning from your first workspace signals.",
   dashboard_status_always: 'Always learning from your workspace.',
+  // DESIGN-AUDIT 4 (responsive): mobile disclosure row for the 300px rail.
+  rail_suggestions_toggle: 'Suggestions & stats',
   // I18N follow-up (2026-09-05): rail AI-Suggestions engine copy. The en
   // values are never rendered (English returns the engine string
   // untouched) -- they document the source strings for translators.
@@ -1406,6 +1408,8 @@ const de: TranslationDict = {
   dashboard_rail_recommended_today: 'Heute empfohlen',
   dashboard_status_learning: 'Ich lerne aus deinen ersten Workspace-Signalen.',
   dashboard_status_always: 'Lerne staendig aus deinem Workspace.',
+  // DESIGN-AUDIT 4 (responsive): mobile disclosure row for the 300px rail.
+  rail_suggestions_toggle: 'Vorschläge & Statistik',
   // I18N follow-up (2026-09-05): rail AI-Suggestions engine copy.
   dashboard_sugg_finish_tasks: 'Aktive Aufgaben abschließen',
   dashboard_sugg_finish_tasks_desc: 'Weil {{count}} Aufgaben noch Aufmerksamkeit brauchen.',
@@ -2619,6 +2623,8 @@ const fa: TranslationDict = {
   dashboard_rail_recommended_today: 'پیشنهاد امروز',
   dashboard_status_learning: 'در حال یادگیری از نخستین سیگنال‌های فضای کاری شما هستم.',
   dashboard_status_always: 'همیشه در حال یادگیری از فضای کاری شما.',
+  // DESIGN-AUDIT 4 (responsive): mobile disclosure row for the 300px rail.
+  rail_suggestions_toggle: 'پیشنهادها و آمار',
   // I18N follow-up (2026-09-05): rail AI-Suggestions engine copy.
   dashboard_sugg_finish_tasks: 'وظایف باز را تمام کن',
   dashboard_sugg_finish_tasks_desc: 'چون {{count}} مورد هنوز به توجه نیاز دارد.',

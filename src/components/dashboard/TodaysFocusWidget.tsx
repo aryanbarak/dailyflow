@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { IconTile } from "@/components/common/IconTile";
 import { Target } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -31,9 +32,7 @@ export function TodaysFocusWidget() {
     <Card className="glass-card card-accent h-full flex flex-col">
       <CardHeader className="px-4 py-3">
         <CardTitle className="text-sm font-semibold flex items-center gap-2.5">
-          <div className="icon-tile w-7 h-7 rounded-md">
-            <Target className="w-3.5 h-3.5 text-primary" />
-          </div>
+          <IconTile className="w-7 h-7 rounded-md"><Target className="w-3.5 h-3.5" /></IconTile>
           <div>
             <span>Today&apos;s Focus</span>
             <p className="text-[10px] font-normal text-muted-foreground mt-0.5">

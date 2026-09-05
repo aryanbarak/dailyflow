@@ -20,6 +20,28 @@
   --flow-exam-hsl: var(--flow-career-hsl);
   --flow-exam: var(--flow-career);
   --flow-exam-bg: var(--flow-career-bg);
+
+  /* DESIGN-AUDIT 1 cleanup (2026-09-06): the frozen Dark Cosmic values
+     Home's chrome used as arbitrary Tailwind hexes, promoted to ONE
+     named palette (tailwind.config.ts `flow` group reads these as
+     hsl(<var> / <alpha-value>), so every existing alpha form keeps
+     working). Theme-independent constants -- they only ever render
+     under dark: prefixes. Hex originals in the comments are canonical. */
+  --flow-night-violet-hsl: 256 100% 65.1%; /* #7C4DFF */
+  --flow-night-violet-soft-hsl: 252 100% 68%; /* #7D5CFF */
+  --flow-night-violet-ink-hsl: 255 100% 77.3%; /* #A88BFF */
+  --flow-night-ink-hsl: 240 45.5% 97.8%; /* #F7F7FC */
+  --flow-night-ink-soft-hsl: 234 19.2% 70.4%; /* #A5A8C2 */
+  --flow-night-ink-faint-hsl: 231 14.8% 53.5%; /* #777C9A */
+  --flow-night-ink-muted-hsl: 231 20.5% 68.4%; /* #9EA3BF */
+  --flow-night-ink-bright-hsl: 240 41.2% 96.7%; /* #F3F3FA */
+  --flow-night-border-hsl: 233 31.2% 57.3%; /* #7078B4 */
+  --flow-night-divider-hsl: 232 23.8% 56.3%; /* #757CAA */
+  --flow-night-surface-hsl: 234 48.8% 8.4%; /* #0B0D20 */
+  --flow-night-shell-hsl: 234 54.3% 6.9%; /* #080A1B */
+  --flow-night-panel-hsl: 236 51.7% 5.7%; /* #070816 */
+  --flow-night-deep-hsl: 235 66.7% 3.5%; /* #03040F */
+  --flow-night-track-hsl: 233 31.6% 22.4%; /* #272B4B */
 }
 
 @layer base {

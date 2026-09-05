@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { IconTile } from "@/components/common/IconTile";
 import { Calendar } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { SkeletonBlock } from "@/components/common/Skeletons";
@@ -34,9 +35,7 @@ export function TodayWidget() {
     <Card className="glass-card card-accent">
       <CardHeader className="px-4 py-3">
         <CardTitle className="text-sm font-semibold flex items-center gap-2.5">
-          <div className="icon-tile w-7 h-7 rounded-md">
-            <Calendar className="w-3.5 h-3.5 text-primary" />
-          </div>
+          <IconTile className="w-7 h-7 rounded-md"><Calendar className="w-3.5 h-3.5" /></IconTile>
           Today
         </CardTitle>
       </CardHeader>

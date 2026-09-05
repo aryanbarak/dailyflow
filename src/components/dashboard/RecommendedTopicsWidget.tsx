@@ -1,4 +1,5 @@
 import { useNavigate } from "react-router-dom";
+import { IconTile } from "@/components/common/IconTile";
 import {
   ArrowRight,
   Binary,
@@ -79,9 +80,7 @@ export function RecommendedTopicsWidget() {
     <Card className="glass-card card-accent">
       <CardHeader className="px-4 py-3">
         <CardTitle className="text-sm font-semibold flex items-center gap-2.5">
-          <div className="icon-tile w-7 h-7 rounded-md">
-            <GraduationCap className="w-3.5 h-3.5 text-primary" />
-          </div>
+          <IconTile className="w-7 h-7 rounded-md"><GraduationCap className="w-3.5 h-3.5" /></IconTile>
           <div>
             <span>Recommended for You</span>
             <p className="text-[10px] font-normal text-muted-foreground mt-0.5">
@@ -97,9 +96,7 @@ export function RecommendedTopicsWidget() {
               key={topic.title}
               className="flex flex-col rounded-lg border border-border/50 bg-secondary/15 p-3 transition-colors hover:bg-secondary/30 hover:border-primary/25"
             >
-              <div className="icon-tile w-8 h-8 rounded-md mb-2">
-                <topic.icon className="w-4 h-4 text-primary" />
-              </div>
+              <IconTile className="w-8 h-8 rounded-md mb-2"><topic.icon className="w-4 h-4" /></IconTile>
               <p className="text-[13px] font-medium leading-snug mb-1">
                 {topic.title}
               </p>

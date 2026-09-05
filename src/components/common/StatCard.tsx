@@ -1,6 +1,7 @@
 import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { Card, CardContent } from "@/components/ui/card";
+import { IconTile } from "@/components/common/IconTile";
 import { cn } from "@/lib/utils";
 
 // DESIGN-AUDIT phase 4: the KPI/stat tile every page hand-rolled (icon
@@ -31,9 +32,9 @@ export function StatCard({
     <Card className="glass-card card-accent surface-elevated">
       <CardContent className="p-3.5">
         <div className="flex items-center gap-2.5 mb-2">
-          <div className={cn("icon-tile w-8 h-8 rounded-md", tileClassName)}>
-            <Icon className={cn("w-4 h-4", iconClassName ?? "text-primary")} />
-          </div>
+          <IconTile className={cn("w-8 h-8 rounded-md", tileClassName)}>
+            <Icon className={cn("w-4 h-4", iconClassName)} />
+          </IconTile>
           <span className="text-xs font-medium text-muted-foreground">{label}</span>
         </div>
         <p className={cn("text-2xl font-bold tracking-tight", valueClassName)}>{value}</p>

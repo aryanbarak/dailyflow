@@ -1,4 +1,5 @@
 ﻿import { useEffect, useMemo, useRef, useState } from "react";
+import { IconTile } from "@/components/common/IconTile";
 import { motion } from "framer-motion";
 import { Plus, Calendar as CalendarIcon, CalendarDays, CheckSquare, Layers, ArrowUpRight, MapPin, Pencil, StickyNote, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -30,6 +31,7 @@ import { cn } from "@/lib/utils";
 import { SmartflowAsciiVisual } from "@/components/smartflow";
 import { StatCard } from "@/components/common/StatCard";
 import { AiSuggestionsCard } from "@/components/common/AiSuggestionsCard";
+import { CollapsibleRail } from "@/components/common/CollapsibleRail";
 import { useAiSuggestions } from "@/features/ai/useAiSuggestions";
 import { localeFor, useT, type TranslationKey } from "@/i18n";
 
@@ -996,15 +998,13 @@ export default function CalendarPage() {
       </div>
 
       {/* Right sidebar */}
-      <div className="w-full lg:w-[300px] shrink-0 space-y-4 lg:sticky lg:top-4 lg:self-start">
+      <CollapsibleRail>
         {/* Today's Agenda — events + tasks */}
         <Card className="glass-card card-accent">
           <CardContent className="p-4 space-y-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2.5">
-                <div className="icon-tile w-7 h-7 rounded-md">
-                  <CalendarIcon className="w-3.5 h-3.5 text-primary" />
-                </div>
+                <IconTile className="w-7 h-7 rounded-md"><CalendarIcon className="w-3.5 h-3.5" /></IconTile>
                 <span className="text-sm font-semibold">{t("calendar_todays_agenda")}</span>
               </div>
               {tasksTotalToday > 0 && (
@@ -1109,9 +1109,7 @@ export default function CalendarPage() {
           <CardContent className="p-4 space-y-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2.5">
-                <div className="icon-tile w-7 h-7 rounded-md">
-                  <CalendarDays className="w-3.5 h-3.5 text-primary" />
-                </div>
+                <IconTile className="w-7 h-7 rounded-md"><CalendarDays className="w-3.5 h-3.5" /></IconTile>
                 <span className="text-sm font-semibold">{t("calendar_upcoming_events")}</span>
               </div>
               <span className="text-xs text-muted-foreground">
@@ -1191,7 +1189,7 @@ export default function CalendarPage() {
             }))}
           />
         )}
-      </div>
+      </CollapsibleRail>
       </div>
 
       <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>

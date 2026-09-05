@@ -1,4 +1,5 @@
 import { useNavigate } from "react-router-dom";
+import { IconTile } from "@/components/common/IconTile";
 import { GraduationCap } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -32,9 +33,7 @@ export function SmartAcademyWidget() {
     <Card className="glass-card card-accent h-full flex flex-col">
       <CardHeader className="px-4 py-3">
         <CardTitle className="text-sm font-semibold flex items-center gap-2.5">
-          <div className="icon-tile w-7 h-7 rounded-md">
-            <GraduationCap className="w-3.5 h-3.5 text-primary" />
-          </div>
+          <IconTile className="w-7 h-7 rounded-md"><GraduationCap className="w-3.5 h-3.5" /></IconTile>
           Smart Academy
         </CardTitle>
       </CardHeader>

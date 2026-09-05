@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { IconTile } from '@/components/common/IconTile';
 import { motion } from 'framer-motion';
 import { BookOpen, Flame, CheckSquare, Smile, Brain, LineChart, PenLine } from 'lucide-react';
 import { AreaChart, Area, ResponsiveContainer } from 'recharts';
@@ -16,6 +17,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { useTasks } from '@/hooks/useTasks';
 import { supabase } from '@/integrations/supabase/client';
 import { cn } from '@/lib/utils';
+import { CollapsibleRail } from '@/components/common/CollapsibleRail';
 import { toast } from 'sonner';
 
 const LOCALE_MAP = { en: 'en-US', de: 'de-DE', fa: 'fa-IR' } as const;
@@ -194,7 +196,7 @@ export default function JournalPage() {
             <CardContent className="p-4 space-y-3">
               {/* DESIGN-AUDIT 1: emoji heading -> icon-tile + lucide icon */}
               <div className="flex items-center gap-2.5">
-                <div className="icon-tile w-7 h-7 rounded-md"><PenLine className="w-3.5 h-3.5 text-primary" /></div>
+                <IconTile className="w-7 h-7 rounded-md"><PenLine className="w-3.5 h-3.5" /></IconTile>
                 <h3 className="text-sm font-semibold">{t('journal_entry_card')}</h3>
               </div>
               {/* Reflection prompts */}
@@ -227,7 +229,7 @@ export default function JournalPage() {
         </div>
 
         {/* Right column */}
-        <div className="w-full lg:w-[300px] shrink-0 space-y-4 lg:sticky lg:top-4 lg:self-start">
+        <CollapsibleRail>
           {/* Mini calendar */}
           <JournalCalendar selectedDate={selectedDate} onSelect={setSelectedDate} />
 
@@ -235,7 +237,7 @@ export default function JournalPage() {
           <Card className="glass-card card-accent">
             <CardContent className="p-4 space-y-3">
               <div className="flex items-center gap-2.5">
-                <div className="icon-tile w-7 h-7 rounded-md"><Brain className="w-3.5 h-3.5 text-primary" /></div>
+                <IconTile className="w-7 h-7 rounded-md"><Brain className="w-3.5 h-3.5" /></IconTile>
                 <span className="text-sm font-semibold">{t('journal_ai_reflection')}</span>
               </div>
               <p className="text-xs text-muted-foreground">{t('journal_ai_placeholder')}</p>
@@ -276,7 +278,7 @@ export default function JournalPage() {
             <CardContent className="p-4 space-y-3">
               {/* DESIGN-AUDIT 1: emoji heading -> icon-tile + lucide icon */}
               <div className="flex items-center gap-2.5">
-                <div className="icon-tile w-7 h-7 rounded-md"><BookOpen className="w-3.5 h-3.5 text-primary" /></div>
+                <IconTile className="w-7 h-7 rounded-md"><BookOpen className="w-3.5 h-3.5" /></IconTile>
                 <h3 className="text-sm font-semibold">{t('journal_memory_timeline')}</h3>
               </div>
               {recentEntries.length === 0 ? (
@@ -309,7 +311,7 @@ export default function JournalPage() {
               )}
             </CardContent>
           </Card>
-        </div>
+        </CollapsibleRail>
       </div>
     </div>
   );

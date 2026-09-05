@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { ArrowRight, Lightbulb, Sparkles } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { SkeletonBlock } from "@/components/common/Skeletons";
+import { IconTile } from "@/components/common/IconTile";
 import { cn } from "@/lib/utils";
 
 export interface AiSuggestionRow {
@@ -41,9 +42,9 @@ export function AiSuggestionsCard({
     <Card className="glass-card card-accent">
       <CardContent className="p-4 space-y-3">
         <div className="flex items-center gap-2.5">
-          <div className="icon-tile w-7 h-7 rounded-md">
-            <Sparkles className="w-3.5 h-3.5 text-primary" />
-          </div>
+          <IconTile className="w-7 h-7 rounded-md">
+            <Sparkles className="w-3.5 h-3.5" />
+          </IconTile>
           <span className="text-sm font-semibold">{title}</span>
         </div>
         {subtitle && <p className="text-[11px] text-muted-foreground">{subtitle}</p>}
@@ -66,20 +67,16 @@ export function AiSuggestionsCard({
                       row.onClick && "cursor-pointer transition-colors hover:bg-secondary/40",
                     )}
                   >
-                    <div
-                      className={cn(
-                        "icon-tile w-7 h-7 rounded-lg shrink-0 mt-0.5",
-                        row.kind === "action"
-                          ? "bg-[var(--flow-analyze-bg)]"
-                          : "bg-[var(--flow-study-bg)]",
-                      )}
+                    <IconTile
+                      tone={row.kind === "action" ? "analyze" : "study"}
+                      className="w-7 h-7 rounded-lg shrink-0 mt-0.5"
                     >
                       {row.kind === "action" ? (
-                        <ArrowRight className="w-3.5 h-3.5 text-[var(--flow-analyze)]" />
+                        <ArrowRight className="w-3.5 h-3.5" />
                       ) : (
-                        <Lightbulb className="w-3.5 h-3.5 text-[var(--flow-study)]" />
+                        <Lightbulb className="w-3.5 h-3.5" />
                       )}
-                    </div>
+                    </IconTile>
                     <p className="text-xs leading-relaxed">{row.text}</p>
                   </Row>
                 </li>
