@@ -10,6 +10,7 @@ import {
   Cloud, Cpu, Bot, Server,
 } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
+import { StatCard } from '@/components/common/StatCard';
 import { useTasks } from '@/hooks/useTasks';
 import { useDocuments } from '@/features/documents/useDocuments';
 import { usePhotos } from '@/hooks/usePhotos';
@@ -1349,43 +1350,35 @@ export default function SettingsPage() {
 
       {/* KPI Row */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <Card className="glass-card card-accent surface-elevated">
-          <CardContent className="p-3.5">
-            <div className="flex items-center gap-2.5 mb-2">
-              <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-analyze-bg)]"><CheckSquare className="w-4 h-4 text-[var(--flow-analyze)]" /></div>
-              <span className="text-xs font-medium text-muted-foreground">Tasks</span>
-            </div>
-            <p className="text-2xl font-bold tracking-tight">{tasks.length}</p>
-          </CardContent>
-        </Card>
-        <Card className="glass-card card-accent surface-elevated">
-          <CardContent className="p-3.5">
-            <div className="flex items-center gap-2.5 mb-2">
-              <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-review-bg)]"><FileText className="w-4 h-4 text-[var(--flow-review)]" /></div>
-              <span className="text-xs font-medium text-muted-foreground">Documents</span>
-            </div>
-            <p className="text-2xl font-bold tracking-tight">{(documents as unknown[]).length}</p>
-          </CardContent>
-        </Card>
-        <Card className="glass-card card-accent surface-elevated">
-          <CardContent className="p-3.5">
-            <div className="flex items-center gap-2.5 mb-2">
-              <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-career-bg)]"><Camera className="w-4 h-4 text-[var(--flow-career)]" /></div>
-              <span className="text-xs font-medium text-muted-foreground">Photos</span>
-            </div>
-            <p className="text-2xl font-bold tracking-tight">{photos.length}</p>
-          </CardContent>
-        </Card>
-        <Card className="glass-card card-accent surface-elevated">
-          <CardContent className="p-3.5">
-            <div className="flex items-center gap-2.5 mb-2">
-              <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-study-bg)]"><Brain className="w-4 h-4 text-[var(--flow-study)]" /></div>
-              <span className="text-xs font-medium text-muted-foreground">AI Memory</span>
-            </div>
-            <p className="text-2xl font-bold tracking-tight">{memoryCount}</p>
-            <p className="text-[11px] text-muted-foreground">memory items</p>
-          </CardContent>
-        </Card>
+        <StatCard
+          icon={CheckSquare}
+          label={t('nav_tasks')}
+          tileClassName="bg-[var(--flow-analyze-bg)]"
+          iconClassName="text-[var(--flow-analyze)]"
+          value={tasks.length}
+        />
+        <StatCard
+          icon={FileText}
+          label={t('nav_documents')}
+          tileClassName="bg-[var(--flow-review-bg)]"
+          iconClassName="text-[var(--flow-review)]"
+          value={(documents as unknown[]).length}
+        />
+        <StatCard
+          icon={Camera}
+          label={t('nav_photos')}
+          tileClassName="bg-[var(--flow-career-bg)]"
+          iconClassName="text-[var(--flow-career)]"
+          value={photos.length}
+        />
+        <StatCard
+          icon={Brain}
+          label={t('settings_ai_memory')}
+          tileClassName="bg-[var(--flow-study-bg)]"
+          iconClassName="text-[var(--flow-study)]"
+          value={memoryCount}
+          sub={t('settings_memory_items')}
+        />
       </div>
 
       <div className="flex gap-1 bg-muted rounded-xl p-1 overflow-x-auto scrollbar-hide">

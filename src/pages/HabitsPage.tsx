@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import { Plus, Flame, Bell, Check, CheckCircle2, Calendar, Trophy, Sparkles, Lightbulb, ArrowRight } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Plus, Flame, Bell, Check, CheckCircle2, Calendar, Trophy } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
@@ -12,18 +12,12 @@ import { useNotifications } from '@/hooks/useNotifications';
 import { useT } from '@/i18n';
 import { getThisWeekMoodSummary } from '@/features/habits/habitMoodService';
 import { useAuth } from '@/hooks/useAuth';
-import { supabase } from '@/integrations/supabase/client';
-import { SkeletonBlock } from '@/components/common/Skeletons';
-import { useAppearance } from '@/features/settings/appearanceStore';
-import {
-  getAiResponseLanguageInstruction,
-  getStoredAiResponseLanguage,
-  resolveAiResponseLanguage,
-} from '@/features/ai/responseLanguage';
+import { StatCard } from '@/components/common/StatCard';
+import { AiSuggestionsCard } from '@/components/common/AiSuggestionsCard';
+import { useAiSuggestions } from '@/features/ai/useAiSuggestions';
 
 export default function HabitsPage() {
   const navigate = useNavigate();
-  const interfaceLanguage = useAppearance((state) => state.language);
   const [showAdd, setShowAdd] = useState(false);
   const { user } = useAuth();
   const [weekMood, setWeekMood] = useState<{ avgMood: number; entries: number; emoji: string } | null>(null);
@@ -51,38 +45,12 @@ export default function HabitsPage() {
   const bestEverStreak = allHabits.reduce((max, h) => Math.max(max, h.longestStreak), 0);
   const progressPct = activeHabits.length > 0 ? Math.round((todayDone / activeHabits.length) * 100) : 0;
 
-  // AI Suggestions — fetched from Gemini via worker
-  const [habitSuggestions, setHabitSuggestions] = useState<Array<{ text: string; type: string }>>([]);
-  const [suggestionsLoading, setSuggestionsLoading] = useState(true);
-  const suggestionsLoaded = useRef(false);
-  const workerUrl = import.meta.env.VITE_AGENT_WORKER_URL as string;
-
-  useEffect(() => {
-    if (suggestionsLoaded.current || allHabits.length === 0 || isLoading) return;
-    suggestionsLoaded.current = true;
-    setSuggestionsLoading(true);
-    supabase.auth.getSession().then(({ data: { session: authSession } }) => {
-      if (!authSession) { setSuggestionsLoading(false); return; }
-      const responseLanguage = resolveAiResponseLanguage({
-        configuredResponseLanguage: getStoredAiResponseLanguage(),
-        interfaceLanguage,
-      });
-      fetch(`${workerUrl}/habits/suggestions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authSession.access_token}` },
-        body: JSON.stringify({
-          responseLanguage,
-          responseLanguageInstruction: getAiResponseLanguageInstruction(responseLanguage),
-        }),
-      })
-        .then(res => res.ok ? res.json() : { suggestions: [] })
-        .then((body: { suggestions: Array<{ text: string; type: string }> }) => {
-          setHabitSuggestions(body.suggestions ?? []);
-        })
-        .catch(() => setHabitSuggestions([]))
-        .finally(() => setSuggestionsLoading(false));
-    });
-  }, [allHabits.length, isLoading, workerUrl, interfaceLanguage]);
+  // AI Suggestions — fetched from Gemini via worker (DESIGN-AUDIT phase 4:
+  // shared hook, was an inline copy of the same fetch)
+  const { suggestions: habitSuggestions, isLoading: suggestionsLoading } = useAiSuggestions({
+    endpoint: 'habits',
+    enabled: allHabits.length > 0 && !isLoading,
+  });
 
   function renderBody() {
     if (isLoading) {
@@ -149,56 +117,22 @@ export default function HabitsPage() {
         <div className="flex-1 min-w-0 space-y-4">
           {/* KPI Stats Row */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <Card className="glass-card card-accent surface-elevated">
-              <CardContent className="p-3.5">
-                <div className="flex items-center gap-2.5 mb-2">
-                  <div className="icon-tile w-8 h-8 rounded-md">
-                    <Flame className="w-4 h-4 text-primary" />
-                  </div>
-                  <span className="text-xs font-medium text-muted-foreground">{t('habits_current_streak')}</span>
-                </div>
-                <p className="text-2xl font-bold tracking-tight">
-                  {bestCurrentStreak} <span className="text-sm font-normal text-muted-foreground">{t('habits_days_unit')}</span>
-                </p>
-              </CardContent>
-            </Card>
-            <Card className="glass-card card-accent surface-elevated">
-              <CardContent className="p-3.5">
-                <div className="flex items-center gap-2.5 mb-2">
-                  <div className="icon-tile w-8 h-8 rounded-md">
-                    <CheckCircle2 className="w-4 h-4 text-primary" />
-                  </div>
-                  <span className="text-xs font-medium text-muted-foreground">{t('habits_completion_rate')}</span>
-                </div>
-                <p className="text-2xl font-bold tracking-tight">{avgRate}%</p>
-              </CardContent>
-            </Card>
-            <Card className="glass-card card-accent surface-elevated">
-              <CardContent className="p-3.5">
-                <div className="flex items-center gap-2.5 mb-2">
-                  <div className="icon-tile w-8 h-8 rounded-md">
-                    <Calendar className="w-4 h-4 text-primary" />
-                  </div>
-                  <span className="text-xs font-medium text-muted-foreground">{t('habits_today_label')}</span>
-                </div>
-                <p className="text-2xl font-bold tracking-tight">
-                  {todayDone} <span className="text-sm font-normal text-muted-foreground">/ {activeHabits.length}</span>
-                </p>
-              </CardContent>
-            </Card>
-            <Card className="glass-card card-accent surface-elevated">
-              <CardContent className="p-3.5">
-                <div className="flex items-center gap-2.5 mb-2">
-                  <div className="icon-tile w-8 h-8 rounded-md">
-                    <Trophy className="w-4 h-4 text-primary" />
-                  </div>
-                  <span className="text-xs font-medium text-muted-foreground">{t('habits_best_streak')}</span>
-                </div>
-                <p className="text-2xl font-bold tracking-tight">
-                  {bestEverStreak} <span className="text-sm font-normal text-muted-foreground">{t('habits_days_unit')}</span>
-                </p>
-              </CardContent>
-            </Card>
+            <StatCard
+              icon={Flame}
+              label={t('habits_current_streak')}
+              value={<>{bestCurrentStreak} <span className="text-sm font-normal text-muted-foreground">{t('habits_days_unit')}</span></>}
+            />
+            <StatCard icon={CheckCircle2} label={t('habits_completion_rate')} value={`${avgRate}%`} />
+            <StatCard
+              icon={Calendar}
+              label={t('habits_today_label')}
+              value={<>{todayDone} <span className="text-sm font-normal text-muted-foreground">/ {activeHabits.length}</span></>}
+            />
+            <StatCard
+              icon={Trophy}
+              label={t('habits_best_streak')}
+              value={<>{bestEverStreak} <span className="text-sm font-normal text-muted-foreground">{t('habits_days_unit')}</span></>}
+            />
           </div>
 
           {/* Progress bar */}
@@ -376,51 +310,21 @@ export default function HabitsPage() {
             </CardContent>
           </Card>
 
-          {/* AI Suggestions — Gemini-generated */}
+          {/* AI Suggestions — Gemini-generated (DESIGN-AUDIT phase 4: shared
+              card; chip colors unified on the flow tokens, rows text-start) */}
           {(suggestionsLoading || habitSuggestions.length > 0) && (
-            <Card className="glass-card card-accent">
-              <CardContent className="p-4 space-y-3">
-                <div className="flex items-center gap-2.5">
-                  <div className="icon-tile w-7 h-7 rounded-md">
-                    <Sparkles className="w-3.5 h-3.5 text-primary" />
-                  </div>
-                  <span className="text-sm font-semibold">{t('ai_suggestions')}</span>
-                </div>
-                <p className="text-[11px] text-muted-foreground">{t('ai_based_on_habits')}</p>
-                {suggestionsLoading ? (
-                  <div className="space-y-2">
-                    <SkeletonBlock className="h-10 w-full" />
-                    <SkeletonBlock className="h-10 w-full" />
-                  </div>
-                ) : (
-                  <ul className="space-y-2">
-                    {habitSuggestions.map((s, i) => {
-                      const isAction = s.type === 'recommendation';
-                      const Row = isAction ? 'button' : 'div';
-                      return (
-                        <li key={i}>
-                          <Row
-                            type={isAction ? 'button' : undefined}
-                            onClick={isAction ? () => navigate('/chat', { state: { initialPrompt: s.text } }) : undefined}
-                            className={cn(
-                              "w-full flex items-start gap-3 rounded-lg bg-secondary/20 px-3 py-2.5 text-left",
-                              isAction && "cursor-pointer transition-colors hover:bg-white/5"
-                            )}
-                          >
-                            <div className={cn("icon-tile w-7 h-7 rounded-lg shrink-0 mt-0.5", isAction ? 'bg-emerald-500/15' : 'bg-violet-500/15')}>
-                              {isAction
-                                ? <ArrowRight className="w-3.5 h-3.5 text-emerald-400" />
-                                : <Lightbulb className="w-3.5 h-3.5 text-violet-400" />}
-                            </div>
-                            <p className="text-xs leading-relaxed">{s.text}</p>
-                          </Row>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-              </CardContent>
-            </Card>
+            <AiSuggestionsCard
+              title={t('ai_suggestions')}
+              subtitle={t('ai_based_on_habits')}
+              isLoading={suggestionsLoading}
+              rows={habitSuggestions.map(s => ({
+                text: s.text,
+                kind: s.type === 'recommendation' ? 'action' as const : 'idea' as const,
+                onClick: s.type === 'recommendation'
+                  ? () => navigate('/chat', { state: { initialPrompt: s.text } })
+                  : undefined,
+              }))}
+            />
           )}
         </div>
       </div>

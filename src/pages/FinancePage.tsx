@@ -74,16 +74,12 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
-import { Sparkles, Lightbulb, ArrowRight } from "lucide-react";
-import { useAppearance } from "@/features/settings/appearanceStore";
-import {
-  getAiResponseLanguageInstruction,
-  getStoredAiResponseLanguage,
-  resolveAiResponseLanguage,
-} from "@/features/ai/responseLanguage";
+import { Sparkles } from "lucide-react";
+import { StatCard } from "@/components/common/StatCard";
+import { AiSuggestionsCard } from "@/components/common/AiSuggestionsCard";
+import { useAiSuggestions } from "@/features/ai/useAiSuggestions";
 
 const categories = ["Food", "Transport", "Rent", "Health", "Other"];
 
@@ -143,7 +139,6 @@ interface TransactionGroup {
 }
 
 export default function FinancePage() {
-  const interfaceLanguage = useAppearance((state) => state.language);
   const { t } = useT();
   const {
     transactions,
@@ -359,38 +354,13 @@ export default function FinancePage() {
     });
   }, [transactions]);
 
-  // AI Suggestions — fetched from Gemini
-  const [finSuggestions, setFinSuggestions] = useState<Array<{ text: string; type: string }>>([]);
-  const [finSugLoading, setFinSugLoading] = useState(false);
-  const finSugLoaded = useRef(false);
-  const workerUrl = import.meta.env.VITE_AGENT_WORKER_URL as string;
-
-  const fetchFinanceSuggestions = () => {
-    if (finSugLoaded.current) return;
-    finSugLoaded.current = true;
-    setFinSugLoading(true);
-    supabase.auth.getSession().then(({ data: { session: authSession } }) => {
-      if (!authSession) { setFinSugLoading(false); return; }
-      const responseLanguage = resolveAiResponseLanguage({
-        configuredResponseLanguage: getStoredAiResponseLanguage(),
-        interfaceLanguage,
-      });
-      fetch(`${workerUrl}/finance/suggestions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authSession.access_token}` },
-        body: JSON.stringify({
-          responseLanguage,
-          responseLanguageInstruction: getAiResponseLanguageInstruction(responseLanguage),
-        }),
-      })
-        .then(res => res.ok ? res.json() : { suggestions: [] })
-        .then((body: { suggestions: Array<{ text: string; type: string }> }) => {
-          setFinSuggestions(body.suggestions ?? []);
-        })
-        .catch(() => setFinSuggestions([]))
-        .finally(() => setFinSugLoading(false));
-    });
-  };
+  // AI Suggestions — fetched from Gemini (DESIGN-AUDIT phase 4: shared hook
+  // in manual mode -- Finance fetches on the generate button, not on load)
+  const {
+    suggestions: finSuggestions,
+    isLoading: finSugLoading,
+    request: fetchFinanceSuggestions,
+  } = useAiSuggestions({ endpoint: 'finance', manual: true });
 
   // Computed real stats (no AI needed)
   const prevMonthExpenses = useMemo(() => {
@@ -771,61 +741,37 @@ export default function FinancePage() {
 
       {/* KPI Stats Row */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
-        <Card className="glass-card card-accent surface-elevated">
-          <CardContent className="p-3.5">
-            <div className="flex items-center gap-2.5 mb-2">
-              <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-analyze-bg)]">
-                <TrendingUp className="w-4 h-4 text-[var(--flow-analyze)]" />
-              </div>
-              <span className="text-xs font-medium text-muted-foreground">{t('finance_income')}</span>
-            </div>
-            <p className="text-2xl font-bold tracking-tight text-[var(--flow-analyze)]">
-              {isInitialLoading ? '...' : formatCurrency(totals.income)}
-            </p>
-          </CardContent>
-        </Card>
-        <Card className="glass-card card-accent surface-elevated">
-          <CardContent className="p-3.5">
-            <div className="flex items-center gap-2.5 mb-2">
-              <div className="icon-tile w-8 h-8 rounded-md bg-destructive/15">
-                <TrendingDown className="w-4 h-4 text-destructive" />
-              </div>
-              <span className="text-xs font-medium text-muted-foreground">{t('finance_expenses')}</span>
-            </div>
-            <p className="text-2xl font-bold tracking-tight text-destructive">
-              {isInitialLoading ? '...' : formatCurrency(totals.expense)}
-            </p>
-          </CardContent>
-        </Card>
-        <Card className="glass-card card-accent surface-elevated">
-          <CardContent className="p-3.5">
-            <div className="flex items-center gap-2.5 mb-2">
-              <div className="icon-tile w-8 h-8 rounded-md">
-                <DollarSign className="w-4 h-4 text-primary" />
-              </div>
-              <span className="text-xs font-medium text-muted-foreground">{t('finance_balance')}</span>
-            </div>
-            <p className={cn("text-2xl font-bold tracking-tight", totals.net >= 0 ? "text-[var(--flow-analyze)]" : "text-destructive")}>
-              {isInitialLoading ? '...' : formatCurrency(totals.net)}
-            </p>
-          </CardContent>
-        </Card>
-        <Card className="glass-card card-accent surface-elevated">
-          <CardContent className="p-3.5">
-            <div className="flex items-center gap-2.5 mb-2">
-              <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-report-bg)]">
-                <Tag className="w-4 h-4 text-[var(--flow-report)]" />
-              </div>
-              <span className="text-xs font-medium text-muted-foreground">{t('finance_top_spend')}</span>
-            </div>
-            <p className="text-lg font-bold tracking-tight">
-              {isInitialLoading ? '...' : topCategory ? topCategory.name : '—'}
-            </p>
-            {topCategory && !isInitialLoading && (
-              <p className="text-[11px] text-muted-foreground">{formatCurrency(topCategory.amount)}</p>
-            )}
-          </CardContent>
-        </Card>
+        <StatCard
+          icon={TrendingUp}
+          label={t('finance_income')}
+          tileClassName="bg-[var(--flow-analyze-bg)]"
+          iconClassName="text-[var(--flow-analyze)]"
+          valueClassName="text-[var(--flow-analyze)]"
+          value={isInitialLoading ? '...' : formatCurrency(totals.income)}
+        />
+        <StatCard
+          icon={TrendingDown}
+          label={t('finance_expenses')}
+          tileClassName="bg-destructive/15"
+          iconClassName="text-destructive"
+          valueClassName="text-destructive"
+          value={isInitialLoading ? '...' : formatCurrency(totals.expense)}
+        />
+        <StatCard
+          icon={DollarSign}
+          label={t('finance_balance')}
+          valueClassName={totals.net >= 0 ? "text-[var(--flow-analyze)]" : "text-destructive"}
+          value={isInitialLoading ? '...' : formatCurrency(totals.net)}
+        />
+        <StatCard
+          icon={Tag}
+          label={t('finance_top_spend')}
+          tileClassName="bg-[var(--flow-report-bg)]"
+          iconClassName="text-[var(--flow-report)]"
+          valueClassName="text-lg"
+          value={isInitialLoading ? '...' : topCategory ? topCategory.name : '—'}
+          sub={topCategory && !isInitialLoading ? formatCurrency(topCategory.amount) : undefined}
+        />
       </div>
 
       {/* Transactions header: tabs + month nav + group by */}
@@ -1190,44 +1136,24 @@ export default function FinancePage() {
           </CardContent>
         </Card>
 
-        {/* AI Finance Insights */}
-        <Card className="glass-card card-accent">
-          <CardContent className="p-4 space-y-3">
-            <div className="flex items-center gap-2.5">
-              <div className="icon-tile w-7 h-7 rounded-md">
-                <Sparkles className="w-3.5 h-3.5 text-primary" />
-              </div>
-              <span className="text-sm font-semibold">{t('finance_ai_title')}</span>
-            </div>
-
-            {finSuggestions.length > 0 ? (
-              <ul className="space-y-2">
-                {finSuggestions.map((s, i) => (
-                  <li key={i} className="flex items-start gap-3 rounded-lg bg-secondary/20 px-3 py-2.5">
-                    <div className={cn("icon-tile w-7 h-7 rounded-lg shrink-0 mt-0.5", s.type === 'action' ? 'bg-[var(--flow-analyze-bg)]' : 'bg-[var(--flow-study-bg)]')}>
-                      {s.type === 'action'
-                        ? <ArrowRight className="w-3.5 h-3.5 text-[var(--flow-analyze)]" />
-                        : <Lightbulb className="w-3.5 h-3.5 text-[var(--flow-study)]" />}
-                    </div>
-                    <p className="text-xs leading-relaxed">{s.text}</p>
-                  </li>
-                ))}
-              </ul>
-            ) : finSugLoading ? (
-              <div className="space-y-2">
-                <SkeletonBlock className="h-10 w-full" />
-                <SkeletonBlock className="h-10 w-full" />
-              </div>
-            ) : (
-              <>
-                <p className="text-xs text-muted-foreground">{t('finance_ai_desc')}</p>
-                <Button size="sm" variant="outline" className="w-full gap-1.5" onClick={fetchFinanceSuggestions}>
-                  <Sparkles className="w-3.5 h-3.5" /> {t('finance_ai_generate')}
-                </Button>
-              </>
-            )}
-
-            {/* Computed real stats */}
+        {/* AI Finance Insights (DESIGN-AUDIT phase 4: shared card; generate
+            button as the empty state, computed stats as the footer) */}
+        <AiSuggestionsCard
+          title={t('finance_ai_title')}
+          isLoading={finSugLoading}
+          rows={finSuggestions.map(s => ({
+            text: s.text,
+            kind: s.type === 'action' ? 'action' as const : 'idea' as const,
+          }))}
+          empty={
+            <>
+              <p className="text-xs text-muted-foreground">{t('finance_ai_desc')}</p>
+              <Button size="sm" variant="outline" className="w-full gap-1.5" onClick={fetchFinanceSuggestions}>
+                <Sparkles className="w-3.5 h-3.5" /> {t('finance_ai_generate')}
+              </Button>
+            </>
+          }
+          footer={
             <div className="border-t border-border/40 pt-3 space-y-2">
               {topCategory && (
                 <div className="flex items-center justify-between text-xs">
@@ -1252,8 +1178,8 @@ export default function FinancePage() {
                 </div>
               )}
             </div>
-          </CardContent>
-        </Card>
+          }
+        />
 
         {/* Quick Actions */}
         <Card className="glass-card card-accent">

@@ -5,6 +5,7 @@ import {
   CheckSquare, Settings, MoreVertical, Edit2, Bot, BookOpen, ArrowRight, Home, PartyPopper,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { StatCard } from '@/components/common/StatCard';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -455,46 +456,38 @@ export default function FamilyPage() {
 
           {/* KPI Row */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <Card className="glass-card card-accent surface-elevated">
-              <CardContent className="p-3.5">
-                <div className="flex items-center gap-2.5 mb-2">
-                  <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-study-bg)]"><Users className="w-4 h-4 text-[var(--flow-study)]" /></div>
-                  <span className="text-xs font-medium text-muted-foreground">{t('family_children')}</span>
-                </div>
-                <p className="text-2xl font-bold tracking-tight">{children.length}</p>
-                <p className="text-[11px] text-muted-foreground">{t('family_total_kids')}</p>
-              </CardContent>
-            </Card>
-            <Card className="glass-card card-accent surface-elevated">
-              <CardContent className="p-3.5">
-                <div className="flex items-center gap-2.5 mb-2">
-                  <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-review-bg)]"><Calendar className="w-4 h-4 text-[var(--flow-review)]" /></div>
-                  <span className="text-xs font-medium text-muted-foreground">{t('family_events')}</span>
-                </div>
-                <p className="text-2xl font-bold tracking-tight">{todayEvents.length > 0 ? todayEvents.length : totalEvents}</p>
-                <p className="text-[11px] text-muted-foreground">{todayEvents.length > 0 ? t('family_events_today') : t('family_total_events')}</p>
-              </CardContent>
-            </Card>
-            <Card className="glass-card card-accent surface-elevated">
-              <CardContent className="p-3.5">
-                <div className="flex items-center gap-2.5 mb-2">
-                  <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-career-bg)]"><GraduationCap className="w-4 h-4 text-[var(--flow-career)]" /></div>
-                  <span className="text-xs font-medium text-muted-foreground">{t('family_homework')}</span>
-                </div>
-                <p className="text-2xl font-bold tracking-tight">{allPendingHw.length}</p>
-                <p className="text-[11px] text-muted-foreground">{t('family_pending_tasks')}</p>
-              </CardContent>
-            </Card>
-            <Card className="glass-card card-accent surface-elevated">
-              <CardContent className="p-3.5">
-                <div className="flex items-center gap-2.5 mb-2">
-                  <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-analyze-bg)]"><CheckSquare className="w-4 h-4 text-[var(--flow-analyze)]" /></div>
-                  <span className="text-xs font-medium text-muted-foreground">{t('family_tasks')}</span>
-                </div>
-                <p className="text-2xl font-bold tracking-tight">{openTasks}</p>
-                <p className="text-[11px] text-muted-foreground">{t('family_open_tasks')}</p>
-              </CardContent>
-            </Card>
+            <StatCard
+              icon={Users}
+              label={t('family_children')}
+              tileClassName="bg-[var(--flow-study-bg)]"
+              iconClassName="text-[var(--flow-study)]"
+              value={children.length}
+              sub={t('family_total_kids')}
+            />
+            <StatCard
+              icon={Calendar}
+              label={t('family_events')}
+              tileClassName="bg-[var(--flow-review-bg)]"
+              iconClassName="text-[var(--flow-review)]"
+              value={todayEvents.length > 0 ? todayEvents.length : totalEvents}
+              sub={todayEvents.length > 0 ? t('family_events_today') : t('family_total_events')}
+            />
+            <StatCard
+              icon={GraduationCap}
+              label={t('family_homework')}
+              tileClassName="bg-[var(--flow-career-bg)]"
+              iconClassName="text-[var(--flow-career)]"
+              value={allPendingHw.length}
+              sub={t('family_pending_tasks')}
+            />
+            <StatCard
+              icon={CheckSquare}
+              label={t('family_tasks')}
+              tileClassName="bg-[var(--flow-analyze-bg)]"
+              iconClassName="text-[var(--flow-analyze)]"
+              value={openTasks}
+              sub={t('family_open_tasks')}
+            />
           </div>
 
           {/* Row 2: Children list + Today's overview */}

@@ -1,6 +1,6 @@
 ﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { Plus, Calendar as CalendarIcon, CalendarDays, CheckSquare, Layers, ArrowRight, ArrowUpRight, Lightbulb, MapPin, Pencil, Sparkles, StickyNote, Trash2 } from "lucide-react";
+import { Plus, Calendar as CalendarIcon, CalendarDays, CheckSquare, Layers, ArrowUpRight, MapPin, Pencil, StickyNote, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -25,17 +25,13 @@ import { AlarmPicker } from "@/features/calendar/components/AlarmPicker";
 import { getTasksAsEvents, type TaskAsEvent } from "@/features/tasks/taskCalendarBridge";
 import { useTasks } from "@/hooks/useTasks";
 import { Checkbox } from "@/components/ui/checkbox";
-import { supabase } from "@/integrations/supabase/client";
 import { formatDateTime, toDateOnly } from "@/lib/date";
 import { cn } from "@/lib/utils";
 import { SmartflowAsciiVisual } from "@/components/smartflow";
-import { useAppearance } from "@/features/settings/appearanceStore";
+import { StatCard } from "@/components/common/StatCard";
+import { AiSuggestionsCard } from "@/components/common/AiSuggestionsCard";
+import { useAiSuggestions } from "@/features/ai/useAiSuggestions";
 import { localeFor, useT, type TranslationKey } from "@/i18n";
-import {
-  getAiResponseLanguageInstruction,
-  getStoredAiResponseLanguage,
-  resolveAiResponseLanguage,
-} from "@/features/ai/responseLanguage";
 
 type EventFilter = "all" | "today" | "week";
 
@@ -161,7 +157,6 @@ function getCategoryDotColor(event: CalendarEvent): string {
 }
 
 export default function CalendarPage() {
-  const interfaceLanguage = useAppearance((state) => state.language);
   const { t, lang } = useT();
   const locale = localeFor(lang);
   const queryClient = useQueryClient();
@@ -405,39 +400,13 @@ export default function CalendarPage() {
       .sort((a, b) => a.dateTimeStart.localeCompare(b.dateTimeStart));
   }, [monthEvents, today]);
 
-  // AI Suggestions — fetched from Gemini via worker
-  const [calSuggestions, setCalSuggestions] = useState<Array<{ text: string; type: string; suggestedDate?: string }>>([]);
+  // AI Suggestions — fetched from Gemini via worker (DESIGN-AUDIT phase 4:
+  // shared hook, was an inline copy of the same fetch)
+  const { suggestions: calSuggestions, isLoading: calSuggestionsLoading } = useAiSuggestions({
+    endpoint: 'calendar',
+    enabled: monthEvents.length > 0,
+  });
   const [dialogDefaultDate, setDialogDefaultDate] = useState<string | undefined>(undefined);
-  const [calSuggestionsLoading, setCalSuggestionsLoading] = useState(true);
-  const calSuggestionsLoaded = useRef(false);
-  const workerUrl = import.meta.env.VITE_AGENT_WORKER_URL as string;
-
-  useEffect(() => {
-    if (calSuggestionsLoaded.current || monthEvents.length === 0) return;
-    calSuggestionsLoaded.current = true;
-    setCalSuggestionsLoading(true);
-    supabase.auth.getSession().then(({ data: { session: authSession } }) => {
-      if (!authSession) { setCalSuggestionsLoading(false); return; }
-      const responseLanguage = resolveAiResponseLanguage({
-        configuredResponseLanguage: getStoredAiResponseLanguage(),
-        interfaceLanguage,
-      });
-      fetch(`${workerUrl}/calendar/suggestions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authSession.access_token}` },
-        body: JSON.stringify({
-          responseLanguage,
-          responseLanguageInstruction: getAiResponseLanguageInstruction(responseLanguage),
-        }),
-      })
-        .then(res => res.ok ? res.json() : { suggestions: [] })
-        .then((body: { suggestions: Array<{ text: string; type: string; suggestedDate?: string }> }) => {
-          setCalSuggestions(body.suggestions ?? []);
-        })
-        .catch(() => setCalSuggestions([]))
-        .finally(() => setCalSuggestionsLoading(false));
-    });
-  }, [monthEvents.length, workerUrl, interfaceLanguage]);
 
   useEffect(() => {
     if (!import.meta.env.DEV) return;
@@ -687,50 +656,10 @@ export default function CalendarPage() {
 
       {/* KPI Stats Row */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <Card className="glass-card card-accent surface-elevated">
-          <CardContent className="p-3.5">
-            <div className="flex items-center gap-2.5 mb-2">
-              <div className="icon-tile w-8 h-8 rounded-md">
-                <CalendarIcon className="w-4 h-4 text-primary" />
-              </div>
-              <span className="text-xs font-medium text-muted-foreground">{t("calendar_events_today")}</span>
-            </div>
-            <p className="text-2xl font-bold tracking-tight">{calendarKpi.eventsToday}</p>
-          </CardContent>
-        </Card>
-        <Card className="glass-card card-accent surface-elevated">
-          <CardContent className="p-3.5">
-            <div className="flex items-center gap-2.5 mb-2">
-              <div className="icon-tile w-8 h-8 rounded-md">
-                <CalendarDays className="w-4 h-4 text-primary" />
-              </div>
-              <span className="text-xs font-medium text-muted-foreground">{t("calendar_this_week")}</span>
-            </div>
-            <p className="text-2xl font-bold tracking-tight">{calendarKpi.eventsThisWeek}</p>
-          </CardContent>
-        </Card>
-        <Card className="glass-card card-accent surface-elevated">
-          <CardContent className="p-3.5">
-            <div className="flex items-center gap-2.5 mb-2">
-              <div className="icon-tile w-8 h-8 rounded-md">
-                <Layers className="w-4 h-4 text-primary" />
-              </div>
-              <span className="text-xs font-medium text-muted-foreground">{t("calendar_categories")}</span>
-            </div>
-            <p className="text-2xl font-bold tracking-tight">{calendarKpi.categoriesUsed}</p>
-          </CardContent>
-        </Card>
-        <Card className="glass-card card-accent surface-elevated">
-          <CardContent className="p-3.5">
-            <div className="flex items-center gap-2.5 mb-2">
-              <div className="icon-tile w-8 h-8 rounded-md">
-                <ArrowUpRight className="w-4 h-4 text-primary" />
-              </div>
-              <span className="text-xs font-medium text-muted-foreground">{t("calendar_upcoming")}</span>
-            </div>
-            <p className="text-2xl font-bold tracking-tight">{calendarKpi.upcoming}</p>
-          </CardContent>
-        </Card>
+        <StatCard icon={CalendarIcon} label={t("calendar_events_today")} value={calendarKpi.eventsToday} />
+        <StatCard icon={CalendarDays} label={t("calendar_this_week")} value={calendarKpi.eventsThisWeek} />
+        <StatCard icon={Layers} label={t("calendar_categories")} value={calendarKpi.categoriesUsed} />
+        <StatCard icon={ArrowUpRight} label={t("calendar_upcoming")} value={calendarKpi.upcoming} />
       </div>
 
       <CalendarFormDialog
@@ -1247,51 +1176,20 @@ export default function CalendarPage() {
           </CardContent>
         </Card>
 
-        {/* AI Suggestions — Gemini-generated */}
+        {/* AI Suggestions — Gemini-generated (DESIGN-AUDIT phase 4: shared card) */}
         {(calSuggestionsLoading || calSuggestions.length > 0) && (
-          <Card className="glass-card card-accent">
-            <CardContent className="p-4 space-y-3">
-              <div className="flex items-center gap-2.5">
-                <div className="icon-tile w-7 h-7 rounded-md">
-                  <Sparkles className="w-3.5 h-3.5 text-primary" />
-                </div>
-                <span className="text-sm font-semibold">{t("ai_suggestions")}</span>
-              </div>
-              <p className="text-[11px] text-muted-foreground">{t("ai_based_on_schedule")}</p>
-              {calSuggestionsLoading ? (
-                <div className="space-y-2">
-                  <SkeletonBlock className="h-10 w-full" />
-                  <SkeletonBlock className="h-10 w-full" />
-                </div>
-              ) : (
-                <ul className="space-y-2">
-                  {calSuggestions.map((s, i) => {
-                    const clickable = !!s.suggestedDate;
-                    const Row = clickable ? 'button' : 'div';
-                    return (
-                      <li key={i}>
-                        <Row
-                          type={clickable ? 'button' : undefined}
-                          onClick={clickable ? () => openNewEventOnDate(s.suggestedDate!) : undefined}
-                          className={cn(
-                            "w-full flex items-start gap-3 rounded-lg bg-secondary/20 px-3 py-2.5 text-start",
-                            clickable && "cursor-pointer transition-colors hover:bg-secondary/40 hover:border-primary/25"
-                          )}
-                        >
-                          <div className={cn("icon-tile w-7 h-7 rounded-lg shrink-0 mt-0.5", s.type === 'recommendation' ? 'bg-[var(--flow-analyze-bg)]' : 'bg-[var(--flow-study-bg)]')}>
-                            {s.type === 'recommendation'
-                              ? <ArrowRight className="w-3.5 h-3.5 text-[var(--flow-analyze)]" />
-                              : <Lightbulb className="w-3.5 h-3.5 text-[var(--flow-study)]" />}
-                          </div>
-                          <p className="text-xs leading-relaxed">{s.text}</p>
-                        </Row>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </CardContent>
-          </Card>
+          <AiSuggestionsCard
+            title={t("ai_suggestions")}
+            subtitle={t("ai_based_on_schedule")}
+            isLoading={calSuggestionsLoading}
+            rows={calSuggestions.map(s => ({
+              text: s.text,
+              kind: s.type === 'recommendation' ? 'action' as const : 'idea' as const,
+              onClick: s.suggestedDate
+                ? () => openNewEventOnDate(s.suggestedDate!)
+                : undefined,
+            }))}
+          />
         )}
       </div>
       </div>

@@ -4,6 +4,7 @@ import { BookOpen, Flame, CheckSquare, Smile, Brain, LineChart, PenLine } from '
 import { AreaChart, Area, ResponsiveContainer } from 'recharts';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import { StatCard } from '@/components/common/StatCard';
 import { JournalEditor } from '@/features/journal/components/JournalEditor';
 import { JournalCalendar } from '@/features/journal/components/JournalCalendar';
 import { useJournalEntry, useJournalMonth } from '@/features/journal/useJournal';
@@ -139,44 +140,23 @@ export default function JournalPage() {
 
           {/* KPI Row */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <Card className="glass-card card-accent surface-elevated">
-              <CardContent className="p-3.5">
-                <div className="flex items-center gap-2.5 mb-2">
-                  <div className="icon-tile w-8 h-8 rounded-md"><Flame className="w-4 h-4 text-primary" /></div>
-                  <span className="text-xs font-medium text-muted-foreground">{t('journal_streak')}</span>
-                </div>
-                <p className="text-2xl font-bold tracking-tight">{streak} <span className="text-sm font-normal text-muted-foreground">days</span></p>
-              </CardContent>
-            </Card>
-            <Card className="glass-card card-accent surface-elevated">
-              <CardContent className="p-3.5">
-                <div className="flex items-center gap-2.5 mb-2">
-                  <div className="icon-tile w-8 h-8 rounded-md"><BookOpen className="w-4 h-4 text-primary" /></div>
-                  <span className="text-xs font-medium text-muted-foreground">{t('journal_entries_month')}</span>
-                </div>
-                <p className="text-2xl font-bold tracking-tight">{monthEntries.length}</p>
-              </CardContent>
-            </Card>
-            <Card className="glass-card card-accent surface-elevated">
-              <CardContent className="p-3.5">
-                <div className="flex items-center gap-2.5 mb-2">
-                  <div className="icon-tile w-8 h-8 rounded-md"><Smile className="w-4 h-4 text-primary" /></div>
-                  <span className="text-xs font-medium text-muted-foreground">{t('journal_mood')}</span>
-                </div>
-                <p className="text-2xl font-bold tracking-tight">
-                  {selectedEntry?.mood ? `${moodEmoji(selectedEntry.mood)} ${MOOD_LABELS[selectedEntry.mood] ?? ''}` : '—'}
-                </p>
-              </CardContent>
-            </Card>
-            <Card className="glass-card card-accent surface-elevated">
-              <CardContent className="p-3.5">
-                <div className="flex items-center gap-2.5 mb-2">
-                  <div className="icon-tile w-8 h-8 rounded-md"><Brain className="w-4 h-4 text-primary" /></div>
-                  <span className="text-xs font-medium text-muted-foreground">{t('journal_ai_insight')}</span>
-                </div>
-                <p className="text-2xl font-bold tracking-tight text-[var(--flow-analyze)]">Positive</p>
-              </CardContent>
-            </Card>
+            <StatCard
+              icon={Flame}
+              label={t('journal_streak')}
+              value={<>{streak} <span className="text-sm font-normal text-muted-foreground">days</span></>}
+            />
+            <StatCard icon={BookOpen} label={t('journal_entries_month')} value={monthEntries.length} />
+            <StatCard
+              icon={Smile}
+              label={t('journal_mood')}
+              value={selectedEntry?.mood ? `${moodEmoji(selectedEntry.mood)} ${MOOD_LABELS[selectedEntry.mood] ?? ''}` : '—'}
+            />
+            <StatCard
+              icon={Brain}
+              label={t('journal_ai_insight')}
+              valueClassName="text-[var(--flow-analyze)]"
+              value="Positive"
+            />
           </div>
 
           {/* Date Reflection */}
