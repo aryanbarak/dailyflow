@@ -186,27 +186,28 @@ export default function TutorWisoPage() {
   );
 
   return (
-    // DESIGN-AUDIT 0.6 (light mode): dark-by-design work surface -- see
-    // TutorAppPage.tsx's comment; same treatment across the tutor suite.
-    <div className="dark min-h-dvh bg-[var(--flow-bg-deep)] text-foreground">
+    // ACADEMY-LIGHT (2026-09-05): the tutor suite now follows the app
+    // theme -- see TutorAppPage.tsx's comment; the frozen dark styling
+    // survives behind dark: prefixes.
+    <div className="min-h-dvh bg-background text-foreground dark:bg-[var(--flow-bg-deep)]">
     <div className="p-4 lg:p-6 max-w-[1500px] mx-auto space-y-4">
-      <div className="flex items-center gap-2 rounded-md border border-slate-700/60 bg-slate-950/60 px-3 py-2">
-        <Link to="/tutor/app" className="rounded border border-slate-600 bg-slate-900 px-3 py-1.5 text-sm font-medium hover:bg-slate-800">
+      <div className="flex items-center gap-2 rounded-md border border-border bg-card/60 dark:border-slate-700/60 dark:bg-slate-950/60 px-3 py-2">
+        <Link to="/tutor/app" className="rounded border border-border bg-card px-3 py-1.5 text-sm font-medium hover:bg-secondary/60 dark:border-slate-600 dark:bg-slate-900 dark:hover:bg-slate-800">
           Tutor
         </Link>
-        <Link to="/tutor" className="rounded border border-slate-600 bg-slate-900 px-3 py-1.5 text-sm font-medium hover:bg-slate-800">
+        <Link to="/tutor" className="rounded border border-border bg-card px-3 py-1.5 text-sm font-medium hover:bg-secondary/60 dark:border-slate-600 dark:bg-slate-900 dark:hover:bg-slate-800">
           Exam Bank (AP2)
         </Link>
-        <Link to="/tutor/wiso" className="rounded border border-slate-400 bg-slate-900 px-3 py-1.5 text-sm font-medium">
+        <Link to="/tutor/wiso" className="rounded border border-primary/50 bg-card px-3 py-1.5 text-sm font-medium dark:border-slate-400 dark:bg-slate-900">
           WISO
         </Link>
-        <Link to="/tutor/ergaenzungspruefung" className="rounded border border-slate-600 bg-slate-900 px-3 py-1.5 text-sm font-medium hover:bg-slate-800">
+        <Link to="/tutor/ergaenzungspruefung" className="rounded border border-border bg-card px-3 py-1.5 text-sm font-medium hover:bg-secondary/60 dark:border-slate-600 dark:bg-slate-900 dark:hover:bg-slate-800">
           Ergänzungsprüfung
         </Link>
       </div>
 
       <div className="flex items-center gap-3">
-        <h1 className="text-4xl font-semibold text-emerald-300">{title}</h1>
+        <h1 className="text-4xl font-semibold text-emerald-600 dark:text-emerald-300">{title}</h1>
         <Button variant="outline" onClick={() => void loadBundle()} disabled={loading}>
           {loading ? "Loading..." : "Reload"}
         </Button>
@@ -226,7 +227,7 @@ export default function TutorWisoPage() {
 
       <div className="rounded-md border p-3 text-lg text-muted-foreground">{summary}</div>
 
-      {error && <div className="rounded-md border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-200">{error}</div>}
+      {error && <div className="rounded-md border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-700 dark:text-rose-200">{error}</div>}
 
       {!error && tab === "wissensbasis" && (
         <div className="space-y-4">

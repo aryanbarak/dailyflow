@@ -364,7 +364,7 @@ function SpeakButton({ text, ttsKey, playingKey, speak, supported }: Readonly<{
         "shrink-0 rounded p-1.5 transition-colors",
         isPlaying
           ? "text-exam bg-exam/20 hover:bg-exam/30"
-          : "text-slate-400 hover:text-slate-200 hover:bg-slate-700/50",
+          : "text-muted-foreground hover:text-foreground hover:bg-secondary/50 dark:text-slate-400 dark:hover:text-slate-200 dark:hover:bg-slate-700/50",
       )}
     >
       {isPlaying ? (
@@ -404,7 +404,7 @@ function FaPlayButton({ id, text, playingId, isAnyPlaying, onToggle }: Readonly<
         "shrink-0 rounded border px-2 py-0.5 text-xs font-medium transition-colors",
         isThis
           ? "border-exam/40 bg-exam/20 text-exam"
-          : "border-slate-600 bg-slate-800 text-slate-400 hover:text-slate-200",
+          : "border-border bg-card text-muted-foreground hover:text-foreground dark:border-slate-600 dark:bg-slate-800 dark:text-slate-400 dark:hover:text-slate-200",
       )}
     >
       {isThis ? "⏸" : "🔊"} FA
@@ -473,15 +473,16 @@ export default function TutorErgaenzungspruefungPage() {
   ];
 
   return (
-    // DESIGN-AUDIT 0.6 (light mode): dark-by-design work surface -- see
-    // TutorAppPage.tsx's comment; same treatment across the tutor suite.
-    <div className="dark min-h-dvh bg-[var(--flow-bg-deep)] text-foreground">
+    // ACADEMY-LIGHT (2026-09-05): the tutor suite now follows the app
+    // theme -- see TutorAppPage.tsx's comment; the frozen dark styling
+    // survives behind dark: prefixes.
+    <div className="min-h-dvh bg-background text-foreground dark:bg-[var(--flow-bg-deep)]">
     <div className="p-4 lg:p-6 max-w-[1500px] mx-auto space-y-4">
       {/* Nav */}
-      <div className="flex flex-wrap items-center gap-2 rounded-md border border-slate-700/60 bg-slate-950/60 px-3 py-2">
-        <Link to="/tutor/app" className="rounded border border-slate-600 bg-slate-900 px-3 py-1.5 text-sm font-medium hover:bg-slate-800">Tutor</Link>
-        <Link to="/tutor" className="rounded border border-slate-600 bg-slate-900 px-3 py-1.5 text-sm font-medium hover:bg-slate-800">Exam Bank (AP2)</Link>
-        <Link to="/tutor/wiso" className="rounded border border-slate-600 bg-slate-900 px-3 py-1.5 text-sm font-medium hover:bg-slate-800">WISO</Link>
+      <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-card/60 dark:border-slate-700/60 dark:bg-slate-950/60 px-3 py-2">
+        <Link to="/tutor/app" className="rounded border border-border bg-card px-3 py-1.5 text-sm font-medium hover:bg-secondary/60 dark:border-slate-600 dark:bg-slate-900 dark:hover:bg-slate-800">Tutor</Link>
+        <Link to="/tutor" className="rounded border border-border bg-card px-3 py-1.5 text-sm font-medium hover:bg-secondary/60 dark:border-slate-600 dark:bg-slate-900 dark:hover:bg-slate-800">Exam Bank (AP2)</Link>
+        <Link to="/tutor/wiso" className="rounded border border-border bg-card px-3 py-1.5 text-sm font-medium hover:bg-secondary/60 dark:border-slate-600 dark:bg-slate-900 dark:hover:bg-slate-800">WISO</Link>
         <Link to="/tutor/ergaenzungspruefung" className="rounded border border-exam/60 bg-exam/10 px-3 py-1.5 text-sm font-medium text-exam">Ergänzungsprüfung</Link>
         <Link to="/tutor/mep-simulation" className="rounded border border-exam/40 bg-exam/10 px-3 py-1.5 text-sm font-medium text-exam hover:bg-exam/20">MEP-Simulation</Link>
       </div>
@@ -530,7 +531,7 @@ export default function TutorErgaenzungspruefungPage() {
                 { bereich: "Ganzheitliche Aufgabe I", punkte: "15 Punkte" },
                 { bereich: "Ganzheitliche Aufgabe II", punkte: "15 Punkte" },
               ].map((row) => (
-                <div key={row.bereich} className="flex items-start justify-between gap-2 rounded border border-slate-700/40 bg-slate-900/50 px-3 py-2">
+                <div key={row.bereich} className="flex items-start justify-between gap-2 rounded border border-border/70 bg-card/50 dark:border-slate-700/40 dark:bg-slate-900/50 px-3 py-2">
                   <span className="text-muted-foreground">{row.bereich}</span>
                   <span className="shrink-0 font-mono text-exam">{row.punkte}</span>
                 </div>
@@ -557,7 +558,7 @@ export default function TutorErgaenzungspruefungPage() {
                 </ul>
                 {thema.fallen.length > 0 && (
                   <div className="rounded-md border border-rose-500/30 bg-rose-500/10 p-3">
-                    <div className="font-medium text-sm text-rose-300 mb-2">Typische Prüfungsfallen</div>
+                    <div className="font-medium text-sm text-rose-600 dark:text-rose-300 mb-2">Typische Prüfungsfallen</div>
                     <ul className="space-y-1">
                       {thema.fallen.map((falle) => (
                         <li key={falle} className="text-sm text-muted-foreground">• {falle}</li>
@@ -569,8 +570,8 @@ export default function TutorErgaenzungspruefungPage() {
               {thema.titel.includes("OOP") && (
                 <div className="space-y-2 pl-1">
                   <div className="flex items-center gap-3">
-                    <h2 className="text-xl font-semibold text-violet-300">OOP Prüfungsfragen</h2>
-                    <span className="rounded border border-violet-500/40 bg-violet-500/20 px-1.5 py-0.5 text-xs font-semibold text-violet-300">
+                    <h2 className="text-xl font-semibold text-violet-600 dark:text-violet-300">OOP Prüfungsfragen</h2>
+                    <span className="rounded border border-violet-500/40 bg-violet-500/20 px-1.5 py-0.5 text-xs font-semibold text-violet-600 dark:text-violet-300">
                       {OOP_QUESTIONS.length} Fragen
                     </span>
                   </div>
@@ -579,12 +580,12 @@ export default function TutorErgaenzungspruefungPage() {
                     const istOffen = offeneOopFrage === oopKey;
                     const vollText = `Frage: ${item.question}. Antwort: ${item.answer}`;
                     return (
-                      <div key={oopKey} className="rounded-md border border-slate-700/60 overflow-hidden">
+                      <div key={oopKey} className="rounded-md border border-border dark:border-slate-700/60 overflow-hidden">
                         <div className="flex items-center gap-1 pr-2">
                           <button
                             type="button"
                             onClick={() => setOffeneOopFrage(istOffen ? null : oopKey)}
-                            className="flex-1 text-left flex items-start justify-between gap-3 px-4 py-3 hover:bg-slate-800/40 transition-colors"
+                            className="flex-1 text-left flex items-start justify-between gap-3 px-4 py-3 hover:bg-secondary/40 dark:hover:bg-slate-800/40 transition-colors"
                           >
                             <span className="text-sm font-medium">
                               <span className="mr-2 font-mono text-xs text-violet-400/70">{idx + 1}.</span>
@@ -595,7 +596,7 @@ export default function TutorErgaenzungspruefungPage() {
                           <SpeakButton text={vollText} ttsKey={`${oopKey}-voll`} playingKey={playingKey} speak={speak} supported={supported} />
                         </div>
                         {istOffen && (
-                          <div className="px-4 pb-4 pt-1 border-t border-slate-700/40">
+                          <div className="px-4 pb-4 pt-1 border-t border-border/70 dark:border-slate-700/40">
                             <div className="rounded-md border border-violet-500/30 bg-violet-500/10 p-3 mt-2">
                               <div className="flex items-center justify-between mb-2">
                                 <span className="text-xs font-medium text-violet-400">Musterantwort</span>
@@ -613,8 +614,8 @@ export default function TutorErgaenzungspruefungPage() {
               {thema.titel.includes("Datenbanken") && (
                 <div className="space-y-2 pl-1">
                   <div className="flex items-center gap-3">
-                    <h2 className="text-xl font-semibold text-emerald-300">Datenbanken Prüfungsfragen</h2>
-                    <span className="rounded border border-emerald-500/40 bg-emerald-500/20 px-1.5 py-0.5 text-xs font-semibold text-emerald-300">
+                    <h2 className="text-xl font-semibold text-emerald-600 dark:text-emerald-300">Datenbanken Prüfungsfragen</h2>
+                    <span className="rounded border border-emerald-500/40 bg-emerald-500/20 px-1.5 py-0.5 text-xs font-semibold text-emerald-600 dark:text-emerald-300">
                       {DATENBANKEN_QUESTIONS.length} Fragen
                     </span>
                   </div>
@@ -623,12 +624,12 @@ export default function TutorErgaenzungspruefungPage() {
                     const istOffen = offeneOopFrage === dbKey;
                     const vollText = `Frage: ${item.question}. Antwort: ${item.answer}`;
                     return (
-                      <div key={dbKey} className="rounded-md border border-slate-700/60 overflow-hidden">
+                      <div key={dbKey} className="rounded-md border border-border dark:border-slate-700/60 overflow-hidden">
                         <div className="flex items-center gap-1 pr-2">
                           <button
                             type="button"
                             onClick={() => setOffeneOopFrage(istOffen ? null : dbKey)}
-                            className="flex-1 text-left flex items-start justify-between gap-3 px-4 py-3 hover:bg-slate-800/40 transition-colors"
+                            className="flex-1 text-left flex items-start justify-between gap-3 px-4 py-3 hover:bg-secondary/40 dark:hover:bg-slate-800/40 transition-colors"
                           >
                             <span className="text-sm font-medium">
                               <span className="mr-2 font-mono text-xs text-emerald-400/70">{idx + 1}.</span>
@@ -639,7 +640,7 @@ export default function TutorErgaenzungspruefungPage() {
                           <SpeakButton text={vollText} ttsKey={`${dbKey}-voll`} playingKey={playingKey} speak={speak} supported={supported} />
                         </div>
                         {istOffen && (
-                          <div className="px-4 pb-4 pt-1 border-t border-slate-700/40">
+                          <div className="px-4 pb-4 pt-1 border-t border-border/70 dark:border-slate-700/40">
                             <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 mt-2">
                               <div className="flex items-center justify-between mb-2">
                                 <span className="text-xs font-medium text-emerald-400">Musterantwort</span>
@@ -667,12 +668,12 @@ export default function TutorErgaenzungspruefungPage() {
                     const istOffen = offeneOopFrage === netKey;
                     const vollText = `Frage: ${item.question}. Antwort: ${item.answer}`;
                     return (
-                      <div key={netKey} className="rounded-md border border-slate-700/60 overflow-hidden">
+                      <div key={netKey} className="rounded-md border border-border dark:border-slate-700/60 overflow-hidden">
                         <div className="flex items-center gap-1 pr-2">
                           <button
                             type="button"
                             onClick={() => setOffeneOopFrage(istOffen ? null : netKey)}
-                            className="flex-1 text-left flex items-start justify-between gap-3 px-4 py-3 hover:bg-slate-800/40 transition-colors"
+                            className="flex-1 text-left flex items-start justify-between gap-3 px-4 py-3 hover:bg-secondary/40 dark:hover:bg-slate-800/40 transition-colors"
                           >
                             <span className="text-sm font-medium">
                               <span className="mr-2 font-mono text-xs text-exam/70">{idx + 1}.</span>
@@ -683,7 +684,7 @@ export default function TutorErgaenzungspruefungPage() {
                           <SpeakButton text={vollText} ttsKey={`${netKey}-voll`} playingKey={playingKey} speak={speak} supported={supported} />
                         </div>
                         {istOffen && (
-                          <div className="px-4 pb-4 pt-1 border-t border-slate-700/40">
+                          <div className="px-4 pb-4 pt-1 border-t border-border/70 dark:border-slate-700/40">
                             <div className="rounded-md border border-exam/30 bg-exam/10 p-3 mt-2">
                               <div className="flex items-center justify-between mb-2">
                                 <span className="text-xs font-medium text-exam">Musterantwort</span>
@@ -701,8 +702,8 @@ export default function TutorErgaenzungspruefungPage() {
               {thema.titel.includes("Softwareentwicklung") && (
                 <div className="space-y-2 pl-1">
                   <div className="flex items-center gap-3">
-                    <h2 className="text-xl font-semibold text-pink-300">Software-Engineering Prüfungsfragen</h2>
-                    <span className="rounded border border-pink-500/40 bg-pink-500/20 px-1.5 py-0.5 text-xs font-semibold text-pink-300">
+                    <h2 className="text-xl font-semibold text-pink-600 dark:text-pink-300">Software-Engineering Prüfungsfragen</h2>
+                    <span className="rounded border border-pink-500/40 bg-pink-500/20 px-1.5 py-0.5 text-xs font-semibold text-pink-600 dark:text-pink-300">
                       {SOFTWAREENGINEERING_QUESTIONS.length} Fragen
                     </span>
                   </div>
@@ -711,12 +712,12 @@ export default function TutorErgaenzungspruefungPage() {
                     const istOffen = offeneOopFrage === seKey;
                     const vollText = `Frage: ${item.question}. Antwort: ${item.answer}`;
                     return (
-                      <div key={seKey} className="rounded-md border border-slate-700/60 overflow-hidden">
+                      <div key={seKey} className="rounded-md border border-border dark:border-slate-700/60 overflow-hidden">
                         <div className="flex items-center gap-1 pr-2">
                           <button
                             type="button"
                             onClick={() => setOffeneOopFrage(istOffen ? null : seKey)}
-                            className="flex-1 text-left flex items-start justify-between gap-3 px-4 py-3 hover:bg-slate-800/40 transition-colors"
+                            className="flex-1 text-left flex items-start justify-between gap-3 px-4 py-3 hover:bg-secondary/40 dark:hover:bg-slate-800/40 transition-colors"
                           >
                             <span className="text-sm font-medium">
                               <span className="mr-2 font-mono text-xs text-pink-400/70">{idx + 1}.</span>
@@ -727,7 +728,7 @@ export default function TutorErgaenzungspruefungPage() {
                           <SpeakButton text={vollText} ttsKey={`${seKey}-voll`} playingKey={playingKey} speak={speak} supported={supported} />
                         </div>
                         {istOffen && (
-                          <div className="px-4 pb-4 pt-1 border-t border-slate-700/40">
+                          <div className="px-4 pb-4 pt-1 border-t border-border/70 dark:border-slate-700/40">
                             <div className="rounded-md border border-pink-500/30 bg-pink-500/10 p-3 mt-2">
                               <div className="flex items-center justify-between mb-2">
                                 <span className="text-xs font-medium text-pink-400">Musterantwort</span>
@@ -761,12 +762,12 @@ export default function TutorErgaenzungspruefungPage() {
               const istOffen = offeneFrage === key;
               const vollText = `Frage: ${item.frage}. Antwort: ${item.antwort}`;
               return (
-                <div key={key} className="rounded-md border border-slate-700/60 overflow-hidden">
+                <div key={key} className="rounded-md border border-border dark:border-slate-700/60 overflow-hidden">
                   <div className="flex items-center gap-1 pr-2">
                     <button
                       type="button"
                       onClick={() => setOffeneFrage(istOffen ? null : key)}
-                      className="flex-1 text-left flex items-start justify-between gap-3 px-4 py-3 hover:bg-slate-800/40 transition-colors"
+                      className="flex-1 text-left flex items-start justify-between gap-3 px-4 py-3 hover:bg-secondary/40 dark:hover:bg-slate-800/40 transition-colors"
                     >
                       <span className="text-sm font-medium">
                         <span className="mr-2 font-mono text-xs text-exam/70">{idx + 1}.</span>
@@ -783,7 +784,7 @@ export default function TutorErgaenzungspruefungPage() {
                     />
                   </div>
                   {istOffen && (
-                    <div className="px-4 pb-4 pt-1 border-t border-slate-700/40">
+                    <div className="px-4 pb-4 pt-1 border-t border-border/70 dark:border-slate-700/40">
                       <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 mt-2">
                         <div className="flex items-center justify-between mb-2">
                           <span className="text-xs font-medium text-emerald-400">Musterantwort</span>
@@ -816,7 +817,7 @@ export default function TutorErgaenzungspruefungPage() {
           </div>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {VORBEREITUNGSTIPPS.map((tipp) => (
-              <div key={tipp.titel} className="rounded-md border border-slate-700/60 bg-slate-900/60 p-4 space-y-2">
+              <div key={tipp.titel} className="rounded-md border border-border bg-card/60 dark:border-slate-700/60 dark:bg-slate-900/60 p-4 space-y-2">
                 <div className="flex items-center gap-2">
                   <span className="text-2xl">{tipp.icon}</span>
                   <h3 className="font-semibold">{tipp.titel}</h3>
@@ -825,7 +826,7 @@ export default function TutorErgaenzungspruefungPage() {
               </div>
             ))}
           </div>
-          <div className="rounded-md border border-slate-700/60 p-4 space-y-3">
+          <div className="rounded-md border border-border dark:border-slate-700/60 p-4 space-y-3">
             <h3 className="font-semibold text-lg">10-Tage-Plan</h3>
             <div className="space-y-2">
               {[
@@ -851,11 +852,11 @@ export default function TutorErgaenzungspruefungPage() {
       {tab === "beispielfragen" && (
         <div className="space-y-4">
           {/* Toolbar */}
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-slate-700/40 bg-slate-900/40 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border/70 bg-card/40 dark:border-slate-700/40 dark:bg-slate-900/40 p-3">
             <p className="text-sm text-muted-foreground">
               Klicken Sie auf eine Frage für die Musterantwort.
               {supported && (
-                <span className="ml-1">Das <strong className="text-slate-300">Lautsprecher-Symbol</strong> liest den Text auf Deutsch vor.</span>
+                <span className="ml-1">Das <strong className="text-foreground dark:text-slate-300">Lautsprecher-Symbol</strong> liest den Text auf Deutsch vor.</span>
               )}
             </p>
             <div className="flex flex-wrap items-center gap-2">
@@ -865,7 +866,7 @@ export default function TutorErgaenzungspruefungPage() {
                   value={selectedVoiceName}
                   onChange={(e) => setSelectedVoiceName(e.target.value)}
                   title="Deutsche Stimme auswählen"
-                  className="rounded border border-slate-600 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-exam/50 max-w-[210px]"
+                  className="rounded border border-border bg-card px-2 py-1 text-xs text-foreground dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-exam/50 max-w-[210px]"
                 >
                   {germanVoices.map((v) => (
                     <option key={v.name} value={v.name}>
@@ -875,7 +876,7 @@ export default function TutorErgaenzungspruefungPage() {
                 </select>
               )}
               {supported && playingKey && (
-                <Button variant="outline" size="sm" onClick={stop} className="shrink-0 border-rose-500/40 text-rose-400 hover:bg-rose-500/10">
+                <Button variant="outline" size="sm" onClick={stop} className="shrink-0 border-rose-500/40 text-rose-600 dark:text-rose-400 hover:bg-rose-500/10">
                   <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" className="mr-1.5">
                     <rect x="6" y="5" width="4" height="14" rx="1" /><rect x="14" y="5" width="4" height="14" rx="1" />
                   </svg>
@@ -903,13 +904,13 @@ export default function TutorErgaenzungspruefungPage() {
                 const vollText = `Frage: ${item.frage}. Antwort: ${item.antwort}`;
 
                 return (
-                  <div key={key} className="rounded-md border border-slate-700/60 overflow-hidden">
+                  <div key={key} className="rounded-md border border-border dark:border-slate-700/60 overflow-hidden">
                     {/* Frage-Zeile */}
                     <div className="flex items-center gap-1 pr-2">
                       <button
                         type="button"
                         onClick={() => setOffeneFrage(istOffen ? null : key)}
-                        className="flex-1 text-left flex items-start justify-between gap-3 px-4 py-3 hover:bg-slate-800/40 transition-colors"
+                        className="flex-1 text-left flex items-start justify-between gap-3 px-4 py-3 hover:bg-secondary/40 dark:hover:bg-slate-800/40 transition-colors"
                       >
                         <span className="text-sm font-medium">{item.frage}</span>
                         <span className="shrink-0 text-muted-foreground text-xs mt-0.5">{istOffen ? "▲" : "▼"}</span>
@@ -925,7 +926,7 @@ export default function TutorErgaenzungspruefungPage() {
 
                     {/* Antwort */}
                     {istOffen && (
-                      <div className="px-4 pb-4 pt-1 border-t border-slate-700/40">
+                      <div className="px-4 pb-4 pt-1 border-t border-border/70 dark:border-slate-700/40">
                         <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 mt-2">
                           <div className="flex items-center justify-between mb-2">
                             <span className="text-xs font-medium text-emerald-400">Musterantwort</span>
@@ -950,20 +951,20 @@ export default function TutorErgaenzungspruefungPage() {
           {/* OOP (25 Fragen) mit explainFa */}
           <div className="space-y-2">
             <div className="flex items-center gap-2">
-              <h3 className="text-lg font-semibold text-violet-300">OOP Prüfungsfragen (25 Fragen)</h3>
-              <span className="rounded border border-violet-500/40 bg-violet-500/20 px-1.5 py-0.5 text-xs font-semibold text-violet-300">OOP</span>
+              <h3 className="text-lg font-semibold text-violet-600 dark:text-violet-300">OOP Prüfungsfragen (25 Fragen)</h3>
+              <span className="rounded border border-violet-500/40 bg-violet-500/20 px-1.5 py-0.5 text-xs font-semibold text-violet-600 dark:text-violet-300">OOP</span>
             </div>
             {OOP_QUESTIONS.map((item, idx) => {
               const key = `bsp-oop-${item.id}`;
               const istOffen = offeneFrage === key;
               const vollText = `Frage: ${item.question}. Antwort: ${item.answer}`;
               return (
-                <div key={key} className="rounded-md border border-slate-700/60 overflow-hidden">
+                <div key={key} className="rounded-md border border-border dark:border-slate-700/60 overflow-hidden">
                   <div className="flex items-center gap-1 pr-2">
                     <button
                       type="button"
                       onClick={() => setOffeneFrage(istOffen ? null : key)}
-                      className="flex-1 text-left flex items-start justify-between gap-3 px-4 py-3 hover:bg-slate-800/40 transition-colors"
+                      className="flex-1 text-left flex items-start justify-between gap-3 px-4 py-3 hover:bg-secondary/40 dark:hover:bg-slate-800/40 transition-colors"
                     >
                       <span className="text-sm font-medium">
                         <span className="mr-2 font-mono text-xs text-violet-400/70">{idx + 1}.</span>
@@ -974,7 +975,7 @@ export default function TutorErgaenzungspruefungPage() {
                     <SpeakButton text={vollText} ttsKey={`${key}-voll`} playingKey={playingKey} speak={speak} supported={supported} />
                   </div>
                   {istOffen && (
-                    <div className="px-4 pb-4 pt-1 border-t border-slate-700/40 space-y-3">
+                    <div className="px-4 pb-4 pt-1 border-t border-border/70 dark:border-slate-700/40 space-y-3">
                       <div className="rounded-md border border-violet-500/30 bg-violet-500/10 p-3 mt-2">
                         <div className="flex items-center justify-between mb-2">
                           <span className="text-xs font-medium text-violet-400">Musterantwort</span>
@@ -1007,20 +1008,20 @@ export default function TutorErgaenzungspruefungPage() {
           {/* Datenbanken (25 Fragen) mit explainFa */}
           <div className="space-y-2">
             <div className="flex items-center gap-2">
-              <h3 className="text-lg font-semibold text-emerald-300">Datenbanken Prüfungsfragen (25 Fragen)</h3>
-              <span className="rounded border border-emerald-500/40 bg-emerald-500/20 px-1.5 py-0.5 text-xs font-semibold text-emerald-300">DB</span>
+              <h3 className="text-lg font-semibold text-emerald-600 dark:text-emerald-300">Datenbanken Prüfungsfragen (25 Fragen)</h3>
+              <span className="rounded border border-emerald-500/40 bg-emerald-500/20 px-1.5 py-0.5 text-xs font-semibold text-emerald-600 dark:text-emerald-300">DB</span>
             </div>
             {DATENBANKEN_QUESTIONS.map((item, idx) => {
               const key = `bsp-db-${item.id}`;
               const istOffen = offeneFrage === key;
               const vollText = `Frage: ${item.question}. Antwort: ${item.answer}`;
               return (
-                <div key={key} className="rounded-md border border-slate-700/60 overflow-hidden">
+                <div key={key} className="rounded-md border border-border dark:border-slate-700/60 overflow-hidden">
                   <div className="flex items-center gap-1 pr-2">
                     <button
                       type="button"
                       onClick={() => setOffeneFrage(istOffen ? null : key)}
-                      className="flex-1 text-left flex items-start justify-between gap-3 px-4 py-3 hover:bg-slate-800/40 transition-colors"
+                      className="flex-1 text-left flex items-start justify-between gap-3 px-4 py-3 hover:bg-secondary/40 dark:hover:bg-slate-800/40 transition-colors"
                     >
                       <span className="text-sm font-medium">
                         <span className="mr-2 font-mono text-xs text-emerald-400/70">{idx + 1}.</span>
@@ -1031,7 +1032,7 @@ export default function TutorErgaenzungspruefungPage() {
                     <SpeakButton text={vollText} ttsKey={`${key}-voll`} playingKey={playingKey} speak={speak} supported={supported} />
                   </div>
                   {istOffen && (
-                    <div className="px-4 pb-4 pt-1 border-t border-slate-700/40 space-y-3">
+                    <div className="px-4 pb-4 pt-1 border-t border-border/70 dark:border-slate-700/40 space-y-3">
                       <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 mt-2">
                         <div className="flex items-center justify-between mb-2">
                           <span className="text-xs font-medium text-emerald-400">Musterantwort</span>
@@ -1072,12 +1073,12 @@ export default function TutorErgaenzungspruefungPage() {
               const istOffen = offeneFrage === key;
               const vollText = `Frage: ${item.question}. Antwort: ${item.answer}`;
               return (
-                <div key={key} className="rounded-md border border-slate-700/60 overflow-hidden">
+                <div key={key} className="rounded-md border border-border dark:border-slate-700/60 overflow-hidden">
                   <div className="flex items-center gap-1 pr-2">
                     <button
                       type="button"
                       onClick={() => setOffeneFrage(istOffen ? null : key)}
-                      className="flex-1 text-left flex items-start justify-between gap-3 px-4 py-3 hover:bg-slate-800/40 transition-colors"
+                      className="flex-1 text-left flex items-start justify-between gap-3 px-4 py-3 hover:bg-secondary/40 dark:hover:bg-slate-800/40 transition-colors"
                     >
                       <span className="text-sm font-medium">
                         <span className="mr-2 font-mono text-xs text-exam/70">{idx + 1}.</span>
@@ -1088,7 +1089,7 @@ export default function TutorErgaenzungspruefungPage() {
                     <SpeakButton text={vollText} ttsKey={`${key}-voll`} playingKey={playingKey} speak={speak} supported={supported} />
                   </div>
                   {istOffen && (
-                    <div className="px-4 pb-4 pt-1 border-t border-slate-700/40 space-y-3">
+                    <div className="px-4 pb-4 pt-1 border-t border-border/70 dark:border-slate-700/40 space-y-3">
                       <div className="rounded-md border border-exam/30 bg-exam/10 p-3 mt-2">
                         <div className="flex items-center justify-between mb-2">
                           <span className="text-xs font-medium text-exam">Musterantwort</span>
@@ -1121,20 +1122,20 @@ export default function TutorErgaenzungspruefungPage() {
           {/* Software-Engineering (25 Fragen) mit explainFa */}
           <div className="space-y-2">
             <div className="flex items-center gap-2">
-              <h3 className="text-lg font-semibold text-pink-300">Software-Engineering Prüfungsfragen (25 Fragen)</h3>
-              <span className="rounded border border-pink-500/40 bg-pink-500/20 px-1.5 py-0.5 text-xs font-semibold text-pink-300">SE</span>
+              <h3 className="text-lg font-semibold text-pink-600 dark:text-pink-300">Software-Engineering Prüfungsfragen (25 Fragen)</h3>
+              <span className="rounded border border-pink-500/40 bg-pink-500/20 px-1.5 py-0.5 text-xs font-semibold text-pink-600 dark:text-pink-300">SE</span>
             </div>
             {SOFTWAREENGINEERING_QUESTIONS.map((item, idx) => {
               const key = `bsp-se-${item.id}`;
               const istOffen = offeneFrage === key;
               const vollText = `Frage: ${item.question}. Antwort: ${item.answer}`;
               return (
-                <div key={key} className="rounded-md border border-slate-700/60 overflow-hidden">
+                <div key={key} className="rounded-md border border-border dark:border-slate-700/60 overflow-hidden">
                   <div className="flex items-center gap-1 pr-2">
                     <button
                       type="button"
                       onClick={() => setOffeneFrage(istOffen ? null : key)}
-                      className="flex-1 text-left flex items-start justify-between gap-3 px-4 py-3 hover:bg-slate-800/40 transition-colors"
+                      className="flex-1 text-left flex items-start justify-between gap-3 px-4 py-3 hover:bg-secondary/40 dark:hover:bg-slate-800/40 transition-colors"
                     >
                       <span className="text-sm font-medium">
                         <span className="mr-2 font-mono text-xs text-pink-400/70">{idx + 1}.</span>
@@ -1145,7 +1146,7 @@ export default function TutorErgaenzungspruefungPage() {
                     <SpeakButton text={vollText} ttsKey={`${key}-voll`} playingKey={playingKey} speak={speak} supported={supported} />
                   </div>
                   {istOffen && (
-                    <div className="px-4 pb-4 pt-1 border-t border-slate-700/40 space-y-3">
+                    <div className="px-4 pb-4 pt-1 border-t border-border/70 dark:border-slate-700/40 space-y-3">
                       <div className="rounded-md border border-pink-500/30 bg-pink-500/10 p-3 mt-2">
                         <div className="flex items-center justify-between mb-2">
                           <span className="text-xs font-medium text-pink-400">Musterantwort</span>
@@ -1191,7 +1192,7 @@ export default function TutorErgaenzungspruefungPage() {
                   "flex items-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium transition-colors",
                   saLang === l
                     ? "border-exam/60 bg-exam/10 text-exam"
-                    : "border-slate-700 bg-slate-900 hover:bg-slate-800 text-muted-foreground",
+                    : "border-border bg-card hover:bg-secondary/60 text-muted-foreground dark:border-slate-700 dark:bg-slate-900 dark:hover:bg-slate-800",
                 )}
               >
                 <span className="text-lg">{l === "de" ? "🇩🇪" : "🇦🇫"}</span>
@@ -1211,7 +1212,7 @@ export default function TutorErgaenzungspruefungPage() {
                 title="Stimme auswählen"
                 value={saVoiceName}
                 onChange={(e) => setSaVoiceName(e.target.value)}
-                className="w-full rounded-md border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-1 focus:ring-exam/50"
+                className="w-full rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-exam/50"
               >
                 {saVoices.map((v) => (
                   <option key={v.name} value={v.name}>{v.name} ({v.lang})</option>
@@ -1234,7 +1235,7 @@ export default function TutorErgaenzungspruefungPage() {
               placeholder={saLang === "de" ? "Deutschen Text hier eingeben…" : "متن فارسی را اینجا بنویسید…"}
               rows={10}
               className={cn(
-                "w-full rounded-lg border border-slate-700 bg-slate-900/60 p-4 text-sm resize-y",
+                "w-full rounded-lg border border-border bg-card/60 p-4 text-sm resize-y dark:border-slate-700 dark:bg-slate-900/60",
                 "placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-exam/40",
                 saLang === "fa" && "text-right",
               )}
@@ -1246,7 +1247,7 @@ export default function TutorErgaenzungspruefungPage() {
                 )}
               </span>
               {saText.length > 0 && (
-                <button type="button" onClick={() => setSaText("")} className="hover:text-slate-200 transition-colors">
+                <button type="button" onClick={() => setSaText("")} className="hover:text-foreground dark:hover:text-slate-200 transition-colors">
                   Löschen
                 </button>
               )}
@@ -1254,11 +1255,11 @@ export default function TutorErgaenzungspruefungPage() {
           </div>
 
           {/* Rate & Pitch sliders */}
-          <div className="grid gap-4 sm:grid-cols-2 rounded-lg border border-slate-700/60 bg-slate-900/40 p-4">
+          <div className="grid gap-4 sm:grid-cols-2 rounded-lg border border-border bg-card/40 dark:border-slate-700/60 dark:bg-slate-900/40 p-4">
             <div className="space-y-1.5">
               <div className="flex items-center justify-between">
                 <label htmlFor="sa-rate" className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Geschwindigkeit / سرعت</label>
-                <span className="font-mono text-xs text-slate-300">{saRate.toFixed(2)}×</span>
+                <span className="font-mono text-xs text-foreground dark:text-slate-300">{saRate.toFixed(2)}×</span>
               </div>
               <input id="sa-rate" type="range" min={0.5} max={2} step={0.05} value={saRate}
                 title="Geschwindigkeit"
@@ -1271,7 +1272,7 @@ export default function TutorErgaenzungspruefungPage() {
             <div className="space-y-1.5">
               <div className="flex items-center justify-between">
                 <label htmlFor="sa-pitch" className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Tonhöhe / زیر و بمی</label>
-                <span className="font-mono text-xs text-slate-300">{saPitch.toFixed(1)}</span>
+                <span className="font-mono text-xs text-foreground dark:text-slate-300">{saPitch.toFixed(1)}</span>
               </div>
               <input id="sa-pitch" type="range" min={0.5} max={2} step={0.1} value={saPitch}
                 title="Tonhöhe"
@@ -1294,7 +1295,7 @@ export default function TutorErgaenzungspruefungPage() {
               {saLang === "de" ? "Vorlesen" : "پخش"}
             </Button>
             <Button size="lg" variant="outline" onClick={saStop} disabled={!saPlaying}
-              className="gap-2 border-rose-500/40 text-rose-400 hover:bg-rose-500/10 disabled:opacity-30">
+              className="gap-2 border-rose-500/40 text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 disabled:opacity-30">
               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                 <rect x="6" y="5" width="4" height="14" rx="1" />
                 <rect x="14" y="5" width="4" height="14" rx="1" />
@@ -1314,22 +1315,22 @@ export default function TutorErgaenzungspruefungPage() {
                   </span>
                   <span>{saLang === "de" ? "Abschnitt" : "بخش"} {saProgress.current} / {saProgress.total}</span>
                 </div>
-                <span className="text-xs text-muted-foreground rounded border border-slate-700 px-1.5 py-0.5">
+                <span className="text-xs text-muted-foreground rounded border border-border px-1.5 py-0.5 dark:border-slate-700">
                   {saProgress.engine === "azure" ? "Azure Neural TTS" : "Web Speech API"}
                 </span>
               </div>
               <progress
                 value={saProgress.current}
                 max={saProgress.total}
-                className="w-full h-1.5 rounded-full [&::-webkit-progress-bar]:rounded-full [&::-webkit-progress-bar]:bg-slate-800 [&::-webkit-progress-value]:rounded-full [&::-webkit-progress-value]:bg-exam [&::-moz-progress-bar]:rounded-full [&::-moz-progress-bar]:bg-exam"
+                className="w-full h-1.5 rounded-full [&::-webkit-progress-bar]:rounded-full [&::-webkit-progress-bar]:bg-muted dark:[&::-webkit-progress-bar]:bg-slate-800 [&::-webkit-progress-value]:rounded-full [&::-webkit-progress-value]:bg-exam [&::-moz-progress-bar]:rounded-full [&::-moz-progress-bar]:bg-exam"
               />
             </div>
           )}
 
           {/* Persian voice install guide */}
           {saLang === "fa" && saVoices.length === 0 && supported && (
-            <div className="rounded-md border border-slate-700/60 bg-slate-900/40 p-4 text-sm space-y-2">
-              <p className="font-medium text-slate-300">صدای فارسی برای Web Speech fallback یافت نشد</p>
+            <div className="rounded-md border border-border bg-card/40 dark:border-slate-700/60 dark:bg-slate-900/40 p-4 text-sm space-y-2">
+              <p className="font-medium text-foreground dark:text-slate-300">صدای فارسی برای Web Speech fallback یافت نشد</p>
               <p className="text-muted-foreground text-xs">Azure TTS به‌صورت خودکار استفاده می‌شود. اگر Azure در دسترس نباشد:</p>
               <ul className="space-y-1 text-xs text-muted-foreground list-disc list-inside">
                 <li>Windows: تنظیمات → زمان و زبان → گفتار → اضافه کردن صدا → فارسی</li>

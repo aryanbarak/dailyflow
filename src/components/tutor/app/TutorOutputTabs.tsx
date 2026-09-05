@@ -201,7 +201,7 @@ function renderPseudocodeResult(result: unknown, lang: string, selectedVariantFr
   return (
     <div className="space-y-4">
       <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 p-3 space-y-1">
-        <div className="font-medium text-emerald-300">📄 {topic || "unknown"} {selectedVariantLabel ? `- ${selectedVariantLabel}` : ""}</div>
+        <div className="font-medium text-emerald-600 dark:text-emerald-300">📄 {topic || "unknown"} {selectedVariantLabel ? `- ${selectedVariantLabel}` : ""}</div>
       </div>
 
       <div className="rounded-md border p-3 space-y-1">
@@ -212,9 +212,9 @@ function renderPseudocodeResult(result: unknown, lang: string, selectedVariantFr
       </div>
 
       {pseudocode && (
-        <div className="rounded-md border border-emerald-500/50 bg-[#0b2a13] p-2.5 sm:p-3 space-y-2">
-          <div className="font-medium text-emerald-300">Pseudocode</div>
-          <pre className="text-[11px] sm:text-xs leading-6 overflow-auto whitespace-pre-wrap text-emerald-100">{pseudocode}</pre>
+        <div className="rounded-md border border-emerald-500/50 bg-emerald-500/10 dark:bg-[#0b2a13] p-2.5 sm:p-3 space-y-2">
+          <div className="font-medium text-emerald-600 dark:text-emerald-300">Pseudocode</div>
+          <pre className="text-[11px] sm:text-xs leading-6 overflow-auto whitespace-pre-wrap text-emerald-900 dark:text-emerald-100">{pseudocode}</pre>
         </div>
       )}
 
@@ -227,7 +227,7 @@ function renderPseudocodeResult(result: unknown, lang: string, selectedVariantFr
 
       {explainTextFa && normalizedLang !== "fa" && (
         <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 p-3 space-y-2">
-          <div className="font-medium text-right text-emerald-200" dir="rtl">توضیح فارسی این Variant</div>
+          <div className="font-medium text-right text-emerald-700 dark:text-emerald-200" dir="rtl">توضیح فارسی این Variant</div>
           {renderMultilineText(explainTextFa, true)}
         </div>
       )}
@@ -554,7 +554,7 @@ export function TutorOutputTabs({
   }
 
   return (
-    <Card className="h-full border-slate-700/70 bg-[#090d1a]">
+    <Card className="h-full border-border bg-card dark:border-slate-700/70 dark:bg-[#090d1a]">
       <CardHeader className="pb-3 px-3 sm:px-6">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <CardTitle className="text-xl sm:text-2xl font-semibold leading-none tracking-tight">Execution Output</CardTitle>
@@ -570,30 +570,30 @@ export function TutorOutputTabs({
       </CardHeader>
       <CardContent className="space-y-3 px-3 sm:px-6">
         <Tabs defaultValue="result" className="w-full">
-          <TabsList className="flex w-full overflow-x-auto rounded-lg bg-[#131b2e] p-1 gap-1 h-auto scrollbar-thin">
-            <TabsTrigger value="result" className="min-w-[90px] data-[state=active]:bg-emerald-500/20 data-[state=active]:text-emerald-300">
+          <TabsList className="flex w-full overflow-x-auto rounded-lg bg-muted p-1 dark:bg-[#131b2e] gap-1 h-auto scrollbar-thin">
+            <TabsTrigger value="result" className="min-w-[90px] data-[state=active]:bg-emerald-500/20 data-[state=active]:text-emerald-700 dark:data-[state=active]:text-emerald-600 dark:text-emerald-300">
               Result
             </TabsTrigger>
-            <TabsTrigger value="events" className="min-w-[90px] data-[state=active]:bg-slate-800 data-[state=active]:text-slate-100">
+            <TabsTrigger value="events" className="min-w-[90px] data-[state=active]:bg-background data-[state=active]:text-foreground dark:data-[state=active]:bg-slate-800 dark:data-[state=active]:text-slate-100">
               Events
             </TabsTrigger>
-            <TabsTrigger value="questions" className="min-w-[90px] data-[state=active]:bg-slate-800 data-[state=active]:text-slate-100">
+            <TabsTrigger value="questions" className="min-w-[90px] data-[state=active]:bg-background data-[state=active]:text-foreground dark:data-[state=active]:bg-slate-800 dark:data-[state=active]:text-slate-100">
               Questions
             </TabsTrigger>
-            <TabsTrigger value="stats" className="min-w-[90px] data-[state=active]:bg-slate-800 data-[state=active]:text-slate-100">
+            <TabsTrigger value="stats" className="min-w-[90px] data-[state=active]:bg-background data-[state=active]:text-foreground dark:data-[state=active]:bg-slate-800 dark:data-[state=active]:text-slate-100">
               Stats
             </TabsTrigger>
-            <TabsTrigger value="raw" className="min-w-[90px] data-[state=active]:bg-slate-800 data-[state=active]:text-slate-100">
+            <TabsTrigger value="raw" className="min-w-[90px] data-[state=active]:bg-background data-[state=active]:text-foreground dark:data-[state=active]:bg-slate-800 dark:data-[state=active]:text-slate-100">
               Raw
             </TabsTrigger>
-            <TabsTrigger value="logs" className="min-w-[90px] data-[state=active]:bg-slate-800 data-[state=active]:text-slate-100">
+            <TabsTrigger value="logs" className="min-w-[90px] data-[state=active]:bg-background data-[state=active]:text-foreground dark:data-[state=active]:bg-slate-800 dark:data-[state=active]:text-slate-100">
               Logs
             </TabsTrigger>
           </TabsList>
 
           <TabsContent value="result" className="mt-4">
             {variantsForSelector.length > 0 && (
-              <div className="sticky top-2 z-10 rounded-md border border-indigo-500/50 bg-[#0f1730]/95 backdrop-blur p-3 mb-3">
+              <div className="sticky top-2 z-10 rounded-md border border-indigo-500/50 bg-card/95 backdrop-blur dark:bg-[#0f1730]/95 p-3 mb-3">
                 <div className="grid gap-2 md:grid-cols-[140px_1fr] md:items-center">
                   <div className="text-sm font-medium text-muted-foreground">Variants ({variantsForSelector.length})</div>
                   <Select value={selectedVariant} onValueChange={(value) => onVariantChange?.(value)}>

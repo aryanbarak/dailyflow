@@ -330,27 +330,28 @@ export default function TutorAppPage() {
   };
 
   return (
-    // DESIGN-AUDIT 0.6 (light mode): Smart Academy is a dark-by-design
-    // work surface (hand-tuned slate/deep-navy styling throughout), so the
-    // subtree opts back into the dark token scope when the app theme is
-    // light -- same treatment as Home's night-sky surface. text-foreground
-    // re-resolves the inherited body color inside this scope.
-    <div className="dark min-h-dvh bg-[var(--flow-bg-deep)] text-foreground">
+    // ACADEMY-LIGHT (2026-09-05): Smart Academy is no longer
+    // dark-by-design -- the forced nested .dark scope is gone and every
+    // hand-tuned slate/deep-navy value now sits behind a dark: prefix
+    // with a token-based light equivalent, across all four tutor pages
+    // and the TutorControlPanel/TutorOutputTabs components. Dark mode is
+    // pixel-identical to the frozen design.
+    <div className="min-h-dvh bg-background text-foreground dark:bg-[var(--flow-bg-deep)]">
     <div className="p-4 lg:p-6 max-w-[1500px] mx-auto">
-      <div className="mb-4 flex items-center gap-2 rounded-md border border-slate-700/60 bg-slate-950/60 px-3 py-2">
-        <Link to="/tutor/app" className="rounded border border-slate-600 bg-slate-900 px-3 py-1.5 text-sm font-medium hover:bg-slate-800">
+      <div className="mb-4 flex items-center gap-2 rounded-md border border-border bg-card/60 dark:border-slate-700/60 dark:bg-slate-950/60 px-3 py-2">
+        <Link to="/tutor/app" className="rounded border border-border bg-card px-3 py-1.5 text-sm font-medium hover:bg-secondary/60 dark:border-slate-600 dark:bg-slate-900 dark:hover:bg-slate-800">
           Tutor
         </Link>
-        <Link to="/tutor" className="rounded border border-slate-600 bg-slate-900 px-3 py-1.5 text-sm font-medium hover:bg-slate-800">
+        <Link to="/tutor" className="rounded border border-border bg-card px-3 py-1.5 text-sm font-medium hover:bg-secondary/60 dark:border-slate-600 dark:bg-slate-900 dark:hover:bg-slate-800">
           Exam Bank (AP2)
         </Link>
-        <Link to="/tutor/wiso" className="rounded border border-slate-600 bg-slate-900 px-3 py-1.5 text-sm font-medium hover:bg-slate-800">
+        <Link to="/tutor/wiso" className="rounded border border-border bg-card px-3 py-1.5 text-sm font-medium hover:bg-secondary/60 dark:border-slate-600 dark:bg-slate-900 dark:hover:bg-slate-800">
           WISO
         </Link>
-        <Link to="/tutor/ergaenzungspruefung" className="rounded border border-slate-600 bg-slate-900 px-3 py-1.5 text-sm font-medium hover:bg-slate-800">
+        <Link to="/tutor/ergaenzungspruefung" className="rounded border border-border bg-card px-3 py-1.5 text-sm font-medium hover:bg-secondary/60 dark:border-slate-600 dark:bg-slate-900 dark:hover:bg-slate-800">
           Ergänzungsprüfung
         </Link>
-        <Link to="/learn-ai" className="rounded border border-slate-600 bg-slate-900 px-3 py-1.5 text-sm font-medium hover:bg-slate-800">
+        <Link to="/learn-ai" className="rounded border border-border bg-card px-3 py-1.5 text-sm font-medium hover:bg-secondary/60 dark:border-slate-600 dark:bg-slate-900 dark:hover:bg-slate-800">
           {t('nav_learn_ai')}
         </Link>
       </div>
@@ -365,12 +366,12 @@ export default function TutorAppPage() {
         </div>
       )}
       {apiConfigured && topicsError && (
-        <div className="mb-4 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200">
+        <div className="mb-4 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-200">
           {topicsError}
           <button
             type="button"
             onClick={() => void useFallbackTopics()}
-            className="ml-3 rounded border border-red-300/60 px-2 py-1 text-xs hover:bg-red-500/20"
+            className="ml-3 rounded border border-red-600/40 px-2 py-1 text-xs hover:bg-red-500/20 dark:border-red-300/60"
           >
             Use fallback topics
           </button>

@@ -285,9 +285,10 @@ export default function TutorPage() {
   };
 
   return (
-    // DESIGN-AUDIT 0.6 (light mode): dark-by-design work surface -- see
-    // TutorAppPage.tsx's comment; same treatment across the tutor suite.
-    <div className="dark min-h-dvh bg-[var(--flow-bg-deep)] text-foreground">
+    // ACADEMY-LIGHT (2026-09-05): the tutor suite now follows the app
+    // theme -- see TutorAppPage.tsx's comment; the frozen dark styling
+    // survives behind dark: prefixes.
+    <div className="min-h-dvh bg-background text-foreground dark:bg-[var(--flow-bg-deep)]">
     <div className="p-6 lg:p-8 max-w-7xl mx-auto">
       <motion.div initial={{ opacity: 0, y: -16 }} animate={{ opacity: 1, y: 0 }} className="mb-6 space-y-1">
         <div className="flex items-start justify-between gap-3">
