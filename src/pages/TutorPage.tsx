@@ -285,6 +285,9 @@ export default function TutorPage() {
   };
 
   return (
+    // DESIGN-AUDIT 0.6 (light mode): dark-by-design work surface -- see
+    // TutorAppPage.tsx's comment; same treatment across the tutor suite.
+    <div className="dark min-h-dvh bg-[var(--flow-bg-deep)] text-foreground">
     <div className="p-6 lg:p-8 max-w-7xl mx-auto">
       <motion.div initial={{ opacity: 0, y: -16 }} animate={{ opacity: 1, y: 0 }} className="mb-6 space-y-1">
         <div className="flex items-start justify-between gap-3">
@@ -417,6 +420,7 @@ export default function TutorPage() {
           )}
         </div>
       )}
+    </div>
     </div>
   );
 }

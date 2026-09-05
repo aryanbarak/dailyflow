@@ -395,9 +395,13 @@ describe("Frozen handoff: desktop grid and the chat layout contract (composer al
     expect(dashboardSource).toMatch(/flex min-h-0 flex-1 flex-col/);
   });
 
-  it("the chat shell is the frozen glass treatment (radius 18, §7 border/background/shadow), flex-col/flex-1/min-h-0/overflow-hidden", () => {
+  it("the chat shell is the frozen glass treatment (radius 18, §7 border/background/shadow in the dark theme; DESIGN-AUDIT 0.6 added token-based light equivalents), flex-col/flex-1/min-h-0/overflow-hidden", () => {
     expect(dashboardSource).toMatch(
-      /flex min-h-0 flex-1 flex-col overflow-hidden rounded-\[18px\] border border-\[#7078B4\]\/\[0\.22\] bg-\[#080A1B\]\/\[0\.55\]/,
+      /flex min-h-0 flex-1 flex-col overflow-hidden rounded-\[18px\] border border-border bg-card\/60/,
+    );
+    // The frozen §7 dark values survive behind the dark: variant.
+    expect(dashboardSource).toMatch(
+      /dark:border-\[#7078B4\]\/\[0\.22\] dark:bg-\[#080A1B\]\/\[0\.55\]/,
     );
   });
 

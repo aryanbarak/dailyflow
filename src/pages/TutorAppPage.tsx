@@ -330,6 +330,12 @@ export default function TutorAppPage() {
   };
 
   return (
+    // DESIGN-AUDIT 0.6 (light mode): Smart Academy is a dark-by-design
+    // work surface (hand-tuned slate/deep-navy styling throughout), so the
+    // subtree opts back into the dark token scope when the app theme is
+    // light -- same treatment as Home's night-sky surface. text-foreground
+    // re-resolves the inherited body color inside this scope.
+    <div className="dark min-h-dvh bg-[var(--flow-bg-deep)] text-foreground">
     <div className="p-4 lg:p-6 max-w-[1500px] mx-auto">
       <div className="mb-4 flex items-center gap-2 rounded-md border border-slate-700/60 bg-slate-950/60 px-3 py-2">
         <Link to="/tutor/app" className="rounded border border-slate-600 bg-slate-900 px-3 py-1.5 text-sm font-medium hover:bg-slate-800">
@@ -417,6 +423,7 @@ export default function TutorAppPage() {
           />
         </div>
       </div>
+    </div>
     </div>
   );
 }

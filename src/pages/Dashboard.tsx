@@ -840,8 +840,9 @@ export default function Dashboard() {
             </div>
           ) : (
             <div
-              className="flex h-full min-h-0 flex-col lg:grid lg:grid-cols-[minmax(0,1fr)_372px] lg:max-[1280px]:grid-cols-[minmax(0,1fr)_330px] lg:max-[1120px]:grid-cols-[minmax(0,1fr)]"
-              style={{ background: "var(--flow-gradient-background)" }}
+              // DESIGN-AUDIT 0.6 (light mode): the Dark Cosmic gradient is
+              // dark-theme-only; light gets the plain background token.
+              className="flex h-full min-h-0 flex-col bg-background dark:[background:var(--flow-gradient-background)] lg:grid lg:grid-cols-[minmax(0,1fr)_372px] lg:max-[1280px]:grid-cols-[minmax(0,1fr)_330px] lg:max-[1120px]:grid-cols-[minmax(0,1fr)]"
             >
               {/* Center column -- frozen §3: flex column, min-width 0,
                   min-height 0; hero, action bars and the metric-capsule
@@ -1069,14 +1070,14 @@ export default function Dashboard() {
                       domain: "tasks",
                     })
                   }
-                  className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-[#7078B4]/[0.22] bg-[#0B0D20]/60 py-2 pl-2.5 pr-3.5 text-left backdrop-blur-[8px] transition-colors hover:border-[#7D5CFF]/40 hover:bg-[#7C4DFF]/[0.08] max-[760px]:min-w-0 max-[760px]:py-[7px] max-[760px]:pr-2.5"
+                  className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-border bg-card/70 py-2 pl-2.5 pr-3.5 text-left backdrop-blur-[8px] transition-colors hover:border-primary/40 hover:bg-primary/[0.06] dark:border-[#7078B4]/[0.22] dark:bg-[#0B0D20]/60 dark:hover:border-[#7D5CFF]/40 dark:hover:bg-[#7C4DFF]/[0.08] max-[760px]:min-w-0 max-[760px]:py-[7px] max-[760px]:pr-2.5"
                 >
-                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#7C4DFF]/[0.16] text-[#A88BFF]">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#7C4DFF]/[0.16] text-primary dark:text-[#A88BFF]">
                     <CheckSquare className="h-3.5 w-3.5" strokeWidth={2} />
                   </span>
                   <span>
-                    <span className="block text-[10px] font-medium uppercase tracking-[.08em] text-[#777C9A] max-[760px]:text-[9px]">{t("dashboard_stat_open_tasks")}</span>
-                    <span className="text-[17px] font-semibold text-[#F7F7FC]">
+                    <span className="block text-[10px] font-medium uppercase tracking-[.08em] text-muted-foreground dark:text-[#777C9A] max-[760px]:text-[9px]">{t("dashboard_stat_open_tasks")}</span>
+                    <span className="text-[17px] font-semibold text-foreground dark:text-[#F7F7FC]">
                       {workspace.signals.incompleteTasks}
                     </span>
                   </span>
@@ -1092,14 +1093,14 @@ export default function Dashboard() {
                       domain: "calendar",
                     })
                   }
-                  className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-[#7078B4]/[0.22] bg-[#0B0D20]/60 py-2 pl-2.5 pr-3.5 text-left backdrop-blur-[8px] transition-colors hover:border-[#7D5CFF]/40 hover:bg-[#7C4DFF]/[0.08] max-[760px]:min-w-0 max-[760px]:py-[7px] max-[760px]:pr-2.5"
+                  className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-border bg-card/70 py-2 pl-2.5 pr-3.5 text-left backdrop-blur-[8px] transition-colors hover:border-primary/40 hover:bg-primary/[0.06] dark:border-[#7078B4]/[0.22] dark:bg-[#0B0D20]/60 dark:hover:border-[#7D5CFF]/40 dark:hover:bg-[#7C4DFF]/[0.08] max-[760px]:min-w-0 max-[760px]:py-[7px] max-[760px]:pr-2.5"
                 >
-                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#4F73FF]/[0.15] text-[#678BFF]">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#4F73FF]/[0.15] text-[#3557E8] dark:text-[#678BFF]">
                     <Calendar className="h-3.5 w-3.5" strokeWidth={2} />
                   </span>
                   <span>
-                    <span className="block text-[10px] font-medium uppercase tracking-[.08em] text-[#777C9A] max-[760px]:text-[9px]">{t("dashboard_stat_todays_events")}</span>
-                    <span className="text-[17px] font-semibold text-[#F7F7FC]">
+                    <span className="block text-[10px] font-medium uppercase tracking-[.08em] text-muted-foreground dark:text-[#777C9A] max-[760px]:text-[9px]">{t("dashboard_stat_todays_events")}</span>
+                    <span className="text-[17px] font-semibold text-foreground dark:text-[#F7F7FC]">
                       {workspace.signals.eventsToday}
                     </span>
                   </span>
@@ -1121,14 +1122,14 @@ export default function Dashboard() {
                     });
                     navigate("/habits");
                   }}
-                  className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-[#7078B4]/[0.22] bg-[#0B0D20]/60 py-2 pl-2.5 pr-3.5 text-left backdrop-blur-[8px] transition-colors hover:border-[#7D5CFF]/40 hover:bg-[#7C4DFF]/[0.08] max-[760px]:min-w-0 max-[760px]:py-[7px] max-[760px]:pr-2.5"
+                  className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-border bg-card/70 py-2 pl-2.5 pr-3.5 text-left backdrop-blur-[8px] transition-colors hover:border-primary/40 hover:bg-primary/[0.06] dark:border-[#7078B4]/[0.22] dark:bg-[#0B0D20]/60 dark:hover:border-[#7D5CFF]/40 dark:hover:bg-[#7C4DFF]/[0.08] max-[760px]:min-w-0 max-[760px]:py-[7px] max-[760px]:pr-2.5"
                 >
-                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#F3A044]/[0.14] text-[#F3A044]">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#F3A044]/[0.14] text-[#B26A0D] dark:text-[#F3A044]">
                     <Flame className="h-3.5 w-3.5" strokeWidth={2} />
                   </span>
                   <span>
-                    <span className="block text-[10px] font-medium uppercase tracking-[.08em] text-[#777C9A] max-[760px]:text-[9px]">{t("dashboard_stat_habit_streak")}</span>
-                    <span className="text-[17px] font-semibold text-[#F7F7FC]">
+                    <span className="block text-[10px] font-medium uppercase tracking-[.08em] text-muted-foreground dark:text-[#777C9A] max-[760px]:text-[9px]">{t("dashboard_stat_habit_streak")}</span>
+                    <span className="text-[17px] font-semibold text-foreground dark:text-[#F7F7FC]">
                       {habitStreak}
                     </span>
                   </span>
@@ -1137,14 +1138,14 @@ export default function Dashboard() {
                   type="button"
                   disabled={railPendingApprovals.length === 0}
                   onClick={() => railPendingApprovals[0]?.onReview()}
-                  className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-[#7D5CFF]/[0.35] bg-[#7C4DFF]/[0.10] py-2 pl-2.5 pr-3.5 text-left backdrop-blur-[8px] transition-colors enabled:hover:border-[#7D5CFF]/60 enabled:hover:bg-[#7C4DFF]/[0.16] disabled:cursor-default max-[760px]:min-w-0 max-[760px]:py-[7px] max-[760px]:pr-2.5"
+                  className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-primary/35 bg-primary/[0.08] py-2 pl-2.5 pr-3.5 text-left backdrop-blur-[8px] transition-colors enabled:hover:border-primary/60 enabled:hover:bg-primary/[0.14] disabled:cursor-default dark:border-[#7D5CFF]/[0.35] dark:bg-[#7C4DFF]/[0.10] dark:enabled:hover:border-[#7D5CFF]/60 dark:enabled:hover:bg-[#7C4DFF]/[0.16] max-[760px]:min-w-0 max-[760px]:py-[7px] max-[760px]:pr-2.5"
                 >
-                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#7C4DFF]/20 text-[#C2B1FF]">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#7C4DFF]/20 text-primary dark:text-[#C2B1FF]">
                     <ShieldCheck className="h-3.5 w-3.5" strokeWidth={2} />
                   </span>
                   <span>
-                    <span className="block text-[10px] font-medium uppercase tracking-[.08em] text-[#777C9A] max-[760px]:text-[9px]">{t("dashboard_stat_approvals")}</span>
-                    <span className="text-[17px] font-semibold text-[#F7F7FC]">
+                    <span className="block text-[10px] font-medium uppercase tracking-[.08em] text-muted-foreground dark:text-[#777C9A] max-[760px]:text-[9px]">{t("dashboard_stat_approvals")}</span>
+                    <span className="text-[17px] font-semibold text-foreground dark:text-[#F7F7FC]">
                       {approvalsPendingCount}
                     </span>
                   </span>
@@ -1157,7 +1158,7 @@ export default function Dashboard() {
             // PO decision (2026-09-05, round 2): on mobile the card chrome
             // (radius/border/shadow) drops away -- the same translucent
             // glass surface, edge to edge over the gradient background.
-            className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[18px] border border-[#7078B4]/[0.22] bg-[#080A1B]/[0.55] shadow-[0_16px_40px_rgba(0,0,0,0.28)] backdrop-blur-[14px] max-lg:rounded-none max-lg:border-0 max-lg:shadow-none"
+            className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[18px] border border-border bg-card/60 shadow-[0_16px_40px_rgba(0,0,0,0.08)] backdrop-blur-[14px] dark:border-[#7078B4]/[0.22] dark:bg-[#080A1B]/[0.55] dark:shadow-[0_16px_40px_rgba(0,0,0,0.28)] max-lg:rounded-none max-lg:border-0 max-lg:shadow-none"
           >
             <ChatPage embedded onOpenAssistantPanel={() => setAssistantPanelOpen(true)} />
           </section>
