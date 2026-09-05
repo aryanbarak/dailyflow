@@ -17,15 +17,15 @@ import {
 const LEADING_RELAXED_MULTIPLIER = 1.625;
 
 // SmartFlow -- Chat Experience v2 (task 17a), workstream 1: composer
-// rebuild. This is the PO-flagged mobile pain point -- a plain 5-row
-// fixed Textarea before this task. Now: auto-grows 1 -> ~5 lines then
-// scrolls internally, the send button lives INSIDE the field (flips side
-// automatically for RTL via `end-*`, a logical Tailwind property -- never
-// hardcoded left/right), the touch target is >=44px (h-11 w-11, the
-// composer's biggest single a11y/mobile-usability fix), and Enter-to-send
-// is desktop-only (mobile/touch keyboards and IME composition get a plain
-// newline on Enter -- see composerSizing.ts's prefersDesktopEnterToSend
-// for why viewport width is the WRONG signal here).
+// rebuild; layout revised per PO decision (2026-09-05) to a DeepSeek-style
+// single box: the rounded glass surface is a wrapper containing the
+// auto-growing field (1 -> ~5 lines then internal scroll) on top and an
+// action row below it with attach + send side by side at the inline end
+// (mirrors automatically for RTL via flex direction + justify-end). Touch
+// targets stay >=44px (h-11 w-11), and Enter-to-send is desktop-only
+// (mobile/touch keyboards and IME composition get a plain newline on
+// Enter -- see composerSizing.ts's prefersDesktopEnterToSend for why
+// viewport width is the WRONG signal here).
 //
 // Colors are the SAME global-named tokens (bg-background, border-border,
 // text-foreground) the rest of the app already uses -- see index.css's
@@ -203,36 +203,20 @@ export function ChatComposer({
           {attachError}
         </p>
       )}
-      <div className={cn("flex items-end gap-3", compact ? "px-2 py-1.5" : "px-3 py-2")}>
-        {onAttachFile && (
-          <>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept={CHAT_ATTACHMENT_ACCEPTED_MIME_TYPES.join(",")}
-              onChange={handleFileInputChange}
-              className="hidden"
-              aria-hidden="true"
-              tabIndex={-1}
-            />
-            <Button
-              type="button"
-              size="icon"
-              variant="ghost"
-              onClick={handleAttachClick}
-              disabled={disabled || attachBusy}
-              aria-label={t("chat_attach_file")}
-              // Same >=44px touch target and shrink-0 box-model guarantee as
-              // the send button below -- a real flex sibling, first in DOM
-              // order so it mirrors automatically for RTL exactly like the
-              // send button mirrors by being LAST (task 17d, V1 convention).
-              className="mb-1 h-11 w-11 shrink-0 rounded-full p-0"
-            >
-              <Paperclip className="h-4 w-4" aria-hidden="true" />
-            </Button>
-          </>
-        )}
-        <Textarea
+      {/* PO decision (2026-09-05): DeepSeek-style composer -- ONE visual
+          box (the rounded glass surface + focus ring live on this wrapper
+          now, via focus-within) containing the textarea on top and an
+          action row BELOW it with the attach + send buttons side by side
+          at the inline end. This keeps task 17d V1's core guarantee even
+          more strongly than the old single-row layout: the buttons are in
+          their own flex row, a separate block sibling of the textarea, so
+          text/button overlap is impossible by construction in every
+          direction, font, and zoom -- no absolute positioning anywhere.
+          justify-end resolves to the right in LTR and the left in RTL
+          automatically. */}
+      <div className={cn(compact ? "px-2 py-1.5" : "px-3 py-2")}>
+        <div className="flex flex-col rounded-2xl bg-[hsl(var(--glass-bg))] transition-shadow focus-within:ring-2 focus-within:ring-ring">
+          <Textarea
         ref={textareaRef}
         value={value}
         onChange={(event) => onChange(event.target.value)}
@@ -258,52 +242,65 @@ export function ChatComposer({
           minHeight: `calc(${COMPOSER_MIN_LINES} * ${LEADING_RELAXED_MULTIPLIER}em + ${compact ? "1rem" : "1.25rem"})`,
         }}
         className={cn(
-          // Task 17b: the field's own surface uses --glass-bg directly
-          // (rather than the bg-background/70 opacity trick) so it
-          // matches the PO's token map literally -- "composer ->
-          // --flow-glass-bg" -- for both themes: light's --glass-bg is
-          // task 17a's existing frosted-white value (unchanged look),
-          // dark's --glass-bg is now exactly --flow-glass-bg (see
-          // index.css's [data-chat-theme="dark"] block). The focus
-          // affordance ("with --flow-border-active on focus") comes for
-          // free from focus-visible:ring-2 already reading --ring, which
-          // is also derived from --flow-border-active in dark -- no
-          // composer-specific focus CSS needed. Task 17d, workstream 3
-          // (design polish -- affordance): ring width bumped 1->2 so the
-          // focus state reads clearly as "you're typing here," still the
-          // same --ring color token, no new token. Task 17g, Y1: shadcn's
-          // base Textarea component applies a permanent `border
-          // border-input` by default; this override recoloured it
-          // (`border-border`) but that's still a decorative outline
-          // visible all the time, not just on focus. PO decision: the
-          // FOCUS ring stays (affordance, focus-visible:ring-2 below --
-          // only visible on focus); any always-on decorative outline
-          // goes. `border-0` overrides the base component's border WIDTH
-          // (the previous override only changed its colour), removing it
-          // entirely.
-          "min-w-0 flex-1 resize-none rounded-2xl border-0 bg-[hsl(var(--glass-bg))] px-3.5 py-2.5 text-sm leading-relaxed shadow-none transition-[height] duration-100 focus-visible:ring-2",
+          // Task 17b's token map ("composer -> --flow-glass-bg") and the
+          // 17d/17g focus + border decisions now live on the WRAPPER box
+          // above: it carries bg-[hsl(var(--glass-bg))] and the ring-2
+          // focus affordance (via focus-within, same --ring token). Task
+          // 17g Y1 still holds: no always-on decorative outline anywhere
+          // -- `border-0` removes shadcn Textarea's default border, and
+          // the field itself is transparent and ring-free (PO decision
+          // 2026-09-05, DeepSeek-style box).
+          "w-full resize-none border-0 bg-transparent px-3.5 py-2.5 text-sm leading-relaxed shadow-none transition-[height] duration-100 focus-visible:ring-0",
           compact && "py-2 text-[13px]",
         )}
       />
-      <Button
-        type="button"
-        size="icon"
-        onClick={onSend}
-        disabled={!canSend}
-        aria-label={disabled ? t("chat_sending") : t("chat_send")}
-        // Task 17d, workstream 3 (design polish -- affordance): a plain
-        // elevation shadow (the existing shadow-md utility, backed by the
-        // existing --shadow-md token -- NOT one of the --flow-glow-*/orb
-        // tokens task 17b's restraint rule reserves for its two motif
-        // placements only) gives the send action visual weight when it's
-        // actually actionable, and recedes to flat when disabled --
-        // matching the existing disabled:opacity-50 the Button component
-        // already applies.
-        className="mb-1 h-11 w-11 shrink-0 rounded-full p-0 shadow-md disabled:shadow-none"
-        style={{ background: "var(--gradient-primary)" }}
-      >
-        <Send className="h-4 w-4" aria-hidden="true" />
-      </Button>
+          {/* Action row INSIDE the box, below the field: attach + send
+              side by side at the inline end (DeepSeek-style). */}
+          <div className={cn("flex items-center justify-end gap-1.5 pb-1.5 pt-0.5", compact ? "px-1.5" : "px-2")}>
+            {onAttachFile && (
+              <>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept={CHAT_ATTACHMENT_ACCEPTED_MIME_TYPES.join(",")}
+                  onChange={handleFileInputChange}
+                  className="hidden"
+                  aria-hidden="true"
+                  tabIndex={-1}
+                />
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  onClick={handleAttachClick}
+                  disabled={disabled || attachBusy}
+                  aria-label={t("chat_attach_file")}
+                  // Same >=44px touch target as the send button; shrink-0
+                  // keeps its box whole; first in DOM order so the pair
+                  // mirrors automatically for RTL.
+                  className="h-11 w-11 shrink-0 rounded-full p-0"
+                >
+                  <Paperclip className="h-4 w-4" aria-hidden="true" />
+                </Button>
+              </>
+            )}
+            <Button
+              type="button"
+              size="icon"
+              onClick={onSend}
+              disabled={!canSend}
+              aria-label={disabled ? t("chat_sending") : t("chat_send")}
+              // Task 17d, workstream 3 (design polish -- affordance): a plain
+              // elevation shadow (the existing shadow-md utility) gives the
+              // send action visual weight when it's actually actionable, and
+              // recedes to flat when disabled.
+              className="h-11 w-11 shrink-0 rounded-full p-0 shadow-md disabled:shadow-none"
+              style={{ background: "var(--gradient-primary)" }}
+            >
+              <Send className="h-4 w-4" aria-hidden="true" />
+            </Button>
+          </div>
+        </div>
       </div>
     </div>
   );

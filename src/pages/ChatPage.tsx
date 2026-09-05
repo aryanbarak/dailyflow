@@ -40,7 +40,8 @@ import { formatDateTime } from '@/lib/date'
 import { createDocument, uploadToStorage, type Document } from '@/features/documents/documentsService'
 import { ChatPageHeader } from '@/features/chat/components/ChatPageHeader'
 import { ChatEmptyState, type ChatEmptyStateAction } from '@/features/chat/components/ChatEmptyState'
-import { ConversationsDrawer } from '@/features/chat/components/ConversationsDrawer'
+import { ConversationsDrawer, DockedConversationsPanel } from '@/features/chat/components/ConversationsDrawer'
+import { useConversationsPanelStore } from '@/features/chat/conversationsPanelStore'
 import { JumpToLatestPill } from '@/features/chat/components/JumpToLatestPill'
 import { useChatDisplayPreferences } from '@/features/chat/chatDisplayPreferencesStore'
 import { shouldAutoScrollOnNewContent } from '@/features/chat/chatScrollDecision'
@@ -2533,6 +2534,11 @@ export default function ChatPage({ embedded = false, onOpenAssistantPanel }: Cha
   const wasNearBottomRef = useRef(true)
   const [showJumpToLatest, setShowJumpToLatest] = useState(false)
   const [conversationsDrawerOpen, setConversationsDrawerOpen] = useState(false)
+  // PO decision (2026-09-05): on Home (embedded), the history panel is a
+  // DOCKED column toggled from the app icon rail (Sidebar.tsx) -- shared
+  // store, not local state, because the toggle lives outside this tree.
+  const conversationsPanelOpen = useConversationsPanelStore((state) => state.open)
+  const setConversationsPanelOpen = useConversationsPanelStore((state) => state.setOpen)
   // Task 17c, PO decisions D3/D4: the mobile bottom nav is gone on this
   // page (AppLayout.tsx), so this "More" sheet -- reusing MobileNav's own
   // NavItemsGrid/mainNavItems/moreNavItems -- is now the only way to reach
@@ -3952,6 +3958,24 @@ export default function ChatPage({ embedded = false, onOpenAssistantPanel }: Cha
       // fallback for any non-flex host.
       style={embedded ? { position: 'static', height: '100%', flex: '1 1 0%', minHeight: 0 } : undefined}
     >
+      {/* PO decision (2026-09-05, DeepSeek-style history): on Home the
+          conversations panel DOCKS as a real layout column at the start
+          side of this row -- no portal, no backdrop, no auto-close; the
+          chat content sits beside it. Toggled from the app icon rail
+          (Sidebar.tsx) via conversationsPanelStore. The standalone /chat
+          route keeps its modal ConversationsDrawer below. */}
+      <div className="flex min-h-0 flex-1">
+        {embedded && conversationsPanelOpen && (
+          <DockedConversationsPanel
+            sessions={sessions}
+            activeSessionId={activeSessionId}
+            onSelect={selectSession}
+            onDelete={handleDeleteSession}
+            onStartNewChat={startNewChat}
+            onClose={() => setConversationsPanelOpen(false)}
+          />
+        )}
+        <div className="flex min-w-0 flex-1 flex-col">
       {/* Header -- task 17c, PO decision D4, final single-row layout:
           [More menu] [Conversations] -- "Flow AI" -- [theme/density] [New].
           Extracted into its own component (ChatPageHeader.tsx) so it's
@@ -3970,7 +3994,9 @@ export default function ChatPage({ embedded = false, onOpenAssistantPanel }: Cha
         compact={compact}
         prefersReducedMotion={prefersReducedMotion}
         onOpenMoreMenu={() => setMoreMenuOpen(true)}
-        onOpenConversations={() => setConversationsDrawerOpen(true)}
+        // PO decision (2026-09-05): embedded Home passes no handler --
+        // its history toggle lives in the app icon rail (docked panel).
+        onOpenConversations={embedded ? undefined : () => setConversationsDrawerOpen(true)}
         onStartNewChat={startNewChat}
         // SmartFlow Home v2 (`SmartFlow Home v2.dc.html`): the embedded
         // header carries the "SmartFlow" title and the ping-dot "Online"
@@ -4199,6 +4225,8 @@ export default function ChatPage({ embedded = false, onOpenAssistantPanel }: Cha
           </div>
         </div>
       </div>
+        </div>
+      </div>
 
       <ConversationsDrawer
         open={conversationsDrawerOpen}
@@ -4207,6 +4235,7 @@ export default function ChatPage({ embedded = false, onOpenAssistantPanel }: Cha
         activeSessionId={activeSessionId}
         onSelect={selectSession}
         onDelete={handleDeleteSession}
+        onStartNewChat={startNewChat}
       />
 
       {/* "More" navigation -- task 17c D3/D4: reuses MobileNav's own sheet

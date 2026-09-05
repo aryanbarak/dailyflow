@@ -23,14 +23,16 @@ describe("ChatComposer", () => {
     expect(screen.getByRole("textbox")).toHaveAttribute("dir", "auto");
   });
 
-  it("the send button is the textarea's LAST flex sibling in a flex row, so it sits at the flow-end and mirrors automatically for RTL via native flex order (task 17d, V1 -- see the structural-overlap describe block below for why this replaced the old absolute+end-1 approach)", () => {
+  it("PO decision (2026-09-05, DeepSeek-style box): the send button lives in the action row BELOW the textarea, inside the same visual box -- after the field in DOM order, justify-end so it mirrors automatically for RTL, never absolutely positioned", () => {
     render(<ChatComposer value="hello" onChange={vi.fn()} onSend={vi.fn()} disabled={false} />);
     const button = screen.getByRole("button");
     const textarea = screen.getByRole("textbox");
-    expect(button.parentElement).toBe(textarea.parentElement);
-    const siblings = Array.from(button.parentElement!.children);
-    expect(siblings.indexOf(button)).toBeGreaterThan(siblings.indexOf(textarea));
-    expect(button.className).not.toMatch(/\bleft-1\b|\bright-1\b|\bend-1\b/);
+    // The action row is a sibling of the textarea inside the box wrapper.
+    expect(button.parentElement!.parentElement).toBe(textarea.parentElement);
+    expect(button.parentElement!.className).toMatch(/\bjustify-end\b/);
+    const boxChildren = Array.from(textarea.parentElement!.children);
+    expect(boxChildren.indexOf(button.parentElement!)).toBeGreaterThan(boxChildren.indexOf(textarea));
+    expect(button.className).not.toMatch(/\bleft-1\b|\bright-1\b|\bend-1\b|\babsolute\b/);
   });
 
   it("the send button meets the >=44px touch-target minimum", () => {
@@ -122,52 +124,50 @@ describe("ChatComposer", () => {
 // of the textarea (`flex-1 min-w-0`) in one flex row, not an
 // absolutely-positioned overlay -- the browser's box model itself makes
 // overlap impossible, independent of direction resolution entirely.
-describe("ChatComposer V1 (task 17d): structural overlap prevention", () => {
-  it("the button is a REAL flex sibling of the textarea -- not absolutely positioned over it", () => {
+// PO decision (2026-09-05, DeepSeek-style box): the buttons moved out of
+// the textarea's own flex row into a dedicated action row BELOW the field
+// (both inside one visual box). That makes 17d V1's overlap guarantee even
+// stronger -- text and buttons occupy separate block-level rows, so
+// intersection is impossible by construction, without relying on
+// flex-1/shrink-0 arithmetic at all. What must still hold: nothing is
+// absolutely positioned, and the rows are real block/flex siblings.
+describe("ChatComposer V1 (task 17d) -> PO 2026-09-05: structural overlap prevention", () => {
+  it("the button lives in its own flex action row -- a real sibling row of the textarea, never absolutely positioned over it", () => {
     render(<ChatComposer value="hi" onChange={vi.fn()} onSend={vi.fn()} disabled={false} />);
     const button = screen.getByRole("button");
     const textarea = screen.getByRole("textbox");
-    expect(button.parentElement).toBe(textarea.parentElement);
+    expect(button.parentElement!.parentElement).toBe(textarea.parentElement);
     expect(button.className).not.toMatch(/\babsolute\b/);
     expect(button.parentElement!.className).toMatch(/\bflex\b/);
+    expect(textarea.parentElement!.className).toMatch(/\bflex-col\b/);
   });
 
-  it("the textarea grows/shrinks (flex-1 min-w-0) while the button never shrinks (shrink-0) -- the box-model guarantee that makes overlap geometrically impossible regardless of direction, font, or zoom", () => {
+  it("the button never shrinks (shrink-0) and the field spans the box's full width -- separate rows make overlap structurally impossible", () => {
     render(<ChatComposer value="hi" onChange={vi.fn()} onSend={vi.fn()} disabled={false} />);
     const textarea = screen.getByRole("textbox");
     const button = screen.getByRole("button");
-    expect(textarea.className).toMatch(/\bflex-1\b/);
-    expect(textarea.className).toMatch(/\bmin-w-0\b/);
+    expect(textarea.className).toMatch(/\bw-full\b/);
     expect(button.className).toMatch(/\bshrink-0\b/);
   });
 
-  it("V1 non-intersection: under RTL, the textarea's content box and the button's border box do not intersect -- computed from the structural flex layout itself, not from a hoped-for padding/absolute-position pairing", () => {
-    const { container } = render(
+  it("non-intersection under RTL: the textarea and the button sit in DIFFERENT rows of a flex-col box -- neither is absolutely positioned, so they cannot intersect in any direction", () => {
+    render(
       <div dir="rtl" style={{ width: "320px" }}>
         <ChatComposer value="برای" onChange={vi.fn()} onSend={vi.fn()} disabled={false} />
       </div>,
     );
-    const row = container.querySelector(".flex.items-end")!;
     const textarea = screen.getByRole("textbox");
     const button = screen.getByRole("button");
-    // The row is a real flex container (verified above); both children
-    // participate in flex layout (neither is absolutely positioned, which
-    // would remove it from the flex algorithm entirely). Given that, the
-    // flex algorithm's own invariant -- a shrink-0 item always keeps its
-    // full box, and a flex-1/min-w-0 sibling is laid out in the REMAINING
-    // space, never overlapping it -- is what jsdom CAN verify structurally,
-    // per the task's own framing ("jsdom can compute this from inline
-    // styles/classes if the layout is structural").
     // (Tailwind's compiled stylesheet isn't loaded in this test environment,
-    // so `.flex`'s actual `display: flex` can't be read back via
-    // getComputedStyle here -- the class name itself, plus the absence of
-    // any `position: absolute` inline style/class on either child, is what
-    // this environment CAN verify structurally.)
-    expect(row.className).toMatch(/\bflex\b/);
+    // so `.flex-col`'s actual computed display can't be read back via
+    // getComputedStyle here -- the class names themselves, plus the absence
+    // of any `position: absolute` on either element, is what this
+    // environment CAN verify structurally.)
+    expect(textarea.parentElement!.className).toMatch(/\bflex-col\b/);
     expect(textarea.className).not.toMatch(/\babsolute\b/);
     expect(button.className).not.toMatch(/\babsolute\b/);
-    expect(textarea.className).toMatch(/\bflex-1\b/);
-    expect(button.className).toMatch(/\bshrink-0\b/);
+    expect(button.parentElement).not.toBe(textarea.parentElement);
+    expect(button.parentElement!.parentElement).toBe(textarea.parentElement);
   });
 
   it("no leftover asymmetric pe-12-style padding hack remains on the textarea (the reservation is now structural, not padding-based)", () => {
@@ -251,17 +251,17 @@ describe("ChatComposer -- attach control (task 19)", () => {
     expect(screen.getAllByRole("button")).toHaveLength(1);
   });
 
-  it("renders an attach button, as a real flex sibling BEFORE the textarea, when onAttachFile is provided", () => {
+  it("renders an attach button side by side with send in the action row (PO 2026-09-05: attach first, send last), when onAttachFile is provided", () => {
     render(<ChatComposer value="" onChange={vi.fn()} onSend={vi.fn()} disabled={false} onAttachFile={vi.fn()} />);
     const buttons = screen.getAllByRole("button");
     expect(buttons).toHaveLength(2);
     const attachButton = screen.getByRole("button", { name: /attach/i });
-    const textarea = screen.getByRole("textbox");
-    expect(attachButton.parentElement).toBe(textarea.parentElement);
+    const sendButton = screen.getByRole("button", { name: /send/i });
+    // Both buttons share ONE action row inside the composer box; attach
+    // comes first in DOM order so the pair mirrors automatically for RTL.
+    expect(attachButton.parentElement).toBe(sendButton.parentElement);
     const siblings = Array.from(attachButton.parentElement!.children);
-    // First in DOM order -- mirrors automatically for RTL exactly like the
-    // send button (LAST in DOM order) already does, per V1's own convention.
-    expect(siblings.indexOf(attachButton)).toBeLessThan(siblings.indexOf(textarea));
+    expect(siblings.indexOf(attachButton)).toBeLessThan(siblings.indexOf(sendButton));
   });
 
   it("the attach button meets the >=44px touch-target minimum, same as the send button", () => {
@@ -352,13 +352,13 @@ describe("ChatComposer -- attach control (task 19)", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("File too large");
   });
 
-  it("V1 non-overlap still holds with the attach button present: textarea stays flex-1/min-w-0, both buttons stay shrink-0", () => {
+  it("non-overlap still holds with the attach button present: both buttons live in the action row below the field (shrink-0), never in the textarea's own row", () => {
     render(<ChatComposer value="hi" onChange={vi.fn()} onSend={vi.fn()} disabled={false} onAttachFile={vi.fn()} />);
     const textarea = screen.getByRole("textbox");
     const attachButton = screen.getByRole("button", { name: /attach/i });
     const sendButton = screen.getByRole("button", { name: /send/i });
-    expect(textarea.className).toMatch(/\bflex-1\b/);
-    expect(textarea.className).toMatch(/\bmin-w-0\b/);
+    expect(textarea.className).toMatch(/\bw-full\b/);
+    expect(attachButton.parentElement).not.toBe(textarea.parentElement);
     expect(attachButton.className).toMatch(/\bshrink-0\b/);
     expect(sendButton.className).toMatch(/\bshrink-0\b/);
   });

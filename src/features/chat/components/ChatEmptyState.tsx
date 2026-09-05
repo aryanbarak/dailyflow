@@ -73,7 +73,41 @@ export function ChatEmptyState({ greetingName, theme, actions, disabled, onSelec
 
   if (embedded) {
     return (
-      <div dir={isRTL ? "rtl" : "ltr"} className="flex flex-col items-center px-6 pb-5 pt-11 text-center">
+      <div dir={isRTL ? "rtl" : "ltr"} className="relative flex flex-col items-center px-6 pb-5 pt-11 text-center">
+        {/* PO decision (2026-09-05): a soft star sprinkle behind the
+            greeting -- decorative only, mixed sizes, no animation. */}
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 800 240"
+          preserveAspectRatio="xMidYMid slice"
+          className="pointer-events-none absolute inset-0 h-full w-full text-foreground"
+        >
+          {/* currentColor -> the theme's foreground token (the chat token
+              guard forbids raw hex here). The brighter dots use a tiny
+              luminous core fading out (sfChatStarGlow) instead of larger
+              flat discs (PO 2026-09-05, round 3: smaller + glowing). */}
+          <defs>
+            <radialGradient id="sfChatStarGlow" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stopColor="currentColor" stopOpacity=".9" />
+              <stop offset="25%" stopColor="currentColor" stopOpacity=".5" />
+              <stop offset="100%" stopColor="currentColor" stopOpacity="0" />
+            </radialGradient>
+          </defs>
+          <g fill="currentColor">
+            <circle cx="70" cy="46" r=".8" opacity=".45" />
+            <circle cx="160" cy="150" r=".6" opacity=".3" />
+            <circle cx="235" cy="70" r="2.2" fill="url(#sfChatStarGlow)" />
+            <circle cx="310" cy="200" r=".7" opacity=".35" />
+            <circle cx="140" cy="215" r=".5" opacity=".25" />
+            <circle cx="500" cy="38" r=".8" opacity=".4" />
+            <circle cx="575" cy="180" r="2.4" fill="url(#sfChatStarGlow)" />
+            <circle cx="650" cy="90" r=".6" opacity=".35" />
+            <circle cx="720" cy="205" r="2" fill="url(#sfChatStarGlow)" />
+            <circle cx="760" cy="60" r=".6" opacity=".3" />
+            <circle cx="420" cy="222" r=".5" opacity=".25" />
+            <circle cx="55" cy="120" r=".6" opacity=".3" />
+          </g>
+        </svg>
         <div className="flex h-[58px] w-[58px] shrink-0 items-center justify-center overflow-visible">
           <FlowAIOrb
             size={58}
@@ -88,9 +122,9 @@ export function ChatEmptyState({ greetingName, theme, actions, disabled, onSelec
         <h2 className="mt-[18px] text-[21px] font-semibold tracking-[-0.01em] text-foreground">
           {t("flow_greeting")}, {greetingName}.
         </h2>
-        <p className="mt-[7px] max-w-[380px] text-[13px] leading-relaxed text-muted-foreground [text-wrap:pretty]">
-          I&apos;m SmartFlow — here to help you learn, plan, and grow every day.
-        </p>
+        {/* PO decision (2026-09-05): the "I'm SmartFlow — here to help
+            you learn, plan, and grow every day." tagline is removed --
+            the greeting stands alone under the orb. */}
       </div>
     );
   }
