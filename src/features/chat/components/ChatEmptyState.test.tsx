@@ -167,12 +167,12 @@ describe("ChatEmptyState D2: mobile has no chip/card/orb markup at all", () => {
 // prototype's CSS stand-in. Standalone (`embedded` omitted) is proven
 // unchanged by every existing test above.
 describe("ChatEmptyState embedded variant (SmartFlow Home v2)", () => {
-  it("renders the centered greeting + tagline with the REAL FlowAIOrb mount, and neither the glass card nor the quick-action chips", () => {
+  it("renders the centered greeting with the REAL FlowAIOrb mount -- no tagline (PO decision 2026-09-05), no glass card, no quick-action chips", () => {
     const html = renderToString(
       <ChatEmptyState greetingName="Aryan" theme="dark" actions={[action]} disabled={false} onSelectPrompt={vi.fn()} embedded />,
     );
     expect(html).toContain("Aryan");
-    expect(html).toContain("here to help you learn, plan, and grow every day");
+    expect(html).not.toContain("here to help you learn, plan, and grow every day");
     // The real FlowAIOrb mount (aria-labelled), not the static
     // --flow-gradient-orb corner motif and not a CSS stand-in.
     expect(html).toContain("SmartFlow assistant");

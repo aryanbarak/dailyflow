@@ -27,7 +27,29 @@ import { SmartflowAsciiVisual } from "@/components/smartflow";
 import { useWorkspace } from "@/features/workspace";
 import { trackWorkspaceInteraction } from "@/features/workspace";
 import { useHabits } from "@/features/habits/useHabits";
-import { useT } from "@/i18n";
+import { localeFor, useT, type TranslationKey } from "@/i18n";
+
+// I18N-SWEEP-1: the workspace engines emit fixed English copy that the
+// Home tests pin; translate at the render layer by exact-string lookup.
+// The en dictionary values are byte-identical to the engine strings, so
+// English output (and every pinned test) is unchanged.
+const ENGINE_STATUS_KEYS: Record<string, TranslationKey> = {
+  "I'm learning from your first workspace signals.": "dashboard_status_learning",
+  "Always learning from your workspace.": "dashboard_status_always",
+};
+function translateEngineCopy(
+  text: string,
+  t: (key: TranslationKey) => string,
+  map: Record<string, TranslationKey>,
+): string {
+  const key = map[text];
+  return key ? t(key) : text;
+}
+
+// PO decision (2026-09-05): the hero's greeting/goal H1 is REMOVED --
+// the hero shows only the orb + date lockup. workspace.hero.title is
+// still computed by the engine (other consumers unaffected), it just no
+// longer renders on Home.
 import type { ToolResolutionResult } from "@/features/agent/toolResolverTypes";
 import { StepApprovalDialog } from "@/features/workspace/components/StepApprovalDialog";
 import type {
@@ -294,10 +316,10 @@ export function FlowAIAssistantRail({
                 <span className="sf-home-ping absolute inset-0 rounded-full bg-[#34D399] motion-safe:animate-[sfPing_2.2s_cubic-bezier(0,0,0.2,1)_infinite]" />
                 <span className="relative inline-flex h-2 w-2 rounded-full bg-[#34D399]" />
               </span>
-              Online
+              {t("online")}
             </div>
             <p className="mt-1.5 text-xs leading-[1.55] text-[#A5A8C2]">
-              {rail.statusMessage}
+              {translateEngineCopy(rail.statusMessage, t, ENGINE_STATUS_KEYS)}
             </p>
           </div>
         </div>
@@ -305,9 +327,9 @@ export function FlowAIAssistantRail({
         {pendingApprovals.length > 0 && (
           <div className="mt-5 border-t border-[#757CAA]/[0.14] pt-4">
             <div className="mb-2.5 flex items-baseline justify-between">
-              <p className={RAIL_SECTION_LABEL_CLASS}>Pending Approvals</p>
+              <p className={RAIL_SECTION_LABEL_CLASS}>{t("dashboard_rail_pending_approvals")}</p>
               <button type="button" onClick={pendingApprovals[0].onReview} className={RAIL_VIEW_ALL_CLASS}>
-                View all
+                {t("view_all")}
               </button>
             </div>
             <div className="flex flex-col gap-2">
@@ -333,7 +355,7 @@ export function FlowAIAssistantRail({
         {suggestions.length > 0 && (
           <div className={RAIL_SECTION_CLASS}>
             <div className="mb-2.5 flex items-baseline justify-between">
-              <p className={RAIL_SECTION_LABEL_CLASS}>AI Suggestions</p>
+              <p className={RAIL_SECTION_LABEL_CLASS}>{t("ai_suggestions")}</p>
               <button
                 type="button"
                 onClick={() =>
@@ -347,7 +369,7 @@ export function FlowAIAssistantRail({
                 }
                 className={RAIL_VIEW_ALL_CLASS}
               >
-                View all
+                {t("view_all")}
               </button>
             </div>
             <div className="flex flex-col gap-2">
@@ -376,7 +398,7 @@ export function FlowAIAssistantRail({
 
         <div className={RAIL_SECTION_CLASS}>
           <div className="mb-2.5 flex items-baseline justify-between">
-            <p className={RAIL_SECTION_LABEL_CLASS}>Continue Learning</p>
+            <p className={RAIL_SECTION_LABEL_CLASS}>{t("dashboard_rail_continue_learning")}</p>
             <button
               type="button"
               onClick={() => {
@@ -391,7 +413,7 @@ export function FlowAIAssistantRail({
               }}
               className={RAIL_VIEW_ALL_CLASS}
             >
-              View all
+              {t("view_all")}
             </button>
           </div>
           <div className="flex flex-col gap-2">
@@ -442,7 +464,7 @@ export function FlowAIAssistantRail({
 
         <div className={RAIL_SECTION_CLASS}>
           <div className="mb-2.5 flex items-baseline justify-between">
-            <p className={RAIL_SECTION_LABEL_CLASS}>Recommended Today</p>
+            <p className={RAIL_SECTION_LABEL_CLASS}>{t("dashboard_rail_recommended_today")}</p>
             <button
               type="button"
               onClick={() =>
@@ -456,7 +478,7 @@ export function FlowAIAssistantRail({
               }
               className={RAIL_VIEW_ALL_CLASS}
             >
-              View all
+              {t("view_all")}
             </button>
           </div>
           <div className="flex flex-col gap-2">
@@ -643,6 +665,7 @@ function WelcomeWorkspace({
 
 export default function Dashboard() {
   const navigate = useNavigate();
+  const { t, lang } = useT();
   const [approvalDialogOpen, setApprovalDialogOpen] = useState(false);
   // SmartFlow Home frozen design handoff §10 (<=1120px, desktop shell):
   // the Assistant Rail leaves the grid and becomes a fixed right overlay,
@@ -817,19 +840,13 @@ export default function Dashboard() {
                   row are flex-none rows and the chat wrapper takes all
                   remaining height. */}
               <div className="flex min-h-0 min-w-0 flex-col">
-      {/* SmartFlow Home v2 (`SmartFlow Home v2.dc.html`) §hero: the
-          approved hero is the night-sky composition -- vertical dark sky
-          gradient, the exact 20-star field (designated stars twinkle),
-          the atmospheric glow ellipse, and the small inward moon/orb
-          group at (880,118) -- at the v2 heights (190px; 132px at
-          <=760px per the v2 rev-2 file `SmartFlow Home v2 (standalone)
-          (1).html`, which compacted the whole mobile band) with the v2
-          overlay: date eyebrow + the greeting H1
-          ONLY (v2 moved the supporting sentence out and relocated the
-          metric capsules below the hero, above the chat shell). NO
-          mountain/ridge/wave paths. Every position, radius, opacity,
-          gradient stop and animation value below is copied verbatim from
-          the v2 prototype. */}
+      {/* SmartFlow Home hero -- night-sky composition (v2 base), revised
+          per PO decision (2026-09-05): the greeting/goal H1 is REMOVED,
+          the moon/orb moved out of the sky into the overlay lockup (orb
+          first, date beside it in white), and the star field grew from
+          the v2 20-star set to 32 stars with several larger radii and 6
+          twinkles. Heights stay v2 (190px; 132px at <=760px). NO
+          mountain/ridge/wave paths. */}
       <WorkspaceRevealSection order={0} className="lg:shrink-0">
         <section className="relative min-h-[190px] flex-none overflow-hidden max-[760px]:min-h-[132px]">
           <svg
@@ -844,16 +861,18 @@ export default function Dashboard() {
                 <stop offset="55%" stopColor="#080A1F" />
                 <stop offset="100%" stopColor="#050615" />
               </linearGradient>
+              {/* PO decision (2026-09-05, round 3): luminous stars -- a
+                  tiny bright core fading to nothing, so the visible dot
+                  stays SMALL while reading as a glow, not a flat disc. */}
+              <radialGradient id="sfStarGlow" cx="50%" cy="50%" r="50%">
+                <stop offset="0%" stopColor="#FFFFFF" />
+                <stop offset="22%" stopColor="#DDD4FF" stopOpacity=".85" />
+                <stop offset="100%" stopColor="#DDD4FF" stopOpacity="0" />
+              </radialGradient>
               <radialGradient id="sfHomeAtmo" cx="78%" cy="30%" r="55%">
                 <stop offset="0%" stopColor="rgba(124,77,255,.30)" />
                 <stop offset="45%" stopColor="rgba(104,61,255,.14)" />
                 <stop offset="100%" stopColor="rgba(104,61,255,0)" />
-              </radialGradient>
-              <radialGradient id="sfHomeMoon" cx="50%" cy="45%" r="55%">
-                <stop offset="0%" stopColor="#FFFFFF" />
-                <stop offset="35%" stopColor="#E4D9FF" />
-                <stop offset="75%" stopColor="#9A6BFF" />
-                <stop offset="100%" stopColor="#6938F0" />
               </radialGradient>
             </defs>
             <rect width="1200" height="300" fill="url(#sfHomeSky)" />
@@ -878,29 +897,78 @@ export default function Dashboard() {
               <circle cx="360" cy="120" r=".6" opacity=".35" />
               <circle cx="660" cy="128" r=".6" opacity=".3" />
               <circle cx="985" cy="140" r=".6" opacity=".3" />
+              {/* PO decision (2026-09-05, rounds 2+3): 12 additional
+                  stars; the brighter ones use the sfStarGlow gradient
+                  (tiny luminous core, soft halo) instead of larger solid
+                  discs. */}
+              <circle cx="110" cy="18" r="2.6" fill="url(#sfStarGlow)" />
+              <circle cx="275" cy="52" r="2.2" fill="url(#sfStarGlow)" />
+              <circle cx="430" cy="76" r="2.8" fill="url(#sfStarGlow)" className="sf-home-twinkle" style={{ animation: "sfTwinkle 5.1s ease-in-out 1.9s infinite" }} />
+              <circle cx="512" cy="14" r=".9" opacity=".6" />
+              <circle cx="700" cy="44" r="2.6" fill="url(#sfStarGlow)" />
+              <circle cx="775" cy="112" r=".8" opacity=".5" />
+              <circle cx="860" cy="24" r="2.2" fill="url(#sfStarGlow)" />
+              <circle cx="930" cy="92" r="3" fill="url(#sfStarGlow)" className="sf-home-twinkle" style={{ animation: "sfTwinkle 4.9s ease-in-out .6s infinite" }} />
+              <circle cx="1040" cy="58" r="2.2" fill="url(#sfStarGlow)" />
+              <circle cx="1150" cy="104" r=".8" opacity=".5" />
+              <circle cx="200" cy="132" r=".7" opacity=".45" />
+              <circle cx="590" cy="86" r=".9" opacity=".6" />
+              {/* PO decision (2026-09-05, rounds 2+3): 14 more stars in
+                  the lower half of the band (y 150-285) -- small solids
+                  plus luminous sfStarGlow cores, two more twinkles. */}
+              <circle cx="80" cy="188" r=".8" opacity=".55" />
+              <circle cx="185" cy="236" r=".8" opacity=".4" />
+              <circle cx="300" cy="172" r="2.4" fill="url(#sfStarGlow)" />
+              <circle cx="365" cy="262" r=".8" opacity=".5" />
+              <circle cx="455" cy="205" r="3" fill="url(#sfStarGlow)" className="sf-home-twinkle" style={{ animation: "sfTwinkle 5.4s ease-in-out 2.3s infinite" }} />
+              <circle cx="540" cy="278" r=".9" opacity=".4" />
+              <circle cx="640" cy="182" r="2.2" fill="url(#sfStarGlow)" />
+              <circle cx="735" cy="248" r=".7" opacity=".45" />
+              <circle cx="820" cy="168" r="2.6" fill="url(#sfStarGlow)" />
+              <circle cx="915" cy="232" r=".8" opacity=".5" />
+              <circle cx="1010" cy="196" r="2.8" fill="url(#sfStarGlow)" className="sf-home-twinkle" style={{ animation: "sfTwinkle 4.4s ease-in-out 1.1s infinite" }} />
+              <circle cx="1095" cy="266" r=".9" opacity=".4" />
+              <circle cx="1160" cy="176" r="2.2" fill="url(#sfStarGlow)" />
+              <circle cx="620" cy="240" r=".7" opacity=".35" />
             </g>
             <ellipse cx="870" cy="150" rx="420" ry="200" fill="url(#sfHomeAtmo)" opacity=".75" />
-            <g className="sf-home-moon" style={{ animation: "sfMoonBreathe 8s ease-in-out infinite" }}>
-              <circle cx="880" cy="118" r="46" fill="none" stroke="rgba(154,107,255,.14)" strokeWidth="1" />
-              <circle cx="880" cy="118" r="30" fill="none" stroke="rgba(154,107,255,.3)" strokeWidth="1.1" />
-              <circle cx="880" cy="118" r="15" fill="url(#sfHomeMoon)" />
-            </g>
           </svg>
 
-          {/* v2 text overlay: padding 30px 36px 22px, max-width 720px;
-              date eyebrow + greeting H1 (32px, 22px at <=760px) and
-              nothing else -- the supporting sentence is gone and the
-              metric capsules moved below the hero (v2). At <=1120px the
-              text caps at 56% so it stays clear of the moon; at <=760px
-              it compacts per the v2 rev-2 file (padding 16px 16px 12px,
-              full width). */}
-          <div className="relative z-[2] max-w-[720px] px-9 pb-[22px] pt-[30px] max-[1120px]:max-w-[56%] max-[760px]:max-w-full max-[760px]:px-4 max-[760px]:pb-3 max-[760px]:pt-4">
-            <p className="text-[11px] font-semibold uppercase tracking-[.18em] text-[#9A6BFF]">
-              {workspace.today.label}
+          {/* PO decision (2026-09-05): the overlay is a single top-aligned
+              lockup -- the breathing orb first, the date beside it in
+              WHITE (#F7F7FC) -- and nothing else (the greeting/goal H1 is
+              removed in both languages). pt-[22px] lines the lockup up
+              with the Assistant Rail's own SmartFlow header row (pt-5 +
+              its 52px orb mount). Direction-agnostic: flex order puts the
+              orb on the start side in LTR and RTL alike. */}
+          <div className="relative z-[2] flex items-center gap-3.5 px-9 pt-[22px] max-[760px]:gap-2.5 max-[760px]:px-4 max-[760px]:pt-3">
+            <svg
+              aria-hidden="true"
+              viewBox="0 0 96 96"
+              className="h-12 w-12 shrink-0 max-[760px]:h-9 max-[760px]:w-9"
+              style={{ animation: "sfMoonBreathe 8s ease-in-out infinite" }}
+            >
+              <defs>
+                <radialGradient id="sfHeroOrb" cx="50%" cy="45%" r="55%">
+                  <stop offset="0%" stopColor="#FFFFFF" />
+                  <stop offset="35%" stopColor="#E4D9FF" />
+                  <stop offset="75%" stopColor="#9A6BFF" />
+                  <stop offset="100%" stopColor="#6938F0" />
+                </radialGradient>
+              </defs>
+              <circle cx="48" cy="48" r="46" fill="none" stroke="rgba(154,107,255,.14)" strokeWidth="1.5" />
+              <circle cx="48" cy="48" r="31" fill="none" stroke="rgba(154,107,255,.3)" strokeWidth="1.5" />
+              <circle cx="48" cy="48" r="16" fill="url(#sfHeroOrb)" />
+            </svg>
+            <p className="text-[15px] font-semibold uppercase tracking-[.18em] text-[#F7F7FC] max-[760px]:text-[12.5px]">
+              {lang === "en"
+                ? workspace.today.label
+                : new Intl.DateTimeFormat(localeFor(lang), {
+                    weekday: "long",
+                    day: "numeric",
+                    month: "long",
+                  }).format(workspace.today.date)}
             </p>
-            <h1 className="mt-2 text-[32px] font-semibold leading-[1.15] tracking-[-.01em] text-[#F7F7FC] max-[760px]:text-[22px]">
-              {workspace.hero.title}
-            </h1>
           </div>
         </section>
       </WorkspaceRevealSection>
@@ -984,7 +1052,7 @@ export default function Dashboard() {
                     <CheckSquare className="h-3.5 w-3.5" strokeWidth={2} />
                   </span>
                   <span>
-                    <span className="block text-[10px] font-medium uppercase tracking-[.08em] text-[#777C9A] max-[760px]:text-[9px]">Open Tasks</span>
+                    <span className="block text-[10px] font-medium uppercase tracking-[.08em] text-[#777C9A] max-[760px]:text-[9px]">{t("dashboard_stat_open_tasks")}</span>
                     <span className="text-[17px] font-semibold text-[#F7F7FC]">
                       {workspace.signals.incompleteTasks}
                     </span>
@@ -1007,7 +1075,7 @@ export default function Dashboard() {
                     <Calendar className="h-3.5 w-3.5" strokeWidth={2} />
                   </span>
                   <span>
-                    <span className="block text-[10px] font-medium uppercase tracking-[.08em] text-[#777C9A] max-[760px]:text-[9px]">Today&apos;s Events</span>
+                    <span className="block text-[10px] font-medium uppercase tracking-[.08em] text-[#777C9A] max-[760px]:text-[9px]">{t("dashboard_stat_todays_events")}</span>
                     <span className="text-[17px] font-semibold text-[#F7F7FC]">
                       {workspace.signals.eventsToday}
                     </span>
@@ -1036,7 +1104,7 @@ export default function Dashboard() {
                     <Flame className="h-3.5 w-3.5" strokeWidth={2} />
                   </span>
                   <span>
-                    <span className="block text-[10px] font-medium uppercase tracking-[.08em] text-[#777C9A] max-[760px]:text-[9px]">Habit Streak</span>
+                    <span className="block text-[10px] font-medium uppercase tracking-[.08em] text-[#777C9A] max-[760px]:text-[9px]">{t("dashboard_stat_habit_streak")}</span>
                     <span className="text-[17px] font-semibold text-[#F7F7FC]">
                       {habitStreak}
                     </span>
@@ -1052,7 +1120,7 @@ export default function Dashboard() {
                     <ShieldCheck className="h-3.5 w-3.5" strokeWidth={2} />
                   </span>
                   <span>
-                    <span className="block text-[10px] font-medium uppercase tracking-[.08em] text-[#777C9A] max-[760px]:text-[9px]">Approvals</span>
+                    <span className="block text-[10px] font-medium uppercase tracking-[.08em] text-[#777C9A] max-[760px]:text-[9px]">{t("dashboard_stat_approvals")}</span>
                     <span className="text-[17px] font-semibold text-[#F7F7FC]">
                       {approvalsPendingCount}
                     </span>

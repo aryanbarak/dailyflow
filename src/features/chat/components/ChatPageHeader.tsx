@@ -3,7 +3,6 @@ import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
-import { ChatHeaderControls } from "./ChatHeaderControls";
 
 // SmartFlow -- task 17c, PO decision D4, final single-row mobile header:
 // [More menu] [Conversations] -- "Flow AI" -- [theme/density] [New].
@@ -36,7 +35,11 @@ export interface ChatPageHeaderProps {
   readonly compact: boolean;
   readonly prefersReducedMotion: boolean;
   readonly onOpenMoreMenu: () => void;
-  readonly onOpenConversations: () => void;
+  // PO decision (2026-09-05): optional -- Home's embedded header passes
+  // undefined (its history toggle moved to the app icon rail, opening the
+  // docked panel); the standalone /chat route still passes a handler and
+  // keeps this button exactly as before.
+  readonly onOpenConversations?: () => void;
   readonly onStartNewChat: () => void;
   // Home V2 final visual correction: Home's embedded chat panel shows
   // "SmartFlow" as its visible title instead of the standalone /chat
@@ -131,17 +134,22 @@ export function ChatPageHeader({
               <Zap className="h-4 w-4" strokeWidth={1.7} />
             </Button>
           )}
-          <ChatHeaderControls />
-          <Button
-            type="button"
-            size="icon"
-            variant="ghost"
-            className="h-9 w-9 shrink-0"
-            onClick={onOpenConversations}
-            aria-label={t("chat_open_conversations")}
-          >
-            <History className="h-4 w-4" />
-          </Button>
+          {/* PO decision (2026-09-05): the theme/density pill
+              (ChatHeaderControls) is removed from the header -- both
+              toggles' stores keep their persisted values; the component
+              and its unit tests remain for a possible future surface. */}
+          {onOpenConversations && (
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="h-9 w-9 shrink-0"
+              onClick={onOpenConversations}
+              aria-label={t("chat_open_conversations")}
+            >
+              <History className="h-4 w-4" />
+            </Button>
+          )}
           {/* v2 rev-2 mobile rules (#sfNewChatBtn/#sfNewChatLabel): the
               New Chat button is icon-only up to 760px (not just below
               sm), so the compacted mobile header row always fits. */}

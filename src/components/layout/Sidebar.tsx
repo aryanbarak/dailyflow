@@ -16,9 +16,11 @@ import {
   BookOpen,
   MessageSquare,
   FolderKanban,
+  History,
   Home,
   Menu,
 } from "lucide-react";
+import { useConversationsPanelStore } from "@/features/chat/conversationsPanelStore";
 import { cn } from "@/lib/utils";
 import { GlobalSearch } from "@/features/search/GlobalSearch";
 import { MicroBreaksCommandLauncher } from "@/features/micro-breaks/components/MicroBreaksCommandLauncher";
@@ -271,6 +273,8 @@ export function Sidebar() {
   const location = useLocation();
   const { t } = useT();
   const [homeMenuOpen, setHomeMenuOpen] = useState(false);
+  const conversationsPanelOpen = useConversationsPanelStore((state) => state.open);
+  const toggleConversationsPanel = useConversationsPanelStore((state) => state.toggle);
   const { displayName, initials } = useSidebarIdentity();
 
   // SmartFlow Home frozen design handoff §4/§9: route-aware presentation
@@ -329,6 +333,20 @@ export function Sidebar() {
           >
             <MessageSquare className="h-5 w-5" strokeWidth={1.7} />
           </NavLink>
+          {/* PO decision (2026-09-05): the conversations-history toggle
+              moved OUT of the embedded chat header into this rail, next to
+              the other icons -- it toggles the docked DeepSeek-style panel
+              (conversationsPanelStore), pressed state reflected for a11y. */}
+          <button
+            type="button"
+            onClick={toggleConversationsPanel}
+            aria-pressed={conversationsPanelOpen}
+            title={t('flow_conversations')}
+            aria-label={t('flow_conversations')}
+            className={cn(HOME_RAIL_BUTTON_CLASS, conversationsPanelOpen && "border border-[#7D5CFF]/40 bg-[#7C4DFF]/[0.16] text-[#A88BFF]")}
+          >
+            <History className="h-5 w-5" strokeWidth={1.7} />
+          </button>
           <NavLink
             to="/settings"
             title={t('nav_settings')}

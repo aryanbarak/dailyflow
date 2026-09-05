@@ -69,14 +69,17 @@ describe("Y1 (task 17g): no decorative border/outline on assistant or user bubbl
     );
   });
 
-  it("the composer textarea has no permanent decorative border -- only the focus-visible ring remains", () => {
-    // The exact contiguous className string (border-0 immediately after
-    // rounded-2xl, immediately before the background) only matches if the
-    // actual JSX has no border-color class in between -- proving removal
-    // from the real code, not just from a comment.
-    expect(composerSource).toMatch(/rounded-2xl border-0 bg-\[hsl\(var\(--glass-bg\)\)\]/);
-    // The focus AFFORDANCE stays -- only visible on focus, not decorative.
-    expect(composerSource).toMatch(/focus-visible:ring-2/);
+  it("the composer field has no permanent decorative border -- only the focus affordance remains (PO 2026-09-05: ring moved to the box wrapper via focus-within)", () => {
+    // PO decision (2026-09-05, DeepSeek-style box): the glass surface and
+    // rounding live on the wrapper now; the textarea itself is transparent
+    // and borderless. The contiguous strings prove no border-color class
+    // crept back in between -- removal in the real code, not a comment.
+    expect(composerSource).toMatch(/rounded-2xl bg-\[hsl\(var\(--glass-bg\)\)\]/);
+    expect(composerSource).toMatch(/border-0 bg-transparent/);
+    // The focus AFFORDANCE stays -- on the box, only visible while the
+    // field inside has focus, not decorative.
+    expect(composerSource).toMatch(/focus-within:ring-2/);
+    expect(composerSource).not.toMatch(/focus-visible:ring-2/);
   });
 });
 

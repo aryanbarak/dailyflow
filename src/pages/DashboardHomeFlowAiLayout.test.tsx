@@ -316,26 +316,22 @@ describe("Frozen handoff: hero is the approved star-field composition -- NO moun
     expect(hero).toMatch(/#050615/);
   });
 
-  it("the star field is the exact frozen 20-circle set with the prototype's twinkling stars (sfTwinkle, staggered 3.4-4.6s)", () => {
+  it("PO decision (2026-09-05, round 2): the star field is 46 stars (v2's 20 + 12 + 14 lower-band additions, mixed sizes up to r 2.4) with 8 staggered sfTwinkle stars; plus the 3 orb circles in the overlay lockup", () => {
     const hero = heroBlock();
-    // 20 stars + the 3 moon circles = 23 <circle> elements in the hero SVG.
+    // 46 sky stars + the 3 orb circles in the overlay lockup SVG.
     const circles = hero.match(/<circle /g) ?? [];
     const twinkles = hero.match(/sfTwinkle/g) ?? [];
-    expect(circles).toHaveLength(23);
-    // The handoff PROSE says "exactly 5 animate sfTwinkle", but its own
-    // position list marks 4 stars (*) and the authoritative prototype
-    // (`SmartFlow Home.dc.html`, which the handoff defers to for "exact
-    // rendered values") animates exactly these same 4: (230,30) (545,48)
-    // (748,34) (1120,66). Implemented verbatim from the prototype;
-    // discrepancy reported in the implementation handback.
-    expect(twinkles).toHaveLength(4);
+    expect(circles).toHaveLength(49);
+    expect(twinkles).toHaveLength(8);
   });
 
-  it("the moon/orb group sits inward at (880,118) with the frozen radii (15 core, 30 + 46 rings) and breathes via sfMoonBreathe", () => {
+  it("PO decision (2026-09-05): the moon/orb left the sky -- it renders as the overlay lockup's own SVG (sfHeroOrb gradient, 16 core + 31/46 rings) breathing via sfMoonBreathe, first in the row before the date", () => {
     const hero = heroBlock();
-    expect(hero).toMatch(/<circle cx="880" cy="118" r="46"/);
-    expect(hero).toMatch(/<circle cx="880" cy="118" r="30"/);
-    expect(hero).toMatch(/<circle cx="880" cy="118" r="15"/);
+    expect(hero).not.toMatch(/<circle cx="880" cy="118"/);
+    expect(hero).toMatch(/sfHeroOrb/);
+    expect(hero).toMatch(/<circle cx="48" cy="48" r="46"/);
+    expect(hero).toMatch(/<circle cx="48" cy="48" r="31"/);
+    expect(hero).toMatch(/<circle cx="48" cy="48" r="16"/);
     expect(hero).toMatch(/sfMoonBreathe 8s ease-in-out infinite/);
   });
 
@@ -343,25 +339,29 @@ describe("Frozen handoff: hero is the approved star-field composition -- NO moun
     expect(heroBlock()).not.toMatch(/<FlowAIOrb/);
   });
 
-  it("SmartFlow Home v2: the hero overlay is date eyebrow + greeting H1 ONLY (32px, 22px at <=760px per the v2 rev-2 file) -- no supporting sentence and no capsules inside the hero", () => {
+  it("PO decision (2026-09-05): the hero overlay is the orb + WHITE date lockup ONLY -- the greeting/goal H1 is removed entirely, no supporting sentence and no capsules inside the hero", () => {
     const hero = heroBlock();
-    expect(hero).toMatch(/<h1/);
-    expect(hero).toMatch(/workspace\.hero\.title/);
-    expect(hero).toMatch(/text-\[32px\]/);
-    expect(hero).toMatch(/max-\[760px\]:text-\[22px\]/);
+    expect(hero).not.toMatch(/<h1/);
+    expect(hero).not.toMatch(/workspace\.hero\.title/);
     expect(hero).toMatch(/workspace\.today\.label/);
+    // Date is white (#F7F7FC), not the old violet eyebrow color.
+    expect(hero).toMatch(/tracking-\[\.18em\] text-\[#F7F7FC\]/);
+    expect(hero).not.toMatch(/text-\[#9A6BFF\]/);
     expect(hero).not.toMatch(/workspace\.hero\.summary/);
     expect(hero).not.toMatch(/Open Tasks/);
     expect(hero).not.toMatch(/workspace\.signals\.incompleteTasks/);
-    expect(dashboardSource).toMatch(/max-w-\[720px\]/);
   });
 
   it("SmartFlow Home v2: the FOUR metric capsules (Open Tasks · Today's Events · Habit Streak · Approvals) render as an equal-stretch row (flex-1, min-w 150px) between the hero and the chat shell, from existing data only", () => {
     const heroEnd = dashboardSource.indexOf("</WorkspaceRevealSection>", dashboardSource.indexOf("min-h-[190px]"));
     const chatIndex = dashboardSource.indexOf("<ChatPage");
     const betweenHeroAndChat = dashboardSource.slice(heroEnd, chatIndex);
+    // I18N-SWEEP-1: the visible capsule labels moved into the i18n
+    // dictionary (t('dashboard_stat_*')); the tracked targetTitle strings
+    // stay literal English. Pin both forms so the labels can't silently
+    // disappear in either place.
     expect(betweenHeroAndChat).toMatch(/Open Tasks/);
-    expect(betweenHeroAndChat).toMatch(/Today&apos;s Events/);
+    expect(betweenHeroAndChat).toMatch(/dashboard_stat_todays_events/);
     expect(betweenHeroAndChat).toMatch(/Habit Streak/);
     expect(betweenHeroAndChat).toMatch(/Approvals/);
     expect(betweenHeroAndChat).toMatch(/min-w-\[150px\] flex-1/);

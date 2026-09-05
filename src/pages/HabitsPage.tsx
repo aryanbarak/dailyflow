@@ -296,9 +296,9 @@ export default function HabitsPage() {
           {/* Filter tabs */}
           <div className="flex flex-wrap gap-1.5">
             {([
-              { value: 'all' as const, label: 'All', count: allHabits.length },
-              { value: 'active' as const, label: 'Active', count: allHabits.filter(h => h.is_active).length },
-              { value: 'paused' as const, label: 'Paused', count: allHabits.filter(h => !h.is_active).length },
+              { value: 'all' as const, label: t('all'), count: allHabits.length },
+              { value: 'active' as const, label: t('habits_active_chip'), count: allHabits.filter(h => h.is_active).length },
+              { value: 'paused' as const, label: t('habits_paused_chip'), count: allHabits.filter(h => !h.is_active).length },
             ]).map(f => (
               <button
                 key={f.value}
@@ -351,10 +351,10 @@ export default function HabitsPage() {
                 </div>
                 <p className="text-xs text-muted-foreground mt-2">
                   {progressPct === 100
-                    ? 'All done — nice work!'
+                    ? t('habits_all_done')
                     : progressPct > 0
-                      ? 'Great start! Keep it up.'
-                      : "Let's get going!"}
+                      ? t('habits_great_start')
+                      : t('habits_lets_go')}
                 </p>
               </div>
 
@@ -362,15 +362,15 @@ export default function HabitsPage() {
               <div className="grid grid-cols-3 gap-2 text-center">
                 <div>
                   <p className="text-lg font-bold text-[var(--flow-analyze)]">{todayDone}</p>
-                  <p className="text-[10px] text-muted-foreground">Completed</p>
+                  <p className="text-[10px] text-muted-foreground">{t('habits_completed')}</p>
                 </div>
                 <div>
                   <p className="text-lg font-bold text-[var(--flow-career)]">{activeHabits.length - todayDone}</p>
-                  <p className="text-[10px] text-muted-foreground">Remaining</p>
+                  <p className="text-[10px] text-muted-foreground">{t('habits_remaining')}</p>
                 </div>
                 <div>
                   <p className="text-lg font-bold text-primary">{activeHabits.length}</p>
-                  <p className="text-[10px] text-muted-foreground">Total Habits</p>
+                  <p className="text-[10px] text-muted-foreground">{t('habits_total')}</p>
                 </div>
               </div>
             </CardContent>
@@ -384,9 +384,9 @@ export default function HabitsPage() {
                   <div className="icon-tile w-7 h-7 rounded-md">
                     <Sparkles className="w-3.5 h-3.5 text-primary" />
                   </div>
-                  <span className="text-sm font-semibold">AI Suggestions</span>
+                  <span className="text-sm font-semibold">{t('ai_suggestions')}</span>
                 </div>
-                <p className="text-[11px] text-muted-foreground">Based on your habits</p>
+                <p className="text-[11px] text-muted-foreground">{t('ai_based_on_habits')}</p>
                 {suggestionsLoading ? (
                   <div className="space-y-2">
                     <SkeletonBlock className="h-10 w-full" />

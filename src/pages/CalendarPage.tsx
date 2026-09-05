@@ -30,6 +30,7 @@ import { formatDateTime, toDateOnly } from "@/lib/date";
 import { cn } from "@/lib/utils";
 import { SmartflowAsciiVisual } from "@/components/smartflow";
 import { useAppearance } from "@/features/settings/appearanceStore";
+import { localeFor, useT, type TranslationKey } from "@/i18n";
 import {
   getAiResponseLanguageInstruction,
   getStoredAiResponseLanguage,
@@ -145,6 +146,14 @@ const CATEGORY_LABELS: Record<string, string> = {
   health: 'Health',
 };
 
+// I18N-SWEEP-1: category display names come from the shared common keys.
+const CATEGORY_LABEL_KEYS: Record<string, TranslationKey> = {
+  personal: 'category_personal',
+  work: 'category_work',
+  family: 'category_family',
+  health: 'category_health',
+};
+
 function getCategoryDotColor(event: CalendarEvent): string {
   if (event.type && CATEGORY_COLORS[event.type]) return CATEGORY_COLORS[event.type];
   if (event.color) return '';
@@ -153,6 +162,8 @@ function getCategoryDotColor(event: CalendarEvent): string {
 
 export default function CalendarPage() {
   const interfaceLanguage = useAppearance((state) => state.language);
+  const { t, lang } = useT();
+  const locale = localeFor(lang);
   const queryClient = useQueryClient();
   const renderCount = useRef(0);
   renderCount.current += 1;
@@ -585,17 +596,19 @@ export default function CalendarPage() {
   }, [weekStart]);
 
   const monthLabel = useMemo(() => {
-    return viewAnchorDate.toLocaleDateString(undefined, { month: "long", year: "numeric" });
-  }, [viewAnchorDate]);
+    return viewAnchorDate.toLocaleDateString(locale, { month: "long", year: "numeric" });
+  }, [viewAnchorDate, locale]);
 
   const monthGridDays = useMemo(() => {
     return Array.from({ length: 42 }, (_, idx) => addDays(gridStart, idx));
   }, [gridStart]);
 
-  const weekdayLabels = useMemo(
-    () => ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
-    [],
-  );
+  // I18N-SWEEP-1: localized short weekday names, Monday-first (2024-01-01
+  // is a Monday, used purely as a formatting anchor).
+  const weekdayLabels = useMemo(() => {
+    const formatter = new Intl.DateTimeFormat(locale, { weekday: "short" });
+    return Array.from({ length: 7 }, (_, idx) => formatter.format(new Date(2024, 0, idx + 1)));
+  }, [locale]);
 
   const handleSelectDay = (day: Date) => {
     const key = formatDayKey(day);
@@ -647,7 +660,7 @@ export default function CalendarPage() {
   const calendarError = rangeError ?? monthError;
   const calendarErrorMessage = calendarError instanceof Error
     ? calendarError.message
-    : "Failed to load calendar events.";
+    : t("calendar_load_error");
   const isInitialLoading = isLoading && rangeEvents.length === 0;
 
   return (
@@ -658,12 +671,12 @@ export default function CalendarPage() {
         className="flex items-center justify-between py-5"
       >
         <div>
-          <h1 className="text-2xl lg:text-3xl font-semibold mb-1">Calendar</h1>
-          <p className="text-sm text-muted-foreground">Plan your day, stay on track</p>
+          <h1 className="text-2xl lg:text-3xl font-semibold mb-1">{t("calendar_title")}</h1>
+          <p className="text-sm text-muted-foreground">{t("calendar_subtitle")}</p>
         </div>
         <Button className="gap-2" style={{ background: 'var(--gradient-primary)' }} onClick={openNewEvent}>
           <Plus className="w-4 h-4" />
-          Add Event
+          {t("calendar_add_event")}
         </Button>
       </motion.div>
 
@@ -680,7 +693,7 @@ export default function CalendarPage() {
               <div className="icon-tile w-8 h-8 rounded-md">
                 <CalendarIcon className="w-4 h-4 text-primary" />
               </div>
-              <span className="text-xs font-medium text-muted-foreground">Events Today</span>
+              <span className="text-xs font-medium text-muted-foreground">{t("calendar_events_today")}</span>
             </div>
             <p className="text-2xl font-bold tracking-tight">{calendarKpi.eventsToday}</p>
           </CardContent>
@@ -691,7 +704,7 @@ export default function CalendarPage() {
               <div className="icon-tile w-8 h-8 rounded-md">
                 <CalendarDays className="w-4 h-4 text-primary" />
               </div>
-              <span className="text-xs font-medium text-muted-foreground">This Week</span>
+              <span className="text-xs font-medium text-muted-foreground">{t("calendar_this_week")}</span>
             </div>
             <p className="text-2xl font-bold tracking-tight">{calendarKpi.eventsThisWeek}</p>
           </CardContent>
@@ -702,7 +715,7 @@ export default function CalendarPage() {
               <div className="icon-tile w-8 h-8 rounded-md">
                 <Layers className="w-4 h-4 text-primary" />
               </div>
-              <span className="text-xs font-medium text-muted-foreground">Categories</span>
+              <span className="text-xs font-medium text-muted-foreground">{t("calendar_categories")}</span>
             </div>
             <p className="text-2xl font-bold tracking-tight">{calendarKpi.categoriesUsed}</p>
           </CardContent>
@@ -713,7 +726,7 @@ export default function CalendarPage() {
               <div className="icon-tile w-8 h-8 rounded-md">
                 <ArrowUpRight className="w-4 h-4 text-primary" />
               </div>
-              <span className="text-xs font-medium text-muted-foreground">Upcoming</span>
+              <span className="text-xs font-medium text-muted-foreground">{t("calendar_upcoming")}</span>
             </div>
             <p className="text-2xl font-bold tracking-tight">{calendarKpi.upcoming}</p>
           </CardContent>
@@ -733,13 +746,13 @@ export default function CalendarPage() {
         <div className="flex flex-wrap items-center gap-3">
           <Tabs value={filter} onValueChange={(value) => setFilter(value as EventFilter)}>
             <TabsList className="bg-secondary">
-              <TabsTrigger value="all">All</TabsTrigger>
-              <TabsTrigger value="today">Today</TabsTrigger>
-              <TabsTrigger value="week">This Week</TabsTrigger>
+              <TabsTrigger value="all">{t("all")}</TabsTrigger>
+              <TabsTrigger value="today">{t("today")}</TabsTrigger>
+              <TabsTrigger value="week">{t("calendar_this_week")}</TabsTrigger>
             </TabsList>
           </Tabs>
           <Button variant="secondary" size="sm" onClick={handleTodayClick}>
-            Go to Today
+            {t("calendar_go_to_today")}
           </Button>
           {filter === "week" && (
             <>
@@ -750,7 +763,7 @@ export default function CalendarPage() {
                   handlePrevWeek();
                 }}
               >
-                Prev Week
+                {t("calendar_prev_week")}
               </Button>
               <Button
                 variant="secondary"
@@ -759,7 +772,7 @@ export default function CalendarPage() {
                   handleNextWeek();
                 }}
               >
-                Next Week
+                {t("calendar_next_week")}
               </Button>
             </>
           )}
@@ -767,11 +780,11 @@ export default function CalendarPage() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <Button variant="secondary" size="sm" onClick={handlePrevMonth}>
-              Prev Month
+              {t("calendar_prev_month")}
             </Button>
             <span className="text-sm font-medium">{monthLabel}</span>
             <Button variant="secondary" size="sm" onClick={handleNextMonth}>
-              Next Month
+              {t("calendar_next_month")}
             </Button>
           </div>
           <div className="flex items-center gap-2 overflow-x-auto">
@@ -787,7 +800,7 @@ export default function CalendarPage() {
                   className={isToday && !isSelected ? "border border-primary" : ""}
                   onClick={() => handleSelectDay(day)}
                 >
-                  <span className="mr-1">{day.toLocaleDateString(undefined, { weekday: "short" })}</span>
+                  <span className="me-1">{day.toLocaleDateString(locale, { weekday: "short" })}</span>
                   {day.getDate()}
                 </Button>
               );
@@ -816,7 +829,7 @@ export default function CalendarPage() {
                   key={key}
                   variant={isSelected ? "default" : "secondary"}
                   className={cn(
-                    "h-11 flex-col items-start justify-start px-1 py-1 text-left gap-0.5",
+                    "h-11 flex-col items-start justify-start px-1 py-1 text-start gap-0.5",
                     !isCurrentMonth && "opacity-60",
                     isToday && !isSelected && "border border-primary",
                   )}
@@ -848,7 +861,9 @@ export default function CalendarPage() {
           {Object.entries(CATEGORY_LABELS).map(([key, label]) => (
             <div key={key} className="flex items-center gap-1.5">
               <span className={cn("w-2 h-2 rounded-full", CATEGORY_COLORS[key])} />
-              <span className="text-[11px] text-muted-foreground">{label}</span>
+              <span className="text-[11px] text-muted-foreground">
+                {CATEGORY_LABEL_KEYS[key] ? t(CATEGORY_LABEL_KEYS[key]) : label}
+              </span>
             </div>
           ))}
         </div>
@@ -857,7 +872,7 @@ export default function CalendarPage() {
       {calendarError ? (
         <StatePanel
           variant="error"
-          title="Calendar failed to load"
+          title={t("calendar_failed_title")}
           description={calendarErrorMessage}
         />
       ) : isInitialLoading ? (
@@ -880,25 +895,25 @@ export default function CalendarPage() {
       ) : !hasAnyEvents ? (
         <StatePanel
           variant="empty"
-          title="No events found"
-          description="Create your first event to see it here."
-          actionLabel="Add event"
+          title={t("calendar_empty_title")}
+          description={t("calendar_empty_desc")}
+          actionLabel={t("calendar_add_event")}
           onAction={openNewEvent}
         />
       ) : filter === "week" && orderedDays.length === 0 && !selectedDay ? (
         <StatePanel
           variant="empty"
-          title="No events this week"
-          description="Add an event to get started."
-          actionLabel="Add event"
+          title={t("calendar_empty_week_title")}
+          description={t("calendar_empty_week_desc")}
+          actionLabel={t("calendar_add_event")}
           onAction={openNewEvent}
         />
       ) : orderedDays.length === 0 && !selectedDay ? (
         <StatePanel
           variant="empty"
-          title="No results for your current filters"
-          description="Try adjusting your search or filters."
-          actionLabel={isFiltering ? "Clear filters" : undefined}
+          title={t("calendar_empty_filtered_title")}
+          description={t("calendar_empty_filtered_desc")}
+          actionLabel={isFiltering ? t("calendar_clear_filters") : undefined}
           onAction={isFiltering ? handleClearFilters : undefined}
         />
       ) : (
@@ -908,13 +923,13 @@ export default function CalendarPage() {
               <CardHeader className="flex flex-row items-center justify-between sticky top-0 z-10 bg-card/95 backdrop-blur">
                 <CardTitle className="text-base flex items-center gap-2">
                   <CalendarIcon className="w-4 h-4 text-primary" />
-                  {new Date(selectedDayKey).toLocaleDateString(undefined, {
+                  {new Date(selectedDayKey).toLocaleDateString(locale, {
                     weekday: "short",
                     month: "short",
                     day: "numeric",
                   })}
                 </CardTitle>
-                <Badge variant="secondary">0 event(s)</Badge>
+                <Badge variant="secondary">{t("calendar_events_count", { count: 0 })}</Badge>
               </CardHeader>
               <CardContent className="py-6 text-sm text-muted-foreground">
                 No events on this day.
@@ -926,17 +941,17 @@ export default function CalendarPage() {
                 <CardHeader className="flex flex-row items-center justify-between sticky top-0 z-10 bg-card/95 backdrop-blur">
                   <CardTitle className="text-base flex items-center gap-2">
                     <CalendarIcon className="w-4 h-4 text-primary" />
-                    {parseDayKeyLocal(dayKey).toLocaleDateString(undefined, {
+                    {parseDayKeyLocal(dayKey).toLocaleDateString(locale, {
                       weekday: "short",
                       month: "short",
                       day: "numeric",
                     })}
                   </CardTitle>
                   <Badge variant={(dayScopedEvents[dayKey].length + (tasksByDay[dayKey]?.length ?? 0)) >= 3 ? "default" : "secondary"}>
-                    {dayScopedEvents[dayKey].length > 0 && `${dayScopedEvents[dayKey].length} event(s)`}
+                    {dayScopedEvents[dayKey].length > 0 && t("calendar_events_count", { count: dayScopedEvents[dayKey].length })}
                     {dayScopedEvents[dayKey].length > 0 && (tasksByDay[dayKey]?.length ?? 0) > 0 && " · "}
                     {(tasksByDay[dayKey]?.length ?? 0) > 0 && `${tasksByDay[dayKey].length} task(s)`}
-                    {dayScopedEvents[dayKey].length === 0 && (tasksByDay[dayKey]?.length ?? 0) === 0 && "0 event(s)"}
+                    {dayScopedEvents[dayKey].length === 0 && (tasksByDay[dayKey]?.length ?? 0) === 0 && t("calendar_events_count", { count: 0 })}
                   </Badge>
                 </CardHeader>
                 <CardContent className="space-y-3">
@@ -969,7 +984,7 @@ export default function CalendarPage() {
                       ? timeEnd
                         ? `${timeStart}\u2013${timeEnd}`
                         : timeStart
-                      : "All day";
+                      : t("calendar_all_day");
                     return (
                       <div
                         key={event.id}
@@ -989,11 +1004,11 @@ export default function CalendarPage() {
                             <div>
                               <div className="flex items-center gap-2">
                                 <p className="text-sm font-medium">{event.title}</p>
-                                {eventState === "current" && <Badge variant="secondary">Now</Badge>}
+                                {eventState === "current" && <Badge variant="secondary">{t("calendar_now")}</Badge>}
                                 {isTodayEvent && eventState !== "current" && (
-                                  <Badge variant="secondary">Today</Badge>
+                                  <Badge variant="secondary">{t("today")}</Badge>
                                 )}
-                                {eventState === "upcoming" && <Badge variant="outline">Upcoming</Badge>}
+                                {eventState === "upcoming" && <Badge variant="outline">{t("calendar_upcoming")}</Badge>}
                               </div>
                               <p className="text-xs text-muted-foreground">{formatDateTime(event.dateTimeStart)}</p>
                             </div>
@@ -1061,7 +1076,7 @@ export default function CalendarPage() {
                 <div className="icon-tile w-7 h-7 rounded-md">
                   <CalendarIcon className="w-3.5 h-3.5 text-primary" />
                 </div>
-                <span className="text-sm font-semibold">Today&apos;s Agenda</span>
+                <span className="text-sm font-semibold">{t("calendar_todays_agenda")}</span>
               </div>
               {tasksTotalToday > 0 && (
                 <div className="flex flex-col items-center shrink-0">
@@ -1092,7 +1107,7 @@ export default function CalendarPage() {
                   const timeStart = formatTime(ev.dateTimeStart);
                   const timeEnd = ev.dateTimeEnd ? formatTime(ev.dateTimeEnd) : null;
                   const dotColor = ev.type && CATEGORY_COLORS[ev.type] ? CATEGORY_COLORS[ev.type] : 'bg-primary';
-                  const badgeLabel = ev.type && CATEGORY_LABELS[ev.type] ? CATEGORY_LABELS[ev.type] : null;
+                  const badgeLabel = ev.type && CATEGORY_LABEL_KEYS[ev.type] ? t(CATEGORY_LABEL_KEYS[ev.type]) : null;
                   return (
                     <li key={ev.id} className="flex items-start gap-3 rounded-lg bg-secondary/20 px-3 py-2">
                       <div className="min-w-[44px] text-[11px] font-medium text-muted-foreground pt-0.5">
@@ -1168,14 +1183,14 @@ export default function CalendarPage() {
                 <div className="icon-tile w-7 h-7 rounded-md">
                   <CalendarDays className="w-3.5 h-3.5 text-primary" />
                 </div>
-                <span className="text-sm font-semibold">Upcoming Events</span>
+                <span className="text-sm font-semibold">{t("calendar_upcoming_events")}</span>
               </div>
               <span className="text-xs text-muted-foreground">
                 {upcomingEvents.length}
               </span>
             </div>
             {upcomingEvents.length === 0 ? (
-              <p className="text-xs text-muted-foreground">No upcoming events in the next 7 days.</p>
+              <p className="text-xs text-muted-foreground">{t("calendar_no_upcoming")}</p>
             ) : (
               <>
                 <ul className="space-y-2">
@@ -1183,11 +1198,11 @@ export default function CalendarPage() {
                     const evDate = parseDayKeyLocal(ev.dateTimeStart.slice(0, 10));
                     const tomorrow = addDays(today, 1);
                     const dateLabel = isSameDay(evDate, tomorrow)
-                      ? 'Tomorrow'
-                      : evDate.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+                      ? t('tomorrow')
+                      : evDate.toLocaleDateString(locale, { weekday: 'short', day: 'numeric', month: 'short' });
                     const timeStart = formatTime(ev.dateTimeStart);
                     const dotColor = ev.type && CATEGORY_COLORS[ev.type] ? CATEGORY_COLORS[ev.type] : 'bg-primary';
-                    const badgeLabel = ev.type && CATEGORY_LABELS[ev.type] ? CATEGORY_LABELS[ev.type] : null;
+                    const badgeLabel = ev.type && CATEGORY_LABEL_KEYS[ev.type] ? t(CATEGORY_LABEL_KEYS[ev.type]) : null;
                     return (
                       <li key={ev.id} className="flex items-start gap-3 rounded-lg bg-secondary/20 px-3 py-2">
                         <div className="min-w-[48px] pt-0.5">
@@ -1240,9 +1255,9 @@ export default function CalendarPage() {
                 <div className="icon-tile w-7 h-7 rounded-md">
                   <Sparkles className="w-3.5 h-3.5 text-primary" />
                 </div>
-                <span className="text-sm font-semibold">AI Suggestions</span>
+                <span className="text-sm font-semibold">{t("ai_suggestions")}</span>
               </div>
-              <p className="text-[11px] text-muted-foreground">Based on your schedule</p>
+              <p className="text-[11px] text-muted-foreground">{t("ai_based_on_schedule")}</p>
               {calSuggestionsLoading ? (
                 <div className="space-y-2">
                   <SkeletonBlock className="h-10 w-full" />
@@ -1259,7 +1274,7 @@ export default function CalendarPage() {
                           type={clickable ? 'button' : undefined}
                           onClick={clickable ? () => openNewEventOnDate(s.suggestedDate!) : undefined}
                           className={cn(
-                            "w-full flex items-start gap-3 rounded-lg bg-secondary/20 px-3 py-2.5 text-left",
+                            "w-full flex items-start gap-3 rounded-lg bg-secondary/20 px-3 py-2.5 text-start",
                             clickable && "cursor-pointer transition-colors hover:bg-secondary/40 hover:border-primary/25"
                           )}
                         >
@@ -1284,14 +1299,14 @@ export default function CalendarPage() {
       <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete event?</AlertDialogTitle>
+            <AlertDialogTitle>{t("calendar_delete_title")}</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently remove &ldquo;{deleteTarget?.title}&rdquo; from your calendar.
+              {t("calendar_delete_desc", { title: deleteTarget?.title ?? "" })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleDelete}>Delete</AlertDialogAction>
+            <AlertDialogCancel>{t("cancel")}</AlertDialogCancel>
+            <AlertDialogAction onClick={handleDelete}>{t("delete")}</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

@@ -3,8 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Flame, Trophy, Check, Trash2 } from 'lucide-react';
 import type { HabitWithStats } from '../types';
-
-const WEEKDAY_LABELS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'] as const;
+import { localeFor, useT } from '@/i18n';
 
 function getCurrentWeekDays(): string[] {
   const today = new Date();
@@ -25,7 +24,14 @@ interface Props {
 
 export function HabitCard({ habit, onToggle, onDelete }: Props) {
   const navigate = useNavigate();
+  const { t, lang } = useT();
   const weekDays = useMemo(() => getCurrentWeekDays(), []);
+  // I18N-SWEEP-1: localized one-letter weekday labels for the heatmap
+  // (previously a hardcoded English M/T/W/T/F/S/S array).
+  const weekdayLabels = useMemo(() => {
+    const formatter = new Intl.DateTimeFormat(localeFor(lang), { weekday: 'narrow' });
+    return weekDays.map(date => formatter.format(new Date(`${date}T00:00:00`)));
+  }, [weekDays, lang]);
   const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
   const completionSet = useMemo(
     () => new Set(habit.completions.map(c => c.completed_date)),
@@ -43,7 +49,7 @@ export function HabitCard({ habit, onToggle, onDelete }: Props) {
         <button
           type="button"
           onClick={() => navigate(`/habits/${habit.id}`)}
-          className="flex items-center gap-3 text-left hover:opacity-80 transition-opacity"
+          className="flex items-center gap-3 text-start hover:opacity-80 transition-opacity"
         >
           <div
             className="w-10 h-10 rounded-xl flex items-center justify-center text-xl flex-shrink-0"
@@ -91,7 +97,7 @@ export function HabitCard({ habit, onToggle, onDelete }: Props) {
           const isToday = date === todayStr;
           return (
             <div key={date} className="flex-1 flex flex-col items-center gap-1">
-              <span className="text-[9px] text-muted-foreground leading-none">{WEEKDAY_LABELS[i]}</span>
+              <span className="text-[9px] text-muted-foreground leading-none">{weekdayLabels[i]}</span>
               <div
                 className="w-full h-6 rounded-md flex items-center justify-center transition-all"
                 style={{
@@ -110,13 +116,13 @@ export function HabitCard({ habit, onToggle, onDelete }: Props) {
       <div className="flex gap-4 text-xs text-muted-foreground">
         <span className="flex items-center gap-1">
           <Flame size={12} style={{ color: habit.color }} />
-          <span>{habit.currentStreak} day streak</span>
+          <span>{t('habits_streak_line', { count: habit.currentStreak })}</span>
         </span>
         <span className="flex items-center gap-1">
           <Trophy size={12} style={{ color: habit.color }} />
-          <span>Best: {habit.longestStreak}</span>
+          <span>{t('habits_best_line', { count: habit.longestStreak })}</span>
         </span>
-        <span className="ml-auto">{habit.completionRate}% this month</span>
+        <span className="ms-auto">{t('habits_month_line', { pct: habit.completionRate })}</span>
       </div>
     </motion.div>
   );
