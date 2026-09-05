@@ -136,8 +136,8 @@ export default function HabitDetailPage() {
                   )}
                   <p className="text-xs text-muted-foreground mt-1">
                     {habit.habit_type === 'goal'
-                      ? `Goal · ${habit.target_value ?? '?'} ${habit.target_unit ?? 'target'}`
-                      : habit.frequency === 'daily' ? 'Every day' : `Weekly · ${habit.target_days}× per week`}
+                      ? t('habits_goal_line', { value: habit.target_value ?? '?', unit: habit.target_unit ?? 'target' })
+                      : habit.frequency === 'daily' ? t('habits_every_day') : t('habits_weekly_line', { count: habit.target_days ?? 0 })}
                     {!habit.is_active && <span className="ms-2 text-[var(--flow-career)]">{t('habits_paused')}</span>}
                     {habit.achieved_at && <span className="ms-2 text-[var(--flow-analyze)]">{t('habits_achieved_suffix')}</span>}
                   </p>
