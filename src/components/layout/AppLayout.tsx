@@ -25,6 +25,13 @@ import { MobilePullToRefreshMain } from "@/features/pull-to-refresh/MobilePullTo
 // mobile shell is completely unchanged.
 const PAGES_WITHOUT_MOBILE_CHROME = new Set(["/chat"]);
 
+// PO decision (2026-09-05, phase-5 mobile pass): mobile Home loses ONLY
+// the top GlobalSearch row (the black strip above the hero) -- the bottom
+// nav stays, unlike /chat's full chrome removal above. Dashboard.tsx's
+// mobile chat-wrapper dvh constants are tuned to this row being absent on
+// "/", so the two lists must move together.
+const PAGES_WITHOUT_MOBILE_SEARCH_ROW = new Set(["/chat", "/"]);
+
 // SmartFlow Home frozen design handoff (§3): like /chat, Home manages its
 // own vertical space entirely internally on desktop -- a 100dvh grid whose
 // only scrolling regions are the chat transcript and the Assistant Rail
@@ -133,7 +140,7 @@ function AppLayoutInner() {
             100vh floor that never shrank, so a fixed-at-the-bottom
             composer could end up rendered behind the keyboard. */}
         <div className="lg:hidden flex flex-col h-[100dvh]" style={mobileShellHeight ? { height: mobileShellHeight } : undefined}>
-          {!hideMobileChrome && (
+          {!PAGES_WITHOUT_MOBILE_SEARCH_ROW.has(location.pathname) && (
             <div className="flex justify-end px-4 pt-3 pb-1 shrink-0">
               <GlobalSearch />
             </div>

@@ -3994,9 +3994,12 @@ export default function ChatPage({ embedded = false, onOpenAssistantPanel }: Cha
         compact={compact}
         prefersReducedMotion={prefersReducedMotion}
         onOpenMoreMenu={() => setMoreMenuOpen(true)}
-        // PO decision (2026-09-05): embedded Home passes no handler --
-        // its history toggle lives in the app icon rail (docked panel).
-        onOpenConversations={embedded ? undefined : () => setConversationsDrawerOpen(true)}
+        // PO decision (2026-09-05, round 2): embedded Home passes the
+        // handler again, but its header button is MOBILE-ONLY
+        // (conversationsMobileOnly) -- desktop Home keeps the icon-rail
+        // toggle for the docked panel, mobile opens the modal drawer.
+        onOpenConversations={() => setConversationsDrawerOpen(true)}
+        conversationsMobileOnly={embedded}
         onStartNewChat={startNewChat}
         // SmartFlow Home v2 (`SmartFlow Home v2.dc.html`): the embedded
         // header carries the "SmartFlow" title and the ping-dot "Online"
@@ -4062,7 +4065,14 @@ export default function ChatPage({ embedded = false, onOpenAssistantPanel }: Cha
             // v2 rev-2 mobile rules (#sfTranscript): 14px vertical
             // transcript padding at <=760px (density still governs
             // above that width).
-            className={cn('min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 max-[760px]:py-3.5 sm:px-6', compact ? 'space-y-2 py-3' : 'space-y-3 py-4')}
+            // PO decision (2026-09-05, round 2, ChatGPT-style glass): on
+            // mobile the transcript's scroll box is pulled up under the
+            // glass header (the header's max-lg:-mb-14 hands it the
+            // space); the !pt-14 (important -- it must beat the py-*
+            // paddings regardless of stylesheet order) keeps the first
+            // message readable below the bar while scrolled content
+            // shows through it.
+            className={cn('min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 max-[760px]:py-3.5 sm:px-6 max-lg:!pt-14', compact ? 'space-y-2 py-3' : 'space-y-3 py-4')}
           >
             {/* Task 17b (conversation-first architecture): the mockup's
                 lobby page, distilled into the empty-state of THIS chat
