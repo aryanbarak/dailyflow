@@ -93,6 +93,16 @@
     --sidebar-accent-foreground: 222 47% 11%;
     --sidebar-border: 214 32% 91%;
     --sidebar-ring: 256 84% 55%;
+
+    /* DESIGN-AUDIT 0.6 follow-up (hero light variant): the Home hero's
+       star glow + atmosphere read their colors from these vars so ONE
+       SVG geometry serves both themes (the sky gradient itself is two
+       defs toggled by rects in Dashboard.tsx). Light = violet sparkles
+       on a pale dawn sky. */
+    --sf-hero-star-core: #7c4dff;
+    --sf-hero-star-halo: #a78bfa;
+    --sf-hero-atmo-core: rgba(124, 77, 255, 0.16);
+    --sf-hero-atmo-mid: rgba(104, 61, 255, 0.07);
   }
 
   .dark {
@@ -164,6 +174,14 @@
     --sidebar-accent-foreground: 210 40% 98%;
     --sidebar-border: 213 36% 18%;
     --sidebar-ring: 252 100% 68%;
+
+    /* DESIGN-AUDIT 0.6 follow-up (hero light variant): the FROZEN night
+       values -- luminous white/lavender stars, stronger violet
+       atmosphere (see :root above). */
+    --sf-hero-star-core: #ffffff;
+    --sf-hero-star-halo: #ddd4ff;
+    --sf-hero-atmo-core: rgba(124, 77, 255, 0.3);
+    --sf-hero-atmo-mid: rgba(104, 61, 255, 0.14);
   }
 
   /* ── Chat page (task 17a: Chat Experience v2) ──────────────────────────

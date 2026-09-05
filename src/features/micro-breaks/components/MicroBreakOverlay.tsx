@@ -58,7 +58,10 @@ function HandoffOrbGlyph({ tokens }: Readonly<{ tokens: OrbVisualTokens }>) {
   return (
     <div
       aria-hidden="true"
-      className="pointer-events-none rounded-full mix-blend-screen"
+      // DESIGN-AUDIT 0.6 follow-up (2026-09-05): mirrors the follower's
+      // light-theme fix (multiply on light, screen on dark) so the
+      // handoff clone stays visually identical in both themes.
+      className="pointer-events-none rounded-full mix-blend-multiply dark:mix-blend-screen"
       style={
         {
           width: tokens.sizePx,
@@ -76,7 +79,7 @@ function HandoffOrbGlyph({ tokens }: Readonly<{ tokens: OrbVisualTokens }>) {
         }}
       />
       <div
-        className="absolute left-1/2 top-1/2 h-5 w-5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/70"
+        className="absolute left-1/2 top-1/2 h-5 w-5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[color-mix(in_srgb,var(--orb-color)_55%,transparent)] dark:bg-white/70"
         style={{ boxShadow: '0 0 28px color-mix(in srgb, var(--orb-color) 78%, transparent)' }}
       />
       <div

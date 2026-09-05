@@ -245,7 +245,7 @@ export function FullSidebarContent({ onNavigate }: Readonly<{ onNavigate?: () =>
       </nav>
 
       {/* Search */}
-      <div className="relative z-10 flex items-center gap-2 px-3 py-2 border-t border-white/5">
+      <div className="relative z-10 flex items-center gap-2 px-3 py-2 border-t border-border dark:border-white/5">
         <GlobalSearch />
         {/* ADR-0014 §10: Micro Breaks desktop entry point. */}
         <MicroBreaksCommandLauncher />
@@ -272,9 +272,15 @@ export function FullSidebarContent({ onNavigate }: Readonly<{ onNavigate?: () =>
 }
 
 // SmartFlow Home frozen design handoff §4: the slim rail's shared 42px
-// icon-button treatment.
+// icon-button treatment. DESIGN-AUDIT 0.6 follow-up (2026-09-05): token
+// light styles added; the frozen dark values live behind dark: prefixes.
 const HOME_RAIL_BUTTON_CLASS =
-  "flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-xl text-[#9EA3BF] transition-colors hover:bg-[#7C4DFF]/[0.12] hover:text-[#F3F3FA]";
+  "flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-xl text-muted-foreground transition-colors hover:bg-primary/[0.08] hover:text-foreground dark:text-[#9EA3BF] dark:hover:bg-[#7C4DFF]/[0.12] dark:hover:text-[#F3F3FA]";
+
+// The active/pressed 42px-tile treatment shared by the Home rail and the
+// tablet icon rail -- same light/dark split as the buttons above.
+const RAIL_ACTIVE_TILE_CLASS =
+  "border border-primary/40 bg-primary/[0.10] text-primary dark:border-[#7D5CFF]/40 dark:bg-[#7C4DFF]/[0.16] dark:text-[#A88BFF]";
 
 export function Sidebar() {
   const location = useLocation();
@@ -296,7 +302,7 @@ export function Sidebar() {
   // sidebar below.
   if (location.pathname === "/") {
     return (
-      <aside className="sticky top-0 z-40 flex h-screen w-[68px] shrink-0 flex-col items-center gap-1.5 border-e border-[#7078B4]/[0.14] bg-[#070816]/[0.82] py-3.5 backdrop-blur-[12px] max-[1280px]:w-16">
+      <aside className="sticky top-0 z-40 flex h-screen w-[68px] shrink-0 flex-col items-center gap-1.5 border-e border-border bg-card/80 py-3.5 backdrop-blur-[12px] dark:border-[#7078B4]/[0.14] dark:bg-[#070816]/[0.82] max-[1280px]:w-16">
         <Sheet open={homeMenuOpen} onOpenChange={setHomeMenuOpen}>
           <SheetTrigger asChild>
             <button
@@ -314,7 +320,10 @@ export function Sidebar() {
             <button
               type="button"
               aria-label={`${t('nav_dashboard')} — ${t('nav_more')}`}
-              className="flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-xl border border-[#7D5CFF]/40 bg-[#7C4DFF]/[0.16] text-[#A88BFF] shadow-[0_0_14px_rgba(124,77,255,0.28)]"
+              className={cn(
+                "flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-xl shadow-[0_0_14px_rgba(124,77,255,0.28)]",
+                RAIL_ACTIVE_TILE_CLASS,
+              )}
             >
               <Home className="h-5 w-5" strokeWidth={1.7} />
             </button>
@@ -323,7 +332,7 @@ export function Sidebar() {
           <SheetContent
             side="left"
             aria-label={t('nav_more')}
-            className="z-[90] flex w-64 max-w-[82vw] flex-col gap-0 overflow-hidden border-e border-[#7078B4]/[0.22] bg-[#090B1C]/[0.97] p-0 shadow-[24px_0_60px_rgba(0,0,0,0.5)]"
+            className="z-[90] flex w-64 max-w-[82vw] flex-col gap-0 overflow-hidden border-e border-border bg-background/[0.97] p-0 shadow-[24px_0_60px_rgba(15,23,42,0.18)] dark:border-[#7078B4]/[0.22] dark:bg-[#090B1C]/[0.97] dark:shadow-[24px_0_60px_rgba(0,0,0,0.5)]"
           >
             <div className="relative flex h-full min-h-0 flex-col overflow-hidden">
               <FullSidebarContent onNavigate={() => setHomeMenuOpen(false)} />
@@ -350,7 +359,7 @@ export function Sidebar() {
             aria-pressed={conversationsPanelOpen}
             title={t('flow_conversations')}
             aria-label={t('flow_conversations')}
-            className={cn(HOME_RAIL_BUTTON_CLASS, conversationsPanelOpen && "border border-[#7D5CFF]/40 bg-[#7C4DFF]/[0.16] text-[#A88BFF]")}
+            className={cn(HOME_RAIL_BUTTON_CLASS, conversationsPanelOpen && RAIL_ACTIVE_TILE_CLASS)}
           >
             <History className="h-5 w-5" strokeWidth={1.7} />
           </button>
@@ -365,7 +374,7 @@ export function Sidebar() {
         </nav>
 
         <div
-          className="relative flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-full border border-[#7078B4]/[0.35] bg-gradient-to-br from-[#3D1D94] to-[#28155F]"
+          className="relative flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-full border border-primary/30 bg-gradient-to-br from-[#3D1D94] to-[#28155F] dark:border-[#7078B4]/[0.35]"
           title={displayName}
           aria-label={displayName}
         >
@@ -376,7 +385,7 @@ export function Sidebar() {
           )}
           <span
             aria-hidden="true"
-            className="absolute -bottom-px -end-px h-[11px] w-[11px] rounded-full border-2 border-[#07081A] bg-[#34D399]"
+            className="absolute -bottom-px -end-px h-[11px] w-[11px] rounded-full border-2 border-card bg-[#34D399] dark:border-[#07081A]"
           />
         </div>
       </aside>
@@ -414,7 +423,7 @@ export function Sidebar() {
                 aria-label={t(item.key)}
                 className={cn(
                   HOME_RAIL_BUTTON_CLASS,
-                  isActive && "border border-[#7D5CFF]/40 bg-[#7C4DFF]/[0.16] text-[#A88BFF]",
+                  isActive && RAIL_ACTIVE_TILE_CLASS,
                 )}
               >
                 <item.icon className="h-5 w-5" strokeWidth={1.7} />
@@ -423,7 +432,7 @@ export function Sidebar() {
           })}
         </nav>
         <div
-          className="relative mt-2 flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-full border border-[#7078B4]/[0.35] bg-gradient-to-br from-[#3D1D94] to-[#28155F]"
+          className="relative mt-2 flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-full border border-primary/30 bg-gradient-to-br from-[#3D1D94] to-[#28155F] dark:border-[#7078B4]/[0.35]"
           title={displayName}
           aria-label={displayName}
         >
@@ -434,7 +443,7 @@ export function Sidebar() {
           )}
           <span
             aria-hidden="true"
-            className="absolute -bottom-px -end-px h-[11px] w-[11px] rounded-full border-2 border-[#07081A] bg-[#34D399]"
+            className="absolute -bottom-px -end-px h-[11px] w-[11px] rounded-full border-2 border-card bg-[#34D399] dark:border-[#07081A]"
           />
         </div>
       </aside>

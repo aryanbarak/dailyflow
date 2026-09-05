@@ -83,7 +83,11 @@ export function SmartflowPointerFollower() {
     <div
       ref={rootRef}
       aria-hidden="true"
-      className="pointer-events-none fixed left-0 top-0 z-20 rounded-full mix-blend-screen transition-opacity duration-500"
+      // DESIGN-AUDIT 0.6 follow-up (2026-09-05): screen-blend brightens,
+      // so on the light theme's white surfaces the orb blended to
+      // invisible. Light uses multiply (the violet halo tints the page,
+      // whites drop out); dark keeps the original screen glow.
+      className="pointer-events-none fixed left-0 top-0 z-20 rounded-full mix-blend-multiply transition-opacity duration-500 dark:mix-blend-screen"
       style={
         {
           width: "var(--orb-size)",
@@ -103,8 +107,11 @@ export function SmartflowPointerFollower() {
             "radial-gradient(circle at 50% 50%, hsl(0 0% 100% / 0.5), color-mix(in srgb, var(--orb-color) 34%, transparent) 18%, color-mix(in srgb, var(--orb-color) 12%, transparent) 42%, transparent 70%)",
         }}
       />
+      {/* Core spark: white reads under dark's screen blend but drops out
+          entirely under light's multiply -- there it becomes a soft spot
+          of the configured orb colour instead. */}
       <div
-        className="absolute left-1/2 top-1/2 h-5 w-5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/70"
+        className="absolute left-1/2 top-1/2 h-5 w-5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[color-mix(in_srgb,var(--orb-color)_55%,transparent)] dark:bg-white/70"
         style={{ boxShadow: "0 0 28px color-mix(in srgb, var(--orb-color) 78%, transparent)" }}
       />
       <div

@@ -241,15 +241,19 @@ export interface AssistantRailSuggestionItem {
   readonly onOpen: () => void;
 }
 
-const RAIL_SECTION_CLASS = "mt-[18px] border-t border-[#757CAA]/[0.14] pt-4";
+// DESIGN-AUDIT 0.6 follow-up (2026-09-05): the Assistant Rail is no
+// longer dark-by-design -- every surface gets a token-based light
+// treatment (same pattern as the Home capsules) with the frozen dark
+// values preserved verbatim behind dark: prefixes.
+const RAIL_SECTION_CLASS = "mt-[18px] border-t border-border pt-4 dark:border-[#757CAA]/[0.14]";
 const RAIL_SECTION_LABEL_CLASS =
-  "text-[11px] font-semibold uppercase tracking-[.12em] text-[#777C9A]";
+  "text-[11px] font-semibold uppercase tracking-[.12em] text-muted-foreground dark:text-[#777C9A]";
 const RAIL_VIEW_ALL_CLASS =
-  "text-[11px] font-medium text-[#9A6BFF] transition-colors hover:text-[#C2B1FF]";
+  "text-[11px] font-medium text-primary transition-colors hover:text-primary/70 dark:text-[#9A6BFF] dark:hover:text-[#C2B1FF]";
 const RAIL_ROW_CLASS =
-  "flex w-full items-center gap-[11px] rounded-[11px] border border-[#7078B4]/[0.18] bg-[#0B0D20]/40 px-2.5 py-[9px] text-left transition-colors hover:border-[#7D5CFF]/40 hover:bg-[#7C4DFF]/[0.08]";
+  "flex w-full items-center gap-[11px] rounded-[11px] border border-border bg-card/70 px-2.5 py-[9px] text-left transition-colors hover:border-primary/40 hover:bg-primary/[0.06] dark:border-[#7078B4]/[0.18] dark:bg-[#0B0D20]/40 dark:hover:border-[#7D5CFF]/40 dark:hover:bg-[#7C4DFF]/[0.08]";
 const RAIL_TILE_CLASS =
-  "flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px] bg-[#7C4DFF]/[0.14] text-[#A88BFF]";
+  "flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px] bg-primary/[0.10] text-primary dark:bg-[#7C4DFF]/[0.14] dark:text-[#A88BFF]";
 
 export function FlowAIAssistantRail({
   rail,
@@ -299,26 +303,26 @@ export function FlowAIAssistantRail({
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <p className="text-[15px] font-semibold text-[#F7F7FC]">SmartFlow</p>
+              <p className="text-[15px] font-semibold text-foreground dark:text-[#F7F7FC]">SmartFlow</p>
               {onClosePanel && (
                 <button
                   type="button"
                   aria-label="Close panel"
                   onClick={onClosePanel}
-                  className="ml-auto hidden h-7 w-7 items-center justify-center rounded-lg text-[#9EA3BF] hover:bg-[#7C4DFF]/[0.12] hover:text-[#F3F3FA] max-[1120px]:flex"
+                  className="ml-auto hidden h-7 w-7 items-center justify-center rounded-lg text-muted-foreground hover:bg-primary/[0.08] hover:text-foreground dark:text-[#9EA3BF] dark:hover:bg-[#7C4DFF]/[0.12] dark:hover:text-[#F3F3FA] max-[1120px]:flex"
                 >
                   <X className="h-[15px] w-[15px]" strokeWidth={2} />
                 </button>
               )}
             </div>
-            <div className="mt-1.5 flex items-center gap-[7px] text-xs font-medium text-[#6EE7B7]">
+            <div className="mt-1.5 flex items-center gap-[7px] text-xs font-medium text-emerald-600 dark:text-[#6EE7B7]">
               <span className="relative inline-flex h-2 w-2">
-                <span className="sf-home-ping absolute inset-0 rounded-full bg-[#34D399] motion-safe:animate-[sfPing_2.2s_cubic-bezier(0,0,0.2,1)_infinite]" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-[#34D399]" />
+                <span className="sf-home-ping absolute inset-0 rounded-full bg-emerald-500 motion-safe:animate-[sfPing_2.2s_cubic-bezier(0,0,0.2,1)_infinite] dark:bg-[#34D399]" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500 dark:bg-[#34D399]" />
               </span>
               {t("online")}
             </div>
-            <p className="mt-1.5 text-xs leading-[1.55] text-[#A5A8C2]">
+            <p className="mt-1.5 text-xs leading-[1.55] text-muted-foreground dark:text-[#A5A8C2]">
               {translateEngineCopy(rail.statusMessage, t, ENGINE_STATUS_KEYS)}
             </p>
           </div>
@@ -339,11 +343,11 @@ export function FlowAIAssistantRail({
                     <FileText className="h-[15px] w-[15px]" strokeWidth={1.8} />
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[12.5px] font-semibold text-[#F7F7FC]" dir="auto">
+                    <span className="block truncate text-[12.5px] font-semibold text-foreground dark:text-[#F7F7FC]" dir="auto">
                       {item.title}
                     </span>
                     {item.meta && (
-                      <span className="mt-px block text-[11.5px] text-[#A5A8C2]">{item.meta}</span>
+                      <span className="mt-px block text-[11.5px] text-muted-foreground dark:text-[#A5A8C2]">{item.meta}</span>
                     )}
                   </span>
                 </button>
@@ -381,14 +385,14 @@ export function FlowAIAssistantRail({
                       <ItemIcon className="h-[15px] w-[15px]" strokeWidth={1.8} />
                     </span>
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[12.5px] font-medium text-[#F7F7FC]">
+                      <span className="block truncate text-[12.5px] font-medium text-foreground dark:text-[#F7F7FC]">
                         {item.title}
                       </span>
                       {item.meta && (
-                        <span className="mt-px block truncate text-[11.5px] text-[#A5A8C2]">{item.meta}</span>
+                        <span className="mt-px block truncate text-[11.5px] text-muted-foreground dark:text-[#A5A8C2]">{item.meta}</span>
                       )}
                     </span>
-                    <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[#777C9A]" strokeWidth={2} />
+                    <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground dark:text-[#777C9A]" strokeWidth={2} />
                   </button>
                 );
               })}
@@ -441,12 +445,12 @@ export function FlowAIAssistantRail({
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center justify-between gap-2">
-                      <span className="truncate text-[12.5px] font-medium text-[#F7F7FC]">
+                      <span className="truncate text-[12.5px] font-medium text-foreground dark:text-[#F7F7FC]">
                         {lesson.title}
                       </span>
-                      <span className="shrink-0 text-[11px] text-[#A5A8C2]">{lesson.progress}%</span>
+                      <span className="shrink-0 text-[11px] text-muted-foreground dark:text-[#A5A8C2]">{lesson.progress}%</span>
                     </span>
-                    <span className="mt-1.5 block h-1 overflow-hidden rounded-full bg-[#272B4B]/90">
+                    <span className="mt-1.5 block h-1 overflow-hidden rounded-full bg-muted dark:bg-[#272B4B]/90">
                       <span
                         className="block h-full rounded-full"
                         style={{
@@ -503,14 +507,14 @@ export function FlowAIAssistantRail({
                     <ItemIcon className="h-[15px] w-[15px]" strokeWidth={1.8} />
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[12.5px] font-medium text-[#F7F7FC]">
+                    <span className="block truncate text-[12.5px] font-medium text-foreground dark:text-[#F7F7FC]">
                       {item.title}
                     </span>
-                    <span className="mt-px block truncate text-[11.5px] text-[#A5A8C2]">
+                    <span className="mt-px block truncate text-[11.5px] text-muted-foreground dark:text-[#A5A8C2]">
                       {item.reason}
                     </span>
                   </span>
-                  <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[#777C9A]" strokeWidth={2} />
+                  <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground dark:text-[#777C9A]" strokeWidth={2} />
                 </button>
               );
             })}
@@ -520,7 +524,7 @@ export function FlowAIAssistantRail({
         <div className={RAIL_SECTION_CLASS}>
           <p className={`mb-2.5 ${RAIL_SECTION_LABEL_CLASS}`}>Recent Conversation</p>
           {rail.isChatLoading ? (
-            <div className="rounded-[11px] border border-[#7078B4]/[0.18] bg-[#0B0D20]/40 p-3">
+            <div className="rounded-[11px] border border-border bg-card/70 p-3 dark:border-[#7078B4]/[0.18] dark:bg-[#0B0D20]/40">
               <SkeletonBlock className="h-3 w-32" />
               <SkeletonBlock className="mt-2 h-2.5 w-16" />
             </div>
@@ -541,21 +545,21 @@ export function FlowAIAssistantRail({
                     });
                     navigate("/chat");
                   }}
-                  className="block w-full rounded-[11px] border border-[#7078B4]/[0.18] bg-[#0B0D20]/40 px-3 py-[11px] text-start transition-colors hover:border-[#7D5CFF]/40 hover:bg-[#7C4DFF]/[0.08]"
+                  className="block w-full rounded-[11px] border border-border bg-card/70 px-3 py-[11px] text-start transition-colors hover:border-primary/40 hover:bg-primary/[0.06] dark:border-[#7078B4]/[0.18] dark:bg-[#0B0D20]/40 dark:hover:border-[#7D5CFF]/40 dark:hover:bg-[#7C4DFF]/[0.08]"
                 >
-                  <span className="block truncate text-[12.5px] font-medium text-[#F7F7FC]" dir="auto">
+                  <span className="block truncate text-[12.5px] font-medium text-foreground dark:text-[#F7F7FC]" dir="auto">
                     {conversation.title}
                   </span>
-                  <span className="mt-0.5 block text-[11.5px] text-[#A5A8C2]">
+                  <span className="mt-0.5 block text-[11.5px] text-muted-foreground dark:text-[#A5A8C2]">
                     {conversation.relativeTime}
                   </span>
                 </button>
               ))}
             </div>
           ) : (
-            <div className="rounded-[11px] border border-[#7078B4]/[0.18] bg-[#0B0D20]/40 p-3">
-              <p className="text-[12.5px] font-medium text-[#F7F7FC]">{t("dashboard_no_recent_conversation")}</p>
-              <p className="mt-1 text-[11.5px] leading-4 text-[#A5A8C2]">
+            <div className="rounded-[11px] border border-border bg-card/70 p-3 dark:border-[#7078B4]/[0.18] dark:bg-[#0B0D20]/40">
+              <p className="text-[12.5px] font-medium text-foreground dark:text-[#F7F7FC]">{t("dashboard_no_recent_conversation")}</p>
+              <p className="mt-1 text-[11.5px] leading-4 text-muted-foreground dark:text-[#A5A8C2]">
                 {t("dashboard_no_recent_conversation_hint")}
               </p>
             </div>
@@ -823,7 +827,7 @@ export default function Dashboard() {
                   <WelcomeWorkspace
                     afterHero={
                       <WorkspaceRevealSection order={1} className="lg:hidden">
-                        <div className="overflow-hidden rounded-2xl border border-[#7078B4]/[0.22] bg-[#070816]/[0.78]">
+                        <div className="overflow-hidden rounded-2xl border border-border bg-card/80 dark:border-[#7078B4]/[0.22] dark:bg-[#070816]/[0.78]">
                           <FlowAIAssistantRail rail={workspace.rightRail} />
                         </div>
                       </WorkspaceRevealSection>
@@ -832,7 +836,7 @@ export default function Dashboard() {
                   />
                 </div>
                 <WorkspaceRevealSection order={2} className="hidden lg:sticky lg:top-6 lg:block">
-                  <div className="overflow-hidden rounded-2xl border border-[#7078B4]/[0.22] bg-[#070816]/[0.78]">
+                  <div className="overflow-hidden rounded-2xl border border-border bg-card/80 dark:border-[#7078B4]/[0.22] dark:bg-[#070816]/[0.78]">
                     <FlowAIAssistantRail rail={workspace.rightRail} />
                   </div>
                 </WorkspaceRevealSection>
@@ -855,7 +859,12 @@ export default function Dashboard() {
           first, date beside it in white), and the star field grew from
           the v2 20-star set to 32 stars with several larger radii and 6
           twinkles. Heights stay v2 (190px; 132px at <=760px). NO
-          mountain/ridge/wave paths. */}
+          mountain/ridge/wave paths.
+          DESIGN-AUDIT 0.6 follow-up (2026-09-05): no longer
+          dark-by-design -- the same composition renders a light "dawn"
+          variant (sfHomeSkyLight rect + --sf-hero-* star/atmo vars +
+          violet star fills); every frozen night value survives under
+          .dark. */}
       {/* PO decision (2026-09-05, phase-5 mobile pass round 2): the hero
           (star field + orb/date lockup) is DESKTOP-ONLY -- on mobile the
           chat takes the whole screen, ChatGPT-style. */}
@@ -873,22 +882,37 @@ export default function Dashboard() {
                 <stop offset="55%" stopColor="#080A1F" />
                 <stop offset="100%" stopColor="#050615" />
               </linearGradient>
+              {/* DESIGN-AUDIT 0.6 follow-up (2026-09-05): the hero gains a
+                  real LIGHT variant -- a pale violet dawn sky rendered by
+                  a second gradient def; the two <rect>s below toggle per
+                  theme while the star/atmo geometry stays shared (their
+                  colors come from the --sf-hero-* vars in index.css). The
+                  frozen night values above are untouched. */}
+              <linearGradient id="sfHomeSkyLight" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#DDE2F9" />
+                <stop offset="55%" stopColor="#EBEEFB" />
+                <stop offset="100%" stopColor="#F7F8FD" />
+              </linearGradient>
               {/* PO decision (2026-09-05, round 3): luminous stars -- a
                   tiny bright core fading to nothing, so the visible dot
                   stays SMALL while reading as a glow, not a flat disc. */}
               <radialGradient id="sfStarGlow" cx="50%" cy="50%" r="50%">
-                <stop offset="0%" stopColor="#FFFFFF" />
-                <stop offset="22%" stopColor="#DDD4FF" stopOpacity=".85" />
-                <stop offset="100%" stopColor="#DDD4FF" stopOpacity="0" />
+                {/* Theme-aware stops: dark keeps the frozen #FFFFFF core /
+                    #DDD4FF halo, light swaps to violet sparkles -- values
+                    live in index.css (--sf-hero-star-core/halo). */}
+                <stop offset="0%" style={{ stopColor: "var(--sf-hero-star-core)" }} />
+                <stop offset="22%" style={{ stopColor: "var(--sf-hero-star-halo)" }} stopOpacity=".85" />
+                <stop offset="100%" style={{ stopColor: "var(--sf-hero-star-halo)" }} stopOpacity="0" />
               </radialGradient>
               <radialGradient id="sfHomeAtmo" cx="78%" cy="30%" r="55%">
-                <stop offset="0%" stopColor="rgba(124,77,255,.30)" />
-                <stop offset="45%" stopColor="rgba(104,61,255,.14)" />
+                <stop offset="0%" style={{ stopColor: "var(--sf-hero-atmo-core)" }} />
+                <stop offset="45%" style={{ stopColor: "var(--sf-hero-atmo-mid)" }} />
                 <stop offset="100%" stopColor="rgba(104,61,255,0)" />
               </radialGradient>
             </defs>
-            <rect width="1200" height="300" fill="url(#sfHomeSky)" />
-            <g fill="#DDD4FF">
+            <rect width="1200" height="300" fill="url(#sfHomeSkyLight)" className="dark:hidden" />
+            <rect width="1200" height="300" fill="url(#sfHomeSky)" className="hidden dark:inline" />
+            <g className="fill-[#8F7BE8] dark:fill-[#DDD4FF]">
               <circle cx="60" cy="40" r="1" />
               <circle cx="150" cy="86" r=".8" opacity=".6" />
               <circle cx="230" cy="30" r="1.1" className="sf-home-twinkle" style={{ animation: "sfTwinkle 3.4s ease-in-out infinite" }} />
@@ -972,7 +996,7 @@ export default function Dashboard() {
               <circle cx="48" cy="48" r="31" fill="none" stroke="rgba(154,107,255,.3)" strokeWidth="1.5" />
               <circle cx="48" cy="48" r="16" fill="url(#sfHeroOrb)" />
             </svg>
-            <p className="text-[15px] font-semibold uppercase tracking-[.18em] text-[#F7F7FC] max-[760px]:text-[12.5px]">
+            <p className="text-[15px] font-semibold uppercase tracking-[.18em] text-foreground dark:text-[#F7F7FC] max-[760px]:text-[12.5px]">
               {lang === "en"
                 ? workspace.today.label
                 : new Intl.DateTimeFormat(localeFor(lang), {
@@ -1192,8 +1216,11 @@ export default function Dashboard() {
               <aside
                 aria-label="Assistant panel"
                 className={cn(
-                  "flex min-h-0 flex-col border-s border-[#7078B4]/[0.14] bg-[#070816]/[0.78] backdrop-blur-[14px]",
-                  "max-[1120px]:fixed max-[1120px]:inset-y-0 max-[1120px]:right-0 max-[1120px]:z-[70] max-[1120px]:w-[372px] max-[1120px]:max-w-[92vw] max-[1120px]:shadow-[-24px_0_60px_rgba(0,0,0,0.55)] max-[1120px]:transition-transform max-[1120px]:duration-[320ms] max-[1120px]:ease-[cubic-bezier(0.32,0.72,0.28,1)] motion-reduce:transition-none",
+                  // DESIGN-AUDIT 0.6 follow-up (2026-09-05): light rail
+                  // shell -- token border/glass; frozen dark values kept
+                  // behind dark: prefixes.
+                  "flex min-h-0 flex-col border-s border-border bg-card/80 backdrop-blur-[14px] dark:border-[#7078B4]/[0.14] dark:bg-[#070816]/[0.78]",
+                  "max-[1120px]:fixed max-[1120px]:inset-y-0 max-[1120px]:right-0 max-[1120px]:z-[70] max-[1120px]:w-[372px] max-[1120px]:max-w-[92vw] max-[1120px]:shadow-[-24px_0_60px_rgba(15,23,42,0.20)] dark:max-[1120px]:shadow-[-24px_0_60px_rgba(0,0,0,0.55)] max-[1120px]:transition-transform max-[1120px]:duration-[320ms] max-[1120px]:ease-[cubic-bezier(0.32,0.72,0.28,1)] motion-reduce:transition-none",
                   assistantPanelOpen
                     ? "max-[1120px]:translate-x-0"
                     : "max-[1120px]:translate-x-[103%]",
