@@ -52,13 +52,20 @@ export interface ChatPageHeaderProps {
   // shows a ping dot + "Online" next to the title. Presentation only;
   // undefined (the standalone /chat route) renders nothing new.
   readonly showOnlineStatus?: boolean;
-  // Frozen handoff §10 (<=1120px): a panel button appears in the chat
-  // header that opens the Assistant Rail overlay. Only rendered when a
-  // handler is provided (Home's embedded panel); the standalone route
-  // passes nothing and is unchanged. Visibility is media-scoped to the
-  // desktop-shell tablet window (1024-1120px) where the rail leaves the
-  // grid.
+  // Frozen handoff §10 (<=1120px), widened by DESIGN-AUDIT phase 5: a
+  // panel button appears in the chat header that opens the Assistant Rail
+  // overlay. Only rendered when a handler is provided (Home's embedded
+  // panel); the standalone route passes nothing and is unchanged.
+  // Visibility is media-scoped to <=1120px -- every shell where the rail
+  // is not a grid column (mobile included, since phase 5 replaced the
+  // below-the-fold stacked mobile rail with this same overlay).
   readonly onOpenAssistantPanel?: () => void;
+  // PO decision (2026-09-05, round 2): Home's embedded header shows the
+  // History button on MOBILE only (desktop Home keeps the icon-rail
+  // toggle for the docked panel; a second header button would duplicate
+  // it). The standalone route leaves this unset -- its button stays
+  // visible at every width (task 17f B1, unchanged).
+  readonly conversationsMobileOnly?: boolean;
 }
 
 export function ChatPageHeader({
@@ -70,6 +77,7 @@ export function ChatPageHeader({
   titleOverride,
   showOnlineStatus,
   onOpenAssistantPanel,
+  conversationsMobileOnly = false,
 }: ChatPageHeaderProps) {
   const { t } = useT();
 
@@ -78,8 +86,16 @@ export function ChatPageHeader({
       initial={prefersReducedMotion ? false : { opacity: 0, y: -10 }}
       animate={{ opacity: 1, y: 0 }}
       // v2 rev-2 mobile rules (#sfChatHead): the header compacts to
-      // 10px vertical padding at <=760px.
-      className={cn("shrink-0 border-b border-border px-3 max-[760px]:py-2.5 sm:px-6", compact ? "py-2" : "py-3")}
+      // 10px vertical padding at <=760px. PO decision (2026-09-05, round
+      // 2, ChatGPT-style): on mobile the header is a GLASS bar -- token
+      // background at 60% + blur, raised above the transcript (which is
+      // pulled up underneath it via the negative margin below), so
+      // messages show through it while scrolling.
+      className={cn(
+        "shrink-0 border-b border-border px-3 max-[760px]:py-2.5 sm:px-6",
+        "max-lg:relative max-lg:z-20 max-lg:-mb-14 max-lg:bg-background/60 max-lg:backdrop-blur-xl",
+        compact ? "py-2" : "py-3",
+      )}
     >
       <div className="flex items-center justify-between gap-2">
         {/* Mobile responsive pass: min-w-0 + overflow-hidden let this
@@ -89,7 +105,7 @@ export function ChatPageHeader({
             itself stays untruncated -- the width is recovered by the
             smaller mobile title size, the sm-gated Online label, and the
             tighter mobile control gaps below. */}
-        <div className="flex min-w-0 items-center gap-2 overflow-hidden">
+        <div className="flex min-w-0 items-center gap-2 overflow-hidden max-[760px]:gap-1.5">
           <Button
             type="button"
             size="icon"
@@ -103,7 +119,11 @@ export function ChatPageHeader({
           <div className="icon-tile shrink-0">
             <Bot className="w-4 h-4 text-primary" />
           </div>
-          <h1 className="whitespace-nowrap text-base font-semibold leading-tight sm:text-lg">{titleOverride ?? t("chat_title")}</h1>
+          {/* PO fix (2026-09-05, round 3): with the History button back in
+              the mobile header the row got tight and "SmartFlow" lost its
+              last letters -- slightly smaller mobile title + the tighter
+              paddings below recover the width. */}
+          <h1 className="whitespace-nowrap text-base font-semibold leading-tight max-[760px]:text-[15px] sm:text-lg">{titleOverride ?? t("chat_title")}</h1>
           {showOnlineStatus && (
             // Frozen handoff §7 colors via existing palette/tokens (the
             // chat feature's flowTokenDerivation test forbids raw hex
@@ -127,7 +147,7 @@ export function ChatPageHeader({
               type="button"
               size="icon"
               variant="ghost"
-              className="hidden h-8 w-8 shrink-0 text-primary [@media(min-width:1024px)_and_(max-width:1120px)]:flex"
+              className="hidden h-8 w-8 shrink-0 text-primary max-[1120px]:flex"
               onClick={onOpenAssistantPanel}
               aria-label="Assistant panel"
             >
@@ -143,7 +163,7 @@ export function ChatPageHeader({
               type="button"
               size="icon"
               variant="ghost"
-              className="h-9 w-9 shrink-0"
+              className={cn("h-9 w-9 shrink-0", conversationsMobileOnly && "lg:hidden")}
               onClick={onOpenConversations}
               aria-label={t("chat_open_conversations")}
             >
@@ -153,7 +173,7 @@ export function ChatPageHeader({
           {/* v2 rev-2 mobile rules (#sfNewChatBtn/#sfNewChatLabel): the
               New Chat button is icon-only up to 760px (not just below
               sm), so the compacted mobile header row always fits. */}
-          <Button size="sm" variant="outline" className="gap-1.5" onClick={onStartNewChat} aria-label={t("flow_new_chat")}>
+          <Button size="sm" variant="outline" className="gap-1.5 max-[760px]:px-2" onClick={onStartNewChat} aria-label={t("flow_new_chat")}>
             <Plus className="w-3.5 h-3.5" />
             <span className="hidden min-[761px]:inline">{t("flow_new_chat")}</span>
           </Button>

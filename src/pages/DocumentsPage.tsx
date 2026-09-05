@@ -40,6 +40,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { StatCard } from "@/components/common/StatCard";
 import { Input } from "@/components/ui/input";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Textarea } from "@/components/ui/textarea";
@@ -917,60 +918,49 @@ export default function DocumentsPage() {
 
           {/* KPI Row */}
           <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
-            <Card className="glass-card card-accent surface-elevated">
-              <CardContent className="p-3.5">
-                <div className="flex items-center gap-2.5 mb-2">
-                  <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-study-bg)]"><FolderOpen className="w-4 h-4 text-[var(--flow-study)]" /></div>
-                  <span className="text-xs font-medium text-muted-foreground">{t('docs_kpi_total')}</span>
-                </div>
-                <p className="text-2xl font-bold tracking-tight">{kpiStats.total}</p>
-              </CardContent>
-            </Card>
-            <Card className="glass-card card-accent surface-elevated">
-              <CardContent className="p-3.5">
-                <div className="flex items-center gap-2.5 mb-2">
-                  <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-plan-bg)]"><FileText className="w-4 h-4 text-[var(--flow-plan)]" /></div>
-                  <span className="text-xs font-medium text-muted-foreground">{t('docs_kpi_pdf')}</span>
-                </div>
-                <p className="text-2xl font-bold tracking-tight">{kpiStats.pdfCount}</p>
-              </CardContent>
-            </Card>
-            <Card className="glass-card card-accent surface-elevated">
-              <CardContent className="p-3.5">
-                <div className="flex items-center gap-2.5 mb-2">
-                  <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-review-bg)]"><PenLine className="w-4 h-4 text-[var(--flow-review)]" /></div>
-                  <span className="text-xs font-medium text-muted-foreground">{t('docs_kpi_notes')}</span>
-                </div>
-                <p className="text-2xl font-bold tracking-tight">{kpiStats.noteCount}</p>
-              </CardContent>
-            </Card>
-            <Card className="glass-card card-accent surface-elevated">
-              <CardContent className="p-3.5">
-                <div className="flex items-center gap-2.5 mb-2">
-                  <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-study-bg)]"><Music className="w-4 h-4 text-[var(--flow-study)]" /></div>
-                  <span className="text-xs font-medium text-muted-foreground">{t('docs_kpi_audio')}</span>
-                </div>
-                <p className="text-2xl font-bold tracking-tight">{kpiStats.audioCount}</p>
-              </CardContent>
-            </Card>
-            <Card className="glass-card card-accent surface-elevated">
-              <CardContent className="p-3.5">
-                <div className="flex items-center gap-2.5 mb-2">
-                  <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-analyze-bg)]"><Sparkles className="w-4 h-4 text-[var(--flow-analyze)]" /></div>
-                  <span className="text-xs font-medium text-muted-foreground">{t('docs_kpi_ai')}</span>
-                </div>
-                <p className="text-2xl font-bold tracking-tight">{kpiStats.aiCount}</p>
-              </CardContent>
-            </Card>
-            <Card className="glass-card card-accent surface-elevated">
-              <CardContent className="p-3.5">
-                <div className="flex items-center gap-2.5 mb-2">
-                  <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-report-bg)]"><HardDrive className="w-4 h-4 text-[var(--flow-report)]" /></div>
-                  <span className="text-xs font-medium text-muted-foreground">{t('docs_kpi_storage')}</span>
-                </div>
-                <p className="text-lg font-bold tracking-tight">{formatStorageSize(kpiStats.totalBytes)}</p>
-              </CardContent>
-            </Card>
+            <StatCard
+              icon={FolderOpen}
+              label={t('docs_kpi_total')}
+              tileClassName="bg-[var(--flow-study-bg)]"
+              iconClassName="text-[var(--flow-study)]"
+              value={kpiStats.total}
+            />
+            <StatCard
+              icon={FileText}
+              label={t('docs_kpi_pdf')}
+              tileClassName="bg-[var(--flow-plan-bg)]"
+              iconClassName="text-[var(--flow-plan)]"
+              value={kpiStats.pdfCount}
+            />
+            <StatCard
+              icon={PenLine}
+              label={t('docs_kpi_notes')}
+              tileClassName="bg-[var(--flow-review-bg)]"
+              iconClassName="text-[var(--flow-review)]"
+              value={kpiStats.noteCount}
+            />
+            <StatCard
+              icon={Music}
+              label={t('docs_kpi_audio')}
+              tileClassName="bg-[var(--flow-study-bg)]"
+              iconClassName="text-[var(--flow-study)]"
+              value={kpiStats.audioCount}
+            />
+            <StatCard
+              icon={Sparkles}
+              label={t('docs_kpi_ai')}
+              tileClassName="bg-[var(--flow-analyze-bg)]"
+              iconClassName="text-[var(--flow-analyze)]"
+              value={kpiStats.aiCount}
+            />
+            <StatCard
+              icon={HardDrive}
+              label={t('docs_kpi_storage')}
+              tileClassName="bg-[var(--flow-report-bg)]"
+              iconClassName="text-[var(--flow-report)]"
+              valueClassName="text-lg"
+              value={formatStorageSize(kpiStats.totalBytes)}
+            />
           </div>
 
           {/* Search + filter */}

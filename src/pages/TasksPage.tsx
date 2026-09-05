@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AlarmPicker } from "@/features/calendar/components/AlarmPicker";
 import { motion } from "framer-motion";
-import { Plus, Calendar, Trash2, Pencil, CheckSquare, ListTodo, CalendarClock, TrendingUp, TrendingDown, Target, Sparkles, ArrowRight, BarChart3, Lightbulb, MessageSquare, Send, ExternalLink } from "lucide-react";
+import { Plus, Calendar, Trash2, Pencil, CheckSquare, ListTodo, CalendarClock, TrendingUp, TrendingDown, Target, BarChart3, MessageSquare, Send, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
@@ -30,7 +30,9 @@ import { Task } from "@/features/tasks/tasksService";
 import { SmartAcademyWidget } from "@/components/dashboard/SmartAcademyWidget";
 import { useChatSessions } from "@/hooks/useChatSessions";
 import { supabase } from "@/integrations/supabase/client";
-import { SkeletonBlock } from "@/components/common/Skeletons";
+import { StatCard } from "@/components/common/StatCard";
+import { AiSuggestionsCard } from "@/components/common/AiSuggestionsCard";
+import { useAiSuggestions } from "@/features/ai/useAiSuggestions";
 import { RecurrencePicker } from "@/components/RecurrencePicker";
 import type { RecurrenceRule } from "@/lib/recurrence";
 import { formatDateLabel, isBeforeDay, isSameDay, toDateOnly } from "@/lib/date";
@@ -141,38 +143,13 @@ export default function TasksPage() {
   const focusDone = focusTasks.filter(t => t.completed).length;
   const focusTotal = focusTasks.length;
 
-  // AI Suggestions — fetched from Gemini via worker
-  const [aiSuggestions, setAiSuggestions] = useState<Array<{ text: string; type: string }>>([]);
-  const [suggestionsLoading, setSuggestionsLoading] = useState(true);
-  const suggestionsLoaded = useRef(false);
+  // AI Suggestions — fetched from Gemini via worker (DESIGN-AUDIT phase 4:
+  // shared hook, was an inline copy of the same fetch)
+  const { suggestions: aiSuggestions, isLoading: suggestionsLoading } = useAiSuggestions({
+    endpoint: 'tasks',
+    enabled: tasks.length > 0 && !isLoading,
+  });
   const workerUrl = import.meta.env.VITE_AGENT_WORKER_URL as string;
-
-  useEffect(() => {
-    if (suggestionsLoaded.current || tasks.length === 0 || isLoading) return;
-    suggestionsLoaded.current = true;
-    setSuggestionsLoading(true);
-    supabase.auth.getSession().then(({ data: { session: authSession } }) => {
-      if (!authSession) { setSuggestionsLoading(false); return; }
-      const responseLanguage = resolveAiResponseLanguage({
-        configuredResponseLanguage: getStoredAiResponseLanguage(),
-        interfaceLanguage,
-      });
-      fetch(`${workerUrl}/tasks/suggestions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authSession.access_token}` },
-        body: JSON.stringify({
-          responseLanguage,
-          responseLanguageInstruction: getAiResponseLanguageInstruction(responseLanguage),
-        }),
-      })
-        .then(res => res.ok ? res.json() : { suggestions: [] })
-        .then((body: { suggestions: Array<{ text: string; type: string }> }) => {
-          setAiSuggestions(body.suggestions ?? []);
-        })
-        .catch(() => setAiSuggestions([]))
-        .finally(() => setSuggestionsLoading(false));
-    });
-  }, [tasks.length, isLoading, workerUrl, interfaceLanguage]);
 
   // Task chat — compact ask-and-answer
   const navigate = useNavigate();
@@ -462,50 +439,10 @@ export default function TasksPage() {
         <div className="flex-1 min-w-0 space-y-4">
           {/* Stats row */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <Card className="glass-card card-accent surface-elevated">
-              <CardContent className="p-3.5">
-                <div className="flex items-center gap-2.5 mb-2">
-                  <div className="icon-tile w-8 h-8 rounded-md">
-                    <ListTodo className="w-4 h-4 text-primary" />
-                  </div>
-                  <span className="text-xs font-medium text-muted-foreground">Total</span>
-                </div>
-                <p className="text-2xl font-bold tracking-tight">{tasks.length}</p>
-              </CardContent>
-            </Card>
-            <Card className="glass-card card-accent surface-elevated">
-              <CardContent className="p-3.5">
-                <div className="flex items-center gap-2.5 mb-2">
-                  <div className="icon-tile w-8 h-8 rounded-md">
-                    <CheckSquare className="w-4 h-4 text-primary" />
-                  </div>
-                  <span className="text-xs font-medium text-muted-foreground">Open</span>
-                </div>
-                <p className="text-2xl font-bold tracking-tight">{counts.open}</p>
-              </CardContent>
-            </Card>
-            <Card className="glass-card card-accent surface-elevated">
-              <CardContent className="p-3.5">
-                <div className="flex items-center gap-2.5 mb-2">
-                  <div className="icon-tile w-8 h-8 rounded-md">
-                    <CalendarClock className="w-4 h-4 text-primary" />
-                  </div>
-                  <span className="text-xs font-medium text-muted-foreground">Due This Week</span>
-                </div>
-                <p className="text-2xl font-bold tracking-tight">{counts.upcomingCount + counts.todayCount}</p>
-              </CardContent>
-            </Card>
-            <Card className="glass-card card-accent surface-elevated">
-              <CardContent className="p-3.5">
-                <div className="flex items-center gap-2.5 mb-2">
-                  <div className="icon-tile w-8 h-8 rounded-md">
-                    <TrendingUp className="w-4 h-4 text-primary" />
-                  </div>
-                  <span className="text-xs font-medium text-muted-foreground">Completion</span>
-                </div>
-                <p className="text-2xl font-bold tracking-tight">{counts.rate}%</p>
-              </CardContent>
-            </Card>
+            <StatCard icon={ListTodo} label="Total" value={tasks.length} />
+            <StatCard icon={CheckSquare} label="Open" value={counts.open} />
+            <StatCard icon={CalendarClock} label="Due This Week" value={counts.upcomingCount + counts.todayCount} />
+            <StatCard icon={TrendingUp} label="Completion" value={`${counts.rate}%`} />
           </div>
 
           {/* Today's Focus — horizontal card */}
@@ -682,38 +619,17 @@ export default function TasksPage() {
 
         {/* Right sidebar */}
         <div className="w-full lg:w-[300px] shrink-0 space-y-4 lg:sticky lg:top-4 lg:self-start">
-          {/* AI Suggestions — Gemini-generated */}
+          {/* AI Suggestions — Gemini-generated (DESIGN-AUDIT phase 4: shared card, title/subtitle now translated) */}
           {(suggestionsLoading || aiSuggestions.length > 0) && (
-            <Card className="glass-card card-accent">
-              <CardContent className="p-4 space-y-3">
-                <div className="flex items-center gap-2.5">
-                  <div className="icon-tile w-7 h-7 rounded-md">
-                    <Sparkles className="w-3.5 h-3.5 text-primary" />
-                  </div>
-                  <span className="text-sm font-semibold">AI Suggestions</span>
-                </div>
-                <p className="text-[11px] text-muted-foreground">Based on your tasks and goals</p>
-                {suggestionsLoading ? (
-                  <div className="space-y-2">
-                    <SkeletonBlock className="h-10 w-full" />
-                    <SkeletonBlock className="h-10 w-full" />
-                  </div>
-                ) : (
-                  <ul className="space-y-2">
-                    {aiSuggestions.map((s, i) => (
-                      <li key={i} className="flex items-start gap-3 rounded-lg bg-secondary/20 px-3 py-2.5">
-                        <div className={cn("icon-tile w-7 h-7 rounded-lg shrink-0 mt-0.5", s.type === 'recommendation' ? 'bg-[var(--flow-analyze-bg)]' : 'bg-[var(--flow-study-bg)]')}>
-                          {s.type === 'recommendation'
-                            ? <ArrowRight className="w-3.5 h-3.5 text-[var(--flow-analyze)]" />
-                            : <Lightbulb className="w-3.5 h-3.5 text-[var(--flow-study)]" />}
-                        </div>
-                        <p className="text-xs leading-relaxed">{s.text}</p>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </CardContent>
-            </Card>
+            <AiSuggestionsCard
+              title={t('ai_suggestions')}
+              subtitle={t('ai_based_on_tasks')}
+              isLoading={suggestionsLoading}
+              rows={aiSuggestions.map(s => ({
+                text: s.text,
+                kind: s.type === 'recommendation' ? 'action' as const : 'idea' as const,
+              }))}
+            />
           )}
 
           {/* Ask about tasks — compact chat */}

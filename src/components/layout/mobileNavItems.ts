@@ -29,16 +29,20 @@ export interface MobileNavItem {
   readonly path: string;
 }
 
+// PO decision (2026-09-05, phase-5 mobile pass): mobile Home IS the chat
+// now, so the bottom bar's SmartFlow Chat entry is redundant -- Calendar
+// takes its slot, and /chat moves into the "more" grid so the standalone
+// route stays reachable.
 export const mainNavItems: MobileNavItem[] = [
   { icon: LayoutDashboard, key: 'nav_dashboard', path: "/" },
-  { icon: MessageSquare, key: 'nav_chat', path: "/chat" },
+  { icon: Calendar, key: 'nav_calendar', path: "/calendar" },
   { icon: Bot, key: 'nav_tutor_app', path: "/tutor/app" },
   { icon: CheckSquare, key: 'nav_tasks', path: "/tasks" },
 ];
 
 export const moreNavItems: MobileNavItem[] = [
   { icon: FolderKanban, key: 'nav_projects', path: "/projects" },
-  { icon: Calendar, key: 'nav_calendar', path: "/calendar" },
+  { icon: MessageSquare, key: 'nav_chat', path: "/chat" },
   { icon: Flame, key: 'nav_habits', path: "/habits" },
   { icon: BookOpen, key: 'nav_journal', path: "/journal" },
   { icon: Wallet, key: 'nav_finance', path: "/finance" },

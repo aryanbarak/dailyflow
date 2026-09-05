@@ -8,6 +8,7 @@ import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
+import { StatCard } from "@/components/common/StatCard";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { usePhotos } from "@/hooks/usePhotos";
@@ -269,46 +270,38 @@ export default function PhotosPage() {
 
         {/* KPI Row */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <Card className="glass-card card-accent surface-elevated">
-            <CardContent className="p-3.5">
-              <div className="flex items-center gap-2.5 mb-2">
-                <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-report-bg)]"><Camera className="w-4 h-4 text-[var(--flow-report)]" /></div>
-                <span className="text-xs font-medium text-muted-foreground">{t('photos_kpi_total')}</span>
-              </div>
-              <p className="text-2xl font-bold tracking-tight">{photos.length}</p>
-              <p className="text-[11px] text-muted-foreground">{t('photos_total')}</p>
-            </CardContent>
-          </Card>
-          <Card className="glass-card card-accent surface-elevated">
-            <CardContent className="p-3.5">
-              <div className="flex items-center gap-2.5 mb-2">
-                <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-study-bg)]"><Users className="w-4 h-4 text-[var(--flow-study)]" /></div>
-                <span className="text-xs font-medium text-muted-foreground">{t('photos_kpi_family')}</span>
-              </div>
-              <p className="text-2xl font-bold tracking-tight">{personTags.length}</p>
-              <p className="text-[11px] text-muted-foreground">{t('photos_family_members')}</p>
-            </CardContent>
-          </Card>
-          <Card className="glass-card card-accent surface-elevated">
-            <CardContent className="p-3.5">
-              <div className="flex items-center gap-2.5 mb-2">
-                <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-review-bg)]"><FolderOpen className="w-4 h-4 text-[var(--flow-review)]" /></div>
-                <span className="text-xs font-medium text-muted-foreground">{t('photos_kpi_albums')}</span>
-              </div>
-              <p className="text-2xl font-bold tracking-tight">{albums.length}</p>
-              <p className="text-[11px] text-muted-foreground">{t('photos_photo_albums')}</p>
-            </CardContent>
-          </Card>
-          <Card className="glass-card card-accent surface-elevated">
-            <CardContent className="p-3.5">
-              <div className="flex items-center gap-2.5 mb-2">
-                <div className="icon-tile w-8 h-8 rounded-md bg-[var(--flow-career-bg)]"><CalendarDays className="w-4 h-4 text-[var(--flow-career)]" /></div>
-                <span className="text-xs font-medium text-muted-foreground">{t('photos_kpi_month')}</span>
-              </div>
-              <p className="text-2xl font-bold tracking-tight">{thisMonthCount}</p>
-              <p className="text-[11px] text-muted-foreground">{t('photos_new_memories')}</p>
-            </CardContent>
-          </Card>
+          <StatCard
+            icon={Camera}
+            label={t('photos_kpi_total')}
+            tileClassName="bg-[var(--flow-report-bg)]"
+            iconClassName="text-[var(--flow-report)]"
+            value={photos.length}
+            sub={t('photos_total')}
+          />
+          <StatCard
+            icon={Users}
+            label={t('photos_kpi_family')}
+            tileClassName="bg-[var(--flow-study-bg)]"
+            iconClassName="text-[var(--flow-study)]"
+            value={personTags.length}
+            sub={t('photos_family_members')}
+          />
+          <StatCard
+            icon={FolderOpen}
+            label={t('photos_kpi_albums')}
+            tileClassName="bg-[var(--flow-review-bg)]"
+            iconClassName="text-[var(--flow-review)]"
+            value={albums.length}
+            sub={t('photos_photo_albums')}
+          />
+          <StatCard
+            icon={CalendarDays}
+            label={t('photos_kpi_month')}
+            tileClassName="bg-[var(--flow-career-bg)]"
+            iconClassName="text-[var(--flow-career)]"
+            value={thisMonthCount}
+            sub={t('photos_new_memories')}
+          />
         </div>
 
         {/* Search bar */}

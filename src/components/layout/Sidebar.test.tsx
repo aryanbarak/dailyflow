@@ -116,7 +116,7 @@ describe("Sidebar: Home's slim icon-only rail + full-navigation drawer (frozen h
     expect(html).toMatch(/bg-\[#34D399\]/);
   });
 
-  it("every OTHER route (e.g. /tasks) still renders the full, unchanged text sidebar -- the slim rail is scoped to Home only, not a global redesign", () => {
+  it("every OTHER route (e.g. /tasks) still renders the full text sidebar (from xl up since DESIGN-AUDIT phase 5), with all destinations as text", () => {
     const html = renderAt("/tasks");
 
     expect(html).toMatch(/\bw-64\b/);
@@ -125,6 +125,20 @@ describe("Sidebar: Home's slim icon-only rail + full-navigation drawer (frozen h
     expect(html).toContain("Calendar");
     expect(html).toContain("Journal");
     expect(html).toContain("Finance");
+  });
+
+  it("DESIGN-AUDIT phase 5 (tablet icon-rail): on non-Home routes the full sidebar is xl-gated and a 68px icon rail (same navItems, labels as aria-labels, active pill, avatar) covers lg..<xl", () => {
+    const html = renderAt("/tasks");
+
+    // CSS-toggled pair: full sidebar hidden until xl, compact rail hidden from xl.
+    expect(html).toMatch(/hidden xl:flex/);
+    expect(html).toMatch(/w-\[68px\][^"]*xl:hidden/);
+    // The compact rail reuses the SAME destinations, icon-only with the
+    // translated label as the accessible name.
+    expect(html).toMatch(/aria-label="Journal"/);
+    expect(html).toMatch(/aria-label="Finance"/);
+    // Active state on the current route's icon, styled like Home's rail.
+    expect(html).toMatch(/bg-\[#7C4DFF\]\/\[0\.16\]/);
   });
 
   it("the drawer renders the SAME FullSidebarContent (same navItems/star-field/logo/footer) the full sidebar uses -- never a second menu system -- and selecting a destination closes it", () => {

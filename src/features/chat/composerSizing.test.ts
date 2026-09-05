@@ -11,13 +11,14 @@ const LINE_HEIGHT = 20;
 const PADDING = 16;
 
 describe("clampComposerHeight", () => {
-  // Task 17c, PO decision D1: composer base height is now a 2-line minimum
-  // (was 1 line under 17a) -- this locks that value in explicitly so a
-  // future accidental revert is caught here, not just via the "never below
-  // minimum" test below (which passes for ANY minimum, since it reads
-  // COMPOSER_MIN_LINES symbolically rather than asserting its value).
-  it("the configured minimum is 2 lines (task 17c, D1 -- was 1 line under 17a)", () => {
-    expect(COMPOSER_MIN_LINES).toBe(2);
+  // PO decision (2026-09-05, ChatGPT-style compact pass): back to a 1-line
+  // minimum (task 17c D1 had raised it to 2; the PO judged the resting
+  // composer too tall against the ChatGPT reference) -- locked in
+  // explicitly so an accidental change is caught here, not just via the
+  // "never below minimum" test below (which passes for ANY minimum, since
+  // it reads COMPOSER_MIN_LINES symbolically).
+  it("the configured minimum is 1 line (PO 2026-09-05 compact pass -- was 2 under 17c D1)", () => {
+    expect(COMPOSER_MIN_LINES).toBe(1);
   });
 
   it("grows to the natural content height between the minimum and 5 lines", () => {
