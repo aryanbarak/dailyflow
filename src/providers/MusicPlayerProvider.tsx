@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react";
+import { createId } from "@/lib/id";
 import {
   MusicPlayerContext,
   PRESETS,
@@ -17,7 +18,7 @@ function isAudioFile(file: File): boolean {
 function makeLocalTrack(file: File): LocalTrack {
   return {
     type: "local",
-    id: crypto.randomUUID(),
+    id: createId(),
     name: file.name.replace(/\.[^.]+$/, ""),
     objectUrl: URL.createObjectURL(file),
   };

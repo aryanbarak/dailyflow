@@ -42,10 +42,9 @@ const navItems: {
   { icon: LayoutDashboard, key: 'nav_dashboard', path: "/" },
   { icon: MessageSquare, key: 'nav_chat', path: "/chat" },
   { icon: FolderKanban, key: 'nav_projects', path: "/projects", activeMatch: "prefix" },
-  // Smart Academy points back at the INTERNAL tutor page. The
-  // VITE_SMART_ACADEMY_URL external override (config/apps.ts) is
-  // deliberately not wired here anymore -- the nav stays internal
-  // regardless of what any environment sets.
+  // Smart Academy points at the INTERNAL tutor page. (The old
+  // VITE_SMART_ACADEMY_URL external override and its config/apps.ts
+  // module are removed entirely -- the nav is internal, full stop.)
   { icon: Bot, key: 'nav_tutor_app', path: "/tutor/app" },
   { icon: CheckSquare, key: 'nav_tasks', path: "/tasks" },
   { icon: Calendar, key: 'nav_calendar', path: "/calendar" },

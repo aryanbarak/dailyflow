@@ -46,6 +46,39 @@ function translateEngineCopy(
   return key ? t(key) : text;
 }
 
+// I18N follow-up (2026-09-05): the rail's AI Suggestions rows are also
+// engine-emitted English (workspaceEngine's contextual suggestions).
+// Same render-layer convention -- for `en` the engine copy IS the en
+// copy, returned untouched (bit-identical output, singular/plural
+// included); fa/de translate fixed titles by exact lookup and the two
+// count-carrying descriptions by pattern match.
+const ENGINE_SUGGESTION_KEYS: Record<string, TranslationKey> = {
+  "Finish active tasks": "dashboard_sugg_finish_tasks",
+  "Review calendar": "dashboard_sugg_review_calendar",
+  "Continue Smart Academy": "dashboard_sugg_continue_academy",
+  "Review budget": "dashboard_sugg_review_budget",
+  "Because a short focused session keeps learning in motion.":
+    "dashboard_sugg_continue_academy_desc",
+  "Because your monthly net is part of today's workspace signal.":
+    "dashboard_sugg_review_budget_desc",
+};
+const ENGINE_TASKS_DESC_RE = /^Because (\d+) items? still need attention\.$/;
+const ENGINE_EVENTS_DESC_RE = /^Because today has (\d+) scheduled events?\.$/;
+function translateEngineSuggestionCopy(
+  text: string,
+  t: (key: TranslationKey, vars?: Record<string, string | number>) => string,
+  lang: string,
+): string {
+  if (lang === "en") return text;
+  const key = ENGINE_SUGGESTION_KEYS[text];
+  if (key) return t(key);
+  const tasks = ENGINE_TASKS_DESC_RE.exec(text);
+  if (tasks) return t("dashboard_sugg_finish_tasks_desc", { count: tasks[1] });
+  const events = ENGINE_EVENTS_DESC_RE.exec(text);
+  if (events) return t("dashboard_sugg_review_calendar_desc", { count: events[1] });
+  return text;
+}
+
 // PO decision (2026-09-05): the hero's greeting/goal H1 is REMOVED --
 // the hero shows only the orb + date lockup. workspace.hero.title is
 // still computed by the engine (other consumers unaffected), it just no
@@ -785,8 +818,12 @@ export default function Dashboard() {
   const railSuggestions = useMemo<AssistantRailSuggestionItem[]>(
     () =>
       workspace.suggestedActions.slice(0, 2).map((action) => ({
-        title: action.title,
-        meta: action.description,
+        // I18N follow-up: displayed copy translates at the render layer;
+        // tracking payloads keep the literal engine strings (analytics
+        // stay language-independent). `lang` in the deps re-runs the memo
+        // on a language switch (t itself is a fresh closure every render).
+        title: translateEngineSuggestionCopy(action.title, t, lang),
+        meta: translateEngineSuggestionCopy(action.description, t, lang),
         icon: action.icon,
         onOpen: () =>
           trackAndNavigateToWorkspaceTarget(navigate, action.target, {
@@ -797,7 +834,8 @@ export default function Dashboard() {
             domain: action.signalDomain,
           }),
       })),
-    [navigate, workspace.suggestedActions],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- lang stands in for t (see comment above)
+    [navigate, workspace.suggestedActions, lang],
   );
 
   return (

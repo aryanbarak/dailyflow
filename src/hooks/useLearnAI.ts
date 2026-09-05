@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createId } from "@/lib/id";
 import { useAuth } from "@/hooks/useAuth";
 import {
   askLearnAI,
@@ -161,7 +162,7 @@ export function useLearnAI() {
       setMessages((prev) => [
         ...prev,
         {
-          id: crypto.randomUUID(),
+          id: createId(),
           role: "user",
           content: messageContent,
           createdAt: new Date().toISOString(),
@@ -203,7 +204,7 @@ export function useLearnAI() {
       setMessages((prev) => [
         ...prev,
         {
-          id: crypto.randomUUID(),
+          id: createId(),
           role: "assistant",
           content: answer,
           createdAt: new Date().toISOString(),

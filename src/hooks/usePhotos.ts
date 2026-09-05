@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { createId } from "@/lib/id";
 import { toast } from "sonner";
 import { useAuth } from "@/providers/AuthProvider";
 import { photosService, type Photo, type PhotoPatch } from "@/features/photos/photosService";
@@ -148,7 +149,7 @@ export function usePhotos() {
       }
       const token = session.access_token;
       const queue: UploadProgress[] = files.map((f) => ({
-        fileId: crypto.randomUUID(),
+        fileId: createId(),
         fileName: f.name,
         status: "pending" as UploadStatus,
       }));
@@ -166,7 +167,7 @@ export function usePhotos() {
 
           updateStatus("uploading");
           try {
-            const uuid = crypto.randomUUID();
+            const uuid = createId();
             const { thumb, width, height } = await generateThumbnailAndDimensions(file);
             const { key, thumbKey } = await uploadToWorker(file, thumb, uuid, token);
             const photo = await photosService.insertPhoto({
