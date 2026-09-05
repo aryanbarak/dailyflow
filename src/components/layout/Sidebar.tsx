@@ -380,9 +380,61 @@ export function Sidebar() {
     );
   }
 
+  // DESIGN-AUDIT phase 5 (tablet icon-rail): between lg (where AppLayout's
+  // desktop shell starts) and xl, the 256px text sidebar ate a third of an
+  // iPad-landscape viewport -- so the full sidebar now renders from xl up,
+  // and the lg..<xl window gets a compact 68px icon rail instead: the SAME
+  // navItems list (one navigation data source), icon-only with the label as
+  // title/aria-label, active state styled like Home's slim rail. Both are
+  // in the tree and CSS-toggled (hidden xl:flex / xl:hidden), so no state
+  // is lost when the viewport crosses the breakpoint.
   return (
-    <aside className="relative w-64 h-screen sticky top-0 overflow-hidden bg-sidebar border-e border-sidebar-border flex flex-col">
-      <FullSidebarContent />
-    </aside>
+    <>
+      <aside className="relative w-64 h-screen sticky top-0 overflow-hidden bg-sidebar border-e border-sidebar-border hidden xl:flex flex-col">
+        <FullSidebarContent />
+      </aside>
+      <aside className="sticky top-0 z-40 flex h-screen w-[68px] shrink-0 flex-col items-center border-e border-sidebar-border bg-sidebar py-3.5 xl:hidden">
+        <nav
+          aria-label={t('nav_dashboard')}
+          className="flex min-h-0 flex-1 flex-col items-center gap-1.5 overflow-y-auto scrollbar-hide"
+        >
+          {navItems.map((item) => {
+            const isActive =
+              item.activeMatch === "prefix"
+                ? location.pathname === item.path || location.pathname.startsWith(`${item.path}/`)
+                : location.pathname === item.path;
+            return (
+              <NavLink
+                key={item.path}
+                to={item.path}
+                title={t(item.key)}
+                aria-label={t(item.key)}
+                className={cn(
+                  HOME_RAIL_BUTTON_CLASS,
+                  isActive && "border border-[#7D5CFF]/40 bg-[#7C4DFF]/[0.16] text-[#A88BFF]",
+                )}
+              >
+                <item.icon className="h-5 w-5" strokeWidth={1.7} />
+              </NavLink>
+            );
+          })}
+        </nav>
+        <div
+          className="relative mt-2 flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-full border border-[#7078B4]/[0.35] bg-gradient-to-br from-[#3D1D94] to-[#28155F]"
+          title={displayName}
+          aria-label={displayName}
+        >
+          {avatarUrl ? (
+            <img src={avatarUrl} alt="" className="h-full w-full rounded-full object-cover" />
+          ) : (
+            <span className="text-sm font-semibold text-[#DDD4FF]">{initials}</span>
+          )}
+          <span
+            aria-hidden="true"
+            className="absolute -bottom-px -end-px h-[11px] w-[11px] rounded-full border-2 border-[#07081A] bg-[#34D399]"
+          />
+        </div>
+      </aside>
+    </>
   );
 }

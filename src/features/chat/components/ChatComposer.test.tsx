@@ -35,11 +35,11 @@ describe("ChatComposer", () => {
     expect(button.className).not.toMatch(/\bleft-1\b|\bright-1\b|\bend-1\b|\babsolute\b/);
   });
 
-  it("the send button meets the >=44px touch-target minimum", () => {
+  it("the send button is the 36px ChatGPT-style circle (PO 2026-09-05 compact pass: explicit override of the >=44px touch-target floor for the composer's two controls)", () => {
     render(<ChatComposer value="hello" onChange={vi.fn()} onSend={vi.fn()} disabled={false} />);
     const button = screen.getByRole("button");
-    expect(button.className).toContain("h-11"); // 2.75rem = 44px in the default Tailwind scale
-    expect(button.className).toContain("w-11");
+    expect(button.className).toContain("h-9"); // 2.25rem = 36px, matching the reference
+    expect(button.className).toContain("w-9");
   });
 
   it("send is disabled when the draft is empty or whitespace-only", () => {
@@ -100,12 +100,12 @@ describe("ChatComposer", () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
-  it("compact mode applies a smaller font-size/padding, but the touch target stays >=44px regardless", () => {
+  it("compact mode applies a smaller font-size; the buttons keep the same 36px circle (PO 2026-09-05 compact pass)", () => {
     render(<ChatComposer value="hi" onChange={vi.fn()} onSend={vi.fn()} disabled={false} compact />);
     expect(screen.getByRole("textbox").className).toContain("text-[13px]");
     const button = screen.getByRole("button");
-    expect(button.className).toContain("h-11");
-    expect(button.className).toContain("w-11");
+    expect(button.className).toContain("h-9");
+    expect(button.className).toContain("w-9");
   });
 });
 
@@ -177,36 +177,37 @@ describe("ChatComposer V1 (task 17d) -> PO 2026-09-05: structural overlap preven
   });
 });
 
-// Task 17d, V2: device evidence showed the composer rendering only ONE
-// line on first paint despite COMPOSER_MIN_LINES=2 (task 17c, D1) --
-// jsdom's own layout-effect timing never surfaced this since it has no
-// real font-loading pipeline. Fixed with a CSS-only `minHeight` inline
-// style (see ChatComposer.tsx's own comment) that is present in the VERY
-// FIRST render output, before any effect has had a chance to run at all --
-// these tests assert on that first-render output specifically, not after
-// an effect flush, to prove the floor doesn't depend on JS timing.
-describe("ChatComposer V2 (task 17d): 2-line minimum applies on first paint, not only after typing", () => {
-  it("the native rows attribute is 2 (COMPOSER_MIN_LINES), not 1, from the very first render", () => {
+// Task 17d, V2: device evidence showed the composer rendering shorter than
+// the configured floor on first paint -- jsdom's own layout-effect timing
+// never surfaced this since it has no real font-loading pipeline. Fixed
+// with a CSS-only `minHeight` inline style (see ChatComposer.tsx's own
+// comment) that is present in the VERY FIRST render output, before any
+// effect has had a chance to run at all -- these tests assert on that
+// first-render output specifically, not after an effect flush, to prove
+// the floor doesn't depend on JS timing. PO decision (2026-09-05,
+// ChatGPT-style compact pass): the floor itself is back to 1 line.
+describe("ChatComposer V2 (task 17d): the line-minimum floor applies on first paint, not only after typing", () => {
+  it("the native rows attribute matches COMPOSER_MIN_LINES (1 since the ChatGPT-style compact pass) from the very first render", () => {
     render(<ChatComposer value="" onChange={vi.fn()} onSend={vi.fn()} disabled={false} />);
-    expect(screen.getByRole("textbox")).toHaveAttribute("rows", "2");
+    expect(screen.getByRole("textbox")).toHaveAttribute("rows", "1");
   });
 
-  it("a CSS min-height reserving 2 lines is present in the textarea's inline style on first render -- a pure font-size-relative calc, not a JS-measured pixel value that could still be wrong before fonts settle", () => {
+  it("a CSS min-height reserving the line floor is present in the textarea's inline style on first render -- a pure font-size-relative calc, not a JS-measured pixel value that could still be wrong before fonts settle", () => {
     render(<ChatComposer value="" onChange={vi.fn()} onSend={vi.fn()} disabled={false} />);
     const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
     // jsdom's inline-style parser arithmetically simplifies the calc()'s
-    // constant multiplication (2 * 1.625em -> 3.25em) when it parses the
-    // style string -- 3.25em IS exactly 2 lines' worth of leading-relaxed
+    // constant multiplication (1 * 1.625em -> 1.625em) when it parses the
+    // style string -- 1.625em IS exactly 1 line's worth of leading-relaxed
     // (1.625) line-height, so this is checking the same fact, just in the
     // form jsdom actually stores it.
-    expect(textarea.style.minHeight).toContain("3.25em");
-    expect(textarea.style.minHeight).toContain("1.25rem");
+    expect(textarea.style.minHeight).toContain("1.625em");
+    expect(textarea.style.minHeight).toContain("1rem");
   });
 
-  it("compact mode still reserves a 2-line floor, just with the smaller compact padding baked into the same calc", () => {
+  it("compact mode reserves the same 1-line floor (padding is unified at 1rem in the calc since the compact pass)", () => {
     render(<ChatComposer value="" onChange={vi.fn()} onSend={vi.fn()} disabled={false} compact />);
     const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
-    expect(textarea.style.minHeight).toContain("3.25em");
+    expect(textarea.style.minHeight).toContain("1.625em");
     expect(textarea.style.minHeight).toContain("1rem");
   });
 
@@ -264,11 +265,12 @@ describe("ChatComposer -- attach control (task 19)", () => {
     expect(siblings.indexOf(attachButton)).toBeLessThan(siblings.indexOf(sendButton));
   });
 
-  it("the attach button meets the >=44px touch-target minimum, same as the send button", () => {
+  it("the attach button is the same 36px circle as send, anchored at the inline START via me-auto (ChatGPT arrangement, PO 2026-09-05)", () => {
     render(<ChatComposer value="" onChange={vi.fn()} onSend={vi.fn()} disabled={false} onAttachFile={vi.fn()} />);
     const attachButton = screen.getByRole("button", { name: /attach/i });
-    expect(attachButton.className).toContain("h-11");
-    expect(attachButton.className).toContain("w-11");
+    expect(attachButton.className).toContain("h-9");
+    expect(attachButton.className).toContain("w-9");
+    expect(attachButton.className).toContain("me-auto");
     expect(attachButton.className).not.toMatch(/\babsolute\b/);
   });
 
@@ -363,10 +365,10 @@ describe("ChatComposer -- attach control (task 19)", () => {
     expect(sendButton.className).toMatch(/\bshrink-0\b/);
   });
 
-  it("V2 2-line minimum is unaffected by the attach control's presence", () => {
+  it("V2 line-minimum floor is unaffected by the attach control's presence (1 line since the compact pass)", () => {
     render(<ChatComposer value="" onChange={vi.fn()} onSend={vi.fn()} disabled={false} onAttachFile={vi.fn()} />);
     const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
-    expect(textarea).toHaveAttribute("rows", "2");
-    expect(textarea.style.minHeight).toContain("3.25em");
+    expect(textarea).toHaveAttribute("rows", "1");
+    expect(textarea.style.minHeight).toContain("1.625em");
   });
 });

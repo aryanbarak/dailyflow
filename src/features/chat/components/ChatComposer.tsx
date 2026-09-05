@@ -18,11 +18,13 @@ const LEADING_RELAXED_MULTIPLIER = 1.625;
 
 // SmartFlow -- Chat Experience v2 (task 17a), workstream 1: composer
 // rebuild; layout revised per PO decision (2026-09-05) to a DeepSeek-style
-// single box: the rounded glass surface is a wrapper containing the
-// auto-growing field (1 -> ~5 lines then internal scroll) on top and an
-// action row below it with attach + send side by side at the inline end
-// (mirrors automatically for RTL via flex direction + justify-end). Touch
-// targets stay >=44px (h-11 w-11), and Enter-to-send is desktop-only
+// single box, then compacted the same day against the ChatGPT reference:
+// the rounded glass surface is a wrapper containing the auto-growing field
+// (1 -> ~5 lines then internal scroll) on top and an action row below it
+// -- attach at the inline start, send at the inline end (mirrors
+// automatically for RTL via justify-end + me-auto). Both buttons are 36px
+// circles (h-9 w-9) by explicit PO override of the >=44px touch-target
+// floor, and Enter-to-send is desktop-only
 // (mobile/touch keyboards and IME composition get a plain newline on
 // Enter -- see composerSizing.ts's prefersDesktopEnterToSend for why
 // viewport width is the WRONG signal here).
@@ -239,7 +241,7 @@ export function ChatComposer({
         // this can never silently drift from the JS clamp logic's own
         // 2-line floor.
         style={{
-          minHeight: `calc(${COMPOSER_MIN_LINES} * ${LEADING_RELAXED_MULTIPLIER}em + ${compact ? "1rem" : "1.25rem"})`,
+          minHeight: `calc(${COMPOSER_MIN_LINES} * ${LEADING_RELAXED_MULTIPLIER}em + 1rem)`,
         }}
         className={cn(
           // Task 17b's token map ("composer -> --flow-glass-bg") and the
@@ -250,12 +252,18 @@ export function ChatComposer({
           // -- `border-0` removes shadcn Textarea's default border, and
           // the field itself is transparent and ring-free (PO decision
           // 2026-09-05, DeepSeek-style box).
-          "w-full resize-none border-0 bg-transparent px-3.5 py-2.5 text-sm leading-relaxed shadow-none transition-[height] duration-100 focus-visible:ring-0",
-          compact && "py-2 text-[13px]",
+          "w-full resize-none border-0 bg-transparent px-3.5 py-2 text-sm leading-relaxed shadow-none transition-[height] duration-100 focus-visible:ring-0",
+          compact && "text-[13px]",
         )}
       />
-          {/* Action row INSIDE the box, below the field: attach + send
-              side by side at the inline end (DeepSeek-style). */}
+          {/* Action row INSIDE the box, below the field. PO decision
+              (2026-09-05, ChatGPT-style compact pass): attach sits at the
+              inline START (me-auto pushes everything after it to the end),
+              send at the inline END -- the ChatGPT arrangement -- and both
+              buttons shrank from the 44px floor to 36px circles (explicit
+              PO override of the >=44px touch-target rule for these two
+              controls, matching the reference). justify-end + me-auto both
+              mirror automatically for RTL. */}
           <div className={cn("flex items-center justify-end gap-1.5 pb-1.5 pt-0.5", compact ? "px-1.5" : "px-2")}>
             {onAttachFile && (
               <>
@@ -275,10 +283,10 @@ export function ChatComposer({
                   onClick={handleAttachClick}
                   disabled={disabled || attachBusy}
                   aria-label={t("chat_attach_file")}
-                  // Same >=44px touch target as the send button; shrink-0
-                  // keeps its box whole; first in DOM order so the pair
-                  // mirrors automatically for RTL.
-                  className="h-11 w-11 shrink-0 rounded-full p-0"
+                  // me-auto anchors attach at the inline START of the
+                  // justify-end row (ChatGPT arrangement); shrink-0 keeps
+                  // its box whole.
+                  className="h-9 w-9 shrink-0 rounded-full p-0 me-auto"
                 >
                   <Paperclip className="h-4 w-4" aria-hidden="true" />
                 </Button>
@@ -294,7 +302,7 @@ export function ChatComposer({
               // elevation shadow (the existing shadow-md utility) gives the
               // send action visual weight when it's actually actionable, and
               // recedes to flat when disabled.
-              className="h-11 w-11 shrink-0 rounded-full p-0 shadow-md disabled:shadow-none"
+              className="h-9 w-9 shrink-0 rounded-full p-0 shadow-md disabled:shadow-none"
               style={{ background: "var(--gradient-primary)" }}
             >
               <Send className="h-4 w-4" aria-hidden="true" />

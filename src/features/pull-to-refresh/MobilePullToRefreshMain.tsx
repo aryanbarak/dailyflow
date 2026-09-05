@@ -34,7 +34,10 @@ export function MobilePullToRefreshMain({ disabled, bottomPadding }: MobilePullT
   });
 
   return (
-    <main ref={containerRef} className={cn('flex-1 overflow-auto overscroll-contain', bottomPadding && 'pb-20')}>
+    // PO decision (2026-09-05, phase-5 mobile pass): the bottom nav became
+    // icon-only (no labels), so its real height dropped to ~52px -- the
+    // reserve shrinks with it (pb-20 -> pb-14).
+    <main ref={containerRef} className={cn('flex-1 overflow-auto overscroll-contain', bottomPadding && 'pb-14')}>
       {enabled && phase !== 'idle' && (
         <PullToRefreshIndicator phase={phase} pullDistance={pullDistance} thresholdPx={PULL_THRESHOLD_PX} />
       )}

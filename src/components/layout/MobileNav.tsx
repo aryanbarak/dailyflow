@@ -57,7 +57,9 @@ export function MobileNav() {
   const startBreak = useMicroBreaksStore(s => s.startBreak);
 
   return (
-    <nav className="fixed bottom-0 left-0 right-0 bg-card border-t border-border z-50">
+    // PO decision (2026-09-05, round 2, ChatGPT-style): glass bottom bar
+    // -- translucent card token + blur, so the page shows through it.
+    <nav className="fixed bottom-0 left-0 right-0 bg-card/75 backdrop-blur-xl border-t border-border z-50">
       <div className="flex items-center justify-around py-2">
         {/* ADR-0014 §10: Micro Breaks mobile entry point -- a small icon,
             not a route (no permanent top-level "Games" nav). */}
@@ -70,28 +72,38 @@ export function MobileNav() {
           <Gamepad2 className="w-5 h-5" />
         </button>
 
+        {/* PO decision (2026-09-05, phase-5 mobile pass): the bottom nav is
+            ICON-ONLY -- the text labels under the icons are gone (same
+            treatment the Micro Breaks gamepad icon always had); the
+            translated name stays as title/aria-label. PO round 3: icons
+            sized back down to a compact w-5 h-5. */}
         {mainNavItems.map((item) => {
           const isActive = location.pathname === item.path;
           return (
             <NavLink
               key={item.path}
               to={item.path}
+              title={t(item.key)}
+              aria-label={t(item.key)}
               className={cn(
                 "flex flex-col items-center gap-1 px-3 py-2 rounded-lg transition-colors",
                 isActive ? "text-primary" : "text-muted-foreground"
               )}
             >
               <item.icon className="w-5 h-5" />
-              <span className="text-xs">{t(item.key)}</span>
             </NavLink>
           );
         })}
 
         <Sheet open={open} onOpenChange={setOpen}>
           <SheetTrigger asChild>
-            <button type="button" className="flex flex-col items-center gap-1 px-3 py-2 rounded-lg text-muted-foreground">
+            <button
+              type="button"
+              title={t('nav_more')}
+              aria-label={t('nav_more')}
+              className="flex flex-col items-center gap-1 px-3 py-2 rounded-lg text-muted-foreground"
+            >
               <Menu className="w-5 h-5" />
-              <span className="text-xs">{t('nav_more')}</span>
             </button>
           </SheetTrigger>
           <SheetContent side="bottom" className="h-auto rounded-t-2xl">

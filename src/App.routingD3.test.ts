@@ -24,8 +24,9 @@ describe("AppLayout mobile chrome gating (task 17c, D3)", () => {
     expect(APP_LAYOUT_SOURCE).toMatch(/\{!hideMobileChrome && <MobileNav \/>\}/);
   });
 
-  it("gates the GlobalSearch row rendering on the current route", () => {
-    expect(APP_LAYOUT_SOURCE).toMatch(/\{!hideMobileChrome && \(/);
+  it("gates the GlobalSearch row rendering on the current route (PO 2026-09-05 phase-5 mobile pass: mobile Home drops the search row too, but keeps the bottom nav)", () => {
+    expect(APP_LAYOUT_SOURCE).toMatch(/\{!PAGES_WITHOUT_MOBILE_SEARCH_ROW\.has\(location\.pathname\) && \(/);
+    expect(APP_LAYOUT_SOURCE).toContain('PAGES_WITHOUT_MOBILE_SEARCH_ROW = new Set(["/chat", "/"])');
     expect(APP_LAYOUT_SOURCE).toContain("<GlobalSearch />");
   });
 
@@ -37,6 +38,8 @@ describe("AppLayout mobile chrome gating (task 17c, D3)", () => {
     // Task 38: the conditional now spans two files -- AppLayout passes the
     // condition in as a prop, MobilePullToRefreshMain applies the class.
     expect(APP_LAYOUT_SOURCE).toMatch(/bottomPadding=\{!hideMobileChrome\}/);
-    expect(MOBILE_PULL_TO_REFRESH_MAIN_SOURCE).toMatch(/bottomPadding && ['"]pb-20['"]/);
+    // PO 2026-09-05 phase-5 mobile pass: the bottom nav went icon-only, so
+    // the reserve shrank with it (pb-20 -> pb-14).
+    expect(MOBILE_PULL_TO_REFRESH_MAIN_SOURCE).toMatch(/bottomPadding && ['"]pb-14['"]/);
   });
 });

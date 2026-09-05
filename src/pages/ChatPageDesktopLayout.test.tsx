@@ -55,13 +55,14 @@ describe("B2 (task 17f): the chat column takes the freed width and self-centres 
   });
 });
 
-describe("B1 (task 17f): the header's History/Conversations button is no longer mobile-only", () => {
-  it("the Conversations button has no lg:hidden class (unlike the More button, which stays mobile-only, out of this task's scope)", () => {
+describe("B1 (task 17f): the header's History/Conversations button is no longer unconditionally mobile-only", () => {
+  it("the Conversations button hides at lg ONLY behind the embedded flag (PO 2026-09-05 round 2: desktop Home keeps the icon-rail toggle; standalone /chat shows it at every width). The More button stays plain mobile-only", () => {
     const conversationsButtonBlock = chatPageHeaderSource.slice(
-      chatPageHeaderSource.indexOf("onClick={onOpenConversations}") - 200,
+      chatPageHeaderSource.indexOf("onClick={onOpenConversations}") - 300,
       chatPageHeaderSource.indexOf("onClick={onOpenConversations}") + 50,
     );
-    expect(conversationsButtonBlock).not.toMatch(/lg:hidden/);
+    expect(conversationsButtonBlock).toMatch(/conversationsMobileOnly && "lg:hidden"/);
+    expect(conversationsButtonBlock).not.toMatch(/(?<!conversationsMobileOnly && ")lg:hidden/);
 
     const moreButtonBlock = chatPageHeaderSource.slice(
       chatPageHeaderSource.indexOf("onClick={onOpenMoreMenu}") - 200,

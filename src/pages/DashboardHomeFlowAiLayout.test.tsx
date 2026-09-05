@@ -382,15 +382,17 @@ describe("Frozen handoff: desktop grid and the chat layout contract (composer al
     expect(dashboardSource).toMatch(/lg:grid-cols-\[minmax\(0,1fr\)_372px\]/);
     expect(dashboardSource).toMatch(/lg:max-\[1280px\]:grid-cols-\[minmax\(0,1fr\)_330px\]/);
     expect(dashboardSource).toMatch(/lg:max-\[1120px\]:grid-cols-\[minmax\(0,1fr\)\]/);
-    expect(dashboardSource).toMatch(/lg:h-dvh lg:min-h-0 lg:overflow-hidden/);
+    // Phase-5 mobile pass: h-full/min-h-0 became unprefixed (the mobile
+    // shell shares the flex height contract); lg keeps dvh + overflow.
+    expect(dashboardSource).toMatch(/h-full min-h-0 lg:h-dvh lg:overflow-hidden/);
     // No brittle viewport-magic values -- the frozen grid/flex contract
     // sizes everything structurally:
     expect(dashboardSource).not.toMatch(/calc\(100vh-/);
   });
 
-  it("the center column is a flex column with min-width/min-height 0, the hero a flex-none row, and the chat wrapper the flex-1/min-h-0 remainder (REV 2: hero flows DIRECTLY into chat)", () => {
-    expect(dashboardSource).toMatch(/flex min-h-0 min-w-0 flex-col/);
-    expect(dashboardSource).toMatch(/lg:flex lg:min-h-0 lg:flex-1 lg:flex-col/);
+  it("the center column is a flex column with min-width/min-height 0, the hero a flex-none row, and the chat wrapper the flex-1/min-h-0 remainder (REV 2: hero flows DIRECTLY into chat; phase-5 mobile pass: the contract is unprefixed, shared by the mobile shell)", () => {
+    expect(dashboardSource).toMatch(/flex min-h-0 min-w-0 flex-1 flex-col/);
+    expect(dashboardSource).toMatch(/flex min-h-0 flex-1 flex-col/);
   });
 
   it("the chat shell is the frozen glass treatment (radius 18, §7 border/background/shadow), flex-col/flex-1/min-h-0/overflow-hidden", () => {
@@ -410,36 +412,42 @@ describe("Frozen handoff: desktop grid and the chat layout contract (composer al
     );
   });
 
-  it("at <=1120px the Assistant Rail becomes a fixed right overlay (372px, max 92vw, z-70) over a z-60 scrim, opened from the chat header's panel button", () => {
-    expect(dashboardSource).toMatch(/lg:max-\[1120px\]:fixed/);
-    expect(dashboardSource).toMatch(/lg:max-\[1120px\]:w-\[372px\]/);
-    expect(dashboardSource).toMatch(/lg:max-\[1120px\]:max-w-\[92vw\]/);
-    expect(dashboardSource).toMatch(/lg:max-\[1120px\]:z-\[70\]/);
-    expect(dashboardSource).toMatch(/lg:max-\[1120px\]:z-\[60\]/);
+  it("at <=1120px -- every shell, mobile included (DESIGN-AUDIT phase 5) -- the Assistant Rail becomes a fixed right overlay (372px, max 92vw, z-70) over a z-60 scrim, opened from the chat header's panel button", () => {
+    // Phase 5 widened the frozen §10 overlay from the lg-gated 1024-1120
+    // desktop window to plain max-[1120px], so the mobile shell shares it.
+    expect(dashboardSource).toMatch(/(?<!lg:)max-\[1120px\]:fixed/);
+    expect(dashboardSource).toMatch(/(?<!lg:)max-\[1120px\]:w-\[372px\]/);
+    expect(dashboardSource).toMatch(/(?<!lg:)max-\[1120px\]:max-w-\[92vw\]/);
+    expect(dashboardSource).toMatch(/(?<!lg:)max-\[1120px\]:z-\[70\]/);
+    expect(dashboardSource).toMatch(/(?<!lg:)max-\[1120px\]:z-\[60\]/);
+    expect(dashboardSource).not.toMatch(/lg:max-\[1120px\]:fixed/);
     expect(dashboardSource).toMatch(/onOpenAssistantPanel=\{\(\) => setAssistantPanelOpen\(true\)\}/);
+  });
+
+  it("DESIGN-AUDIT phase 5: the old below-the-fold stacked mobile rail is gone from the main branch -- the overlay is mobile's rail; the low-data Welcome branch keeps its inline copies", () => {
+    // Exactly the low-data branch's two inline FlowAIAssistantRail
+    // renders (lg:hidden stacked + lg:sticky column) plus the one overlay
+    // aside remain -- 3 total, not 4.
+    expect(dashboardSource.match(/<FlowAIAssistantRail/g)).toHaveLength(3);
   });
 });
 
 // Mobile responsive pass (PO: "the mobile section must be fixed too --
-// the design must be responsive"): below lg Home lives in the app's
-// scrollable mobile shell (search row above, fixed bottom nav below), so
-// the chat wrapper can't be flex-sized by the page -- it takes a
-// dvh-bound height instead, tuned so the composer lands at the bottom
-// nav's top edge on first paint instead of being clipped behind it.
-describe("Mobile responsive pass: bounded dvh chat wrapper below lg", () => {
-  it("the chat wrapper's mobile height is dvh-bound with a min-height floor for short viewports (318px constant for 761-1023, 254px at <=760px where the v2 rev-2 hero is 132px), and lg still overrides back to the desktop flex contract", () => {
+// the design must be responsive"): since the phase-5 mobile pass removed
+// Home's search row and metric capsules, mobile Home is hero + chat only
+// and fills the shell's <main> with the SAME flex contract as desktop
+// (main's pb-20 reserves the fixed bottom nav) -- no tuned dvh constants.
+describe("Mobile responsive pass: flex-sized chat wrapper below lg", () => {
+  it("PO fix (2026-09-05, phase-5 mobile pass): the chat wrapper FLEXES on every breakpoint -- the tuned mobile h-[calc(100dvh-NNNpx)] constants are gone (composer can never fall behind the bottom nav), and round 2 made it full-bleed on mobile (p-0)", () => {
     expect(dashboardSource).toMatch(
-      /h-\[calc\(100dvh-318px\)\] min-h-\[420px\] flex-col[^"]*max-\[760px\]:h-\[calc\(100dvh-254px\)\][^"]*lg:h-auto lg:min-h-0 lg:flex-1/,
+      /flex min-h-0 flex-1 flex-col max-lg:p-0 lg:px-7 lg:pb-5 lg:pt-3/,
     );
+    expect(dashboardSource).not.toMatch(/100dvh-\d+px/);
   });
 
-  it("the metric row pins the v2 rev-2 mobile grid: explicit 2x2 (grid-cols-2, 8px gap, 10px bottom margin) with min-w-0 compact capsules at <=760px", () => {
-    expect(dashboardSource).toMatch(
-      /max-\[760px\]:mb-2\.5 max-\[760px\]:grid max-\[760px\]:grid-cols-2 max-\[760px\]:gap-2/,
-    );
-    expect(dashboardSource).toMatch(
-      /max-\[760px\]:min-w-0 max-\[760px\]:py-\[7px\] max-\[760px\]:pr-2\.5/,
-    );
+  it("PO decision (2026-09-05, phase-5 mobile pass): the metric capsules are desktop-only -- the row is hidden lg:flex and the old v2 rev-2 2x2 mobile grid is gone", () => {
+    expect(dashboardSource).toMatch(/mb-3 hidden lg:flex flex-none flex-wrap gap-2\.5/);
+    expect(dashboardSource).not.toMatch(/max-\[760px\]:grid-cols-2/);
   });
 });
 

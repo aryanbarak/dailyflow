@@ -305,7 +305,7 @@ export function FlowAIAssistantRail({
                   type="button"
                   aria-label="Close panel"
                   onClick={onClosePanel}
-                  className="ml-auto hidden h-7 w-7 items-center justify-center rounded-lg text-[#9EA3BF] hover:bg-[#7C4DFF]/[0.12] hover:text-[#F3F3FA] [@media(min-width:1024px)_and_(max-width:1120px)]:flex"
+                  className="ml-auto hidden h-7 w-7 items-center justify-center rounded-lg text-[#9EA3BF] hover:bg-[#7C4DFF]/[0.12] hover:text-[#F3F3FA] max-[1120px]:flex"
                 >
                   <X className="h-[15px] w-[15px]" strokeWidth={2} />
                 </button>
@@ -806,8 +806,16 @@ export default function Dashboard() {
     // the rail leaves the grid and becomes a fixed right overlay). The
     // cold-start WelcomeWorkspace branch keeps a scrollable padded column
     // instead -- it has no chat surface to fit.
-    <WorkspaceReveal className="lg:h-dvh lg:min-h-0 lg:overflow-hidden">
-      <div className="lg:h-full lg:min-h-0">
+    // PO fix (2026-09-05, phase-5 mobile pass): the mobile shell now uses
+    // the SAME flex height contract as desktop instead of tuned
+    // h-[calc(100dvh-NNNpx)] constants -- Home mobile is hero + chat only
+    // (search row and capsules removed), so the page fills the app
+    // shell's <main> (h-full; main's pb-20 is the fixed bottom-nav
+    // reserve) and the chat wrapper flexes into whatever remains. The
+    // composer can no longer fall behind the bottom nav on ANY viewport
+    // height.
+    <WorkspaceReveal className="h-full min-h-0 lg:h-dvh lg:overflow-hidden">
+      <div className="h-full min-h-0">
           {workspace.isLowData ? (
             <div className="mx-auto max-w-[1180px] space-y-7 px-4 pb-8 pt-5 sm:px-6 lg:h-full lg:overflow-y-auto lg:px-8 lg:pt-6">
               <div className="grid grid-cols-1 gap-7 lg:grid-cols-[minmax(0,1fr)_300px] lg:items-start">
@@ -832,14 +840,14 @@ export default function Dashboard() {
             </div>
           ) : (
             <div
-              className="lg:grid lg:h-full lg:min-h-0 lg:grid-cols-[minmax(0,1fr)_372px] lg:max-[1280px]:grid-cols-[minmax(0,1fr)_330px] lg:max-[1120px]:grid-cols-[minmax(0,1fr)]"
+              className="flex h-full min-h-0 flex-col lg:grid lg:grid-cols-[minmax(0,1fr)_372px] lg:max-[1280px]:grid-cols-[minmax(0,1fr)_330px] lg:max-[1120px]:grid-cols-[minmax(0,1fr)]"
               style={{ background: "var(--flow-gradient-background)" }}
             >
               {/* Center column -- frozen §3: flex column, min-width 0,
                   min-height 0; hero, action bars and the metric-capsule
                   row are flex-none rows and the chat wrapper takes all
                   remaining height. */}
-              <div className="flex min-h-0 min-w-0 flex-col">
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       {/* SmartFlow Home hero -- night-sky composition (v2 base), revised
           per PO decision (2026-09-05): the greeting/goal H1 is REMOVED,
           the moon/orb moved out of the sky into the overlay lockup (orb
@@ -847,7 +855,10 @@ export default function Dashboard() {
           the v2 20-star set to 32 stars with several larger radii and 6
           twinkles. Heights stay v2 (190px; 132px at <=760px). NO
           mountain/ridge/wave paths. */}
-      <WorkspaceRevealSection order={0} className="lg:shrink-0">
+      {/* PO decision (2026-09-05, phase-5 mobile pass round 2): the hero
+          (star field + orb/date lockup) is DESKTOP-ONLY -- on mobile the
+          chat takes the whole screen, ChatGPT-style. */}
+      <WorkspaceRevealSection order={0} className="shrink-0 max-lg:hidden">
         <section className="relative min-h-[190px] flex-none overflow-hidden max-[760px]:min-h-[132px]">
           <svg
             aria-hidden="true"
@@ -1006,17 +1017,25 @@ export default function Dashboard() {
           page then scrolls, as before). The <=760px paddings are the v2
           rev-2 sfCenter values (10px all around). Nothing renders after
           the chat except the mobile-stacked Assistant Rail. */}
-      <WorkspaceRevealSection order={1} className="lg:flex lg:min-h-0 lg:flex-1 lg:flex-col">
-        <div className="flex h-[calc(100dvh-318px)] min-h-[420px] flex-col px-4 pb-4 pt-3 max-[760px]:h-[calc(100dvh-254px)] max-[760px]:px-2.5 max-[760px]:pb-2.5 max-[760px]:pt-2.5 sm:px-7 sm:pb-5 lg:h-auto lg:min-h-0 lg:flex-1">
+      <WorkspaceRevealSection order={1} className="flex min-h-0 flex-1 flex-col">
+        {/* PO fix (2026-09-05, phase-5 mobile pass): the tuned mobile
+            h-[calc(100dvh-NNNpx)] constants (318/254, briefly 266/202)
+            are GONE -- the wrapper now flexes into the remaining shell
+            height on every breakpoint, exactly like the desktop
+            contract, so the composer's action row is always visible
+            above the fixed bottom nav. */}
+        {/* PO decision (2026-09-05, round 2): on mobile the wrapper is
+            FULL-BLEED (p-0) -- the chat surface runs edge to edge under
+            the glass header/nav; desktop keeps its former padding. */}
+        <div className="flex min-h-0 flex-1 flex-col max-lg:p-0 lg:px-7 lg:pb-5 lg:pt-3">
           {/* SmartFlow Home v2 §metrics: the metric capsules moved OUT of
               the hero to a flex-none row directly above the chat shell,
               each stretching equally (flex-1, min-width 150px), and v2
               adds the fourth capsule -- Habit Streak (existing habits
               data, best current streak). Counts are the existing
-              workspace signals; no new backend reads. At <=760px the v2
-              rev-2 file pins the row as an explicit 2x2 grid (#sfMetrics:
-              1fr 1fr, 8px gap, 10px bottom margin; capsules min-w-0 with
-              7px/10px padding) instead of relying on flex wrapping.
+              workspace signals; no new backend reads. (v2 rev-2's 2x2
+              mobile grid is gone -- see the phase-5 mobile-pass comment
+              below: the row no longer renders below lg at all.)
               PO decision (post-v2 rev-2): the four capsules are
               CLICKABLE -- Open Tasks -> /tasks, Today's Events ->
               /calendar, Habit Streak -> /habits (existing routes,
@@ -1025,7 +1044,11 @@ export default function Dashboard() {
               Pending Approvals rows open (first pending item; disabled
               when nothing is pending). Navigation + the existing dialog
               only -- no new execution surface. */}
-          <div className="mb-3 flex flex-none flex-wrap gap-2.5 max-[760px]:mb-2.5 max-[760px]:grid max-[760px]:grid-cols-2 max-[760px]:gap-2">
+          {/* PO decision (2026-09-05, phase-5 mobile pass): the metric
+              capsules are DESKTOP-ONLY -- on mobile they're hidden
+              entirely (hidden lg:flex), so the chat gets the space; the
+              old 2x2 mobile grid is gone. */}
+          <div className="mb-3 hidden lg:flex flex-none flex-wrap gap-2.5">
             {workspace.signals.isLoading ? (
               <>
                 <SkeletonBlock className="h-[46px] min-w-[150px] flex-1 rounded-xl max-[760px]:min-w-0" />
@@ -1131,51 +1154,48 @@ export default function Dashboard() {
           </div>
           <section
             aria-label="SmartFlow conversation"
-            className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[18px] border border-[#7078B4]/[0.22] bg-[#080A1B]/[0.55] shadow-[0_16px_40px_rgba(0,0,0,0.28)] backdrop-blur-[14px]"
+            // PO decision (2026-09-05, round 2): on mobile the card chrome
+            // (radius/border/shadow) drops away -- the same translucent
+            // glass surface, edge to edge over the gradient background.
+            className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[18px] border border-[#7078B4]/[0.22] bg-[#080A1B]/[0.55] shadow-[0_16px_40px_rgba(0,0,0,0.28)] backdrop-blur-[14px] max-lg:rounded-none max-lg:border-0 max-lg:shadow-none"
           >
             <ChatPage embedded onOpenAssistantPanel={() => setAssistantPanelOpen(true)} />
           </section>
         </div>
       </WorkspaceRevealSection>
 
-      {/* Below lg the Assistant Rail stacks after the chat as a secondary
-          surface (the app's existing mobile arrangement) -- same
-          component, same data, different placement per breakpoint. */}
-      <WorkspaceRevealSection order={2} className="px-4 pb-4 sm:px-7 lg:hidden">
-        <div className="overflow-hidden rounded-2xl border border-[#7078B4]/[0.22] bg-[#070816]/[0.78]">
-          <FlowAIAssistantRail
-            rail={workspace.rightRail}
-            pendingApprovals={railPendingApprovals}
-            suggestions={railSuggestions}
-          />
-        </div>
-      </WorkspaceRevealSection>
               </div>
 
-              {/* Frozen §10/§11 (<=1120px, desktop shell): the rail leaves
-                  the grid and becomes a fixed right overlay -- this scrim
-                  sits behind it (z 60) and closes it on click. */}
+              {/* Frozen §10/§11, widened by DESIGN-AUDIT phase 5: at
+                  <=1120px -- now INCLUDING the mobile shell, not just the
+                  1024-1120 desktop window -- the rail leaves the grid and
+                  becomes a fixed right overlay; this scrim sits behind it
+                  (z 60) and closes it on click. The old mobile arrangement
+                  (the rail stacked below the chat, far under the fold and
+                  effectively undiscoverable) is replaced by the same
+                  overlay, opened from the chat header's panel button. */}
               {assistantPanelOpen && (
                 <button
                   type="button"
                   aria-label="Close assistant panel"
                   onClick={() => setAssistantPanelOpen(false)}
-                  className="hidden cursor-default lg:max-[1120px]:fixed lg:max-[1120px]:inset-0 lg:max-[1120px]:z-[60] lg:max-[1120px]:block lg:max-[1120px]:bg-[#03040F]/60 lg:max-[1120px]:backdrop-blur-[2px]"
+                  className="hidden cursor-default max-[1120px]:fixed max-[1120px]:inset-0 max-[1120px]:z-[60] max-[1120px]:block max-[1120px]:bg-[#03040F]/60 max-[1120px]:backdrop-blur-[2px]"
                 />
               )}
 
               {/* Frozen §8: the FULL right Assistant Rail -- 372px grid
                   column on desktop (330px at <=1280px), its body an
-                  independent vertical scroller; at <=1120px a fixed right
-                  overlay (372px, max 92vw, z 70) slid in/out per §10. */}
+                  independent vertical scroller; at <=1120px (all shells,
+                  phase 5) a fixed right overlay (372px, max 92vw, z 70)
+                  slid in/out per §10. */}
               <aside
                 aria-label="Assistant panel"
                 className={cn(
-                  "hidden border-s border-[#7078B4]/[0.14] bg-[#070816]/[0.78] backdrop-blur-[14px] lg:flex lg:min-h-0 lg:flex-col",
-                  "lg:max-[1120px]:fixed lg:max-[1120px]:inset-y-0 lg:max-[1120px]:right-0 lg:max-[1120px]:z-[70] lg:max-[1120px]:w-[372px] lg:max-[1120px]:max-w-[92vw] lg:max-[1120px]:shadow-[-24px_0_60px_rgba(0,0,0,0.55)] lg:max-[1120px]:transition-transform lg:max-[1120px]:duration-[320ms] lg:max-[1120px]:ease-[cubic-bezier(0.32,0.72,0.28,1)] motion-reduce:transition-none",
+                  "flex min-h-0 flex-col border-s border-[#7078B4]/[0.14] bg-[#070816]/[0.78] backdrop-blur-[14px]",
+                  "max-[1120px]:fixed max-[1120px]:inset-y-0 max-[1120px]:right-0 max-[1120px]:z-[70] max-[1120px]:w-[372px] max-[1120px]:max-w-[92vw] max-[1120px]:shadow-[-24px_0_60px_rgba(0,0,0,0.55)] max-[1120px]:transition-transform max-[1120px]:duration-[320ms] max-[1120px]:ease-[cubic-bezier(0.32,0.72,0.28,1)] motion-reduce:transition-none",
                   assistantPanelOpen
-                    ? "lg:max-[1120px]:translate-x-0"
-                    : "lg:max-[1120px]:translate-x-[103%]",
+                    ? "max-[1120px]:translate-x-0"
+                    : "max-[1120px]:translate-x-[103%]",
                 )}
               >
                 <FlowAIAssistantRail
