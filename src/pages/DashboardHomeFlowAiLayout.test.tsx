@@ -314,6 +314,11 @@ describe("Frozen handoff: hero is the approved star-field composition -- NO moun
     expect(hero).toMatch(/#0C0F2E/);
     expect(hero).toMatch(/#080A1F/);
     expect(hero).toMatch(/#050615/);
+    // DESIGN-AUDIT 0.6 follow-up (2026-09-05): the light "dawn" variant
+    // renders through a second gradient def + theme-toggled rects; the
+    // frozen night gradient above must survive alongside it.
+    expect(hero).toMatch(/sfHomeSkyLight/);
+    expect(hero).toMatch(/fill="url\(#sfHomeSky\)" className="hidden dark:inline"/);
   });
 
   it("PO decision (2026-09-05, round 2): the star field is 46 stars (v2's 20 + 12 + 14 lower-band additions, mixed sizes up to r 2.4) with 8 staggered sfTwinkle stars; plus the 3 orb circles in the overlay lockup", () => {
@@ -344,8 +349,11 @@ describe("Frozen handoff: hero is the approved star-field composition -- NO moun
     expect(hero).not.toMatch(/<h1/);
     expect(hero).not.toMatch(/workspace\.hero\.title/);
     expect(hero).toMatch(/workspace\.today\.label/);
-    // Date is white (#F7F7FC), not the old violet eyebrow color.
-    expect(hero).toMatch(/tracking-\[\.18em\] text-\[#F7F7FC\]/);
+    // Date is white (#F7F7FC) in the dark theme, not the old violet
+    // eyebrow color. DESIGN-AUDIT 0.6 follow-up (2026-09-05): light mode
+    // renders it with the foreground token; the frozen white survives
+    // behind the dark: prefix.
+    expect(hero).toMatch(/tracking-\[\.18em\] text-foreground dark:text-\[#F7F7FC\]/);
     expect(hero).not.toMatch(/text-\[#9A6BFF\]/);
     expect(hero).not.toMatch(/workspace\.hero\.summary/);
     expect(hero).not.toMatch(/Open Tasks/);
@@ -395,9 +403,13 @@ describe("Frozen handoff: desktop grid and the chat layout contract (composer al
     expect(dashboardSource).toMatch(/flex min-h-0 flex-1 flex-col/);
   });
 
-  it("the chat shell is the frozen glass treatment (radius 18, §7 border/background/shadow), flex-col/flex-1/min-h-0/overflow-hidden", () => {
+  it("the chat shell is the frozen glass treatment (radius 18, §7 border/background/shadow in the dark theme; DESIGN-AUDIT 0.6 added token-based light equivalents), flex-col/flex-1/min-h-0/overflow-hidden", () => {
     expect(dashboardSource).toMatch(
-      /flex min-h-0 flex-1 flex-col overflow-hidden rounded-\[18px\] border border-\[#7078B4\]\/\[0\.22\] bg-\[#080A1B\]\/\[0\.55\]/,
+      /flex min-h-0 flex-1 flex-col overflow-hidden rounded-\[18px\] border border-border bg-card\/60/,
+    );
+    // The frozen §7 dark values survive behind the dark: variant.
+    expect(dashboardSource).toMatch(
+      /dark:border-\[#7078B4\]\/\[0\.22\] dark:bg-\[#080A1B\]\/\[0\.55\]/,
     );
   });
 

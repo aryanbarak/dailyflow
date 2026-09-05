@@ -34,7 +34,11 @@
     --popover: 0 0% 100%;
     --popover-foreground: 222 47% 11%;
 
-    --primary: 199 85% 38%;
+    /* DESIGN-AUDIT 0.6: the light palette follows the same --flow-primary
+       violet identity 0.1 gave the dark theme (the legacy hsl(199 ...)
+       cyan accent is gone here too). A slightly deeper violet than
+       #7C4DFF keeps white-on-primary readable on light surfaces. */
+    --primary: 256 84% 55%;
     --primary-foreground: 0 0% 100%;
 
     --secondary: 210 20% 93%;
@@ -43,7 +47,7 @@
     --muted: 210 20% 93%;
     --muted-foreground: 215 16% 47%;
 
-    --accent: 199 85% 38%;
+    --accent: 259 90% 62%;
     --accent-foreground: 0 0% 100%;
 
     --destructive: 0 84% 60%;
@@ -51,7 +55,7 @@
 
     --border: 214 32% 91%;
     --input: 214 32% 91%;
-    --ring: 199 85% 38%;
+    --ring: 256 84% 55%;
 
     --radius: 0.75rem;
 
@@ -82,12 +86,23 @@
 
     --sidebar-background: 0 0% 100%;
     --sidebar-foreground: 222 47% 11%;
-    --sidebar-primary: 199 85% 38%;
+    /* DESIGN-AUDIT 0.6: sidebar accent follows the violet derivation. */
+    --sidebar-primary: 256 84% 55%;
     --sidebar-primary-foreground: 0 0% 100%;
     --sidebar-accent: 210 20% 96%;
     --sidebar-accent-foreground: 222 47% 11%;
     --sidebar-border: 214 32% 91%;
-    --sidebar-ring: 199 85% 38%;
+    --sidebar-ring: 256 84% 55%;
+
+    /* DESIGN-AUDIT 0.6 follow-up (hero light variant): the Home hero's
+       star glow + atmosphere read their colors from these vars so ONE
+       SVG geometry serves both themes (the sky gradient itself is two
+       defs toggled by rects in Dashboard.tsx). Light = violet sparkles
+       on a pale dawn sky. */
+    --sf-hero-star-core: #7c4dff;
+    --sf-hero-star-halo: #a78bfa;
+    --sf-hero-atmo-core: rgba(124, 77, 255, 0.16);
+    --sf-hero-atmo-mid: rgba(104, 61, 255, 0.07);
   }
 
   .dark {
@@ -159,6 +174,14 @@
     --sidebar-accent-foreground: 210 40% 98%;
     --sidebar-border: 213 36% 18%;
     --sidebar-ring: 252 100% 68%;
+
+    /* DESIGN-AUDIT 0.6 follow-up (hero light variant): the FROZEN night
+       values -- luminous white/lavender stars, stronger violet
+       atmosphere (see :root above). */
+    --sf-hero-star-core: #ffffff;
+    --sf-hero-star-halo: #ddd4ff;
+    --sf-hero-atmo-core: rgba(124, 77, 255, 0.3);
+    --sf-hero-atmo-mid: rgba(104, 61, 255, 0.14);
   }
 
   /* ── Chat page (task 17a: Chat Experience v2) ──────────────────────────
@@ -292,16 +315,24 @@
     @apply border-border;
   }
 
-  /* DESIGN-AUDIT 0.4: the app shell now paints the Dark Cosmic gradient
-     on EVERY page (previously only the chat page had it, via
+  /* DESIGN-AUDIT 0.4: the app shell paints the Dark Cosmic gradient on
+     EVERY page (previously only the chat page had it, via
      [data-chat-theme="dark"] above). The gradient lives on body as a
      fixed background-image over the --flow-bg-deep base color; html keeps
      the same base color and #root goes transparent so it never occludes
      the body gradient. The raw #07060E is gone -- --flow-bg-deep is the
-     single deep-background source of truth. */
+     single deep-background source of truth.
+     DESIGN-AUDIT 0.6 (light mode): all of that is scoped to .dark now --
+     without the class, the shell paints the plain light --background
+     token and no gradient. */
   html,
   body {
     min-height: 100%;
+    background: hsl(var(--background));
+  }
+
+  html.dark,
+  .dark body {
     background: var(--flow-bg-deep);
   }
 
@@ -327,18 +358,21 @@
 
   body {
     @apply text-foreground font-sans antialiased;
-    /* DESIGN-AUDIT 0.4: background-color + fixed gradient image, kept as
-       separate longhands (same never-compete-with-bg-background reasoning
-       as the [data-chat-theme="dark"] rule above). */
+    background-color: hsl(var(--background));
+    overflow-x: hidden;
+  }
+
+  /* DESIGN-AUDIT 0.4: background-color + fixed gradient image, kept as
+     separate longhands (same never-compete-with-bg-background reasoning
+     as the [data-chat-theme="dark"] rule above). 0.6: dark-only. */
+  .dark body {
     background-color: var(--flow-bg-deep);
     background-image: var(--flow-gradient-background);
     background-attachment: fixed;
-    overflow-x: hidden;
   }
 
   html {
     font-family: 'Sora', 'Inter', system-ui, sans-serif;
-    background: var(--flow-bg-deep);
   }
 
   /* DESIGN-AUDIT 3: Vazirmatn as the explicit body font for Persian, not

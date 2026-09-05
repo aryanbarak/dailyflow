@@ -186,6 +186,9 @@ export default function TutorWisoPage() {
   );
 
   return (
+    // DESIGN-AUDIT 0.6 (light mode): dark-by-design work surface -- see
+    // TutorAppPage.tsx's comment; same treatment across the tutor suite.
+    <div className="dark min-h-dvh bg-[var(--flow-bg-deep)] text-foreground">
     <div className="p-4 lg:p-6 max-w-[1500px] mx-auto space-y-4">
       <div className="flex items-center gap-2 rounded-md border border-slate-700/60 bg-slate-950/60 px-3 py-2">
         <Link to="/tutor/app" className="rounded border border-slate-600 bg-slate-900 px-3 py-1.5 text-sm font-medium hover:bg-slate-800">
@@ -325,6 +328,7 @@ export default function TutorWisoPage() {
           ))}
         </div>
       )}
+    </div>
     </div>
   );
 }
