@@ -39,7 +39,7 @@ import { formatDateLabel, isBeforeDay, isSameDay, toDateOnly } from "@/lib/date"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import ReactMarkdown from "react-markdown";
 import { cn } from "@/lib/utils";
-import { useT } from "@/i18n";
+import { useT, type TranslationKey } from "@/i18n";
 import { useAppearance } from "@/features/settings/appearanceStore";
 import { createDirectionalMarkdownComponents } from "@/lib/bidiText";
 import {
@@ -160,6 +160,10 @@ export default function TasksPage() {
   const [taskChatSessionId, setTaskChatSessionId] = useState<string | null>(null);
   const [taskChatSending, setTaskChatSending] = useState(false);
 
+  // I18N-SWEEP-2: deliberately NOT translated -- this is model context
+  // (like the [Task context] header and the "Tasks:" session title), not
+  // user-visible UI; the response language is governed separately by
+  // responseLanguage.ts.
   const buildTaskContext = useCallback(() => {
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
@@ -230,16 +234,19 @@ export default function TasksPage() {
   const prodStats = useMemo(() => {
     const now = new Date();
 
+    // I18N-SWEEP-2: the memo returns translation KEYS (not display
+    // strings) so the rendered labels re-resolve on language switch
+    // without `t` in the dependency array.
     if (statsRange === 'all') {
       const total = tasks.filter(t => t.completed).length;
       return {
         current: total,
-        currentLabel: 'Total completed',
-        previous: null,
-        previousLabel: null,
-        pct: null,
+        currentLabelKey: 'tasks_stats_total_completed' as TranslationKey,
+        previous: null as number | null,
+        previousLabelKey: null as TranslationKey | null,
+        pct: null as number | null,
         hasData: total > 0,
-        extra: `${counts.rate}% completion rate`,
+        extraRate: counts.rate as number | null,
       };
     }
 
@@ -258,12 +265,12 @@ export default function TasksPage() {
       const pct = prevCount > 0 ? Math.round(((curCount - prevCount) / prevCount) * 100) : null;
       return {
         current: curCount,
-        currentLabel: 'This month',
-        previous: prevCount,
-        previousLabel: 'Last month',
+        currentLabelKey: 'tasks_stats_this_month' as TranslationKey,
+        previous: prevCount as number | null,
+        previousLabelKey: 'tasks_stats_last_month' as TranslationKey | null,
         pct,
         hasData,
-        extra: null,
+        extraRate: null as number | null,
       };
     }
 
@@ -282,12 +289,12 @@ export default function TasksPage() {
     const pct = prevCount > 0 ? Math.round(((curCount - prevCount) / prevCount) * 100) : null;
     return {
       current: curCount,
-      currentLabel: 'This week',
-      previous: prevCount,
-      previousLabel: 'Last week',
+      currentLabelKey: 'tasks_stats_this_week' as TranslationKey,
+      previous: prevCount as number | null,
+      previousLabelKey: 'tasks_stats_last_week' as TranslationKey | null,
       pct,
       hasData,
-      extra: null,
+      extraRate: null as number | null,
     };
   }, [tasks, statsRange, counts.rate]);
 
@@ -336,7 +343,7 @@ export default function TasksPage() {
   const handleSave = async () => {
     const trimmed = title.trim();
     if (!trimmed) {
-      setFormError("Task title is required.");
+      setFormError(t('tasks_form_title_required'));
       return;
     }
     if (editingTask) {
@@ -355,19 +362,19 @@ export default function TasksPage() {
   };
 
   const dueLabel = (task: Task) => {
-    if (!task.dueDate) return "No due date";
+    if (!task.dueDate) return t('tasks_no_due_date');
     const date = parseDateOnly(task.dueDate);
-    if (isSameDay(date, today)) return "Due today";
-    if (!task.completed && isBeforeDay(date, today)) return "Overdue";
-    return `Due ${formatDateLabel(task.dueDate)}`;
+    if (isSameDay(date, today)) return t('tasks_due_today');
+    if (!task.completed && isBeforeDay(date, today)) return t('tasks_overdue');
+    return t('tasks_due_on', { date: formatDateLabel(task.dueDate) });
   };
 
-  const FILTERS: { value: TaskFilter; label: string; count: number }[] = [
-    { value: "all", label: "All", count: tasks.length },
-    { value: "today", label: "Today", count: counts.todayCount },
-    { value: "upcoming", label: "Upcoming", count: counts.upcomingCount },
-    { value: "overdue", label: "Overdue", count: counts.overdueCount },
-    { value: "completed", label: "Completed", count: counts.completedCount },
+  const FILTERS: { value: TaskFilter; labelKey: TranslationKey; count: number }[] = [
+    { value: "all", labelKey: 'tasks_filter_all', count: tasks.length },
+    { value: "today", labelKey: 'tasks_filter_today', count: counts.todayCount },
+    { value: "upcoming", labelKey: 'tasks_filter_upcoming', count: counts.upcomingCount },
+    { value: "overdue", labelKey: 'tasks_overdue', count: counts.overdueCount },
+    { value: "completed", labelKey: 'tasks_completed', count: counts.completedCount },
   ];
 
   return (
@@ -379,19 +386,19 @@ export default function TasksPage() {
         className="flex items-center justify-between py-5"
       >
         <div>
-          <h1 className="text-2xl lg:text-3xl font-semibold mb-1">Tasks</h1>
-          <p className="text-sm text-muted-foreground">Manage your to-dos and reminders</p>
+          <h1 className="text-2xl lg:text-3xl font-semibold mb-1">{t('tasks_title')}</h1>
+          <p className="text-sm text-muted-foreground">{t('tasks_subtitle')}</p>
         </div>
         <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
           <DialogTrigger asChild>
             <Button className="gap-2" style={{ background: 'var(--gradient-primary)' }} onClick={openNewTask}>
               <Plus className="w-4 h-4" />
-              Add Task
+              {t('tasks_add')}
             </Button>
           </DialogTrigger>
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
-              <DialogTitle>{editingTask ? "Edit Task" : "New Task"}</DialogTitle>
+              <DialogTitle>{editingTask ? t('tasks_edit') : t('tasks_new')}</DialogTitle>
             </DialogHeader>
             <div className="space-y-4 pt-4">
               {formError && (
@@ -400,23 +407,23 @@ export default function TasksPage() {
                 </Alert>
               )}
               <div className="space-y-2">
-                <Label>Task Title</Label>
+                <Label>{t('tasks_form_title_label')}</Label>
                 <Input
-                  placeholder="What needs to be done?"
+                  placeholder={t('tasks_form_title_placeholder')}
                   value={title}
                   onChange={(event) => setTitle(event.target.value)}
                 />
               </div>
               <div className="space-y-2">
-                <Label>Notes</Label>
+                <Label>{t('notes')}</Label>
                 <Textarea
-                  placeholder="Optional details"
+                  placeholder={t('tasks_form_notes_placeholder')}
                   value={notes}
                   onChange={(event) => setNotes(event.target.value)}
                 />
               </div>
               <div className="space-y-2">
-                <Label>Due Date</Label>
+                <Label>{t('tasks_due_date')}</Label>
                 <Input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} />
               </div>
               <RecurrencePicker
@@ -426,7 +433,7 @@ export default function TasksPage() {
                 onEndDateChange={setRecurrenceEndDate}
               />
               <Button className="w-full" onClick={handleSave}>
-                {editingTask ? "Save Changes" : "Create Task"}
+                {editingTask ? t('tasks_save_changes') : t('tasks_create')}
               </Button>
             </div>
           </DialogContent>
@@ -439,10 +446,10 @@ export default function TasksPage() {
         <div className="flex-1 min-w-0 space-y-4">
           {/* Stats row */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <StatCard icon={ListTodo} label="Total" value={tasks.length} />
-            <StatCard icon={CheckSquare} label="Open" value={counts.open} />
-            <StatCard icon={CalendarClock} label="Due This Week" value={counts.upcomingCount + counts.todayCount} />
-            <StatCard icon={TrendingUp} label="Completion" value={`${counts.rate}%`} />
+            <StatCard icon={ListTodo} label={t('tasks_stat_total')} value={tasks.length} />
+            <StatCard icon={CheckSquare} label={t('tasks_stat_open')} value={counts.open} />
+            <StatCard icon={CalendarClock} label={t('tasks_stat_due_week')} value={counts.upcomingCount + counts.todayCount} />
+            <StatCard icon={TrendingUp} label={t('tasks_stat_completion')} value={`${counts.rate}%`} />
           </div>
 
           {/* Today's Focus — horizontal card */}
@@ -456,9 +463,9 @@ export default function TasksPage() {
                       <Target className="w-5 h-5 text-primary" />
                     </div>
                     <div>
-                      <p className="text-sm font-semibold">Today&apos;s Focus</p>
+                      <p className="text-sm font-semibold">{t('tasks_focus_title')}</p>
                       <p className="text-[11px] text-muted-foreground">
-                        Complete these important tasks today to stay on track.
+                        {t('tasks_focus_subtitle')}
                       </p>
                     </div>
                   </div>
@@ -499,7 +506,7 @@ export default function TasksPage() {
                         {focusDone}/{focusTotal}
                       </span>
                     </div>
-                    <p className="text-[10px] text-muted-foreground mt-1">Completed</p>
+                    <p className="text-[10px] text-muted-foreground mt-1">{t('tasks_completed')}</p>
                   </div>
                 </div>
               </CardContent>
@@ -509,7 +516,7 @@ export default function TasksPage() {
           {error && (
             <StatePanel
               variant="error"
-              title="Unable to load tasks"
+              title={t('tasks_error_load')}
               description={error}
             />
           )}
@@ -528,7 +535,7 @@ export default function TasksPage() {
                     : "glass-card hover:bg-secondary/40"
                 )}
               >
-                {f.label} ({f.count})
+                {t(f.labelKey)} ({f.count})
               </button>
             ))}
           </div>
@@ -583,7 +590,7 @@ export default function TasksPage() {
                       task.completed ? "border-muted text-muted-foreground" : "border-primary/30 text-primary"
                     )}
                   >
-                    {task.completed ? "Done" : "Open"}
+                    {task.completed ? t('tasks_status_done') : t('tasks_open')}
                   </Badge>
                   <Button
                     variant="ghost"
@@ -607,9 +614,9 @@ export default function TasksPage() {
               <div className="max-w-md mx-auto">
                 <StatePanel
                   variant="empty"
-                  title="No tasks in this view"
-                  description="Try a different filter or add a new task."
-                  actionLabel="Add task"
+                  title={t('tasks_empty_view_title')}
+                  description={t('tasks_empty_view_desc')}
+                  actionLabel={t('tasks_add')}
                   onAction={openNewTask}
                 />
               </div>
@@ -639,7 +646,7 @@ export default function TasksPage() {
                 <div className="icon-tile w-7 h-7 rounded-md">
                   <MessageSquare className="w-3.5 h-3.5 text-primary" />
                 </div>
-                <span className="text-sm font-semibold">Ask about your tasks</span>
+                <span className="text-sm font-semibold">{t('tasks_ask_title')}</span>
               </div>
               {taskAnswer && (
                 <div className="rounded-lg bg-secondary/20 px-3 py-2.5 text-xs leading-relaxed" dir="auto" lang={taskAnswerLanguage ?? undefined}>
@@ -654,7 +661,7 @@ export default function TasksPage() {
                   onClick={() => navigate(`/chat`)}
                   className="flex items-center gap-1 text-[10px] text-primary hover:underline"
                 >
-                  Continue in Flow AI Chat
+                  {t('tasks_ask_continue')}
                   <ExternalLink className="w-2.5 h-2.5" />
                 </button>
               )}
@@ -663,7 +670,7 @@ export default function TasksPage() {
                   value={taskQuestion}
                   onChange={e => setTaskQuestion(e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void handleAskAboutTasks(); } }}
-                  placeholder="e.g. Which tasks should I focus on?"
+                  placeholder={t('tasks_ask_placeholder')}
                   disabled={taskChatSending}
                   className="text-xs h-8"
                 />
@@ -689,16 +696,16 @@ export default function TasksPage() {
                   <div className="icon-tile w-7 h-7 rounded-md">
                     <BarChart3 className="w-3.5 h-3.5 text-primary" />
                   </div>
-                  <span className="text-sm font-semibold">Productivity Stats</span>
+                  <span className="text-sm font-semibold">{t('tasks_stats_title')}</span>
                 </div>
                 <Select value={statsRange} onValueChange={v => setStatsRange(v as 'week' | 'month' | 'all')}>
                   <SelectTrigger className="h-7 w-[110px] text-[11px] glass-card border-border/50">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="week" className="text-xs">This Week</SelectItem>
-                    <SelectItem value="month" className="text-xs">This Month</SelectItem>
-                    <SelectItem value="all" className="text-xs">All Time</SelectItem>
+                    <SelectItem value="week" className="text-xs">{t('tasks_stats_this_week')}</SelectItem>
+                    <SelectItem value="month" className="text-xs">{t('tasks_stats_this_month')}</SelectItem>
+                    <SelectItem value="all" className="text-xs">{t('tasks_stats_all_time')}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -709,9 +716,9 @@ export default function TasksPage() {
                       <CheckSquare className="w-3.5 h-3.5 text-[var(--flow-analyze)]" />
                     </div>
                     <div className="flex-1 min-w-0">
-                      <p className="text-xs font-medium">{prodStats.currentLabel}</p>
+                      <p className="text-xs font-medium">{t(prodStats.currentLabelKey)}</p>
                       <p className="text-[10px] text-muted-foreground">
-                        {prodStats.current} completed
+                        {t('tasks_stats_completed_count', { count: prodStats.current })}
                       </p>
                     </div>
                     {prodStats.pct !== null && (
@@ -721,34 +728,36 @@ export default function TasksPage() {
                       </div>
                     )}
                   </li>
-                  {prodStats.previous !== null && (
+                  {prodStats.previous !== null && prodStats.previousLabelKey && (
                     <li className="flex items-center gap-3">
                       <div className="icon-tile w-8 h-8 rounded-full bg-[var(--flow-study-bg)]">
                         <Calendar className="w-3.5 h-3.5 text-[var(--flow-study)]" />
                       </div>
                       <div className="flex-1 min-w-0">
-                        <p className="text-xs font-medium">{prodStats.previousLabel}</p>
+                        <p className="text-xs font-medium">{t(prodStats.previousLabelKey)}</p>
                         <p className="text-[10px] text-muted-foreground">
-                          {prodStats.previous} completed
+                          {t('tasks_stats_completed_count', { count: prodStats.previous })}
                         </p>
                       </div>
                     </li>
                   )}
-                  {prodStats.extra && (
+                  {prodStats.extraRate !== null && (
                     <li className="flex items-center gap-3">
                       <div className="icon-tile w-8 h-8 rounded-full bg-primary/10">
                         <TrendingUp className="w-3.5 h-3.5 text-primary" />
                       </div>
                       <div className="flex-1 min-w-0">
-                        <p className="text-xs font-medium">Overall</p>
-                        <p className="text-[10px] text-muted-foreground">{prodStats.extra}</p>
+                        <p className="text-xs font-medium">{t('tasks_stats_overall')}</p>
+                        <p className="text-[10px] text-muted-foreground">
+                          {t('tasks_stats_completion_rate', { rate: prodStats.extraRate })}
+                        </p>
                       </div>
                     </li>
                   )}
                 </ul>
               ) : (
                 <p className="text-xs text-muted-foreground">
-                  Trends will appear here as you complete tasks.
+                  {t('tasks_stats_empty')}
                 </p>
               )}
             </CardContent>
@@ -763,14 +772,14 @@ export default function TasksPage() {
       <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete task?</AlertDialogTitle>
+            <AlertDialogTitle>{t('tasks_delete_confirm')}</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently remove &ldquo;{deleteTarget?.title}&rdquo; from your list.
+              {t('tasks_delete_desc', { title: deleteTarget?.title ?? '' })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleDelete}>Delete</AlertDialogAction>
+            <AlertDialogCancel>{t('cancel')}</AlertDialogCancel>
+            <AlertDialogAction onClick={handleDelete}>{t('delete')}</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
