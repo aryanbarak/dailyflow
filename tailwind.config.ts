@@ -100,6 +100,27 @@ export default {
         // Same channels, general-purpose name: non-tutor amber accents
         // (warnings, due-soon markers) that need utility+alpha forms.
         career: "hsl(var(--flow-career-hsl) / <alpha-value>)",
+        // DESIGN-AUDIT 1 cleanup: the frozen Dark Cosmic chrome values
+        // (index.css --flow-night-*-hsl) as a named palette, replacing
+        // Dashboard.tsx's arbitrary [#hex] utilities. hsl(<var> /
+        // <alpha-value>) keeps every /NN and /[0.NN] alpha form working.
+        night: {
+          violet: "hsl(var(--flow-night-violet-hsl) / <alpha-value>)",
+          "violet-soft": "hsl(var(--flow-night-violet-soft-hsl) / <alpha-value>)",
+          "violet-ink": "hsl(var(--flow-night-violet-ink-hsl) / <alpha-value>)",
+          ink: "hsl(var(--flow-night-ink-hsl) / <alpha-value>)",
+          "ink-soft": "hsl(var(--flow-night-ink-soft-hsl) / <alpha-value>)",
+          "ink-faint": "hsl(var(--flow-night-ink-faint-hsl) / <alpha-value>)",
+          "ink-muted": "hsl(var(--flow-night-ink-muted-hsl) / <alpha-value>)",
+          "ink-bright": "hsl(var(--flow-night-ink-bright-hsl) / <alpha-value>)",
+          border: "hsl(var(--flow-night-border-hsl) / <alpha-value>)",
+          divider: "hsl(var(--flow-night-divider-hsl) / <alpha-value>)",
+          surface: "hsl(var(--flow-night-surface-hsl) / <alpha-value>)",
+          shell: "hsl(var(--flow-night-shell-hsl) / <alpha-value>)",
+          panel: "hsl(var(--flow-night-panel-hsl) / <alpha-value>)",
+          deep: "hsl(var(--flow-night-deep-hsl) / <alpha-value>)",
+          track: "hsl(var(--flow-night-track-hsl) / <alpha-value>)",
+        },
       },
       borderRadius: {
         lg: "var(--radius)",

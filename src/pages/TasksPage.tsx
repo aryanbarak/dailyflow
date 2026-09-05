@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { IconTile } from "@/components/common/IconTile";
 import { useNavigate } from "react-router-dom";
 import { AlarmPicker } from "@/features/calendar/components/AlarmPicker";
 import { motion } from "framer-motion";
@@ -31,6 +32,7 @@ import { SmartAcademyWidget } from "@/components/dashboard/SmartAcademyWidget";
 import { useChatSessions } from "@/hooks/useChatSessions";
 import { supabase } from "@/integrations/supabase/client";
 import { StatCard } from "@/components/common/StatCard";
+import { CollapsibleRail } from "@/components/common/CollapsibleRail";
 import { AiSuggestionsCard } from "@/components/common/AiSuggestionsCard";
 import { useAiSuggestions } from "@/features/ai/useAiSuggestions";
 import { RecurrencePicker } from "@/components/RecurrencePicker";
@@ -459,9 +461,7 @@ export default function TasksPage() {
                 <div className="flex flex-col sm:flex-row sm:items-center gap-4">
                   {/* Left — icon + title */}
                   <div className="flex items-center gap-3 shrink-0">
-                    <div className="icon-tile w-10 h-10 rounded-lg">
-                      <Target className="w-5 h-5 text-primary" />
-                    </div>
+                    <IconTile className="w-10 h-10 rounded-lg"><Target className="w-5 h-5" /></IconTile>
                     <div>
                       <p className="text-sm font-semibold">{t('tasks_focus_title')}</p>
                       <p className="text-[11px] text-muted-foreground">
@@ -625,7 +625,7 @@ export default function TasksPage() {
         </div>
 
         {/* Right sidebar */}
-        <div className="w-full lg:w-[300px] shrink-0 space-y-4 lg:sticky lg:top-4 lg:self-start">
+        <CollapsibleRail>
           {/* AI Suggestions — Gemini-generated (DESIGN-AUDIT phase 4: shared card, title/subtitle now translated) */}
           {(suggestionsLoading || aiSuggestions.length > 0) && (
             <AiSuggestionsCard
@@ -643,9 +643,7 @@ export default function TasksPage() {
           <Card className="glass-card card-accent">
             <CardContent className="p-4 space-y-3">
               <div className="flex items-center gap-2.5">
-                <div className="icon-tile w-7 h-7 rounded-md">
-                  <MessageSquare className="w-3.5 h-3.5 text-primary" />
-                </div>
+                <IconTile className="w-7 h-7 rounded-md"><MessageSquare className="w-3.5 h-3.5" /></IconTile>
                 <span className="text-sm font-semibold">{t('tasks_ask_title')}</span>
               </div>
               {taskAnswer && (
@@ -693,9 +691,7 @@ export default function TasksPage() {
             <CardContent className="p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2.5">
-                  <div className="icon-tile w-7 h-7 rounded-md">
-                    <BarChart3 className="w-3.5 h-3.5 text-primary" />
-                  </div>
+                  <IconTile className="w-7 h-7 rounded-md"><BarChart3 className="w-3.5 h-3.5" /></IconTile>
                   <span className="text-sm font-semibold">{t('tasks_stats_title')}</span>
                 </div>
                 <Select value={statsRange} onValueChange={v => setStatsRange(v as 'week' | 'month' | 'all')}>
@@ -712,9 +708,7 @@ export default function TasksPage() {
               {prodStats.hasData ? (
                 <ul className="space-y-3">
                   <li className="flex items-center gap-3">
-                    <div className="icon-tile w-8 h-8 rounded-full bg-[var(--flow-analyze-bg)]">
-                      <CheckSquare className="w-3.5 h-3.5 text-[var(--flow-analyze)]" />
-                    </div>
+                    <IconTile tone="analyze" className="w-8 h-8 rounded-full"><CheckSquare className="w-3.5 h-3.5" /></IconTile>
                     <div className="flex-1 min-w-0">
                       <p className="text-xs font-medium">{t(prodStats.currentLabelKey)}</p>
                       <p className="text-[10px] text-muted-foreground">
@@ -730,9 +724,7 @@ export default function TasksPage() {
                   </li>
                   {prodStats.previous !== null && prodStats.previousLabelKey && (
                     <li className="flex items-center gap-3">
-                      <div className="icon-tile w-8 h-8 rounded-full bg-[var(--flow-study-bg)]">
-                        <Calendar className="w-3.5 h-3.5 text-[var(--flow-study)]" />
-                      </div>
+                      <IconTile tone="study" className="w-8 h-8 rounded-full"><Calendar className="w-3.5 h-3.5" /></IconTile>
                       <div className="flex-1 min-w-0">
                         <p className="text-xs font-medium">{t(prodStats.previousLabelKey)}</p>
                         <p className="text-[10px] text-muted-foreground">
@@ -743,9 +735,7 @@ export default function TasksPage() {
                   )}
                   {prodStats.extraRate !== null && (
                     <li className="flex items-center gap-3">
-                      <div className="icon-tile w-8 h-8 rounded-full bg-primary/10">
-                        <TrendingUp className="w-3.5 h-3.5 text-primary" />
-                      </div>
+                      <IconTile className="w-8 h-8 rounded-full"><TrendingUp className="w-3.5 h-3.5" /></IconTile>
                       <div className="flex-1 min-w-0">
                         <p className="text-xs font-medium">{t('tasks_stats_overall')}</p>
                         <p className="text-[10px] text-muted-foreground">
@@ -765,7 +755,7 @@ export default function TasksPage() {
 
           {/* Smart Academy */}
           <SmartAcademyWidget />
-        </div>
+        </CollapsibleRail>
       </div>
 
       {/* Delete confirmation */}

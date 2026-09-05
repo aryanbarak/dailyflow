@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { IconTile } from "@/components/common/IconTile";
 import {
   CheckCircle2,
   Flame,
@@ -102,9 +103,7 @@ export function AiInsightsWidget() {
     <Card className="glass-card card-accent h-full flex flex-col">
       <CardHeader className="px-4 py-3">
         <CardTitle className="text-sm font-semibold flex items-center gap-2.5">
-          <div className="icon-tile w-7 h-7 rounded-md">
-            <Sparkles className="w-3.5 h-3.5 text-primary" />
-          </div>
+          <IconTile className="w-7 h-7 rounded-md"><Sparkles className="w-3.5 h-3.5" /></IconTile>
           <div>
             <span>AI Insights</span>
             <p className="text-[10px] font-normal text-muted-foreground mt-0.5">

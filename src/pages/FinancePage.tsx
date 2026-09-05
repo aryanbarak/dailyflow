@@ -1,4 +1,5 @@
 ﻿import { useEffect, useMemo, useRef, useState } from "react";
+import { IconTile } from "@/components/common/IconTile";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Plus,
@@ -79,6 +80,7 @@ import { useT } from "@/i18n";
 import { Sparkles } from "lucide-react";
 import { StatCard } from "@/components/common/StatCard";
 import { AiSuggestionsCard } from "@/components/common/AiSuggestionsCard";
+import { CollapsibleRail } from "@/components/common/CollapsibleRail";
 import { useAiSuggestions } from "@/features/ai/useAiSuggestions";
 
 const categories = ["Food", "Transport", "Rent", "Health", "Other"];
@@ -1083,14 +1085,12 @@ export default function FinancePage() {
       </div>
 
       {/* Right sidebar */}
-      <div className="w-full lg:w-[300px] shrink-0 space-y-4 lg:sticky lg:top-4 lg:self-start">
+      <CollapsibleRail>
         {/* Financial Health */}
         <Card className="glass-card card-accent">
           <CardContent className="p-4 space-y-4">
             <div className="flex items-center gap-2.5">
-              <div className="icon-tile w-7 h-7 rounded-md">
-                <DollarSign className="w-3.5 h-3.5 text-primary" />
-              </div>
+              <IconTile className="w-7 h-7 rounded-md"><DollarSign className="w-3.5 h-3.5" /></IconTile>
               <span className="text-sm font-semibold">{t('finance_health')}</span>
             </div>
             {(() => {
@@ -1199,7 +1199,7 @@ export default function FinancePage() {
             </Button>
           </CardContent>
         </Card>
-      </div>
+      </CollapsibleRail>
       </div>
 
       <AnimatePresence>

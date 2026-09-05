@@ -278,15 +278,15 @@ export interface AssistantRailSuggestionItem {
 // longer dark-by-design -- every surface gets a token-based light
 // treatment (same pattern as the Home capsules) with the frozen dark
 // values preserved verbatim behind dark: prefixes.
-const RAIL_SECTION_CLASS = "mt-[18px] border-t border-border pt-4 dark:border-[#757CAA]/[0.14]";
+const RAIL_SECTION_CLASS = "mt-[18px] border-t border-border pt-4 dark:border-night-divider/[0.14]";
 const RAIL_SECTION_LABEL_CLASS =
-  "text-[11px] font-semibold uppercase tracking-[.12em] text-muted-foreground dark:text-[#777C9A]";
+  "text-[11px] font-semibold uppercase tracking-[.12em] text-muted-foreground dark:text-night-ink-faint";
 const RAIL_VIEW_ALL_CLASS =
   "text-[11px] font-medium text-primary transition-colors hover:text-primary/70 dark:text-[#9A6BFF] dark:hover:text-[#C2B1FF]";
 const RAIL_ROW_CLASS =
-  "flex w-full items-center gap-[11px] rounded-[11px] border border-border bg-card/70 px-2.5 py-[9px] text-left transition-colors hover:border-primary/40 hover:bg-primary/[0.06] dark:border-[#7078B4]/[0.18] dark:bg-[#0B0D20]/40 dark:hover:border-[#7D5CFF]/40 dark:hover:bg-[#7C4DFF]/[0.08]";
+  "flex w-full items-center gap-[11px] rounded-[11px] border border-border bg-card/70 px-2.5 py-[9px] text-left transition-colors hover:border-primary/40 hover:bg-primary/[0.06] dark:border-night-border/[0.18] dark:bg-night-surface/40 dark:hover:border-night-violet-soft/40 dark:hover:bg-night-violet/[0.08]";
 const RAIL_TILE_CLASS =
-  "flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px] bg-primary/[0.10] text-primary dark:bg-[#7C4DFF]/[0.14] dark:text-[#A88BFF]";
+  "flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px] bg-primary/[0.10] text-primary dark:bg-night-violet/[0.14] dark:text-night-violet-ink";
 
 export function FlowAIAssistantRail({
   rail,
@@ -336,13 +336,13 @@ export function FlowAIAssistantRail({
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <p className="text-[15px] font-semibold text-foreground dark:text-[#F7F7FC]">SmartFlow</p>
+              <p className="text-[15px] font-semibold text-foreground dark:text-night-ink">SmartFlow</p>
               {onClosePanel && (
                 <button
                   type="button"
                   aria-label="Close panel"
                   onClick={onClosePanel}
-                  className="ml-auto hidden h-7 w-7 items-center justify-center rounded-lg text-muted-foreground hover:bg-primary/[0.08] hover:text-foreground dark:text-[#9EA3BF] dark:hover:bg-[#7C4DFF]/[0.12] dark:hover:text-[#F3F3FA] max-[1120px]:flex"
+                  className="ml-auto hidden h-7 w-7 items-center justify-center rounded-lg text-muted-foreground hover:bg-primary/[0.08] hover:text-foreground dark:text-night-ink-muted dark:hover:bg-night-violet/[0.12] dark:hover:text-night-ink-bright max-[1120px]:flex"
                 >
                   <X className="h-[15px] w-[15px]" strokeWidth={2} />
                 </button>
@@ -355,14 +355,14 @@ export function FlowAIAssistantRail({
               </span>
               {t("online")}
             </div>
-            <p className="mt-1.5 text-xs leading-[1.55] text-muted-foreground dark:text-[#A5A8C2]">
+            <p className="mt-1.5 text-xs leading-[1.55] text-muted-foreground dark:text-night-ink-soft">
               {translateEngineCopy(rail.statusMessage, t, ENGINE_STATUS_KEYS)}
             </p>
           </div>
         </div>
 
         {pendingApprovals.length > 0 && (
-          <div className="mt-5 border-t border-[#757CAA]/[0.14] pt-4">
+          <div className="mt-5 border-t border-night-divider/[0.14] pt-4">
             <div className="mb-2.5 flex items-baseline justify-between">
               <p className={RAIL_SECTION_LABEL_CLASS}>{t("dashboard_rail_pending_approvals")}</p>
               <button type="button" onClick={pendingApprovals[0].onReview} className={RAIL_VIEW_ALL_CLASS}>
@@ -376,11 +376,11 @@ export function FlowAIAssistantRail({
                     <FileText className="h-[15px] w-[15px]" strokeWidth={1.8} />
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[12.5px] font-semibold text-foreground dark:text-[#F7F7FC]" dir="auto">
+                    <span className="block truncate text-[12.5px] font-semibold text-foreground dark:text-night-ink" dir="auto">
                       {item.title}
                     </span>
                     {item.meta && (
-                      <span className="mt-px block text-[11.5px] text-muted-foreground dark:text-[#A5A8C2]">{item.meta}</span>
+                      <span className="mt-px block text-[11.5px] text-muted-foreground dark:text-night-ink-soft">{item.meta}</span>
                     )}
                   </span>
                 </button>
@@ -418,14 +418,14 @@ export function FlowAIAssistantRail({
                       <ItemIcon className="h-[15px] w-[15px]" strokeWidth={1.8} />
                     </span>
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[12.5px] font-medium text-foreground dark:text-[#F7F7FC]">
+                      <span className="block truncate text-[12.5px] font-medium text-foreground dark:text-night-ink">
                         {item.title}
                       </span>
                       {item.meta && (
-                        <span className="mt-px block truncate text-[11.5px] text-muted-foreground dark:text-[#A5A8C2]">{item.meta}</span>
+                        <span className="mt-px block truncate text-[11.5px] text-muted-foreground dark:text-night-ink-soft">{item.meta}</span>
                       )}
                     </span>
-                    <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground dark:text-[#777C9A]" strokeWidth={2} />
+                    <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground dark:text-night-ink-faint" strokeWidth={2} />
                   </button>
                 );
               })}
@@ -478,12 +478,12 @@ export function FlowAIAssistantRail({
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center justify-between gap-2">
-                      <span className="truncate text-[12.5px] font-medium text-foreground dark:text-[#F7F7FC]">
+                      <span className="truncate text-[12.5px] font-medium text-foreground dark:text-night-ink">
                         {lesson.title}
                       </span>
-                      <span className="shrink-0 text-[11px] text-muted-foreground dark:text-[#A5A8C2]">{lesson.progress}%</span>
+                      <span className="shrink-0 text-[11px] text-muted-foreground dark:text-night-ink-soft">{lesson.progress}%</span>
                     </span>
-                    <span className="mt-1.5 block h-1 overflow-hidden rounded-full bg-muted dark:bg-[#272B4B]/90">
+                    <span className="mt-1.5 block h-1 overflow-hidden rounded-full bg-muted dark:bg-night-track/90">
                       <span
                         className="block h-full rounded-full"
                         style={{
@@ -540,14 +540,14 @@ export function FlowAIAssistantRail({
                     <ItemIcon className="h-[15px] w-[15px]" strokeWidth={1.8} />
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[12.5px] font-medium text-foreground dark:text-[#F7F7FC]">
+                    <span className="block truncate text-[12.5px] font-medium text-foreground dark:text-night-ink">
                       {item.title}
                     </span>
-                    <span className="mt-px block truncate text-[11.5px] text-muted-foreground dark:text-[#A5A8C2]">
+                    <span className="mt-px block truncate text-[11.5px] text-muted-foreground dark:text-night-ink-soft">
                       {item.reason}
                     </span>
                   </span>
-                  <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground dark:text-[#777C9A]" strokeWidth={2} />
+                  <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground dark:text-night-ink-faint" strokeWidth={2} />
                 </button>
               );
             })}
@@ -557,7 +557,7 @@ export function FlowAIAssistantRail({
         <div className={RAIL_SECTION_CLASS}>
           <p className={`mb-2.5 ${RAIL_SECTION_LABEL_CLASS}`}>Recent Conversation</p>
           {rail.isChatLoading ? (
-            <div className="rounded-[11px] border border-border bg-card/70 p-3 dark:border-[#7078B4]/[0.18] dark:bg-[#0B0D20]/40">
+            <div className="rounded-[11px] border border-border bg-card/70 p-3 dark:border-night-border/[0.18] dark:bg-night-surface/40">
               <SkeletonBlock className="h-3 w-32" />
               <SkeletonBlock className="mt-2 h-2.5 w-16" />
             </div>
@@ -578,21 +578,21 @@ export function FlowAIAssistantRail({
                     });
                     navigate("/chat");
                   }}
-                  className="block w-full rounded-[11px] border border-border bg-card/70 px-3 py-[11px] text-start transition-colors hover:border-primary/40 hover:bg-primary/[0.06] dark:border-[#7078B4]/[0.18] dark:bg-[#0B0D20]/40 dark:hover:border-[#7D5CFF]/40 dark:hover:bg-[#7C4DFF]/[0.08]"
+                  className="block w-full rounded-[11px] border border-border bg-card/70 px-3 py-[11px] text-start transition-colors hover:border-primary/40 hover:bg-primary/[0.06] dark:border-night-border/[0.18] dark:bg-night-surface/40 dark:hover:border-night-violet-soft/40 dark:hover:bg-night-violet/[0.08]"
                 >
-                  <span className="block truncate text-[12.5px] font-medium text-foreground dark:text-[#F7F7FC]" dir="auto">
+                  <span className="block truncate text-[12.5px] font-medium text-foreground dark:text-night-ink" dir="auto">
                     {conversation.title}
                   </span>
-                  <span className="mt-0.5 block text-[11.5px] text-muted-foreground dark:text-[#A5A8C2]">
+                  <span className="mt-0.5 block text-[11.5px] text-muted-foreground dark:text-night-ink-soft">
                     {conversation.relativeTime}
                   </span>
                 </button>
               ))}
             </div>
           ) : (
-            <div className="rounded-[11px] border border-border bg-card/70 p-3 dark:border-[#7078B4]/[0.18] dark:bg-[#0B0D20]/40">
-              <p className="text-[12.5px] font-medium text-foreground dark:text-[#F7F7FC]">{t("dashboard_no_recent_conversation")}</p>
-              <p className="mt-1 text-[11.5px] leading-4 text-muted-foreground dark:text-[#A5A8C2]">
+            <div className="rounded-[11px] border border-border bg-card/70 p-3 dark:border-night-border/[0.18] dark:bg-night-surface/40">
+              <p className="text-[12.5px] font-medium text-foreground dark:text-night-ink">{t("dashboard_no_recent_conversation")}</p>
+              <p className="mt-1 text-[11.5px] leading-4 text-muted-foreground dark:text-night-ink-soft">
                 {t("dashboard_no_recent_conversation_hint")}
               </p>
             </div>
@@ -865,7 +865,7 @@ export default function Dashboard() {
                   <WelcomeWorkspace
                     afterHero={
                       <WorkspaceRevealSection order={1} className="lg:hidden">
-                        <div className="overflow-hidden rounded-2xl border border-border bg-card/80 dark:border-[#7078B4]/[0.22] dark:bg-[#070816]/[0.78]">
+                        <div className="overflow-hidden rounded-2xl border border-border bg-card/80 dark:border-night-border/[0.22] dark:bg-night-panel/[0.78]">
                           <FlowAIAssistantRail rail={workspace.rightRail} />
                         </div>
                       </WorkspaceRevealSection>
@@ -874,7 +874,7 @@ export default function Dashboard() {
                   />
                 </div>
                 <WorkspaceRevealSection order={2} className="hidden lg:sticky lg:top-6 lg:block">
-                  <div className="overflow-hidden rounded-2xl border border-border bg-card/80 dark:border-[#7078B4]/[0.22] dark:bg-[#070816]/[0.78]">
+                  <div className="overflow-hidden rounded-2xl border border-border bg-card/80 dark:border-night-border/[0.22] dark:bg-night-panel/[0.78]">
                     <FlowAIAssistantRail rail={workspace.rightRail} />
                   </div>
                 </WorkspaceRevealSection>
@@ -1034,7 +1034,7 @@ export default function Dashboard() {
               <circle cx="48" cy="48" r="31" fill="none" stroke="rgba(154,107,255,.3)" strokeWidth="1.5" />
               <circle cx="48" cy="48" r="16" fill="url(#sfHeroOrb)" />
             </svg>
-            <p className="text-[15px] font-semibold uppercase tracking-[.18em] text-foreground dark:text-[#F7F7FC] max-[760px]:text-[12.5px]">
+            <p className="text-[15px] font-semibold uppercase tracking-[.18em] text-foreground dark:text-night-ink max-[760px]:text-[12.5px]">
               {lang === "en"
                 ? workspace.today.label
                 : new Intl.DateTimeFormat(localeFor(lang), {
@@ -1132,14 +1132,14 @@ export default function Dashboard() {
                       domain: "tasks",
                     })
                   }
-                  className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-border bg-card/70 py-2 pl-2.5 pr-3.5 text-left backdrop-blur-[8px] transition-colors hover:border-primary/40 hover:bg-primary/[0.06] dark:border-[#7078B4]/[0.22] dark:bg-[#0B0D20]/60 dark:hover:border-[#7D5CFF]/40 dark:hover:bg-[#7C4DFF]/[0.08] max-[760px]:min-w-0 max-[760px]:py-[7px] max-[760px]:pr-2.5"
+                  className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-border bg-card/70 py-2 pl-2.5 pr-3.5 text-left backdrop-blur-[8px] transition-colors hover:border-primary/40 hover:bg-primary/[0.06] dark:border-night-border/[0.22] dark:bg-night-surface/60 dark:hover:border-night-violet-soft/40 dark:hover:bg-night-violet/[0.08] max-[760px]:min-w-0 max-[760px]:py-[7px] max-[760px]:pr-2.5"
                 >
-                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#7C4DFF]/[0.16] text-primary dark:text-[#A88BFF]">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-night-violet/[0.16] text-primary dark:text-night-violet-ink">
                     <CheckSquare className="h-3.5 w-3.5" strokeWidth={2} />
                   </span>
                   <span>
-                    <span className="block text-[10px] font-medium uppercase tracking-[.08em] text-muted-foreground dark:text-[#777C9A] max-[760px]:text-[9px]">{t("dashboard_stat_open_tasks")}</span>
-                    <span className="text-[17px] font-semibold text-foreground dark:text-[#F7F7FC]">
+                    <span className="block text-[10px] font-medium uppercase tracking-[.08em] text-muted-foreground dark:text-night-ink-faint max-[760px]:text-[9px]">{t("dashboard_stat_open_tasks")}</span>
+                    <span className="text-[17px] font-semibold text-foreground dark:text-night-ink">
                       {workspace.signals.incompleteTasks}
                     </span>
                   </span>
@@ -1155,14 +1155,14 @@ export default function Dashboard() {
                       domain: "calendar",
                     })
                   }
-                  className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-border bg-card/70 py-2 pl-2.5 pr-3.5 text-left backdrop-blur-[8px] transition-colors hover:border-primary/40 hover:bg-primary/[0.06] dark:border-[#7078B4]/[0.22] dark:bg-[#0B0D20]/60 dark:hover:border-[#7D5CFF]/40 dark:hover:bg-[#7C4DFF]/[0.08] max-[760px]:min-w-0 max-[760px]:py-[7px] max-[760px]:pr-2.5"
+                  className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-border bg-card/70 py-2 pl-2.5 pr-3.5 text-left backdrop-blur-[8px] transition-colors hover:border-primary/40 hover:bg-primary/[0.06] dark:border-night-border/[0.22] dark:bg-night-surface/60 dark:hover:border-night-violet-soft/40 dark:hover:bg-night-violet/[0.08] max-[760px]:min-w-0 max-[760px]:py-[7px] max-[760px]:pr-2.5"
                 >
                   <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#4F73FF]/[0.15] text-[#3557E8] dark:text-[#678BFF]">
                     <Calendar className="h-3.5 w-3.5" strokeWidth={2} />
                   </span>
                   <span>
-                    <span className="block text-[10px] font-medium uppercase tracking-[.08em] text-muted-foreground dark:text-[#777C9A] max-[760px]:text-[9px]">{t("dashboard_stat_todays_events")}</span>
-                    <span className="text-[17px] font-semibold text-foreground dark:text-[#F7F7FC]">
+                    <span className="block text-[10px] font-medium uppercase tracking-[.08em] text-muted-foreground dark:text-night-ink-faint max-[760px]:text-[9px]">{t("dashboard_stat_todays_events")}</span>
+                    <span className="text-[17px] font-semibold text-foreground dark:text-night-ink">
                       {workspace.signals.eventsToday}
                     </span>
                   </span>
@@ -1184,14 +1184,14 @@ export default function Dashboard() {
                     });
                     navigate("/habits");
                   }}
-                  className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-border bg-card/70 py-2 pl-2.5 pr-3.5 text-left backdrop-blur-[8px] transition-colors hover:border-primary/40 hover:bg-primary/[0.06] dark:border-[#7078B4]/[0.22] dark:bg-[#0B0D20]/60 dark:hover:border-[#7D5CFF]/40 dark:hover:bg-[#7C4DFF]/[0.08] max-[760px]:min-w-0 max-[760px]:py-[7px] max-[760px]:pr-2.5"
+                  className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-border bg-card/70 py-2 pl-2.5 pr-3.5 text-left backdrop-blur-[8px] transition-colors hover:border-primary/40 hover:bg-primary/[0.06] dark:border-night-border/[0.22] dark:bg-night-surface/60 dark:hover:border-night-violet-soft/40 dark:hover:bg-night-violet/[0.08] max-[760px]:min-w-0 max-[760px]:py-[7px] max-[760px]:pr-2.5"
                 >
                   <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#F3A044]/[0.14] text-[#B26A0D] dark:text-[#F3A044]">
                     <Flame className="h-3.5 w-3.5" strokeWidth={2} />
                   </span>
                   <span>
-                    <span className="block text-[10px] font-medium uppercase tracking-[.08em] text-muted-foreground dark:text-[#777C9A] max-[760px]:text-[9px]">{t("dashboard_stat_habit_streak")}</span>
-                    <span className="text-[17px] font-semibold text-foreground dark:text-[#F7F7FC]">
+                    <span className="block text-[10px] font-medium uppercase tracking-[.08em] text-muted-foreground dark:text-night-ink-faint max-[760px]:text-[9px]">{t("dashboard_stat_habit_streak")}</span>
+                    <span className="text-[17px] font-semibold text-foreground dark:text-night-ink">
                       {habitStreak}
                     </span>
                   </span>
@@ -1200,14 +1200,14 @@ export default function Dashboard() {
                   type="button"
                   disabled={railPendingApprovals.length === 0}
                   onClick={() => railPendingApprovals[0]?.onReview()}
-                  className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-primary/35 bg-primary/[0.08] py-2 pl-2.5 pr-3.5 text-left backdrop-blur-[8px] transition-colors enabled:hover:border-primary/60 enabled:hover:bg-primary/[0.14] disabled:cursor-default dark:border-[#7D5CFF]/[0.35] dark:bg-[#7C4DFF]/[0.10] dark:enabled:hover:border-[#7D5CFF]/60 dark:enabled:hover:bg-[#7C4DFF]/[0.16] max-[760px]:min-w-0 max-[760px]:py-[7px] max-[760px]:pr-2.5"
+                  className="flex min-w-[150px] flex-1 items-center gap-2.5 rounded-xl border border-primary/35 bg-primary/[0.08] py-2 pl-2.5 pr-3.5 text-left backdrop-blur-[8px] transition-colors enabled:hover:border-primary/60 enabled:hover:bg-primary/[0.14] disabled:cursor-default dark:border-night-violet-soft/[0.35] dark:bg-night-violet/[0.10] dark:enabled:hover:border-night-violet-soft/60 dark:enabled:hover:bg-night-violet/[0.16] max-[760px]:min-w-0 max-[760px]:py-[7px] max-[760px]:pr-2.5"
                 >
-                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#7C4DFF]/20 text-primary dark:text-[#C2B1FF]">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-night-violet/20 text-primary dark:text-[#C2B1FF]">
                     <ShieldCheck className="h-3.5 w-3.5" strokeWidth={2} />
                   </span>
                   <span>
-                    <span className="block text-[10px] font-medium uppercase tracking-[.08em] text-muted-foreground dark:text-[#777C9A] max-[760px]:text-[9px]">{t("dashboard_stat_approvals")}</span>
-                    <span className="text-[17px] font-semibold text-foreground dark:text-[#F7F7FC]">
+                    <span className="block text-[10px] font-medium uppercase tracking-[.08em] text-muted-foreground dark:text-night-ink-faint max-[760px]:text-[9px]">{t("dashboard_stat_approvals")}</span>
+                    <span className="text-[17px] font-semibold text-foreground dark:text-night-ink">
                       {approvalsPendingCount}
                     </span>
                   </span>
@@ -1220,7 +1220,7 @@ export default function Dashboard() {
             // PO decision (2026-09-05, round 2): on mobile the card chrome
             // (radius/border/shadow) drops away -- the same translucent
             // glass surface, edge to edge over the gradient background.
-            className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[18px] border border-border bg-card/60 shadow-[0_16px_40px_rgba(0,0,0,0.08)] backdrop-blur-[14px] dark:border-[#7078B4]/[0.22] dark:bg-[#080A1B]/[0.55] dark:shadow-[0_16px_40px_rgba(0,0,0,0.28)] max-lg:rounded-none max-lg:border-0 max-lg:shadow-none"
+            className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[18px] border border-border bg-card/60 shadow-[0_16px_40px_rgba(0,0,0,0.08)] backdrop-blur-[14px] dark:border-night-border/[0.22] dark:bg-night-shell/[0.55] dark:shadow-[0_16px_40px_rgba(0,0,0,0.28)] max-lg:rounded-none max-lg:border-0 max-lg:shadow-none"
           >
             <ChatPage embedded onOpenAssistantPanel={() => setAssistantPanelOpen(true)} />
           </section>
@@ -1242,7 +1242,7 @@ export default function Dashboard() {
                   type="button"
                   aria-label="Close assistant panel"
                   onClick={() => setAssistantPanelOpen(false)}
-                  className="hidden cursor-default max-[1120px]:fixed max-[1120px]:inset-0 max-[1120px]:z-[60] max-[1120px]:block max-[1120px]:bg-[#03040F]/60 max-[1120px]:backdrop-blur-[2px]"
+                  className="hidden cursor-default max-[1120px]:fixed max-[1120px]:inset-0 max-[1120px]:z-[60] max-[1120px]:block max-[1120px]:bg-night-deep/60 max-[1120px]:backdrop-blur-[2px]"
                 />
               )}
 
@@ -1257,7 +1257,7 @@ export default function Dashboard() {
                   // DESIGN-AUDIT 0.6 follow-up (2026-09-05): light rail
                   // shell -- token border/glass; frozen dark values kept
                   // behind dark: prefixes.
-                  "flex min-h-0 flex-col border-s border-border bg-card/80 backdrop-blur-[14px] dark:border-[#7078B4]/[0.14] dark:bg-[#070816]/[0.78]",
+                  "flex min-h-0 flex-col border-s border-border bg-card/80 backdrop-blur-[14px] dark:border-night-border/[0.14] dark:bg-night-panel/[0.78]",
                   "max-[1120px]:fixed max-[1120px]:inset-y-0 max-[1120px]:right-0 max-[1120px]:z-[70] max-[1120px]:w-[372px] max-[1120px]:max-w-[92vw] max-[1120px]:shadow-[-24px_0_60px_rgba(15,23,42,0.20)] dark:max-[1120px]:shadow-[-24px_0_60px_rgba(0,0,0,0.55)] max-[1120px]:transition-transform max-[1120px]:duration-[320ms] max-[1120px]:ease-[cubic-bezier(0.32,0.72,0.28,1)] motion-reduce:transition-none",
                   assistantPanelOpen
                     ? "max-[1120px]:translate-x-0"

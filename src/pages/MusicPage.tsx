@@ -30,6 +30,8 @@ import { useT } from "@/i18n";
 import { loadPlaylists } from "@/hooks/usePlaylists";
 import { loadHistory as loadOldHistory } from "@/hooks/useMusicPlayer";
 import { safeGet, storageKey } from "@/lib/storage";
+import { CollapsibleRail } from "@/components/common/CollapsibleRail";
+import { IconTile } from "@/components/common/IconTile";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -76,12 +78,15 @@ async function fetchYTInfo(id: string) {
 
 // Quick Modes
 const QUICK_MODES = [
-  { id: 'deep-focus', icon: Zap, label: 'mf_mode_deep_focus', desc: 'mf_mode_deep_focus_desc', query: 'Deep Focus Coding Music', color: 'bg-[var(--flow-study-bg)] text-[var(--flow-study)]' },
-  { id: 'study', icon: BookOpen, label: 'mf_mode_study', desc: 'mf_mode_study_desc', query: 'Study Music Concentration', color: 'bg-[var(--flow-review-bg)] text-[var(--flow-review)]' },
-  { id: 'relax', icon: Headphones, label: 'mf_mode_relax', desc: 'mf_mode_relax_desc', query: 'Calm Relaxing Music', color: 'bg-[var(--flow-analyze-bg)] text-[var(--flow-analyze)]' },
-  { id: 'sleep', icon: Moon, label: 'mf_mode_sleep', desc: 'mf_mode_sleep_desc', query: 'Sleep Music Deep Calm', color: 'bg-[var(--flow-study-bg)] text-[var(--flow-study)]' },
-  { id: 'workout', icon: Dumbbell, label: 'mf_mode_workout', desc: 'mf_mode_workout_desc', query: 'Workout Motivation Music', color: 'bg-[var(--flow-plan-bg)] text-[var(--flow-plan)]' },
-  { id: 'family', icon: Users, label: 'mf_mode_family', desc: 'mf_mode_family_desc', query: 'Kids Music Family Friendly', color: 'bg-[var(--flow-career-bg)] text-[var(--flow-career)]' },
+  // DESIGN-AUDIT 2 follow-up: the per-mode `color` strings were dead --
+  // no consumer ever rendered them (the chip buttons below use their own
+  // active/inactive classes) -- so they are dropped rather than migrated.
+  { id: 'deep-focus', icon: Zap, label: 'mf_mode_deep_focus', desc: 'mf_mode_deep_focus_desc', query: 'Deep Focus Coding Music' },
+  { id: 'study', icon: BookOpen, label: 'mf_mode_study', desc: 'mf_mode_study_desc', query: 'Study Music Concentration' },
+  { id: 'relax', icon: Headphones, label: 'mf_mode_relax', desc: 'mf_mode_relax_desc', query: 'Calm Relaxing Music' },
+  { id: 'sleep', icon: Moon, label: 'mf_mode_sleep', desc: 'mf_mode_sleep_desc', query: 'Sleep Music Deep Calm' },
+  { id: 'workout', icon: Dumbbell, label: 'mf_mode_workout', desc: 'mf_mode_workout_desc', query: 'Workout Motivation Music' },
+  { id: 'family', icon: Users, label: 'mf_mode_family', desc: 'mf_mode_family_desc', query: 'Kids Music Family Friendly' },
 ] as const;
 
 // ─── localStorage migration ─────────────────────────────────────────────────
@@ -323,14 +328,14 @@ export default function MusicPage() {
       {/* KPI Cards */}
       <motion.div variants={stagger} initial="hidden" animate="show" className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         {[
-          { icon: Timer, label: t('mf_kpi_listening'), value: listeningLabel, sub: t('mf_kpi_listening_sub'), color: 'bg-[var(--flow-study-bg)] text-[var(--flow-study)]' },
-          { icon: Zap, label: t('mf_kpi_focus'), value: String(pomodoroRunning ? 1 : 0), sub: t('mf_kpi_focus_sub'), color: 'bg-[var(--flow-analyze-bg)] text-[var(--flow-analyze)]' },
-          { icon: BookOpen, label: t('mf_kpi_study'), value: String(likedTracks.length), sub: t('mf_kpi_study_sub'), color: 'bg-[var(--flow-plan-bg)] text-[var(--flow-plan)]' },
-          { icon: FolderOpen, label: t('mf_kpi_playlists'), value: String(dbPlaylists.length), sub: t('mf_kpi_playlists_sub'), color: 'bg-[var(--flow-report-bg)] text-[var(--flow-report)]' },
+          { icon: Timer, label: t('mf_kpi_listening'), value: listeningLabel, sub: t('mf_kpi_listening_sub'), tone: 'study' as const },
+          { icon: Zap, label: t('mf_kpi_focus'), value: String(pomodoroRunning ? 1 : 0), sub: t('mf_kpi_focus_sub'), tone: 'analyze' as const },
+          { icon: BookOpen, label: t('mf_kpi_study'), value: String(likedTracks.length), sub: t('mf_kpi_study_sub'), tone: 'plan' as const },
+          { icon: FolderOpen, label: t('mf_kpi_playlists'), value: String(dbPlaylists.length), sub: t('mf_kpi_playlists_sub'), tone: 'report' as const },
         ].map(kpi => (
           <motion.div key={kpi.label} variants={fadeUp}>
             <Card className="glass-card card-accent surface-elevated"><CardContent className="p-3.5">
-              <div className="flex items-center gap-2.5 mb-2"><div className={cn("icon-tile w-8 h-8 rounded-md", kpi.color)}><kpi.icon className="w-4 h-4" /></div>
+              <div className="flex items-center gap-2.5 mb-2"><IconTile tone={kpi.tone} className="w-8 h-8 rounded-md"><kpi.icon className="w-4 h-4" /></IconTile>
                 <span className="text-[10px] font-medium text-muted-foreground">{kpi.label}</span></div>
               <p className="text-xl font-bold tracking-tight">{kpi.value}</p>
               <p className="text-[10px] text-muted-foreground">{kpi.sub}</p>
@@ -379,7 +384,7 @@ export default function MusicPage() {
             {/* Focus Session Card */}
             <Card className="glass-card card-accent border-primary/20">
               <CardContent className="p-4 space-y-3">
-                <div className="flex items-center gap-2.5"><div className="icon-tile w-7 h-7 rounded-md bg-primary/15"><Zap className="w-3.5 h-3.5 text-primary" /></div>
+                <div className="flex items-center gap-2.5"><IconTile className="w-7 h-7 rounded-md"><Zap className="w-3.5 h-3.5" /></IconTile>
                   <span className="text-sm font-semibold">{t('mf_focus_session')}</span></div>
                 {linkedTaskTitle ? (
                   <div className="space-y-2">
@@ -484,7 +489,7 @@ export default function MusicPage() {
       </div>
 
       {/* Right Sidebar */}
-      <div className="w-full lg:w-[300px] shrink-0 space-y-4 lg:sticky lg:top-4 lg:self-start">
+      <CollapsibleRail>
         <NowPlayingCard />
 
         <Card className="glass-card card-accent"><CardContent className="p-4">
@@ -510,7 +515,7 @@ export default function MusicPage() {
             <div className="flex items-center justify-between text-xs"><span className="flex items-center gap-2 text-muted-foreground"><Clock className="w-3 h-3" /> {t('mf_recently_added')}</span><span>{playHistory.length}</span></div>
           </div>
         </CardContent></Card>
-      </div>
+      </CollapsibleRail>
       </div>
       </Tabs>
 

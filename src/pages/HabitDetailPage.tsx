@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { IconTile } from '@/components/common/IconTile';
 import { useNavigate, useParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { ArrowLeft, Check, Flame, Trophy, Calendar, Pencil } from 'lucide-react';
@@ -169,27 +170,21 @@ export default function HabitDetailPage() {
         <div className="grid grid-cols-3 gap-3">
           <Card className="glass-card card-accent">
             <CardContent className="p-3.5 text-center">
-              <div className="icon-tile w-8 h-8 rounded-md mx-auto mb-2">
-                <Flame className="w-4 h-4 text-primary" />
-              </div>
+              <IconTile className="w-8 h-8 rounded-md mx-auto mb-2"><Flame className="w-4 h-4" /></IconTile>
               <p className="text-2xl font-bold">{habit.currentStreak}</p>
               <p className="text-[10px] text-muted-foreground">{t('habits_current_streak')}</p>
             </CardContent>
           </Card>
           <Card className="glass-card card-accent">
             <CardContent className="p-3.5 text-center">
-              <div className="icon-tile w-8 h-8 rounded-md mx-auto mb-2">
-                <Trophy className="w-4 h-4 text-primary" />
-              </div>
+              <IconTile className="w-8 h-8 rounded-md mx-auto mb-2"><Trophy className="w-4 h-4" /></IconTile>
               <p className="text-2xl font-bold">{habit.longestStreak}</p>
               <p className="text-[10px] text-muted-foreground">{t('habits_best_streak')}</p>
             </CardContent>
           </Card>
           <Card className="glass-card card-accent">
             <CardContent className="p-3.5 text-center">
-              <div className="icon-tile w-8 h-8 rounded-md mx-auto mb-2">
-                <Calendar className="w-4 h-4 text-primary" />
-              </div>
+              <IconTile className="w-8 h-8 rounded-md mx-auto mb-2"><Calendar className="w-4 h-4" /></IconTile>
               <p className="text-2xl font-bold">{habit.completionRate}%</p>
               <p className="text-[10px] text-muted-foreground">{t('habits_completion_rate')}</p>
             </CardContent>

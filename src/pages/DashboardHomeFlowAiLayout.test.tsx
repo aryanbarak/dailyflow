@@ -353,7 +353,10 @@ describe("Frozen handoff: hero is the approved star-field composition -- NO moun
     // eyebrow color. DESIGN-AUDIT 0.6 follow-up (2026-09-05): light mode
     // renders it with the foreground token; the frozen white survives
     // behind the dark: prefix.
-    expect(hero).toMatch(/tracking-\[\.18em\] text-foreground dark:text-\[#F7F7FC\]/);
+    // DESIGN-AUDIT 1 cleanup (2026-09-06): the frozen white moved from an
+    // arbitrary [#F7F7FC] utility to the named night-ink token (same hex,
+    // via --flow-night-ink-hsl in index.css).
+    expect(hero).toMatch(/tracking-\[\.18em\] text-foreground dark:text-night-ink/);
     expect(hero).not.toMatch(/text-\[#9A6BFF\]/);
     expect(hero).not.toMatch(/workspace\.hero\.summary/);
     expect(hero).not.toMatch(/Open Tasks/);
@@ -409,7 +412,10 @@ describe("Frozen handoff: desktop grid and the chat layout contract (composer al
     );
     // The frozen §7 dark values survive behind the dark: variant.
     expect(dashboardSource).toMatch(
-      /dark:border-\[#7078B4\]\/\[0\.22\] dark:bg-\[#080A1B\]\/\[0\.55\]/,
+      // DESIGN-AUDIT 1 cleanup (2026-09-06): the frozen §7 hexes are now
+      // the named night-* tokens (#7078B4 = night-border, #080A1B =
+      // night-shell; index.css --flow-night-*-hsl).
+      /dark:border-night-border\/\[0\.22\] dark:bg-night-shell\/\[0\.55\]/,
     );
   });
 

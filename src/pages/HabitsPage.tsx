@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { IconTile } from '@/components/common/IconTile';
 import { Plus, Flame, Bell, Check, CheckCircle2, Calendar, Trophy } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
@@ -14,6 +15,7 @@ import { getThisWeekMoodSummary } from '@/features/habits/habitMoodService';
 import { useAuth } from '@/hooks/useAuth';
 import { StatCard } from '@/components/common/StatCard';
 import { AiSuggestionsCard } from '@/components/common/AiSuggestionsCard';
+import { CollapsibleRail } from '@/components/common/CollapsibleRail';
 import { useAiSuggestions } from '@/features/ai/useAiSuggestions';
 
 export default function HabitsPage() {
@@ -255,14 +257,12 @@ export default function HabitsPage() {
         </div>
 
         {/* Right sidebar */}
-        <div className="w-full lg:w-[300px] shrink-0 space-y-4 lg:sticky lg:top-4 lg:self-start">
+        <CollapsibleRail>
           {/* Today's Progress */}
           <Card className="glass-card card-accent">
             <CardContent className="p-4 space-y-4">
               <div className="flex items-center gap-2.5">
-                <div className="icon-tile w-7 h-7 rounded-md">
-                  <Flame className="w-3.5 h-3.5 text-primary" />
-                </div>
+                <IconTile className="w-7 h-7 rounded-md"><Flame className="w-3.5 h-3.5" /></IconTile>
                 <span className="text-sm font-semibold">{t('habits_todays_progress')}</span>
               </div>
 
@@ -326,7 +326,7 @@ export default function HabitsPage() {
               }))}
             />
           )}
-        </div>
+        </CollapsibleRail>
       </div>
 
       {showAdd && <AddHabitModal onClose={() => setShowAdd(false)} />}
