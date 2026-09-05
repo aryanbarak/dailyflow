@@ -9,7 +9,6 @@ vi.mock("@/features/profile/useProfile", () => ({ useProfile: () => ({ profile: 
 vi.mock("@/features/search/GlobalSearch", () => ({ GlobalSearch: () => null }));
 vi.mock("@/components/FlowAIOrb", () => ({ FlowAIOrb: () => null }));
 vi.mock("@/components/smartflow", () => ({ SmartflowAsciiVisual: () => null }));
-vi.mock("@/config/apps", () => ({ getSmartAcademyUrl: () => "https://academy.example.test" }));
 
 import { Sidebar } from "./Sidebar";
 

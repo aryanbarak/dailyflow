@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from
 import { motion, useReducedMotion } from 'framer-motion';
 import { AlertTriangle, X } from 'lucide-react';
 import { useT } from '@/i18n';
+import { createId } from '@/lib/id';
 import { isolateBidiRunsInText, resolveMessageBaseDirection } from '@/lib/bidiText';
 import { cn } from '@/lib/utils';
 import { useAppearance } from '@/features/settings/appearanceStore';
@@ -142,7 +143,8 @@ export function MicroBreakOverlay() {
   const viewportBallPositionRef = useRef<ViewportPoint | null>(null);
   const phaseRef = useRef(phase);
   phaseRef.current = phase;
-  // MB-20, ADR-0015 §14: the client-generated run id (crypto.randomUUID()),
+  // MB-20, ADR-0015 §14: the client-generated run id (createId() -- a UUID
+  // in secure contexts, with a non-crashing fallback elsewhere),
   // set ONCE at session start (handleChooseJourney/handleContinueJourney) --
   // NOT at session end -- so a retry after a mid-session write failure (the
   // localStorage queue's next flush) reuses the SAME id, matching
@@ -186,7 +188,7 @@ export function MicroBreakOverlay() {
   }
 
   function handleChooseJourney() {
-    journeyRunIdRef.current = crypto.randomUUID();
+    journeyRunIdRef.current = createId();
     setJourneyRoom(1);
     setJourneyStartRoomIndex(1);
     setJourneyScore(0);
@@ -208,7 +210,7 @@ export function MicroBreakOverlay() {
     // snapshot exists (this button only renders once one does; see the
     // 'choosing' phase JSX), so the ?? 0 fallback below is defensive only.
     const startScore = journeyProgressSnapshot?.checkpointScore ?? 0;
-    journeyRunIdRef.current = crypto.randomUUID();
+    journeyRunIdRef.current = createId();
     setJourneyRoom(startRoom);
     setJourneyStartRoomIndex(startRoom);
     setJourneyScore(startScore);

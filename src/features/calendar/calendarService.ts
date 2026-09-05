@@ -1,4 +1,5 @@
 import { supabase } from "@/integrations/supabase/client";
+import { createId } from "@/lib/id";
 import { safeGet, safeSet, safeRemove, storageKey } from "@/lib/storage";
 
 export interface CalendarEvent {
@@ -192,7 +193,7 @@ export const calendarService = {
     }
     const now = new Date().toISOString();
     const event: CalendarEvent = {
-      id: crypto.randomUUID(),
+      id: createId(),
       title: input.title.trim(),
       dateTimeStart: input.dateTimeStart,
       dateTimeEnd: input.dateTimeEnd,

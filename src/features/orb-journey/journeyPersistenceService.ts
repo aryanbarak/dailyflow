@@ -62,7 +62,7 @@ export interface JourneyProgressCandidate {
 }
 
 export interface JourneyRunSummary {
-  /** Client-generated (crypto.randomUUID()) BEFORE calling this function --
+  /** Client-generated (createId()) BEFORE calling this function --
    *  ADR-0015 §14 / ADR-0014 §6's idempotent-retry pattern requires the SAME
    *  id across every retry of the same logical session, which only the
    *  caller (not this function) can guarantee across multiple calls. */

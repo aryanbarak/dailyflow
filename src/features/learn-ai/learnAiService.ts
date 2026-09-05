@@ -1,4 +1,5 @@
 import { supabase } from "@/integrations/supabase/client";
+import { createId } from "@/lib/id";
 import type { Database } from "@/integrations/supabase/types";
 import type {
   LearnAIMode,
@@ -99,7 +100,7 @@ export async function insertMessage(input: {
     if (error) throw error;
     return data.id;
   } catch (err) {
-    const id = crypto.randomUUID();
+    const id = createId();
     const message: LearnAIMessage = {
       id,
       role: input.role,

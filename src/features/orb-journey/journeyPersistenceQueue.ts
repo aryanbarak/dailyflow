@@ -8,6 +8,7 @@
 // own comment already documents for gameActive/score).
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { createId } from '@/lib/id';
 import { supabase as defaultClient } from '@/integrations/supabase/client';
 import {
   journeyPersistenceService,
@@ -41,11 +42,11 @@ export const useJourneyPersistenceQueueStore = create<JourneyPersistenceQueueSta
     (set, get) => ({
       queue: [],
       // entryId is a LOCAL queue-bookkeeping id (removal handle), distinct
-      // from JourneyRunSummary's own `id` (the crypto.randomUUID() the
-      // caller generated at session start for the idempotent-retry
-      // contract) -- a progress write has no id of its own at all, so this
-      // store needs its own regardless.
-      enqueue: write => set({ queue: [...get().queue, { ...write, entryId: crypto.randomUUID() } as QueuedJourneyWrite] }),
+      // from JourneyRunSummary's own `id` (the createId() the caller
+      // generated at session start for the idempotent-retry contract) --
+      // a progress write has no id of its own at all, so this store needs
+      // its own regardless.
+      enqueue: write => set({ queue: [...get().queue, { ...write, entryId: createId() } as QueuedJourneyWrite] }),
       remove: entryId => set({ queue: get().queue.filter(item => item.entryId !== entryId) }),
     }),
     { name: 'smartflow:orb-journey-persistence-queue' },
