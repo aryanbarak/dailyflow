@@ -69,15 +69,15 @@ export function TutorControlPanel(props: TutorControlPanelProps) {
 
   const statusTone =
     statusText === "SUCCESS"
-      ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
+      ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200"
       : statusText === "FAILED"
-        ? "border-rose-500/40 bg-rose-500/10 text-rose-200"
+        ? "border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-200"
         : statusText === "RUNNING"
-          ? "border-sky-500/40 bg-sky-500/10 text-sky-200"
+          ? "border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-200"
           : "border-border bg-muted/20 text-muted-foreground";
 
   return (
-    <Card className="h-full border-slate-700/70 bg-[#090d1a]">
+    <Card className="h-full border-border bg-card dark:border-slate-700/70 dark:bg-[#090d1a]">
       <CardHeader className="pb-3">
         <CardTitle className="text-xl font-semibold">FIAE Tutor</CardTitle>
       </CardHeader>
@@ -201,7 +201,7 @@ export function TutorControlPanel(props: TutorControlPanelProps) {
         </div>
 
         {!apiConfigured && (
-          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-200">
             Tutor API not configured. Set <code>VITE_TUTOR_API_URL</code> to enable Run/Test.
           </div>
         )}

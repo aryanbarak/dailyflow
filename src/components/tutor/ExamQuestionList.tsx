@@ -82,7 +82,7 @@ function renderStructuredText(text: string) {
     rendered.push(
       <pre
         key={`code-${codeIndex}`}
-        className="rounded-md border border-emerald-400/30 bg-black/20 p-4 text-sm leading-7 font-mono whitespace-pre-wrap break-words overflow-x-hidden"
+        className="rounded-md border border-emerald-400/30 bg-black/[0.04] p-4 text-sm leading-7 font-mono whitespace-pre-wrap break-words overflow-x-hidden dark:bg-black/20"
       >
         {codeParts.join("\n\n")}
       </pre>,
@@ -138,7 +138,7 @@ export function ExamQuestionList({ questions, expandedId, onToggleAnswer }: Exam
               <Button
                 type="button"
                 variant="outline"
-                className="w-full"
+                className="w-full border-primary/25 text-primary hover:border-primary/40"
                 onClick={() => onToggleAnswer(question.id)}
               >
                 {isOpen ? "Hide answer" : "Show answer"}
@@ -146,7 +146,7 @@ export function ExamQuestionList({ questions, expandedId, onToggleAnswer }: Exam
 
               {isOpen && (
                 <div className="space-y-3">
-                  <section className="rounded-md border border-emerald-500/30 bg-emerald-950/30 p-4">
+                  <section className="rounded-md border border-emerald-500/30 bg-emerald-500/10 p-4 dark:bg-emerald-950/30">
                     <div className="space-y-3">{renderStructuredText(getAnswerText(question))}</div>
                   </section>
 
@@ -161,14 +161,14 @@ export function ExamQuestionList({ questions, expandedId, onToggleAnswer }: Exam
                   )}
 
                   {explain && (
-                    <section className="rounded-md border border-emerald-500/20 bg-emerald-950/20 p-4">
+                    <section className="rounded-md border border-emerald-500/20 bg-emerald-500/[0.07] p-4 dark:bg-emerald-950/20">
                       <h3 className="text-sm font-semibold mb-2">Explain</h3>
                       <p className="whitespace-pre-wrap text-sm leading-relaxed">{sanitizeText(explain)}</p>
                     </section>
                   )}
 
                   {explainFa && (
-                    <section className="rounded-md border border-amber-500/30 bg-amber-950/20 p-4">
+                    <section className="rounded-md border border-amber-500/30 bg-amber-500/10 p-4 dark:bg-amber-950/20">
                       <h3 className="text-sm font-semibold mb-2 text-right">Explain (FA)</h3>
                       <p className="whitespace-pre-wrap text-sm leading-relaxed text-right" dir="rtl">
                         {sanitizeText(explainFa)}

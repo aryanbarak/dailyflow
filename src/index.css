@@ -47,8 +47,14 @@
     --muted: 210 20% 93%;
     --muted-foreground: 215 16% 47%;
 
-    --accent: 259 90% 62%;
-    --accent-foreground: 0 0% 100%;
+    /* ACADEMY-LIGHT (2026-09-05): in shadcn, accent is the SUBTLE
+       hover/focus surface (outline+ghost buttons, menu items, calendar
+       cells) -- the saturated violet the 0.6 re-brand put here made
+       every light-mode hover a loud filled bar (PO screenshot,
+       /tutor "Show answer"). A violet-tinted whisper instead; the
+       brand violet stays in --primary/--ring. */
+    --accent: 256 60% 94%;
+    --accent-foreground: 256 62% 35%;
 
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 100%;
