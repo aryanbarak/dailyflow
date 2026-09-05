@@ -199,7 +199,12 @@ function ProfileTab() {
       } else if (err instanceof AvatarImageProcessingError && err.reason === 'too_large') {
         toast.error(t('settings_avatar_too_large', { mb: String(MAX_SOURCE_BYTES / (1024 * 1024)) }));
       } else {
-        toast.error(t('settings_avatar_failed'));
+        // Storage/DB failures carry the actionable reason (RLS violation,
+        // bucket missing, mime rejected...) -- show it, or nobody can tell
+        // a policy problem from a network blip.
+        toast.error(t('settings_avatar_failed'), {
+          description: err instanceof Error ? err.message : undefined,
+        });
       }
     } finally {
       setIsAvatarBusy(false);
@@ -213,8 +218,10 @@ function ProfileTab() {
       await clearAvatar(user.id);
       await refresh();
       toast.success(t('settings_avatar_removed'));
-    } catch {
-      toast.error(t('settings_avatar_failed'));
+    } catch (err) {
+      toast.error(t('settings_avatar_failed'), {
+        description: err instanceof Error ? err.message : undefined,
+      });
     } finally {
       setIsAvatarBusy(false);
     }
