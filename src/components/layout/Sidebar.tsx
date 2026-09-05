@@ -71,7 +71,7 @@ function useSidebarIdentity() {
     .slice(0, 2)
     .map((part) => part[0]?.toUpperCase())
     .join("") || "U";
-  return { displayName, initials };
+  return { displayName, initials, avatarUrl: profile?.avatarUrl ?? null };
 }
 
 // SmartFlow Home frozen design handoff (§9 / spec §2b): the ONE full
@@ -86,7 +86,7 @@ export function FullSidebarContent({ onNavigate }: Readonly<{ onNavigate?: () =>
   const location = useLocation();
   const { t } = useT();
   const shouldReduceMotion = useReducedMotion();
-  const { displayName, initials } = useSidebarIdentity();
+  const { displayName, initials, avatarUrl } = useSidebarIdentity();
 
   return (
     <>
@@ -251,8 +251,12 @@ export function FullSidebarContent({ onNavigate }: Readonly<{ onNavigate?: () =>
       {/* Footer */}
       <div className="relative z-10 p-4 border-t border-sidebar-border">
         <div className="flex items-center gap-3 px-3 py-2">
-          <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center">
-            <span className="text-sm font-medium text-primary">{initials}</span>
+          <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center overflow-hidden">
+            {avatarUrl ? (
+              <img src={avatarUrl} alt="" className="h-full w-full object-cover" />
+            ) : (
+              <span className="text-sm font-medium text-primary">{initials}</span>
+            )}
           </div>
           <div className="flex-1 min-w-0">
             <p className="text-sm font-medium text-sidebar-foreground truncate">{displayName}</p>
@@ -275,7 +279,7 @@ export function Sidebar() {
   const [homeMenuOpen, setHomeMenuOpen] = useState(false);
   const conversationsPanelOpen = useConversationsPanelStore((state) => state.open);
   const toggleConversationsPanel = useConversationsPanelStore((state) => state.toggle);
-  const { displayName, initials } = useSidebarIdentity();
+  const { displayName, initials, avatarUrl } = useSidebarIdentity();
 
   // SmartFlow Home frozen design handoff §4/§9: route-aware presentation
   // mode, not a second navigation system. On Home the rail is slim and
@@ -362,7 +366,11 @@ export function Sidebar() {
           title={displayName}
           aria-label={displayName}
         >
-          <span className="text-sm font-semibold text-[#DDD4FF]">{initials}</span>
+          {avatarUrl ? (
+            <img src={avatarUrl} alt="" className="h-full w-full rounded-full object-cover" />
+          ) : (
+            <span className="text-sm font-semibold text-[#DDD4FF]">{initials}</span>
+          )}
           <span
             aria-hidden="true"
             className="absolute -bottom-px -end-px h-[11px] w-[11px] rounded-full border-2 border-[#07081A] bg-[#34D399]"
