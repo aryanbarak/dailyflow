@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
-import { getOrCreateProfile, updateProfile, Profile } from "@/features/profile/profileService";
+import {
+  getOrCreateProfile,
+  updateProfile,
+  Profile,
+  PROFILE_UPDATED_EVENT,
+} from "@/features/profile/profileService";
 
 export function useProfile() {
   const { user } = useAuth();
@@ -39,6 +44,16 @@ export function useProfile() {
   useEffect(() => {
     refresh();
   }, [refresh, user]);
+
+  // Refetch when ANOTHER useProfile() instance mutates the profile (avatar
+  // upload in Settings must reach the persistent sidebar without a remount).
+  useEffect(() => {
+    const onProfileUpdated = () => {
+      refresh();
+    };
+    window.addEventListener(PROFILE_UPDATED_EVENT, onProfileUpdated);
+    return () => window.removeEventListener(PROFILE_UPDATED_EVENT, onProfileUpdated);
+  }, [refresh]);
 
   const save = useCallback(
     async (data: { displayName?: string; bio?: string }) => {

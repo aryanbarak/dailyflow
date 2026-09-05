@@ -20,6 +20,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Input } from '@/components/ui/input';
 import { useAuth } from '@/hooks/useAuth';
 import { useProfile } from '@/features/profile/useProfile';
+import { setAvatar, clearAvatar } from '@/features/profile/profileService';
+import { processAvatarImage, AvatarImageProcessingError, MAX_SOURCE_BYTES } from '@/features/profile/avatarImage';
 import { usePreferences } from '@/hooks/usePreferences';
 import {
   useAppearance, ACCENT_COLORS, DENSITY_OPTIONS,
@@ -160,73 +162,162 @@ function getInitials(name: string, email: string): string {
 // ── Tab: Profile ───────────────────────────────────────────────────────────
 
 function ProfileTab() {
+  const { t } = useT();
   const { user } = useAuth();
-  const { profile, isLoading, isSaving, save } = useProfile();
+  const { profile, isLoading, isSaving, save, refresh } = useProfile();
   const [displayName, setDisplayName] = useState('');
   const [avatarColor, setAvatarColor] = useState<string>(() =>
     safeGet(storageKey('avatar-color'), '#4F73FF'), /* --flow-blue */
   );
+  const [isAvatarBusy, setIsAvatarBusy] = useState(false);
+  const avatarInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setDisplayName(profile?.displayName ?? '');
   }, [profile]);
 
   const initials = getInitials(displayName, user?.email ?? '');
+  const avatarUrl = profile?.avatarUrl ?? null;
 
   async function handleSave() {
     safeSet(storageKey('avatar-color'), avatarColor);
     const ok = await save({ displayName });
-    if (ok) toast.success('Profile updated');
+    if (ok) toast.success(t('settings_profile_saved'));
+  }
+
+  async function handleAvatarFile(file: File) {
+    if (!user) return;
+    setIsAvatarBusy(true);
+    try {
+      const image = await processAvatarImage(file);
+      await setAvatar(user.id, image);
+      await refresh();
+      toast.success(t('settings_avatar_updated'));
+    } catch (err) {
+      if (err instanceof AvatarImageProcessingError && err.reason === 'not_an_image') {
+        toast.error(t('settings_avatar_not_image'));
+      } else if (err instanceof AvatarImageProcessingError && err.reason === 'too_large') {
+        toast.error(t('settings_avatar_too_large', { mb: String(MAX_SOURCE_BYTES / (1024 * 1024)) }));
+      } else {
+        toast.error(t('settings_avatar_failed'));
+      }
+    } finally {
+      setIsAvatarBusy(false);
+    }
+  }
+
+  async function handleAvatarRemove() {
+    if (!user) return;
+    setIsAvatarBusy(true);
+    try {
+      await clearAvatar(user.id);
+      await refresh();
+      toast.success(t('settings_avatar_removed'));
+    } catch {
+      toast.error(t('settings_avatar_failed'));
+    } finally {
+      setIsAvatarBusy(false);
+    }
   }
 
   return (
     <div className="space-y-4">
       <div className="flex flex-col items-center gap-4 py-6">
-        <div
-          className="w-20 h-20 rounded-full flex items-center justify-center text-white font-bold text-2xl border-4 border-background shadow-lg"
-          style={{ backgroundColor: avatarColor }}
+        {/* The picked file never reaches the input's value; the input exists
+            only to open the OS picker (clicking the avatar opens it too). */}
+        <input
+          ref={avatarInputRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          aria-hidden="true"
+          tabIndex={-1}
+          onChange={e => {
+            const file = e.target.files?.[0];
+            e.target.value = '';
+            if (file) handleAvatarFile(file);
+          }}
+        />
+        <button
+          type="button"
+          aria-label={t('settings_avatar_upload')}
+          onClick={() => avatarInputRef.current?.click()}
+          disabled={isAvatarBusy || isLoading}
+          className="relative h-20 w-20 rounded-full border-4 border-background shadow-lg transition-transform hover:scale-105 disabled:opacity-70"
+          style={avatarUrl ? undefined : { backgroundColor: avatarColor }}
         >
-          {initials}
-        </div>
-        <div className="flex gap-2 flex-wrap justify-center">
-          {AVATAR_COLORS.map(c => (
+          {avatarUrl ? (
+            <img src={avatarUrl} alt="" className="h-full w-full rounded-full object-cover" />
+          ) : (
+            <span className="flex h-full w-full items-center justify-center text-2xl font-bold text-white">{initials}</span>
+          )}
+          {isAvatarBusy && (
+            <span className="absolute inset-0 flex items-center justify-center rounded-full bg-black/40">
+              <Loader2 size={20} className="animate-spin text-white" />
+            </span>
+          )}
+        </button>
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          <button
+            type="button"
+            onClick={() => avatarInputRef.current?.click()}
+            disabled={isAvatarBusy || isLoading}
+            className="flex min-h-11 items-center gap-2 rounded-xl bg-muted px-4 py-2 text-sm font-medium transition-colors hover:bg-muted/70 disabled:opacity-50"
+          >
+            <Camera size={15} /> {t('settings_avatar_upload')}
+          </button>
+          {avatarUrl && (
             <button
-              key={c}
               type="button"
-              aria-label={`Select color ${c}`}
-              onClick={() => setAvatarColor(c)}
-              className="w-7 h-7 rounded-full transition-transform hover:scale-110"
-              style={{
-                backgroundColor: c,
-                outline: avatarColor === c ? `3px solid ${c}` : 'none',
-                outlineOffset: '2px',
-              }}
-            />
-          ))}
+              onClick={handleAvatarRemove}
+              disabled={isAvatarBusy || isLoading}
+              className="flex min-h-11 items-center gap-2 rounded-xl bg-muted px-4 py-2 text-sm font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50"
+            >
+              <Trash2 size={15} /> {t('settings_avatar_remove')}
+            </button>
+          )}
         </div>
+        {!avatarUrl && (
+          <div className="flex gap-2 flex-wrap justify-center">
+            {AVATAR_COLORS.map(c => (
+              <button
+                key={c}
+                type="button"
+                aria-label={`Select color ${c}`}
+                onClick={() => setAvatarColor(c)}
+                className="w-7 h-7 rounded-full transition-transform hover:scale-110"
+                style={{
+                  backgroundColor: c,
+                  outline: avatarColor === c ? `3px solid ${c}` : 'none',
+                  outlineOffset: '2px',
+                }}
+              />
+            ))}
+          </div>
+        )}
         <p className="text-sm text-muted-foreground">{user?.email}</p>
       </div>
 
-      <SectionCard title="Account info">
+      <SectionCard title={t('settings_account_info')}>
         <div className="py-4 space-y-3">
           <div className="space-y-1.5">
-            <label htmlFor="displayName" className="text-xs text-muted-foreground">Display name</label>
+            <label htmlFor="displayName" className="text-xs text-muted-foreground">{t('settings_display_name')}</label>
             <input
               id="displayName"
               value={displayName}
               onChange={e => setDisplayName(e.target.value)}
-              placeholder="Your name"
+              placeholder={t('settings_your_name')}
               disabled={isLoading}
               className="w-full bg-muted rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-50"
             />
           </div>
           <div className="space-y-1.5">
-            <label htmlFor="settings-email" className="text-xs text-muted-foreground">Email</label>
+            <label htmlFor="settings-email" className="text-xs text-muted-foreground">{t('settings_email')}</label>
             <input
               id="settings-email"
               value={user?.email ?? ''}
               readOnly
-              aria-label="Email address"
+              aria-label={t('settings_email')}
               className="w-full bg-muted rounded-xl px-4 py-2.5 text-sm outline-none opacity-60 cursor-not-allowed"
             />
           </div>
@@ -236,7 +327,7 @@ function ProfileTab() {
             disabled={isSaving || isLoading}
             className="w-full py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-medium disabled:opacity-50 hover:opacity-90 transition-opacity"
           >
-            {isSaving ? <span className="flex items-center justify-center gap-2"><Loader2 size={14} className="animate-spin" /> Saving…</span> : 'Save profile'}
+            {isSaving ? <span className="flex items-center justify-center gap-2"><Loader2 size={14} className="animate-spin" /> {t('settings_saving')}</span> : t('settings_save_profile')}
           </button>
         </div>
       </SectionCard>
@@ -1142,6 +1233,7 @@ function DataTab() {
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<Tab>('profile');
   const { user, isLoading } = useAuth();
+  const { profile: heroProfile } = useProfile();
   const { t, isRTL } = useT();
   const navigate = useNavigate();
 
@@ -1189,9 +1281,10 @@ export default function SettingsPage() {
     (documents as { sizeBytes: number | null }[]).reduce((s, d) => s + (d.sizeBytes ?? 0), 0)
   , [documents]);
 
-  const displayName = user?.user_metadata?.full_name ?? user?.email?.split('@')[0] ?? '';
+  const displayName = heroProfile?.displayName?.trim() || (user?.user_metadata?.full_name ?? user?.email?.split('@')[0] ?? '');
   const initials = getInitials(displayName, user?.email ?? '');
   const avatarColor = safeGet(storageKey('avatar-color'), '#7C4DFF'); /* --flow-primary */
+  const heroAvatarUrl = heroProfile?.avatarUrl ?? null;
   const memberSince = user?.created_at ? new Date(user.created_at).toLocaleDateString('en', { month: 'long', year: 'numeric' }) : '';
 
   function timeAgo(iso: string): string {
@@ -1220,10 +1313,18 @@ export default function SettingsPage() {
         <Card className="glass-card card-accent overflow-hidden">
           <CardContent className="p-6">
             <div className="flex flex-col sm:flex-row items-center sm:items-start gap-5">
-              <div className="w-20 h-20 rounded-full flex items-center justify-center text-white font-bold text-2xl border-4 border-background shadow-lg shrink-0"
-                style={{ backgroundColor: avatarColor }}>
-                {initials}
-              </div>
+              {heroAvatarUrl ? (
+                <img
+                  src={heroAvatarUrl}
+                  alt=""
+                  className="w-20 h-20 rounded-full object-cover border-4 border-background shadow-lg shrink-0"
+                />
+              ) : (
+                <div className="w-20 h-20 rounded-full flex items-center justify-center text-white font-bold text-2xl border-4 border-background shadow-lg shrink-0"
+                  style={{ backgroundColor: avatarColor }}>
+                  {initials}
+                </div>
+              )}
               <div className="flex-1 min-w-0 text-center sm:text-left">
                 <h1 className="text-xl font-bold">{displayName || 'SmartFlow User'}</h1>
                 <p className="text-sm text-muted-foreground">{user?.email}</p>
