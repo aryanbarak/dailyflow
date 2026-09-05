@@ -473,6 +473,9 @@ export default function TutorErgaenzungspruefungPage() {
   ];
 
   return (
+    // DESIGN-AUDIT 0.6 (light mode): dark-by-design work surface -- see
+    // TutorAppPage.tsx's comment; same treatment across the tutor suite.
+    <div className="dark min-h-dvh bg-[var(--flow-bg-deep)] text-foreground">
     <div className="p-4 lg:p-6 max-w-[1500px] mx-auto space-y-4">
       {/* Nav */}
       <div className="flex flex-wrap items-center gap-2 rounded-md border border-slate-700/60 bg-slate-950/60 px-3 py-2">
@@ -1340,6 +1343,7 @@ export default function TutorErgaenzungspruefungPage() {
           )}
         </div>
       )}
+    </div>
     </div>
   );
 }

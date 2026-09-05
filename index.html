@@ -22,18 +22,44 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;600;700&display=swap" rel="stylesheet" />
+    <!-- DESIGN-AUDIT 0.6 (light mode): apply the stored theme BEFORE first
+         paint -- reads the same smartflow_preferences key usePreferences
+         owns; any failure keeps the markup's dark default. Must run before
+         the <style> below paints anything. -->
+    <script>
+      (function () {
+        try {
+          var stored = JSON.parse(localStorage.getItem("smartflow_preferences") || "{}");
+          var theme = stored.theme || "system";
+          var dark =
+            theme === "dark" ||
+            (theme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          document.documentElement.classList.toggle("dark", dark);
+        } catch (e) {
+          /* keep the dark default */
+        }
+      })();
+    </script>
     <style>
       /* Pre-hydration paint only -- the CSS bundle (index.css) takes over
          with --flow-bg-deep + --flow-gradient-background once loaded
          (DESIGN-AUDIT 0.4). #03040F IS --flow-bg-deep's value; a raw hex
          is unavoidable here because the token file ships inside the CSS
-         bundle and does not exist yet at first paint. #root must stay
+         bundle and does not exist yet at first paint. DESIGN-AUDIT 0.6:
+         the boot background is class-driven now -- the script above has
+         already resolved .dark before this paints, and the light value
+         mirrors index.css's light --background. #root must stay
          transparent so it never occludes the body gradient. */
       html,
       body {
         min-height: 100%;
         margin: 0;
         background: #03040F;
+      }
+
+      html:not(.dark),
+      html:not(.dark) body {
+        background: #f7f8fb;
       }
 
       #root {
@@ -57,7 +83,7 @@
     <meta name="twitter:image" content="https://lovable.dev/opengraph-image-p98pqg.png" />
   </head>
 
-  <body style="background:#03040F">
+  <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

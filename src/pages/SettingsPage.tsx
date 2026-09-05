@@ -16,7 +16,6 @@ import { useDocuments } from '@/features/documents/useDocuments';
 import { usePhotos } from '@/hooks/usePhotos';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
-import { useTheme } from 'next-themes';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Input } from '@/components/ui/input';
 import { useAuth } from '@/hooks/useAuth';
@@ -511,7 +510,6 @@ function SecurityTab() {
 // ── Tab: Appearance ────────────────────────────────────────────────────────
 
 function AppearanceTab() {
-  const { theme, setTheme } = useTheme();
   const {
     density, accentColor, reducedMotion, language,
     orbEnabled, orbColor, orbSize, orbOpacity, microBreakDurationSeconds,
@@ -519,6 +517,11 @@ function AppearanceTab() {
     setOrbEnabled, setOrbColor, setOrbSize, setOrbOpacity, setMicroBreakDurationSeconds,
   } = useAppearance();
   const { preferences, setTheme: setPrefTheme, setCurrency } = usePreferences();
+  // DESIGN-AUDIT 0.6 (light mode): the selector reads/writes ONLY
+  // usePreferences now -- next-themes' useTheme had no mounted
+  // ThemeProvider, so its `theme` was always undefined (the selected tile
+  // never highlighted) and its setTheme was a no-op.
+  const theme = preferences.theme;
   const { t } = useT();
 
   const [aiDefaults, setAiDefaults] = useState<AiDefaults>(() => readAiDefaults());
@@ -573,7 +576,6 @@ function AppearanceTab() {
   ] as const;
 
   function handleTheme(t: string) {
-    setTheme(t);
     setPrefTheme(t as 'light' | 'dark' | 'system');
   }
 

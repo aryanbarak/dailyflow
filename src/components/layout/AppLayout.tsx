@@ -6,6 +6,7 @@ import { OfflineBadge } from "@/components/OfflineBadge";
 import { MiniPlayer } from "@/components/music/MiniPlayer";
 import { GlobalSearch } from "@/features/search/GlobalSearch";
 import { useAlarms } from "@/features/calendar/useAlarms";
+import { usePreferences } from "@/hooks/usePreferences";
 import { PageTitleProvider } from "@/contexts/PageTitleContext";
 import { LaunchExperience } from "@/components/LaunchExperience";
 import { LaunchProvider, useLaunch } from "@/contexts/LaunchContext";
@@ -44,6 +45,12 @@ function AppLayoutInner() {
   const location = useLocation();
   const hideMobileChrome = PAGES_WITHOUT_MOBILE_CHROME.has(location.pathname);
   useAlarms();
+  // DESIGN-AUDIT 0.6 (light mode): the stored theme used to be applied
+  // only once SettingsPage mounted -- this app-shell instance keeps the
+  // .dark class in sync from boot (index.html's inline script covers the
+  // pre-hydration frame) and subscribes to OS color-scheme changes for
+  // "system".
+  usePreferences();
   // Task 17f, C2: production evidence -- after a fresh mount in the
   // Android PWA STANDALONE context, `100dvh` mis-measured this shell (the
   // chat composer sat below the visible viewport). Scoped to the chat page

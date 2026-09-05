@@ -90,9 +90,12 @@ export function FullSidebarContent({ onNavigate }: Readonly<{ onNavigate?: () =>
 
   return (
     <>
+      {/* DESIGN-AUDIT 0.6 (light mode): the two decorative star-field
+          layers are dark-theme-only -- on the light sidebar they read as
+          smudges (and the screen-blend layer washes out anyway). */}
       <motion.div
         aria-hidden="true"
-        className="pointer-events-none absolute -inset-6 z-0 opacity-85"
+        className="pointer-events-none absolute -inset-6 z-0 hidden opacity-85 dark:block"
         style={{
           backgroundImage: [
             "radial-gradient(circle at center, hsl(248 95% 82% / 0.54) 0 0.3px, hsl(var(--primary) / 0.28) 0.42px, transparent 0.72px)",
@@ -119,7 +122,7 @@ export function FullSidebarContent({ onNavigate }: Readonly<{ onNavigate?: () =>
       />
       <motion.div
         aria-hidden="true"
-        className="pointer-events-none absolute -inset-8 z-0 opacity-70"
+        className="pointer-events-none absolute -inset-8 z-0 hidden opacity-70 dark:block"
         style={{
           backgroundImage:
             "radial-gradient(circle at center, hsl(248 95% 80% / 0.34) 0 0.42px, transparent 0.86px)",

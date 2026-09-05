@@ -44,6 +44,7 @@ import { ConversationsDrawer, DockedConversationsPanel } from '@/features/chat/c
 import { useConversationsPanelStore } from '@/features/chat/conversationsPanelStore'
 import { JumpToLatestPill } from '@/features/chat/components/JumpToLatestPill'
 import { useChatDisplayPreferences } from '@/features/chat/chatDisplayPreferencesStore'
+import { useResolvedAppTheme } from '@/hooks/usePreferences'
 import { shouldAutoScrollOnNewContent } from '@/features/chat/chatScrollDecision'
 import { shouldAutoRunReadOnlyOverlay } from '@/features/chat/autoReadOverlayGate'
 import { isChatEmptyState } from '@/features/chat/emptyStateVisibility'
@@ -2487,7 +2488,13 @@ export default function ChatPage({ embedded = false, onOpenAssistantPanel }: Cha
   // existing framer-motion fade-in (workstream 3's "reduced = instant, no
   // motion" requirement applied to this pre-existing animation too, not
   // just the new ones).
-  const theme = useChatDisplayPreferences((state) => state.theme)
+  // DESIGN-AUDIT 0.6 (light mode): the chat surface now follows the ONE
+  // app-wide theme (Settings > Appearance) instead of the page-scoped
+  // chatDisplayPreferencesStore theme -- with the header's theme pill
+  // unmounted (PO decision 2026-09-05) that store's theme had no remaining
+  // control surface, and a chat that stays dark inside a light app reads
+  // as a bug (PO, 2026-09-05). Density remains page-scoped as before.
+  const theme = useResolvedAppTheme()
   const density = useChatDisplayPreferences((state) => state.density)
   const compact = density === 'compact'
   const prefersReducedMotion = useReducedMotion()
