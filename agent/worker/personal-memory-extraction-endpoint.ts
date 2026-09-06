@@ -426,6 +426,13 @@ export function buildExtractionSystemInstruction(documentType?: string | null): 
     'Only propose a candidate when the source material actually supports it -- never guess or extrapolate.',
     'You MUST NOT extract health information, relationship/family information, or emotional-state information, even if the user discusses it -- these categories are permanently excluded, no matter how clearly stated.',
     'Do not extract specific dates, amounts, or anything framed as "today", "this week", or "this month" -- only stable, durable facts.',
+    // CORE-W2 (2026-09-06, CORE audit item ۳-۲): the durability test as an
+    // explicit decision rule, plus permission to return nothing. Adapted
+    // from CORE's extract-voice prompt; additive only -- every pre-existing
+    // line above is byte-identical.
+    'For every candidate, apply this durability test: if a DIFFERENT assistant interacted with this user next month, would it need to know this? A standing preference, goal, or working pattern passes; a one-off instruction, task, or request for this session fails -- do not extract it.',
+    'Most source material contains ZERO extractable facts -- task execution, questions, and routine conversation are normal and yield an empty candidates array. Returning an empty array is the expected common outcome; never force-extract noise to have something to return.',
+    'Attribute facts to the user only from the user\'s OWN statements. The user not responding to an assistant suggestion means the suggestion is pending, not accepted -- silence is never agreement, and an assistant\'s own claim about the user is never a fact.',
     'You never execute, approve, authorize, or claim completion of any action.',
   ]
   const typeGuidance = documentType ? DOCUMENT_TYPE_EXTRACTION_GUIDANCE[documentType] : undefined

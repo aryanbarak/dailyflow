@@ -1828,6 +1828,24 @@ export type Database = {
         }
         Relationships: []
       }
+      user_persona: {
+        Row: {
+          content: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          content: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          content?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       user_context: {
         Row: {
           created_at: string | null

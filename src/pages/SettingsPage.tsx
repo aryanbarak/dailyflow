@@ -45,6 +45,7 @@ import { triggerPersonalMemoryExtraction } from '@/features/personal-memory/pers
 import { resolveDocumentChunkSources } from '@/features/documents/documentChunkSourceResolver';
 import { GitHubIntegrationCard } from '@/features/integrations/github/GitHubIntegrationCard';
 import { TelegramIntegrationCard } from '@/features/integrations/telegram/TelegramIntegrationCard';
+import { PersonaCard } from '@/features/persona/PersonaCard';
 import {
   listBrowserFlowWritePermissions,
   upsertBrowserFlowWritePermission,
@@ -1313,7 +1314,7 @@ export default function SettingsPage() {
     appearance:    <AppearanceTab />,
     notifications: <NotificationsTab />,
     data:          <DataTab />,
-    'ai-memory':   <div className="space-y-6"><PersonalMemorySection service={browserPersonalMemoryRecordService} triggerExtraction={triggerPersonalMemoryExtraction} resolveDocumentSources={resolveDocumentChunkSources} /><AiMemoryTab /></div>,
+    'ai-memory':   <div className="space-y-6"><PersonaCard /><PersonalMemorySection service={browserPersonalMemoryRecordService} triggerExtraction={triggerPersonalMemoryExtraction} resolveDocumentSources={resolveDocumentChunkSources} /><AiMemoryTab /></div>,
     integrations:  <div className="space-y-6"><GitHubIntegrationCard /><TelegramIntegrationCard /></div>,
   };
 

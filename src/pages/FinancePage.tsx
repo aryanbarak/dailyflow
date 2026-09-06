@@ -81,6 +81,7 @@ import { Sparkles } from "lucide-react";
 import { StatCard } from "@/components/common/StatCard";
 import { AiSuggestionsCard } from "@/components/common/AiSuggestionsCard";
 import { CollapsibleRail } from "@/components/common/CollapsibleRail";
+import { SubscriptionSuggestionsCard } from "@/features/finance/components/SubscriptionSuggestionsCard";
 import { useAiSuggestions } from "@/features/ai/useAiSuggestions";
 
 const categories = ["Food", "Transport", "Rent", "Health", "Other"];
@@ -1086,6 +1087,10 @@ export default function FinancePage() {
 
       {/* Right sidebar */}
       <CollapsibleRail>
+        {/* CORE-W2 (item ۱-۵): detector-driven, user-promoted subscription
+            suggestions. Fed the FULL transactions array (not the month
+            filter) -- cadence detection needs cross-month history. */}
+        <SubscriptionSuggestionsCard transactions={transactions} formatCurrency={formatCurrency} />
         {/* Financial Health */}
         <Card className="glass-card card-accent">
           <CardContent className="p-4 space-y-4">
