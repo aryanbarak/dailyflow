@@ -31,6 +31,9 @@ import { PlaylistPlayerProvider } from "@/contexts/PlaylistPlayerContext";
 import { AppLoader } from "@/components/AppLoader";
 import { LanguageProvider } from "@/components/LanguageProvider";
 import { FlowAIOrbPlayground } from "@/components/FlowAIOrb";
+import { ErrorBoundary } from "@/components/common/ErrorBoundary";
+import { CrashFallback } from "@/components/common/CrashFallback";
+import { NetworkStatusPill } from "@/components/common/NetworkStatusPill";
 import { MicroBreaksDevHarness } from "@/features/micro-breaks/components/MicroBreaksDevHarness";
 import { SmartflowLanding } from "@/components/smartflow";
 
@@ -76,6 +79,12 @@ const App = () => (
         <AccentColorInit />
         <Toaster />
         <Sonner />
+        {/* CORE-W1 (item ۴-۳): app-wide connectivity pill + render-crash
+            boundary (the existing generic ErrorBoundary with an app-level
+            offline-aware fallback). Both need LanguageProvider (useT); the
+            pill lives outside the router (no navigation involved). */}
+        <NetworkStatusPill />
+        <ErrorBoundary fallback={<CrashFallback />}>
         <BrowserRouter>
           <Routes>
             {import.meta.env.DEV && (
@@ -150,6 +159,7 @@ const App = () => (
             <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>
+        </ErrorBoundary>
       </LanguageProvider>
       </TooltipProvider>
       </PlaylistPlayerProvider>

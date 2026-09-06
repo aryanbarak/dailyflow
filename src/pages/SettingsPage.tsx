@@ -44,6 +44,7 @@ import { browserPersonalMemoryRecordService } from '@/features/personal-memory/p
 import { triggerPersonalMemoryExtraction } from '@/features/personal-memory/personalMemoryExtractionTriggerClient';
 import { resolveDocumentChunkSources } from '@/features/documents/documentChunkSourceResolver';
 import { GitHubIntegrationCard } from '@/features/integrations/github/GitHubIntegrationCard';
+import { TelegramIntegrationCard } from '@/features/integrations/telegram/TelegramIntegrationCard';
 import {
   listBrowserFlowWritePermissions,
   upsertBrowserFlowWritePermission,
@@ -1313,7 +1314,7 @@ export default function SettingsPage() {
     notifications: <NotificationsTab />,
     data:          <DataTab />,
     'ai-memory':   <div className="space-y-6"><PersonalMemorySection service={browserPersonalMemoryRecordService} triggerExtraction={triggerPersonalMemoryExtraction} resolveDocumentSources={resolveDocumentChunkSources} /><AiMemoryTab /></div>,
-    integrations:  <GitHubIntegrationCard />,
+    integrations:  <div className="space-y-6"><GitHubIntegrationCard /><TelegramIntegrationCard /></div>,
   };
 
   return (

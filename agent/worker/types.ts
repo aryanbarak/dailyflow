@@ -45,6 +45,15 @@ export interface Env {
   AI_SHADOW_MODEL_ID?: string
   AI_SHADOW_MODEL_VERSION?: string
   AI_SHADOW_SAMPLE_RATE?: string
+  // CORE-W1 (2026-09-06): Telegram capture channel (telegram-webhook.ts).
+  // Both are Worker secrets (`wrangler secret put ...`), never [vars].
+  // Absent => the /telegram/webhook route answers 404 (feature off) --
+  // same fail-closed shape as ENGINEERING_TASKS_COMPANION_TOKEN above.
+  // TELEGRAM_WEBHOOK_SECRET is the secret_token registered at setWebhook
+  // time; Telegram echoes it back on every delivery and it is the ONLY
+  // authentication on that route.
+  TELEGRAM_BOT_TOKEN?: string
+  TELEGRAM_WEBHOOK_SECRET?: string
 }
 
 export type Language = 'en' | 'de' | 'fa'

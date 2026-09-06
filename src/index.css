@@ -42,6 +42,25 @@
   --flow-night-panel-hsl: 236 51.7% 5.7%; /* #070816 */
   --flow-night-deep-hsl: 235 66.7% 3.5%; /* #03040F */
   --flow-night-track-hsl: 233 31.6% 22.4%; /* #272B4B */
+
+  /* CORE-W1 density tokens (2026-09-06, CORE audit item ۴-۱): control
+     heights as vars so ONE mobile block below bumps every button/input/
+     select trigger to the WCAG 2.5.8 44px touch target -- instead of
+     sprinkling md: variants through ui components. Desktop values are
+     the exact heights the components hardcoded before (h-10/h-9/h-11),
+     so >=768px renders pixel-identical. Consumed by ui/button.tsx,
+     ui/input.tsx, ui/select.tsx ONLY -- page-level h-10s are unaffected. */
+  --sf-control-h: 2.5rem; /* 40px -- button default/icon, input, select */
+  --sf-control-h-sm: 2.25rem; /* 36px -- button sm */
+  --sf-control-h-lg: 2.75rem; /* 44px -- button lg (already touch-sized) */
+}
+
+/* Below Tailwind's md (min-width: 768px) breakpoint: touch targets. */
+@media (max-width: 767.98px) {
+  :root {
+    --sf-control-h: 2.75rem; /* 44px */
+    --sf-control-h-sm: 2.5rem; /* 40px */
+  }
 }
 
 @layer base {
