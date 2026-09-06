@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { StatCard } from '@/components/common/StatCard';
 import { JournalEditor } from '@/features/journal/components/JournalEditor';
+import { JournalCompanion } from '@/features/journal/components/JournalCompanion';
 import { JournalCalendar } from '@/features/journal/components/JournalCalendar';
 import { useJournalEntry, useJournalMonth } from '@/features/journal/useJournal';
 import { moodEmoji } from '@/features/journal/components/MoodPicker';
@@ -41,7 +42,11 @@ export default function JournalPage() {
   const [selectedDate, setSelectedDate] = useState(todayStr());
   const { t, lang } = useT();
   const { user } = useAuth();
-  const { tasks } = useTasks();
+  const { tasks, addTask } = useTasks();
+
+  // CORE-W3 (items ۱-۱/۱-۲): live mirror of the editor draft, feeding the
+  // companion panel's checkbox/@ai detection under the editor.
+  const [draftContent, setDraftContent] = useState('');
 
   // Habit summary for selected date
   const [dateHabits, setDateHabits] = useState<{ completed: number; total: number; rate: number } | null>(null);
@@ -223,7 +228,18 @@ export default function JournalPage() {
                   </motion.button>
                 ))}
               </div>
-              <JournalEditor date={selectedDate} promptInsert={promptInsert} />
+              <JournalEditor date={selectedDate} promptInsert={promptInsert} onContentChange={setDraftContent} />
+              {user && (
+                <div className="mt-4">
+                  <JournalCompanion
+                    userId={user.id}
+                    date={selectedDate}
+                    content={draftContent}
+                    tasks={tasks}
+                    onCreateTask={({ title, notes }) => addTask({ title, notes })}
+                  />
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>

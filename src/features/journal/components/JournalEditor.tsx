@@ -7,11 +7,15 @@ import { useDebounce } from '@/hooks/useDebounce';
 interface Props {
   readonly date: string;
   readonly promptInsert?: string | null;
+  // CORE-W3: lets JournalPage mirror the LIVE draft (for the companion
+  // panel's checkbox/@ai detection) without lifting this component's own
+  // save/dirty state management.
+  readonly onContentChange?: (content: string) => void;
 }
 
 const PLACEHOLDER = 'What happened today? How did you feel?';
 
-export function JournalEditor({ date, promptInsert }: Props) {
+export function JournalEditor({ date, promptInsert, onContentChange }: Props) {
   const { data: entry, isLoading } = useJournalEntry(date);
   const { mutate: upsert } = useUpsertJournalEntry();
 
@@ -44,6 +48,13 @@ export function JournalEditor({ date, promptInsert }: Props) {
       dirty.current = true;
     }
   }, [promptInsert]);
+
+  // CORE-W3: mirror every content change (typing, date-switch load,
+  // prompt insertion) to the optional observer -- one effect instead of
+  // per-callsite calls, so no path can be missed.
+  useEffect(() => {
+    onContentChange?.(content);
+  }, [content, onContentChange]);
 
   const debouncedContent = useDebounce(content, 1200);
   const debouncedMood = useDebounce(mood, 1200);
