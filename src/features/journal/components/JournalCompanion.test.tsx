@@ -4,9 +4,9 @@
 // @ai runs, note listing/deletion, all explicit and injected.
 import "@testing-library/jest-dom/vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { JournalCompanion } from "./JournalCompanion";
+import { JOURNAL_WATCHER_IDLE_MS, JournalCompanion } from "./JournalCompanion";
 
 // Both pull in the Supabase client at import time; tests always inject.
 vi.mock("../journalAiNotesService", () => ({
@@ -132,5 +132,162 @@ describe("JournalCompanion", () => {
     await userEvent.click(screen.getByRole("button", { name: "Delete note" }));
     await waitFor(() => expect(screen.queryByText("Saved reply.")).toBeNull());
     expect(notesService.delete).toHaveBeenCalledWith("note-1");
+  });
+});
+
+// CORE-W3b (2026-09-06): the watcher -- opt-in auto-run of @ai lines after
+// a typing pause. Fake timers drive the idle window; the global localStorage
+// shim lacks a full Storage surface, so it is stubbed with a memory one
+// (pattern from smartflow-pointer-follower.test.tsx).
+function makeMemoryStorage(): Storage {
+  const map = new Map<string, string>();
+  return {
+    get length() {
+      return map.size;
+    },
+    clear: () => map.clear(),
+    getItem: (key: string) => map.get(key) ?? null,
+    key: (index: number) => [...map.keys()][index] ?? null,
+    removeItem: (key: string) => {
+      map.delete(key);
+    },
+    setItem: (key: string, value: string) => {
+      map.set(key, String(value));
+    },
+  } as Storage;
+}
+
+function okRun(reply = "A calm, good day.") {
+  return vi.fn(async (instruction: string) => ({
+    ok: true as const,
+    persisted: true,
+    note: { id: `note-${instruction}`, instruction, reply, createdAt: "2026-09-06T10:00:00Z" },
+  }));
+}
+
+describe("JournalCompanion watcher", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal("localStorage", makeMemoryStorage());
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    cleanup();
+  });
+
+  async function flush(ms = 0) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  }
+
+  it("does NOT auto-run by default -- the watcher is opt-in", async () => {
+    const runInstruction = okRun();
+    render(
+      <JournalCompanion
+        {...baseProps}
+        content={"@ai summarize"}
+        onCreateTask={vi.fn()}
+        notesService={makeNotesService()}
+        runInstruction={runInstruction}
+      />,
+    );
+    await flush(JOURNAL_WATCHER_IDLE_MS * 3);
+    expect(runInstruction).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: /Run/ })).toBeInTheDocument();
+  });
+
+  it("auto-runs an @ai line after the idle window once enabled", async () => {
+    const runInstruction = okRun();
+    render(
+      <JournalCompanion
+        {...baseProps}
+        content={"@ai summarize"}
+        onCreateTask={vi.fn()}
+        notesService={makeNotesService()}
+        runInstruction={runInstruction}
+      />,
+    );
+    await flush();
+    fireEvent.click(screen.getByRole("switch"));
+    await flush(JOURNAL_WATCHER_IDLE_MS);
+    expect(runInstruction).toHaveBeenCalledTimes(1);
+    expect(runInstruction).toHaveBeenCalledWith("summarize", "2026-09-06", "@ai summarize");
+    expect(screen.getByText("A calm, good day.")).toBeInTheDocument();
+  });
+
+  it("every keystroke resets the idle window", async () => {
+    const runInstruction = okRun();
+    const props = {
+      ...baseProps,
+      onCreateTask: vi.fn(),
+      notesService: makeNotesService(),
+      runInstruction,
+    };
+    const { rerender } = render(<JournalCompanion {...props} content={"@ai summarize"} />);
+    await flush();
+    fireEvent.click(screen.getByRole("switch"));
+    await flush(JOURNAL_WATCHER_IDLE_MS - 4000);
+    rerender(<JournalCompanion {...props} content={"@ai summarize please"} />);
+    await flush(JOURNAL_WATCHER_IDLE_MS - 4000);
+    // 12s of total time, but never 10s of silence.
+    expect(runInstruction).not.toHaveBeenCalled();
+    await flush(4000);
+    expect(runInstruction).toHaveBeenCalledTimes(1);
+    expect(runInstruction).toHaveBeenCalledWith("summarize please", "2026-09-06", "@ai summarize please");
+  });
+
+  it("a failed auto-run never loops -- one attempt, manual Run still offered", async () => {
+    const runInstruction = vi.fn(async () => ({
+      ok: false as const,
+      code: "PROVIDER_UNAVAILABLE" as const,
+      message: "The AI model is temporarily unavailable.",
+    }));
+    render(
+      <JournalCompanion
+        {...baseProps}
+        content={"@ai summarize"}
+        onCreateTask={vi.fn()}
+        notesService={makeNotesService()}
+        runInstruction={runInstruction}
+      />,
+    );
+    await flush();
+    fireEvent.click(screen.getByRole("switch"));
+    await flush(JOURNAL_WATCHER_IDLE_MS * 5);
+    expect(runInstruction).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("status")).toHaveTextContent("temporarily unavailable");
+    expect(screen.getByRole("button", { name: /Run/ })).toBeInTheDocument();
+  });
+
+  it("remembers the switch across mounts via localStorage", async () => {
+    const first = render(
+      <JournalCompanion
+        {...baseProps}
+        content={"@ai summarize"}
+        onCreateTask={vi.fn()}
+        notesService={makeNotesService()}
+        runInstruction={okRun()}
+      />,
+    );
+    await flush();
+    fireEvent.click(screen.getByRole("switch"));
+    first.unmount();
+
+    const runInstruction = okRun();
+    render(
+      <JournalCompanion
+        {...baseProps}
+        content={"@ai summarize"}
+        onCreateTask={vi.fn()}
+        notesService={makeNotesService()}
+        runInstruction={runInstruction}
+      />,
+    );
+    await flush(JOURNAL_WATCHER_IDLE_MS);
+    expect(runInstruction).toHaveBeenCalledTimes(1);
   });
 });
