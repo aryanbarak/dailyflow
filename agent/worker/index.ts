@@ -11,6 +11,8 @@ import {
 } from './reasoning-endpoint'
 import { handleGitHubIntegrationRequest } from './github-integration'
 import { handleTelegramWebhookRequest } from './telegram-webhook'
+import { handleJournalAssistantRequest } from './journal-assistant-endpoint'
+import { handleMcpRequest } from './mcp-endpoint'
 import { handleEngineeringTasksRequest } from './engineering-tasks-endpoint'
 import { handleContextDerivationRequest } from './context-derivation-endpoint'
 import { handlePersonalMemoryExtractionRequest } from './personal-memory-extraction-endpoint'
@@ -114,6 +116,15 @@ export default {
     // non-browser routes, before the CORS/POST handling below.
     const telegramResponse = await handleTelegramWebhookRequest(request, env)
     if (telegramResponse) return telegramResponse
+
+    // CORE-W3: journal @ai instructions -- handles its own CORS/OPTIONS
+    // (module convention), so it sits with the self-contained routes.
+    const journalAssistantResponse = await handleJournalAssistantRequest(request, env)
+    if (journalAssistantResponse) return journalAssistantResponse
+
+    // CORE-W3: MCP server -- api_tokens bearer auth, not browser CORS.
+    const mcpResponse = await handleMcpRequest(request, env)
+    if (mcpResponse) return mcpResponse
 
     const engineeringTasksResponse = await handleEngineeringTasksRequest(request, env)
     if (engineeringTasksResponse) return engineeringTasksResponse
