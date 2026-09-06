@@ -3,14 +3,43 @@
 // suggestion-only: detected checkboxes become tasks ONLY on a click,
 // detected @ai instructions run ONLY on a click, and the journal text
 // itself is never modified.
-import { useCallback, useEffect, useMemo, useState } from "react";
+//
+// CORE-W3b (2026-09-06, the "watcher" half of ۱-۱): an opt-in switch makes
+// @ai instructions run automatically after a typing pause (CORE's collab
+// scanner fires the @butler command 10s after Yjs idle). The explicit
+// trigger remains the user WRITING the @ai line -- the watcher only removes
+// the click -- so ADR-0010's explicit-trigger rule holds. Each instruction
+// auto-runs at most once per (date, text): a failed run never loops, and
+// unrelated edits never re-fire it (CORE's own dedup rule). CORE's second
+// mechanic -- the proactive scan of the diff with NO user-written command --
+// is deliberately not built: that would be silent AI over private journal
+// text, which ADR-0010 forbids.
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, ListTodo, Loader2, Play, Sparkles, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { useT } from "@/i18n";
 import type { Task } from "@/features/tasks/tasksService";
 import { analyzeJournalDraft } from "../journalCompanion";
 import { journalAiNotesService, type JournalAiNote } from "../journalAiNotesService";
 import { runJournalInstruction, type JournalAssistantResult } from "../journalAssistantClient";
+
+/** Idle window before the watcher fires -- CORE's collab scanner uses 10s. */
+export const JOURNAL_WATCHER_IDLE_MS = 10_000;
+
+const WATCHER_STORAGE_KEY = "sf-journal-watcher-v1";
+
+function readWatcherEnabled(): boolean {
+  try {
+    return localStorage.getItem(WATCHER_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function watcherKey(date: string, instruction: string): string {
+  return `${date}\u0000${instruction.trim()}`;
+}
 
 interface NotesServiceLike {
   listByDate(userId: string, entryDate: string): Promise<JournalAiNote[]>;
@@ -44,6 +73,11 @@ export function JournalCompanion({
   const [busyTask, setBusyTask] = useState<number | null>(null);
   const [busyInstruction, setBusyInstruction] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [watcherEnabled, setWatcherEnabled] = useState(readWatcherEnabled);
+  // Instructions the watcher (or a manual Run) already fired for, keyed by
+  // (date, text) -- the once-per-conversation dedup. A ref, not state: a
+  // failed attempt must not re-render into another attempt.
+  const attemptedRef = useRef<Set<string>>(new Set());
 
   const analysis = useMemo(() => analyzeJournalDraft(content), [content]);
 
@@ -80,21 +114,8 @@ export function JournalCompanion({
     (item) => !answeredInstructions.has(item.instruction.trim()),
   );
 
-  const hasAnything = pendingCheckboxes.length > 0 || pendingInstructions.length > 0 || notes.length > 0;
-  if (!hasAnything) return null;
-
-  const handleCreateTask = async (lineIndex: number, title: string) => {
-    setBusyTask(lineIndex);
-    setError(null);
-    try {
-      await onCreateTask({ title, notes: t("journal_task_source_note", { date }) });
-      setCreatedTitles((prev) => new Set(prev).add(title.trim().toLowerCase()));
-    } finally {
-      setBusyTask(null);
-    }
-  };
-
   const handleRunInstruction = async (lineIndex: number, instruction: string) => {
+    attemptedRef.current.add(watcherKey(date, instruction));
     setBusyInstruction(lineIndex);
     setError(null);
     try {
@@ -110,6 +131,54 @@ export function JournalCompanion({
       }
     } finally {
       setBusyInstruction(null);
+    }
+  };
+
+  // The watcher. `runPendingRef` is reassigned every render so the timeout
+  // callback always sees the CURRENT pending list and handler -- a plain
+  // closure would go stale across the 10s wait.
+  const runPendingRef = useRef<() => void>(() => {});
+  runPendingRef.current = () => {
+    const targets = pendingInstructions.filter(
+      (item) => !attemptedRef.current.has(watcherKey(date, item.instruction)),
+    );
+    void (async () => {
+      for (const item of targets) {
+        await handleRunInstruction(item.lineIndex, item.instruction);
+      }
+    })();
+  };
+  const unattemptedCount = pendingInstructions.filter(
+    (item) => !attemptedRef.current.has(watcherKey(date, item.instruction)),
+  ).length;
+  useEffect(() => {
+    if (!watcherEnabled || unattemptedCount === 0) return;
+    // `content` in the deps is the idle detection: every keystroke replaces
+    // the timer, so it only ever fires after a genuine pause.
+    const timer = setTimeout(() => runPendingRef.current(), JOURNAL_WATCHER_IDLE_MS);
+    return () => clearTimeout(timer);
+  }, [watcherEnabled, unattemptedCount, content, date]);
+
+  const handleWatcherToggle = (enabled: boolean) => {
+    setWatcherEnabled(enabled);
+    try {
+      localStorage.setItem(WATCHER_STORAGE_KEY, enabled ? "1" : "0");
+    } catch {
+      // Per-viewer convenience only -- the switch still works for this visit.
+    }
+  };
+
+  const hasAnything = pendingCheckboxes.length > 0 || pendingInstructions.length > 0 || notes.length > 0;
+  if (!hasAnything) return null;
+
+  const handleCreateTask = async (lineIndex: number, title: string) => {
+    setBusyTask(lineIndex);
+    setError(null);
+    try {
+      await onCreateTask({ title, notes: t("journal_task_source_note", { date }) });
+      setCreatedTitles((prev) => new Set(prev).add(title.trim().toLowerCase()));
+    } finally {
+      setBusyTask(null);
     }
   };
 
@@ -152,10 +221,21 @@ export function JournalCompanion({
 
       {pendingInstructions.length > 0 && (
         <section className="space-y-2">
-          <h4 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            <Sparkles className="h-3.5 w-3.5" />
-            {t("journal_instructions_heading")}
-          </h4>
+          <div className="flex items-center gap-1.5">
+            <h4 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              <Sparkles className="h-3.5 w-3.5" />
+              {t("journal_instructions_heading")}
+            </h4>
+            <label className="ms-auto flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+              {t("journal_watcher_toggle")}
+              <Switch
+                checked={watcherEnabled}
+                onCheckedChange={handleWatcherToggle}
+                aria-label={t("journal_watcher_toggle")}
+                className="scale-90"
+              />
+            </label>
+          </div>
           <ul className="space-y-1.5">
             {pendingInstructions.map((item) => (
               <li key={item.lineIndex} className="flex items-center gap-2">

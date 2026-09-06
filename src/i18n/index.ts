@@ -180,6 +180,8 @@ const en = {
   journal_note_delete: 'Delete note',
   journal_note_delete_error: 'Could not delete the note. Please try again.',
   journal_note_unsaved: 'The reply could not be saved — it will disappear when you leave this page.',
+  // CORE-W3b (2026-09-06): the journal watcher (auto-run @ai after a pause).
+  journal_watcher_toggle: 'Auto-run after a pause',
   // CORE-W3 (2026-09-06): API tokens / MCP access (Settings > Integrations).
   api_tokens_card_title: 'API & MCP access',
   api_tokens_card_desc: 'Connect Claude, Cursor, or any MCP client to your SmartFlow memory and tasks. Tokens are shown once and can be revoked anytime.',
@@ -1504,6 +1506,7 @@ const de: TranslationDict = {
   journal_note_delete: 'Notiz löschen',
   journal_note_delete_error: 'Notiz konnte nicht gelöscht werden. Bitte erneut versuchen.',
   journal_note_unsaved: 'Die Antwort konnte nicht gespeichert werden — sie verschwindet, wenn du die Seite verlässt.',
+  journal_watcher_toggle: 'Nach einer Pause automatisch ausführen',
   // CORE-W3 (2026-09-06): API tokens / MCP access (Settings > Integrations).
   api_tokens_card_title: 'API- & MCP-Zugriff',
   api_tokens_card_desc: 'Verbinde Claude, Cursor oder jeden MCP-Client mit deinem SmartFlow-Gedächtnis und deinen Aufgaben. Tokens werden einmal angezeigt und sind jederzeit widerrufbar.',
@@ -2772,6 +2775,7 @@ const fa: TranslationDict = {
   journal_note_delete: 'حذف یادداشت',
   journal_note_delete_error: 'حذف یادداشت ممکن نشد. دوباره تلاش کن.',
   journal_note_unsaved: 'پاسخ ذخیره نشد — با ترک این صفحه از بین می‌رود.',
+  journal_watcher_toggle: 'اجرای خودکار بعد از مکث',
   // CORE-W3 (2026-09-06): API tokens / MCP access (Settings > Integrations).
   api_tokens_card_title: 'دسترسی API و MCP',
   api_tokens_card_desc: 'کلود، کرسر یا هر کلاینت MCP را به حافظه و وظایف اسمارت‌فلو وصل کن. توکن فقط یک بار نمایش داده می‌شود و هر وقت بخواهی باطل می‌شود.',
