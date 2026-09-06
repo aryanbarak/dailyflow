@@ -21,6 +21,7 @@ import {
 import { FlowAIOrb } from "@/components/FlowAIOrb";
 import { cn } from "@/lib/utils";
 import ChatPage from "@/pages/ChatPage";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useSetPageTitle } from "@/hooks/useSetPageTitle";
 import { SkeletonBlock } from "@/components/common/Skeletons";
 import { SmartflowAsciiVisual } from "@/components/smartflow";
@@ -28,6 +29,9 @@ import { useWorkspace } from "@/features/workspace";
 import { trackWorkspaceInteraction } from "@/features/workspace";
 import { useHabits } from "@/features/habits/useHabits";
 import { localeFor, useT, type TranslationKey } from "@/i18n";
+// CORE audit item 1-3: Home's second mode (opt-in, Dashboard stays default).
+import { useHomeViewModeStore } from "@/features/daily/homeViewModeStore";
+import { DailyHomeView } from "@/features/daily/components/DailyHomeView";
 
 // I18N-SWEEP-1: the workspace engines emit fixed English copy that the
 // Home tests pin; translate at the render layer by exact-string lookup.
@@ -779,7 +783,13 @@ export default function Dashboard() {
     setApprovalDialogTarget(null);
   };
 
-  useSetPageTitle("Dashboard", workspace.today.label);
+  const homeViewMode = useHomeViewModeStore((state) => state.mode);
+  const setHomeViewMode = useHomeViewModeStore((state) => state.setMode);
+
+  useSetPageTitle(
+    homeViewMode === "daily" ? t("home_mode_daily") : "Dashboard",
+    workspace.today.label,
+  );
 
   // Frozen handoff §8 (Pending Approvals): the rail rows reuse the EXACT
   // same runtime predicates (pending + requiresApproval, task-complete
@@ -884,7 +894,14 @@ export default function Dashboard() {
             <div
               // DESIGN-AUDIT 0.6 (light mode): the Dark Cosmic gradient is
               // dark-theme-only; light gets the plain background token.
-              className="flex h-full min-h-0 flex-col bg-background dark:[background:var(--flow-gradient-background)] lg:grid lg:grid-cols-[minmax(0,1fr)_372px] lg:max-[1280px]:grid-cols-[minmax(0,1fr)_330px] lg:max-[1120px]:grid-cols-[minmax(0,1fr)]"
+              // CORE audit item 1-3: Daily mode drops the two-column grid
+              // entirely (no Assistant Rail alongside it) -- the exact
+              // dashboard-mode string below is UNCHANGED from before.
+              className={
+                homeViewMode === "daily"
+                  ? "flex h-full min-h-0 flex-col bg-background dark:[background:var(--flow-gradient-background)]"
+                  : "flex h-full min-h-0 flex-col bg-background dark:[background:var(--flow-gradient-background)] lg:grid lg:grid-cols-[minmax(0,1fr)_372px] lg:max-[1280px]:grid-cols-[minmax(0,1fr)_330px] lg:max-[1120px]:grid-cols-[minmax(0,1fr)]"
+              }
             >
               {/* Center column -- frozen §3: flex column, min-width 0,
                   min-height 0; hero, action bars and the metric-capsule
@@ -1080,6 +1097,20 @@ export default function Dashboard() {
           page then scrolls, as before). The <=760px paddings are the v2
           rev-2 sfCenter values (10px all around). Nothing renders after
           the chat except the mobile-stacked Assistant Rail. */}
+      {/* CORE audit item 1-3: Home's second mode. A toggle, not a
+          replacement -- Dashboard (below) stays the untouched default;
+          switching to Daily unmounts it in favor of DailyHomeView. Kept
+          OUTSIDE the isLowData branch above, so a first-run user always
+          lands on Dashboard and never sees this toggle. */}
+      <div className="mb-3 flex flex-none justify-start">
+        <Tabs value={homeViewMode} onValueChange={(value) => setHomeViewMode(value as "dashboard" | "daily")}>
+          <TabsList className="bg-secondary">
+            <TabsTrigger value="dashboard">{t("home_mode_dashboard")}</TabsTrigger>
+            <TabsTrigger value="daily">{t("home_mode_daily")}</TabsTrigger>
+          </TabsList>
+        </Tabs>
+      </div>
+      {homeViewMode === "dashboard" ? (
       <WorkspaceRevealSection order={1} className="flex min-h-0 flex-1 flex-col">
         {/* PO fix (2026-09-05, phase-5 mobile pass): the tuned mobile
             h-[calc(100dvh-NNNpx)] constants (318/254, briefly 266/202)
@@ -1226,6 +1257,9 @@ export default function Dashboard() {
           </section>
         </div>
       </WorkspaceRevealSection>
+      ) : (
+        <DailyHomeView />
+      )}
 
               </div>
 
@@ -1237,6 +1271,11 @@ export default function Dashboard() {
                   (the rail stacked below the chat, far under the fold and
                   effectively undiscoverable) is replaced by the same
                   overlay, opened from the chat header's panel button. */}
+              {/* CORE audit item 1-3: Daily mode has no chat, so no
+                  panel-opening trigger exists either -- the scrim + rail
+                  below are Dashboard-mode only. */}
+              {homeViewMode === "dashboard" && (
+              <>
               {assistantPanelOpen && (
                 <button
                   type="button"
@@ -1271,6 +1310,8 @@ export default function Dashboard() {
                   onClosePanel={() => setAssistantPanelOpen(false)}
                 />
               </aside>
+              </>
+              )}
             </div>
           )}
       </div>
