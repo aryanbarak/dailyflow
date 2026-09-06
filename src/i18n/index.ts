@@ -139,6 +139,23 @@ const en = {
   dashboard_status_always: 'Always learning from your workspace.',
   // DESIGN-AUDIT 4 (responsive): mobile disclosure row for the 300px rail.
   rail_suggestions_toggle: 'Suggestions & stats',
+  // CORE-W1 (2026-09-06): offline layer (NetworkStatusPill, AppErrorBoundary).
+  network_offline_pill: "You're offline — changes sync when you reconnect",
+  network_back_online: 'Back online',
+  app_crash_title: 'Something went wrong',
+  app_crash_body: 'The app hit an unexpected error. Reloading usually fixes it.',
+  app_crash_body_offline: 'You appear to be offline. The app will reload automatically once the connection returns.',
+  app_crash_reload: 'Reload',
+  // CORE-W1 (2026-09-06): Telegram capture integration (Settings > Integrations).
+  telegram_card_title: 'Telegram capture',
+  telegram_card_desc: 'Message the SmartFlow bot to capture tasks from anywhere.',
+  telegram_status_linked: 'Connected to Telegram',
+  telegram_status_unlinked: 'Not connected',
+  telegram_generate_code: 'Generate link code',
+  telegram_code_hint: 'Send this command to the bot within 10 minutes:',
+  telegram_unlink: 'Disconnect',
+  telegram_link_error: 'Could not create a link code. Please try again.',
+  telegram_unlink_error: 'Could not disconnect. Please try again.',
   // I18N follow-up (2026-09-05): rail AI-Suggestions engine copy. The en
   // values are never rendered (English returns the engine string
   // untouched) -- they document the source strings for translators.
@@ -1410,6 +1427,23 @@ const de: TranslationDict = {
   dashboard_status_always: 'Lerne staendig aus deinem Workspace.',
   // DESIGN-AUDIT 4 (responsive): mobile disclosure row for the 300px rail.
   rail_suggestions_toggle: 'Vorschläge & Statistik',
+  // CORE-W1 (2026-09-06): offline layer (NetworkStatusPill, AppErrorBoundary).
+  network_offline_pill: 'Du bist offline — Änderungen werden nach der Verbindung synchronisiert',
+  network_back_online: 'Wieder online',
+  app_crash_title: 'Etwas ist schiefgelaufen',
+  app_crash_body: 'Die App hat einen unerwarteten Fehler. Neu laden behebt das meistens.',
+  app_crash_body_offline: 'Du scheinst offline zu sein. Die App lädt automatisch neu, sobald die Verbindung zurück ist.',
+  app_crash_reload: 'Neu laden',
+  // CORE-W1 (2026-09-06): Telegram capture integration (Settings > Integrations).
+  telegram_card_title: 'Telegram-Erfassung',
+  telegram_card_desc: 'Schreibe dem SmartFlow-Bot, um von überall Aufgaben zu erfassen.',
+  telegram_status_linked: 'Mit Telegram verbunden',
+  telegram_status_unlinked: 'Nicht verbunden',
+  telegram_generate_code: 'Verbindungscode erstellen',
+  telegram_code_hint: 'Sende diesen Befehl innerhalb von 10 Minuten an den Bot:',
+  telegram_unlink: 'Trennen',
+  telegram_link_error: 'Verbindungscode konnte nicht erstellt werden. Bitte erneut versuchen.',
+  telegram_unlink_error: 'Trennen fehlgeschlagen. Bitte erneut versuchen.',
   // I18N follow-up (2026-09-05): rail AI-Suggestions engine copy.
   dashboard_sugg_finish_tasks: 'Aktive Aufgaben abschließen',
   dashboard_sugg_finish_tasks_desc: 'Weil {{count}} Aufgaben noch Aufmerksamkeit brauchen.',
@@ -2625,6 +2659,23 @@ const fa: TranslationDict = {
   dashboard_status_always: 'همیشه در حال یادگیری از فضای کاری شما.',
   // DESIGN-AUDIT 4 (responsive): mobile disclosure row for the 300px rail.
   rail_suggestions_toggle: 'پیشنهادها و آمار',
+  // CORE-W1 (2026-09-06): offline layer (NetworkStatusPill, AppErrorBoundary).
+  network_offline_pill: 'آفلاین هستید — تغییرات پس از اتصال همگام می‌شوند',
+  network_back_online: 'اتصال برقرار شد',
+  app_crash_title: 'مشکلی پیش آمد',
+  app_crash_body: 'برنامه با خطای غیرمنتظره‌ای مواجه شد. بارگذاری دوباره معمولاً مشکل را حل می‌کند.',
+  app_crash_body_offline: 'به نظر می‌رسد آفلاین هستید. به محض برقراری اتصال، برنامه خودکار دوباره بارگذاری می‌شود.',
+  app_crash_reload: 'بارگذاری دوباره',
+  // CORE-W1 (2026-09-06): Telegram capture integration (Settings > Integrations).
+  telegram_card_title: 'ثبت از تلگرام',
+  telegram_card_desc: 'به ربات اسمارت‌فلو پیام بده تا از هرجا وظیفه ثبت کنی.',
+  telegram_status_linked: 'به تلگرام متصل است',
+  telegram_status_unlinked: 'متصل نیست',
+  telegram_generate_code: 'ساخت کد اتصال',
+  telegram_code_hint: 'این دستور را تا ۱۰ دقیقه دیگر برای ربات بفرست:',
+  telegram_unlink: 'قطع اتصال',
+  telegram_link_error: 'ساخت کد اتصال ممکن نشد. دوباره تلاش کن.',
+  telegram_unlink_error: 'قطع اتصال ممکن نشد. دوباره تلاش کن.',
   // I18N follow-up (2026-09-05): rail AI-Suggestions engine copy.
   dashboard_sugg_finish_tasks: 'وظایف باز را تمام کن',
   dashboard_sugg_finish_tasks_desc: 'چون {{count}} مورد هنوز به توجه نیاز دارد.',

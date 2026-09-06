@@ -10,6 +10,7 @@ import {
   type ReasoningResponseLanguage,
 } from './reasoning-endpoint'
 import { handleGitHubIntegrationRequest } from './github-integration'
+import { handleTelegramWebhookRequest } from './telegram-webhook'
 import { handleEngineeringTasksRequest } from './engineering-tasks-endpoint'
 import { handleContextDerivationRequest } from './context-derivation-endpoint'
 import { handlePersonalMemoryExtractionRequest } from './personal-memory-extraction-endpoint'
@@ -107,6 +108,12 @@ export default {
 
     const githubResponse = await handleGitHubIntegrationRequest(request, env)
     if (githubResponse) return githubResponse
+
+    // CORE-W1: Telegram capture webhook -- authenticated by its own shared
+    // secret header (see telegram-webhook.ts), so it sits with the other
+    // non-browser routes, before the CORS/POST handling below.
+    const telegramResponse = await handleTelegramWebhookRequest(request, env)
+    if (telegramResponse) return telegramResponse
 
     const engineeringTasksResponse = await handleEngineeringTasksRequest(request, env)
     if (engineeringTasksResponse) return engineeringTasksResponse
