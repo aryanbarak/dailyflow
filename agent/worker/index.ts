@@ -1,5 +1,5 @@
 import type { Env, AgentBriefing, ExtractedFact, MemoryEntry, UserContext, BriefingMode, ChatMessage, ChatOptions, Language } from './types'
-import { buildUserContext, fetchConfirmedPersonalMemory, fetchUserLanguage, fetchTaskSnapshot, fetchCalendarSnapshot, fetchHabitSnapshot, fetchFinanceSnapshot, supabaseGet, supabasePost, supabasePatch } from './context-builder'
+import { buildUserContext, fetchConfirmedPersonalMemory, fetchUserLanguage, fetchUserPersona, fetchTaskSnapshot, fetchCalendarSnapshot, fetchHabitSnapshot, fetchFinanceSnapshot, supabaseGet, supabasePost, supabasePatch } from './context-builder'
 import { buildConfirmedMemoryIndicatorLine } from './personal-memory-prompt-serialization'
 import { buildPrompt, buildExtractionPrompt, buildChatExtractionPrompt, EXTRACTABLE_KEYS, buildChatSystemPrompt } from './prompt-builder'
 import {
@@ -1585,9 +1585,12 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
   }
 
   try {
-    const [storedLanguage, confirmedMemory] = await Promise.all([
+    const [storedLanguage, confirmedMemory, userPersona] = await Promise.all([
       fetchUserLanguage(userId, env),
       fetchConfirmedPersonalMemory(userId, env),
+      // CORE-W2 (item ۳-۴): best-effort -- resolves null on any failure,
+      // never fails the turn (see fetchUserPersona's own comment).
+      fetchUserPersona(userId, env),
     ])
     // LANG-02: the turn's language. The client resolves a concrete
     // responseLanguage for every /chat turn (configured AI language ->
@@ -2077,7 +2080,7 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
       }
     }
 
-    const system = buildChatSystemPrompt(language, confirmedMemory, new Date(), timeZone)
+    const system = buildChatSystemPrompt(language, confirmedMemory, new Date(), timeZone, userPersona)
     const fullHistory: ChatMessage[] = [...history, { role: 'user', content: modelFacingMessage }]
 
     // INC-01: a provider failure (429/5xx/network) here must not fall

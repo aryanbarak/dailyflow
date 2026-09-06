@@ -156,6 +156,20 @@ const en = {
   telegram_unlink: 'Disconnect',
   telegram_link_error: 'Could not create a link code. Please try again.',
   telegram_unlink_error: 'Could not disconnect. Please try again.',
+  // CORE-W2 (2026-09-06): user persona document (Settings > AI & Memory).
+  persona_card_title: 'About me (persona)',
+  persona_card_desc: 'Written by you, read by your assistant on every chat turn. Preferences, context, and standing directives — in your own words.',
+  persona_placeholder: '## Who I am\n\n## Preferences\n\n## Directives for my assistant\n',
+  persona_save: 'Save',
+  persona_saved: 'Saved',
+  persona_save_error: 'Could not save. Please try again.',
+  // CORE-W2 (2026-09-06): subscription suggestions (Finance rail).
+  subscriptions_card_title: 'Possible subscriptions',
+  subscriptions_card_desc: 'Recurring monthly charges spotted in your transactions. Add them as recurring, or dismiss.',
+  subscriptions_confidence_likely: 'monthly × {{count}}',
+  subscriptions_confidence_possible: 'seen {{count}}×, looks monthly',
+  subscriptions_promote: 'Add',
+  subscriptions_dismiss: 'Dismiss suggestion',
   // I18N follow-up (2026-09-05): rail AI-Suggestions engine copy. The en
   // values are never rendered (English returns the engine string
   // untouched) -- they document the source strings for translators.
@@ -1444,6 +1458,20 @@ const de: TranslationDict = {
   telegram_unlink: 'Trennen',
   telegram_link_error: 'Verbindungscode konnte nicht erstellt werden. Bitte erneut versuchen.',
   telegram_unlink_error: 'Trennen fehlgeschlagen. Bitte erneut versuchen.',
+  // CORE-W2 (2026-09-06): user persona document (Settings > AI & Memory).
+  persona_card_title: 'Über mich (Persona)',
+  persona_card_desc: 'Von dir geschrieben, von deinem Assistenten in jedem Chat gelesen. Vorlieben, Kontext und feste Anweisungen — in deinen eigenen Worten.',
+  persona_placeholder: '## Wer ich bin\n\n## Vorlieben\n\n## Anweisungen an meinen Assistenten\n',
+  persona_save: 'Speichern',
+  persona_saved: 'Gespeichert',
+  persona_save_error: 'Speichern fehlgeschlagen. Bitte erneut versuchen.',
+  // CORE-W2 (2026-09-06): subscription suggestions (Finance rail).
+  subscriptions_card_title: 'Mögliche Abos',
+  subscriptions_card_desc: 'Monatlich wiederkehrende Abbuchungen in deinen Transaktionen. Als Dauerauftrag übernehmen oder ausblenden.',
+  subscriptions_confidence_likely: 'monatlich × {{count}}',
+  subscriptions_confidence_possible: '{{count}}× gesehen, wirkt monatlich',
+  subscriptions_promote: 'Übernehmen',
+  subscriptions_dismiss: 'Vorschlag ausblenden',
   // I18N follow-up (2026-09-05): rail AI-Suggestions engine copy.
   dashboard_sugg_finish_tasks: 'Aktive Aufgaben abschließen',
   dashboard_sugg_finish_tasks_desc: 'Weil {{count}} Aufgaben noch Aufmerksamkeit brauchen.',
@@ -2676,6 +2704,20 @@ const fa: TranslationDict = {
   telegram_unlink: 'قطع اتصال',
   telegram_link_error: 'ساخت کد اتصال ممکن نشد. دوباره تلاش کن.',
   telegram_unlink_error: 'قطع اتصال ممکن نشد. دوباره تلاش کن.',
+  // CORE-W2 (2026-09-06): user persona document (Settings > AI & Memory).
+  persona_card_title: 'درباره من (پرسونا)',
+  persona_card_desc: 'تو می‌نویسی، دستیارت در هر گفتگو می‌خواند. ترجیح‌ها، زمینه و دستورهای همیشگی — با کلمات خودت.',
+  persona_placeholder: '## من کی هستم\n\n## ترجیح‌ها\n\n## دستورها برای دستیارم\n',
+  persona_save: 'ذخیره',
+  persona_saved: 'ذخیره شد',
+  persona_save_error: 'ذخیره نشد. دوباره تلاش کن.',
+  // CORE-W2 (2026-09-06): subscription suggestions (Finance rail).
+  subscriptions_card_title: 'اشتراک‌های احتمالی',
+  subscriptions_card_desc: 'هزینه‌های ماهانه تکرارشونده در تراکنش‌هایت. به تکرارشونده‌ها اضافه کن یا رد کن.',
+  subscriptions_confidence_likely: 'ماهانه × {{count}}',
+  subscriptions_confidence_possible: '{{count}} بار دیده شده، ماهانه به نظر می‌رسد',
+  subscriptions_promote: 'افزودن',
+  subscriptions_dismiss: 'رد کردن پیشنهاد',
   // I18N follow-up (2026-09-05): rail AI-Suggestions engine copy.
   dashboard_sugg_finish_tasks: 'وظایف باز را تمام کن',
   dashboard_sugg_finish_tasks_desc: 'چون {{count}} مورد هنوز به توجه نیاز دارد.',

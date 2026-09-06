@@ -336,16 +336,42 @@ function buildCurrentDateTimeSection(now: Date, timeZone: string): string {
   return `Current date and time: ${isoDate} (${get('weekday')}), ${time}, ${timeZone}`
 }
 
+// CORE-W2 (2026-09-06, CORE audit item ۳-۴): hard ceiling on how much of
+// the user's persona document reaches the prompt. The editor UI and the
+// user_persona CHECK constraint both cap content at 8000 chars; this is an
+// independent last-resort bound so a widened column can never silently
+// dominate the token budget.
+export const USER_PERSONA_MAX_PROMPT_CHARS = 8000
+
+export function buildUserPersonaSection(personaDocument: string | null | undefined): string {
+  if (!personaDocument) return ''
+  const trimmed = personaDocument.trim()
+  if (trimmed.length === 0) return ''
+  const bounded = trimmed.length > USER_PERSONA_MAX_PROMPT_CHARS
+    ? trimmed.slice(0, USER_PERSONA_MAX_PROMPT_CHARS)
+    : trimmed
+  return [
+    'The user wrote the following persona document about themselves for you. It is user-authored ground truth about who they are and how they want you to work with them -- follow its preferences and directives, and never contradict it with a guess:',
+    '<user-persona>',
+    bounded,
+    '</user-persona>',
+  ].join('\n')
+}
+
 export function buildChatSystemPrompt(
   language: Language,
   confirmedMemory: ConfirmedPersonalMemoryRecord[],
   now: Date,
   timeZone: string,
+  // CORE-W2: optional so every pre-existing caller/test keeps byte-identical
+  // output; only /chat passes a value (fetched best-effort in index.ts).
+  personaDocument: string | null = null,
 ): string {
   const persona = CHAT_PERSONA[language]
   const dateTimeSection = buildCurrentDateTimeSection(now, timeZone)
+  const personaSection = buildUserPersonaSection(personaDocument)
   const memorySection = buildConfirmedMemorySection(confirmedMemory)
-  return [persona, dateTimeSection, memorySection].filter(Boolean).join('\n\n')
+  return [persona, dateTimeSection, personaSection, memorySection].filter(Boolean).join('\n\n')
 }
 
 const LANG_NAMES: Record<Language, string> = {

@@ -1052,6 +1052,15 @@ describe('buildExtractionSystemInstruction (task 18, A3 type-aware guidance)', (
     expect(buildExtractionSystemInstruction(null)).toBe(buildExtractionSystemInstruction())
     expect(buildExtractionSystemInstruction('unknown-type')).toBe(buildExtractionSystemInstruction())
   })
+
+  // CORE-W2 (2026-09-06, audit item ۳-۲): the three additive durability-gate
+  // lines are part of the base instruction for EVERY provenance kind.
+  it('the base instruction carries the durability test, empty-is-normal permission, and silence-is-not-agreement rule', () => {
+    const instruction = buildExtractionSystemInstruction()
+    expect(instruction).toContain('durability test: if a DIFFERENT assistant interacted with this user next month')
+    expect(instruction).toContain('Returning an empty array is the expected common outcome')
+    expect(instruction).toContain('silence is never agreement')
+  })
 })
 
 describe('normalizeOverlapSubjectText (task 18, B1)', () => {

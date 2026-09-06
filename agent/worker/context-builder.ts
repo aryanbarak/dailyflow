@@ -102,6 +102,30 @@ export async function fetchConfirmedPersonalMemory(
 }
 
 // =============================================
+// CORE-W2 (2026-09-06, CORE audit item ۳-۴): the user's own persona
+// document (user_persona, migration 20260906120000) -- a hand-written,
+// user-OWNED markdown doc, distinct from model-extracted personal memory.
+// Best-effort by design: any read failure returns null and the chat turn
+// proceeds without a persona section (same degradation posture as the
+// overlap check in personal-memory-extraction-endpoint.ts).
+// =============================================
+export async function fetchUserPersona(userId: string, env: Env): Promise<string | null> {
+  try {
+    const rows = await supabaseGet<Array<{ content: string | null }>>(
+      env,
+      `user_persona?user_id=eq.${userId}&select=content&limit=1`
+    )
+    const content = rows[0]?.content
+    if (typeof content !== 'string') return null
+    const trimmed = content.trim()
+    return trimmed.length > 0 ? trimmed : null
+  } catch (error) {
+    console.error(`[Persona] read failed (continuing without persona): ${(error as Error).message}`)
+    return null
+  }
+}
+
+// =============================================
 // User language from user_settings
 // =============================================
 export async function fetchUserLanguage(userId: string, env: Env): Promise<Language> {

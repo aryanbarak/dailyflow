@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildChatSystemPrompt } from './prompt-builder'
+import { buildChatSystemPrompt, buildUserPersonaSection, USER_PERSONA_MAX_PROMPT_CHARS } from './prompt-builder'
 import type { ConfirmedPersonalMemoryRecord } from './personal-memory-prompt-serialization'
 import type { Language } from './types'
 
@@ -304,5 +304,41 @@ describe('buildChatSystemPrompt', () => {
       expect(prompt).toContain('Flow AI')
       expect(prompt).not.toMatch(bidiControls)
     }
+  })
+})
+
+// CORE-W2 (2026-09-06, CORE audit item ۳-۴): the user persona document.
+describe('buildUserPersonaSection / persona in buildChatSystemPrompt', () => {
+  it('null, undefined, and whitespace-only documents produce no section at all', () => {
+    expect(buildUserPersonaSection(null)).toBe('')
+    expect(buildUserPersonaSection(undefined)).toBe('')
+    expect(buildUserPersonaSection('   \n  ')).toBe('')
+  })
+
+  it('a document is wrapped in <user-persona> tags with the user-authored framing line', () => {
+    const section = buildUserPersonaSection('## Preferences\nShort answers.')
+    expect(section).toContain('<user-persona>')
+    expect(section).toContain('## Preferences\nShort answers.')
+    expect(section).toContain('</user-persona>')
+    expect(section).toContain('user-authored ground truth')
+  })
+
+  it('an over-long document is hard-capped at USER_PERSONA_MAX_PROMPT_CHARS', () => {
+    const section = buildUserPersonaSection('x'.repeat(USER_PERSONA_MAX_PROMPT_CHARS + 500))
+    const body = section.split('<user-persona>\n')[1].split('\n</user-persona>')[0]
+    expect(body).toHaveLength(USER_PERSONA_MAX_PROMPT_CHARS)
+  })
+
+  it('omitting the parameter keeps buildChatSystemPrompt byte-identical (every pre-existing caller)', () => {
+    const withoutParam = buildChatSystemPrompt('fa', [], FIXED_CLOCK, FIXED_TIMEZONE)
+    const withNull = buildChatSystemPrompt('fa', [], FIXED_CLOCK, FIXED_TIMEZONE, null)
+    expect(withNull).toBe(withoutParam)
+    expect(withoutParam).not.toContain('<user-persona>')
+  })
+
+  it('a persona document appears in the chat system prompt when passed', () => {
+    const prompt = buildChatSystemPrompt('en', [], FIXED_CLOCK, FIXED_TIMEZONE, '## Directives\nNever schedule before 9am.')
+    expect(prompt).toContain('<user-persona>')
+    expect(prompt).toContain('Never schedule before 9am.')
   })
 })
