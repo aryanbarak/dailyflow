@@ -271,6 +271,13 @@ function installFetchMock(
       log.sessionPatches += 1
       return new Response(null, { status: 204 })
     }
+    // CORE-W6 (item ۱-۶, ADR-0023 SS2): best-effort recall-log write, fired
+    // whenever confirmedMemoryRows is non-empty -- not under test in this
+    // file (see context-builder-personal-memory-recall.test.ts), so just
+    // acknowledged like every other POST-only ledger table here.
+    if (url.startsWith(`${SUPABASE_URL}/rest/v1/personal_memory_recall_log`) && method === 'POST') {
+      return new Response(null, { status: 201 })
+    }
     throw new Error(`Unexpected fetch: ${method} ${url}`)
   })
 

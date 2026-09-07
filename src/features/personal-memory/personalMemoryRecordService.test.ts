@@ -36,6 +36,7 @@ function fakeRepository(overrides: Partial<PersonalMemoryRecordRepository> = {})
     listConfirmedByOwner: vi.fn(async () => []),
     createRun: vi.fn(),
     completeRun: vi.fn(),
+    listRunsByOwner: vi.fn(async () => []),
     ...overrides,
   };
 }
@@ -251,5 +252,28 @@ describe("createPersonalMemoryRecordService -- listConfirmed (ADR-0011)", () => 
 
     await expect(service.listConfirmed()).rejects.toMatchObject({ code: "UNAUTHENTICATED" });
     expect(listConfirmedByOwner).not.toHaveBeenCalled();
+  });
+});
+
+describe("createPersonalMemoryRecordService -- listRuns (CORE-W6, ADR-0023 SS1)", () => {
+  it("delegates to the repository's run history read for the resolved owner", async () => {
+    const listRunsByOwner = vi.fn(async () => [
+      { id: "run-1", ownerId: "user-1", modelIdentity: "gemini-test", derivationVersion: "personal-memory-extraction-v1", startedAt: "2026-09-01T00:00:00.000Z", candidateCount: 3, acceptedCount: 2, droppedCount: 1 },
+    ]);
+    const repository = fakeRepository({ listRunsByOwner });
+    const service = createPersonalMemoryRecordService({ repository, resolveOwnerId: async () => "user-1" });
+
+    const result = await service.listRuns();
+    expect(result).toHaveLength(1);
+    expect(listRunsByOwner).toHaveBeenCalledWith("user-1");
+  });
+
+  it("throws UNAUTHENTICATED when no owner is resolved, before touching the repository", async () => {
+    const listRunsByOwner = vi.fn();
+    const repository = fakeRepository({ listRunsByOwner });
+    const service = createPersonalMemoryRecordService({ repository, resolveOwnerId: async () => null });
+
+    await expect(service.listRuns()).rejects.toMatchObject({ code: "UNAUTHENTICATED" });
+    expect(listRunsByOwner).not.toHaveBeenCalled();
   });
 });

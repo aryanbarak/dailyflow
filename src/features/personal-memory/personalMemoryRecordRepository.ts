@@ -203,6 +203,8 @@ export interface PersonalMemoryRecordRepository {
   listConfirmedByOwner(ownerId: string, limit?: number): Promise<readonly PersonalMemoryRecord[]>;
   createRun(input: CreatePersonalMemoryExtractionRunInput): Promise<PersonalMemoryExtractionRun>;
   completeRun(input: CompletePersonalMemoryExtractionRunInput): Promise<PersonalMemoryExtractionRun>;
+  /** CORE-W6 (ADR-0023 SS1): extraction-run history for the new "Extraction history" UI. No migration needed -- the table's existing owner-scoped SELECT RLS already permits this read. */
+  listRunsByOwner(ownerId: string, limit?: number): Promise<readonly PersonalMemoryExtractionRun[]>;
 }
 
 export function createSupabasePersonalMemoryRecordRepository(
@@ -368,6 +370,18 @@ export function createSupabasePersonalMemoryRecordRepository(
 
       if (error) throw new PersonalMemoryRecordPersistenceError("Unable to complete extraction run.", error);
       return mapRowToRun(data as PersonalMemoryExtractionRunRow);
+    },
+
+    async listRunsByOwner(ownerId, limit = 30) {
+      const { data, error } = await client
+        .from("personal_memory_extraction_runs")
+        .select(RUN_COLUMNS)
+        .eq("user_id", ownerId)
+        .order("started_at", { ascending: false })
+        .limit(limit);
+
+      if (error) throw new PersonalMemoryRecordPersistenceError("Unable to list extraction runs.", error);
+      return ((data ?? []) as PersonalMemoryExtractionRunRow[]).map(mapRowToRun);
     },
   };
 }

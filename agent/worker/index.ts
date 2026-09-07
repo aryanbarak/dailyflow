@@ -1,5 +1,6 @@
 import type { Env, AgentBriefing, ExtractedFact, MemoryEntry, UserContext, BriefingMode, ChatMessage, ChatOptions, Language } from './types'
-import { buildUserContext, fetchConfirmedPersonalMemory, fetchUserLanguage, fetchUserPersona, fetchTaskSnapshot, fetchCalendarSnapshot, fetchHabitSnapshot, fetchFinanceSnapshot, supabaseGet, supabasePost, supabasePatch } from './context-builder'
+import { buildUserContext, fetchConfirmedPersonalMemory, fetchUserLanguage, fetchUserPersona, fetchTaskSnapshot, fetchCalendarSnapshot, fetchHabitSnapshot, fetchFinanceSnapshot, logPersonalMemoryRecall, supabaseGet, supabasePost, supabasePatch } from './context-builder'
+import { selectBoundedConfirmedMemory } from './personal-memory-prompt-serialization'
 import { buildConfirmedMemoryIndicatorLine } from './personal-memory-prompt-serialization'
 import { buildPrompt, buildExtractionPrompt, buildChatExtractionPrompt, EXTRACTABLE_KEYS, buildChatSystemPrompt } from './prompt-builder'
 import {
@@ -256,6 +257,12 @@ async function generateBriefing(
 ): Promise<AgentBriefing> {
   // ۱. داده‌ها رو جمع کن
   const context = await buildUserContext(userId, env, mode)
+
+  // CORE-W6 (item ۱-۶, ADR-0023 SS2): log exactly the record ids that will
+  // actually be injected into this briefing's prompt (the same bounded
+  // selection buildPrompt itself computes below) -- best-effort, see
+  // logPersonalMemoryRecall's own comment.
+  void logPersonalMemoryRecall(env, userId, 'briefing', selectBoundedConfirmedMemory(context.confirmedMemory).map(r => r.id))
 
   // ۲. Prompt بساز
   const { system, user } = buildPrompt(context)
@@ -1609,6 +1616,13 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext): Pr
       // never fails the turn (see fetchUserPersona's own comment).
       fetchUserPersona(userId, env),
     ])
+
+    // CORE-W6 (item ۱-۶, ADR-0023 SS2): log exactly the record ids that will
+    // actually be injected into this turn's system prompt (the same bounded
+    // selection buildChatSystemPrompt itself computes below) -- best-effort,
+    // never awaited into the critical path beyond this fire call itself
+    // failing closed inside logPersonalMemoryRecall.
+    void logPersonalMemoryRecall(env, userId, 'chat', selectBoundedConfirmedMemory(confirmedMemory).map(r => r.id))
     // LANG-02: the turn's language. The client resolves a concrete
     // responseLanguage for every /chat turn (configured AI language ->
     // detected message language -> UI language, resolveAiResponseLanguage

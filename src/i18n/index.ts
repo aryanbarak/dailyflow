@@ -1353,6 +1353,35 @@ const en = {
   // once a stored checkpoint (journey_progress) exists.
   micro_breaks_session_choice_continue_journey: 'Continue Journey (Room {{room}})',
   micro_breaks_session_choice_continue_journey_desc: 'Pick up where you left off',
+
+  // CORE-W6 (2026-09-07, ADR-0023): Memory Transparency Level -- extraction
+  // history, recall log, provenance graph.
+  personal_memory_extraction_history_title: 'Extraction history',
+  personal_memory_extraction_history_retry: 'Check now',
+  personal_memory_extraction_history_retrying: 'Checking…',
+  personal_memory_extraction_history_loading: 'Loading extraction history…',
+  personal_memory_extraction_history_empty: 'No extraction runs yet.',
+  personal_memory_extraction_history_retry_success: 'Done -- {{accepted}} new memory item(s) accepted.',
+  personal_memory_extraction_history_kind_facts: 'Personal memory',
+  personal_memory_extraction_history_kind_people: 'People',
+  personal_memory_extraction_history_outcome_completed: 'Completed',
+  personal_memory_extraction_history_outcome_failed: 'Failed',
+  personal_memory_extraction_history_outcome_interrupted: 'Interrupted',
+  personal_memory_extraction_history_outcome_in_progress: 'In progress',
+  personal_memory_extraction_history_counts: '{{accepted}} accepted, {{dropped}} dropped',
+  personal_memory_recall_log_title: 'Recall log',
+  personal_memory_recall_log_loading: 'Loading recall log…',
+  personal_memory_recall_log_empty: 'No memory has been recalled yet.',
+  personal_memory_recall_log_consumer_chat: 'Chat',
+  personal_memory_recall_log_consumer_briefing: 'Briefing',
+  personal_memory_recall_log_consumer_tutor: 'Learn AI tutor',
+  personal_memory_provenance_graph_title: 'Memory provenance',
+  personal_memory_provenance_graph_loading: 'Loading memory provenance…',
+  personal_memory_provenance_graph_empty: 'No personal memory to trace yet.',
+  personal_memory_provenance_graph_node_document: 'Document',
+  personal_memory_provenance_graph_node_chat_turn: 'Chat message',
+  personal_memory_provenance_graph_node_briefing: 'Briefing',
+  personal_memory_provenance_graph_view_source: 'View source',
 };
 
 type TranslationDict = typeof en;
@@ -2647,6 +2676,35 @@ const de: TranslationDict = {
   micro_breaks_journey_cleared_label: 'Alle Räume geschafft — weiter geht’s!',
   micro_breaks_session_choice_continue_journey: 'Reise fortsetzen (Raum {{room}})',
   micro_breaks_session_choice_continue_journey_desc: 'Dort weitermachen, wo du aufgehört hast',
+
+  // CORE-W6 (2026-09-07, ADR-0023): Memory Transparency Level -- extraction
+  // history, recall log, provenance graph.
+  personal_memory_extraction_history_title: 'Extraktionsverlauf',
+  personal_memory_extraction_history_retry: 'Jetzt prüfen',
+  personal_memory_extraction_history_retrying: 'Wird geprüft…',
+  personal_memory_extraction_history_loading: 'Extraktionsverlauf wird geladen…',
+  personal_memory_extraction_history_empty: 'Noch keine Extraktionsläufe.',
+  personal_memory_extraction_history_retry_success: 'Fertig -- {{accepted}} neue(r) Erinnerungseintrag/-einträge übernommen.',
+  personal_memory_extraction_history_kind_facts: 'Persönliches Gedächtnis',
+  personal_memory_extraction_history_kind_people: 'Personen',
+  personal_memory_extraction_history_outcome_completed: 'Abgeschlossen',
+  personal_memory_extraction_history_outcome_failed: 'Fehlgeschlagen',
+  personal_memory_extraction_history_outcome_interrupted: 'Unterbrochen',
+  personal_memory_extraction_history_outcome_in_progress: 'Läuft',
+  personal_memory_extraction_history_counts: '{{accepted}} übernommen, {{dropped}} verworfen',
+  personal_memory_recall_log_title: 'Abrufprotokoll',
+  personal_memory_recall_log_loading: 'Abrufprotokoll wird geladen…',
+  personal_memory_recall_log_empty: 'Noch kein Gedächtnisabruf.',
+  personal_memory_recall_log_consumer_chat: 'Chat',
+  personal_memory_recall_log_consumer_briefing: 'Briefing',
+  personal_memory_recall_log_consumer_tutor: 'Lern-KI-Tutor',
+  personal_memory_provenance_graph_title: 'Herkunft der Erinnerungen',
+  personal_memory_provenance_graph_loading: 'Herkunft wird geladen…',
+  personal_memory_provenance_graph_empty: 'Noch kein persönliches Gedächtnis zum Nachverfolgen.',
+  personal_memory_provenance_graph_node_document: 'Dokument',
+  personal_memory_provenance_graph_node_chat_turn: 'Chat-Nachricht',
+  personal_memory_provenance_graph_node_briefing: 'Briefing',
+  personal_memory_provenance_graph_view_source: 'Quelle ansehen',
 };
 
 const fa: TranslationDict = {
@@ -3939,6 +3997,35 @@ const fa: TranslationDict = {
   micro_breaks_journey_cleared_label: 'همه اتاق‌ها تمام شد — به بازی ادامه دهید!',
   micro_breaks_session_choice_continue_journey: 'ادامه سفر (اتاق {{room}})',
   micro_breaks_session_choice_continue_journey_desc: 'از همان جایی که رها کردید ادامه دهید',
+
+  // CORE-W6 (2026-09-07, ADR-0023): سطح شفافیت حافظه -- سابقه‌ی استخراج،
+  // سابقه‌ی فراخوانی، گراف منشأ.
+  personal_memory_extraction_history_title: 'سابقه‌ی استخراج',
+  personal_memory_extraction_history_retry: 'بررسی الان',
+  personal_memory_extraction_history_retrying: 'در حال بررسی…',
+  personal_memory_extraction_history_loading: 'در حال بارگذاری سابقه‌ی استخراج…',
+  personal_memory_extraction_history_empty: 'هنوز هیچ استخراجی انجام نشده است.',
+  personal_memory_extraction_history_retry_success: 'انجام شد -- {{accepted}} مورد حافظه‌ی جدید پذیرفته شد.',
+  personal_memory_extraction_history_kind_facts: 'حافظه‌ی شخصی',
+  personal_memory_extraction_history_kind_people: 'افراد',
+  personal_memory_extraction_history_outcome_completed: 'کامل شد',
+  personal_memory_extraction_history_outcome_failed: 'ناموفق',
+  personal_memory_extraction_history_outcome_interrupted: 'قطع شده',
+  personal_memory_extraction_history_outcome_in_progress: 'در حال انجام',
+  personal_memory_extraction_history_counts: '{{accepted}} پذیرفته شد، {{dropped}} رد شد',
+  personal_memory_recall_log_title: 'سابقه‌ی فراخوانی حافظه',
+  personal_memory_recall_log_loading: 'در حال بارگذاری سابقه‌ی فراخوانی…',
+  personal_memory_recall_log_empty: 'هنوز هیچ حافظه‌ای فراخوانی نشده است.',
+  personal_memory_recall_log_consumer_chat: 'گفتگو',
+  personal_memory_recall_log_consumer_briefing: 'بریفینگ',
+  personal_memory_recall_log_consumer_tutor: 'دستیار یادگیری',
+  personal_memory_provenance_graph_title: 'منشأ حافظه',
+  personal_memory_provenance_graph_loading: 'در حال بارگذاری منشأ حافظه…',
+  personal_memory_provenance_graph_empty: 'هنوز حافظه‌ای برای ردیابی وجود ندارد.',
+  personal_memory_provenance_graph_node_document: 'سند',
+  personal_memory_provenance_graph_node_chat_turn: 'پیام گفتگو',
+  personal_memory_provenance_graph_node_briefing: 'بریفینگ',
+  personal_memory_provenance_graph_view_source: 'مشاهده‌ی منبع',
 };
 
 export type TranslationKey = keyof TranslationDict;

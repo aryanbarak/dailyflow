@@ -12,6 +12,7 @@ import {
 
 function record(overrides: Partial<ConfirmedPersonalMemoryRecord> = {}): ConfirmedPersonalMemoryRecord {
   return {
+    id: 'record-1',
     kind: 'preference',
     content: { summary: 'Prefers async written updates' },
     createdAt: '2026-08-01T00:00:00.000Z',

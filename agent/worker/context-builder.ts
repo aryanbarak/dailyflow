@@ -30,7 +30,7 @@ export async function supabaseGet<T>(env: Env, path: string): Promise<T> {
 export async function supabasePost(
   env: Env,
   table: string,
-  body: Record<string, unknown>,
+  body: Record<string, unknown> | Record<string, unknown>[],
   prefer = 'return=minimal'
 ): Promise<void> {
   const res = await fetch(`${env.SUPABASE_URL}/rest/v1/${table}`, {
@@ -89,16 +89,54 @@ export async function fetchConfirmedPersonalMemory(
   env: Env,
   limit = 30
 ): Promise<ConfirmedPersonalMemoryRecord[]> {
-  const rows = await supabaseGet<Array<{ kind: string; content: unknown; created_at: string }>>(
+  const rows = await supabaseGet<Array<{ id: string; kind: string; content: unknown; created_at: string }>>(
     env,
-    `personal_memory_records?user_id=eq.${userId}&status=in.(user_confirmed,user_corrected)&select=kind,content,created_at&order=created_at.desc&limit=${limit}`
+    `personal_memory_records?user_id=eq.${userId}&status=in.(user_confirmed,user_corrected)&select=id,kind,content,created_at&order=created_at.desc&limit=${limit}`
   )
 
   return rows.map(r => ({
+    id: r.id,
     kind: r.kind as ConfirmedPersonalMemoryRecord['kind'],
     content: r.content as Record<string, unknown>,
     createdAt: r.created_at,
   }))
+}
+
+// =============================================
+// CORE-W6 (2026-09-07, CORE audit item 1-6, ADR-0023 SS2): recall-log
+// instrumentation for the Worker's two confirmed-memory consumers (/chat,
+// briefings -- both already funnel through fetchConfirmedPersonalMemory
+// above, a real single choke point). The Learn AI tutor is a separate,
+// browser-side consumer that does not run inside this Worker at all (see
+// ADR-0023 Context) -- it logs its own recalls via a dedicated RPC instead,
+// see personalMemoryRecallLogRepository.ts.
+//
+// Best-effort by design, matching fetchUserPersona's own degradation
+// posture in this file: a logging failure never fails the chat/briefing
+// turn it's attached to.
+// =============================================
+export async function logPersonalMemoryRecall(
+  env: Env,
+  userId: string,
+  consumer: 'chat' | 'briefing',
+  recordIds: readonly string[]
+): Promise<void> {
+  if (recordIds.length === 0) return
+  try {
+    const batchId = crypto.randomUUID()
+    await supabasePost(
+      env,
+      'personal_memory_recall_log',
+      recordIds.map(recordId => ({
+        user_id: userId,
+        record_id: recordId,
+        consumer,
+        recall_batch_id: batchId,
+      }))
+    )
+  } catch (error) {
+    console.warn(`[PersonalMemory] recall log write failed (continuing): ${(error as Error).message}`)
+  }
 }
 
 // =============================================

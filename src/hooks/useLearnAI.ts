@@ -17,6 +17,7 @@ import type {
 import { insertMessage, listHistory } from "@/features/learn-ai/learnAiService";
 import { browserPersonalMemoryRecordService } from "@/features/personal-memory/personalMemoryRecordBrowserService";
 import { getConfirmedMemoryPromptContext } from "@/features/personal-memory/personalMemoryPromptContext";
+import { browserPersonalMemoryRecallLogService } from "@/features/personal-memory/personalMemoryRecallLogBrowserService";
 import { useAppearance } from "@/features/settings/appearanceStore";
 import {
   getAiResponseLanguageInstruction,
@@ -182,7 +183,12 @@ export function useLearnAI() {
       let answer: string;
       let aiError: AIError | null = null;
       try {
-        const memoryContext = await getConfirmedMemoryPromptContext(browserPersonalMemoryRecordService);
+        const { text: memoryContext, recordIds: recalledRecordIds } = await getConfirmedMemoryPromptContext(browserPersonalMemoryRecordService);
+        if (recalledRecordIds.length > 0) {
+          // Best-effort, fire-and-forget -- ADR-0023 SS2: a logging failure
+          // must never block or degrade the actual tutor reply.
+          browserPersonalMemoryRecallLogService.logTutorRecall(recalledRecordIds).catch(() => {});
+        }
         const result = await askLearnAI({
           message: messageContent,
           history,

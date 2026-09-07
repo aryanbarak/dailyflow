@@ -31,6 +31,7 @@ and must not be reused.
 - [ADR-0020: AI Learning Foundation and Shadow Model Governance](ADR-0020-ai-learning-foundation-and-shadow-model-governance.md) - Accepted
 - [ADR-0021: Live Learning Capture and Shadow Runtime](ADR-0021-live-learning-capture-and-shadow-runtime.md) - Proposed
 - [ADR-0022: Live Routing Evaluation and Comparison Semantics](ADR-0022-live-routing-evaluation-and-comparison-semantics.md) - Proposed
+- [ADR-0023: Memory Transparency Level v1 — Recall Logging, Range Deletion, and Narrow People Extraction](ADR-0023-memory-transparency-and-narrow-people-extraction.md) - Accepted
 
 ## ADR vs Decision Log
 
