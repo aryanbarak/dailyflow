@@ -6,6 +6,12 @@ export interface Task {
   title: string;
   notes?: string;
   dueDate?: string | null;
+  // CORE-W5 (2026-09-06, CORE audit item 1-4): a real RFC 5545 RRULE
+  // property list (no "RRULE:" prefix, no DTSTART -- see
+  // src/features/scheduling/occurrences.ts), replacing the old inert
+  // enum. recurrenceEndDate maps to the RRULE's UNTIL boundary.
+  recurrenceRule?: string | null;
+  recurrenceEndDate?: string | null;
   completed: boolean;
   completedAt?: string | null;
   createdAt: string;
@@ -38,6 +44,8 @@ function mapRowToTask(row: TaskRow): Task {
     title: row.title,
     notes: row.notes ?? undefined,
     dueDate: row.due_date ?? null,
+    recurrenceRule: (row as Record<string, unknown>).recurrence_rule as string | null ?? null,
+    recurrenceEndDate: (row as Record<string, unknown>).recurrence_end_date as string | null ?? null,
     completed: row.completed,
     completedAt: (row as Record<string, unknown>).completed_at as string | null ?? null,
     createdAt: row.created_at,
@@ -64,7 +72,7 @@ function normalizeError(
   return new TaskServiceError(code, message);
 }
 
-const TASK_SELECT_COLUMNS = "id,user_id,title,notes,due_date,completed,completed_at,created_at,updated_at";
+const TASK_SELECT_COLUMNS = "id,user_id,title,notes,due_date,recurrence_rule,recurrence_end_date,completed,completed_at,created_at,updated_at";
 
 async function readOwnedTask(userId: string, taskId: string) {
   const normalizedUserId = normalizeRequiredId(userId, "userId");
@@ -118,7 +126,14 @@ export const tasksService = {
   async updateTask(
     userId: string,
     id: string,
-    updates: { title?: string; notes?: string; dueDate?: string | null; completed?: boolean },
+    updates: {
+      title?: string;
+      notes?: string;
+      dueDate?: string | null;
+      completed?: boolean;
+      recurrenceRule?: string | null;
+      recurrenceEndDate?: string | null;
+    },
   ) {
     const nextNotes = updates.notes !== undefined ? updates.notes.trim() || null : undefined;
     const { data, error } = await supabase
@@ -128,6 +143,8 @@ export const tasksService = {
         notes: nextNotes,
         due_date: updates.dueDate === undefined ? undefined : updates.dueDate || null,
         completed: updates.completed ?? undefined,
+        recurrence_rule: updates.recurrenceRule,
+        recurrence_end_date: updates.recurrenceEndDate,
       })
       .eq("id", id)
       .eq("user_id", userId)

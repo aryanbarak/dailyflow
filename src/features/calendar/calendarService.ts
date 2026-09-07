@@ -12,6 +12,13 @@ export interface CalendarEvent {
   color?: string;
   type?: string;
   allDay?: boolean;
+  // CORE-W5 (2026-09-06, CORE audit item 1-4): a real RFC 5545 RRULE
+  // property list (see src/features/scheduling/occurrences.ts). Was
+  // previously accepted by CalendarFormDialog but silently dropped before
+  // ever reaching this service -- now threaded through Supabase AND the
+  // localStorage fallback path below.
+  recurrenceRule?: string | null;
+  recurrenceEndDate?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -31,6 +38,8 @@ type DbRow = {
   color: string | null;
   type: string | null;
   all_day: boolean;
+  recurrence_rule: string | null;
+  recurrence_end_date: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -47,6 +56,8 @@ function dbRowToEvent(row: DbRow): CalendarEvent {
     color: row.color ?? undefined,
     type: row.type ?? undefined,
     allDay: row.all_day,
+    recurrenceRule: row.recurrence_rule,
+    recurrenceEndDate: row.recurrence_end_date,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -66,6 +77,8 @@ function toInsertRow(userId: string, input: EventInput) {
     color: input.color || null,
     type: input.type || null,
     all_day: input.allDay ?? false,
+    recurrence_rule: input.recurrenceRule ?? null,
+    recurrence_end_date: input.recurrenceEndDate ?? null,
   };
 }
 
@@ -103,6 +116,8 @@ function buildDbUpdates(updates: Partial<Omit<CalendarEvent, "id" | "createdAt">
   if ("color" in updates) row.color = updates.color ?? null;
   if ("type" in updates) row.type = updates.type ?? null;
   if ("allDay" in updates) row.all_day = updates.allDay ?? false;
+  if ("recurrenceRule" in updates) row.recurrence_rule = updates.recurrenceRule ?? null;
+  if ("recurrenceEndDate" in updates) row.recurrence_end_date = updates.recurrenceEndDate ?? null;
   return row;
 }
 
@@ -202,6 +217,8 @@ export const calendarService = {
       color: input.color,
       type: input.type,
       allDay: input.allDay,
+      recurrenceRule: input.recurrenceRule ?? null,
+      recurrenceEndDate: input.recurrenceEndDate ?? null,
       createdAt: now,
       updatedAt: now,
     };
@@ -261,6 +278,8 @@ export async function migrateLocalStorageEvents(userId: string): Promise<void> {
     color: e.color || null,
     type: e.type || null,
     all_day: e.allDay ?? false,
+    recurrence_rule: e.recurrenceRule ?? null,
+    recurrence_end_date: e.recurrenceEndDate ?? null,
   }));
   // Mark migrated before insert so repeated Supabase failures can't create duplicates.
   // If insert fails, the localStorage data is still intact and readable as fallback.

@@ -80,7 +80,14 @@ export function useTasks() {
   const updateTask = useCallback(
     async (
       id: string,
-      patch: { title?: string; notes?: string; dueDate?: string | null; completed?: boolean },
+      patch: {
+        title?: string;
+        notes?: string;
+        dueDate?: string | null;
+        completed?: boolean;
+        recurrenceRule?: string | null;
+        recurrenceEndDate?: string | null;
+      },
     ) => {
       if (!user) {
         toast({ variant: "destructive", title: "You must be signed in" });

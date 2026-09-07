@@ -12,8 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { CalendarEvent } from "@/features/calendar/calendarService";
-import { RecurrencePicker } from "@/components/RecurrencePicker";
-import type { RecurrenceRule } from "@/lib/recurrence";
+import { SchedulePicker } from "@/features/scheduling/components/SchedulePicker";
 
 type CalendarFormMode = "create" | "edit";
 
@@ -30,7 +29,7 @@ interface CalendarFormDialogProps {
     location?: string;
     notes?: string;
     type?: string;
-    recurrenceRule?: RecurrenceRule;
+    recurrenceRule?: string;
     recurrenceEndDate?: string;
   }) => Promise<void> | void;
   isSaving?: boolean;
@@ -109,8 +108,8 @@ export function CalendarFormDialog({
   const [location, setLocation] = useState("");
   const [notes, setNotes] = useState("");
   const [eventType, setEventType] = useState("personal");
-  const [recurrenceRule, setRecurrenceRule] = useState<RecurrenceRule | ''>('');
-  const [recurrenceEndDate, setRecurrenceEndDate] = useState('');
+  const [recurrenceRule, setRecurrenceRule] = useState<string | null>(null);
+  const [recurrenceEndDate, setRecurrenceEndDate] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -133,8 +132,12 @@ export function CalendarFormDialog({
       setLocation(initialEvent.location ?? "");
       setNotes(initialEvent.notes ?? "");
       setEventType(initialEvent.type ?? "personal");
-      setRecurrenceRule('');
-      setRecurrenceEndDate('');
+      // CORE-W5 fix: restore the event's actual schedule instead of always
+      // resetting to none -- editing a recurring event used to silently
+      // discard its rule (and the rule never even reached the DB before
+      // this feature, so there was nothing real to restore either way).
+      setRecurrenceRule(initialEvent.recurrenceRule ?? null);
+      setRecurrenceEndDate(initialEvent.recurrenceEndDate ?? null);
       setError(null);
       return;
     }
@@ -147,8 +150,8 @@ export function CalendarFormDialog({
     setLocation("");
     setNotes("");
     setEventType("personal");
-    setRecurrenceRule('');
-    setRecurrenceEndDate('');
+    setRecurrenceRule(null);
+    setRecurrenceEndDate(null);
     setError(null);
   }, [initialEvent, mode, open]);
 
@@ -193,8 +196,8 @@ export function CalendarFormDialog({
         location,
         notes,
         type: eventType,
-        recurrenceRule: recurrenceRule || undefined,
-        recurrenceEndDate: recurrenceEndDate || undefined,
+        recurrenceRule: recurrenceRule ?? undefined,
+        recurrenceEndDate: recurrenceEndDate ?? undefined,
       });
       onOpenChange(false);
     } finally {
@@ -256,11 +259,19 @@ export function CalendarFormDialog({
             <Label>Notes</Label>
             <Textarea value={notes} onChange={(event) => setNotes(event.target.value)} />
           </div>
-          <RecurrencePicker
-            value={recurrenceRule}
-            onChange={setRecurrenceRule}
-            endDate={recurrenceEndDate}
-            onEndDateChange={setRecurrenceEndDate}
+          <SchedulePicker
+            granularity="datetime"
+            recurrenceRule={recurrenceRule}
+            recurrenceEndDate={recurrenceEndDate}
+            onChange={(result) => {
+              setRecurrenceRule(result.recurrenceRule);
+              setRecurrenceEndDate(result.recurrenceEndDate);
+              if (result.resolvedDateTime) {
+                const resolved = new Date(result.resolvedDateTime);
+                setDate(formatInputDate(resolved));
+                setStartTime(formatInputTime(resolved));
+              }
+            }}
           />
           <Button className="w-full" onClick={handleSubmit} disabled={isBusy}>
             {mode === "edit" ? "Save Changes" : "Create Event"}

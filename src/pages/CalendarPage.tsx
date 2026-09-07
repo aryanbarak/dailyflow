@@ -21,6 +21,7 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CalendarEvent, calendarService } from "@/features/calendar/calendarService";
 import { CalendarFormDialog } from "@/features/calendar/CalendarFormDialog";
+import { expandRecurringEvents } from "@/features/calendar/expandRecurringEvents";
 import { loadCalendarUiState, saveCalendarUiState } from "@/features/calendar/calendarUiState";
 import { AlarmPicker } from "@/features/calendar/components/AlarmPicker";
 import { getTasksAsEvents, type TaskAsEvent } from "@/features/tasks/taskCalendarBridge";
@@ -326,20 +327,28 @@ export default function CalendarPage() {
   }, [hasLocationOnly, hasNotesOnly, searchQuery, sortedMonthEvents]);
 
   const eventsByDay = useMemo(() => {
-    return filteredEvents.reduce<Record<string, CalendarEvent[]>>((acc, event) => {
+    // CORE-W5 (audit item 1-4): a recurring event contributes one virtual
+    // occurrence per day it actually recurs on, in addition to (really,
+    // instead of) its own literal stored date -- see
+    // expandRecurringEvents.ts. Unbounded ("all" filter, no rangeStart/
+    // rangeEnd) skips expansion rather than guessing a window; the
+    // month grid below always expands regardless of filter.
+    const source = rangeStart && rangeEnd ? expandRecurringEvents(filteredEvents, rangeStart, rangeEnd) : filteredEvents;
+    return source.reduce<Record<string, CalendarEvent[]>>((acc, event) => {
       const key = toDateOnly(event.dateTimeStart);
       acc[key] = acc[key] ? [...acc[key], event] : [event];
       return acc;
     }, {});
-  }, [filteredEvents]);
+  }, [filteredEvents, rangeStart, rangeEnd]);
 
   const monthEventsByDay = useMemo(() => {
-    return filteredMonthEvents.reduce<Record<string, CalendarEvent[]>>((acc, event) => {
+    const source = expandRecurringEvents(filteredMonthEvents, monthWindowStart, monthWindowEnd);
+    return source.reduce<Record<string, CalendarEvent[]>>((acc, event) => {
       const key = toDateOnly(event.dateTimeStart);
       acc[key] = acc[key] ? [...acc[key], event] : [event];
       return acc;
     }, {});
-  }, [filteredMonthEvents]);
+  }, [filteredMonthEvents, monthWindowStart, monthWindowEnd]);
 
   const monthEventStats = useMemo(() => {
     if (monthEvents.length === 0) {
@@ -458,7 +467,16 @@ export default function CalendarPage() {
   };
 
   const openEditEvent = (event: CalendarEvent) => {
-    setEditingEvent(event);
+    // CORE-W5: `event` may be a virtual RECURRING OCCURRENCE from
+    // eventsByDay/monthEventsByDay (same real id, a shifted dateTimeStart
+    // for display) -- resolve back to the actual stored row so editing
+    // never silently rewrites the whole series' own start date/time to
+    // whichever occurrence happened to be clicked. No per-occurrence
+    // override (EXDATE) support: editing any occurrence edits the series.
+    const real = sortedMonthEvents.find((e) => e.id === event.id)
+      ?? sortedRangeEvents.find((e) => e.id === event.id)
+      ?? event;
+    setEditingEvent(real);
     setIsDialogOpen(true);
   };
 
@@ -469,6 +487,8 @@ export default function CalendarPage() {
     location?: string;
     notes?: string;
     type?: string;
+    recurrenceRule?: string;
+    recurrenceEndDate?: string;
   }) => {
     if (editingEvent) {
       await calendarService.update(editingEvent.id, payload);

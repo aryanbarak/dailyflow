@@ -35,8 +35,8 @@ import { StatCard } from "@/components/common/StatCard";
 import { CollapsibleRail } from "@/components/common/CollapsibleRail";
 import { AiSuggestionsCard } from "@/components/common/AiSuggestionsCard";
 import { useAiSuggestions } from "@/features/ai/useAiSuggestions";
-import { RecurrencePicker } from "@/components/RecurrencePicker";
-import type { RecurrenceRule } from "@/lib/recurrence";
+import { SchedulePicker } from "@/features/scheduling/components/SchedulePicker";
+import { nextOccurrenceAfter } from "@/features/scheduling/occurrences";
 import { formatDateLabel, isBeforeDay, isSameDay, toDateOnly } from "@/lib/date";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import ReactMarkdown from "react-markdown";
@@ -105,8 +105,8 @@ export default function TasksPage() {
   const [title, setTitle] = useState("");
   const [notes, setNotes] = useState("");
   const [dueDate, setDueDate] = useState("");
-  const [recurrenceRule, setRecurrenceRule] = useState<RecurrenceRule | ''>('');
-  const [recurrenceEndDate, setRecurrenceEndDate] = useState('');
+  const [recurrenceRule, setRecurrenceRule] = useState<string | null>(null);
+  const [recurrenceEndDate, setRecurrenceEndDate] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [statsRange, setStatsRange] = useState<'week' | 'month' | 'all'>('week');
 
@@ -325,8 +325,8 @@ export default function TasksPage() {
     setTitle("");
     setNotes("");
     setDueDate("");
-    setRecurrenceRule('');
-    setRecurrenceEndDate('');
+    setRecurrenceRule(null);
+    setRecurrenceEndDate(null);
     setFormError(null);
     setIsDialogOpen(true);
   };
@@ -336,8 +336,11 @@ export default function TasksPage() {
     setTitle(task.title);
     setNotes(task.notes ?? "");
     setDueDate(task.dueDate ?? "");
-    setRecurrenceRule('');
-    setRecurrenceEndDate('');
+    // CORE-W5 fix: restore the task's actual schedule instead of always
+    // resetting to none -- editing a recurring task used to silently
+    // discard its rule.
+    setRecurrenceRule(task.recurrenceRule ?? null);
+    setRecurrenceEndDate(task.recurrenceEndDate ?? null);
     setFormError(null);
     setIsDialogOpen(true);
   };
@@ -349,7 +352,15 @@ export default function TasksPage() {
       return;
     }
     if (editingTask) {
-      await updateTask(editingTask.id, { title: trimmed, notes, dueDate: dueDate || null });
+      // CORE-W5 fix: the schedule is now forwarded on edit too -- it used
+      // to only ever be settable at creation time.
+      await updateTask(editingTask.id, {
+        title: trimmed,
+        notes,
+        dueDate: dueDate || null,
+        recurrenceRule,
+        recurrenceEndDate,
+      });
     } else {
       await addTask({ title: trimmed, notes, dueDate: dueDate || null, recurrenceRule: recurrenceRule || undefined, recurrenceEndDate: recurrenceEndDate || undefined });
     }
@@ -369,6 +380,19 @@ export default function TasksPage() {
     if (isSameDay(date, today)) return t('tasks_due_today');
     if (!task.completed && isBeforeDay(date, today)) return t('tasks_overdue');
     return t('tasks_due_on', { date: formatDateLabel(task.dueDate) });
+  };
+
+  // CORE-W5 (CORE audit item 1-4): a real, storable RRULE finally means
+  // this can be shown -- but purely as information. There is no
+  // materialization of future rows and no completion-cascade behavior:
+  // SmartFlow tasks are a manual checklist, not an agent-fired job queue
+  // (unlike CORE's own tasks), so "next occurrence" is read-only here.
+  const repeatsLabel = (task: Task): string | null => {
+    if (!task.recurrenceRule) return null;
+    const dtstart = task.dueDate ? parseDateOnly(task.dueDate) : new Date(task.createdAt);
+    const until = task.recurrenceEndDate ? parseDateOnly(task.recurrenceEndDate) : null;
+    const next = nextOccurrenceAfter(task.recurrenceRule, dtstart, today, until);
+    return next ? t('schedule_repeats_next', { date: formatDateLabel(next.toISOString()) }) : null;
   };
 
   const FILTERS: { value: TaskFilter; labelKey: TranslationKey; count: number }[] = [
@@ -428,11 +452,17 @@ export default function TasksPage() {
                 <Label>{t('tasks_due_date')}</Label>
                 <Input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} />
               </div>
-              <RecurrencePicker
-                value={recurrenceRule}
-                onChange={setRecurrenceRule}
-                endDate={recurrenceEndDate}
-                onEndDateChange={setRecurrenceEndDate}
+              <SchedulePicker
+                granularity="date"
+                recurrenceRule={recurrenceRule}
+                recurrenceEndDate={recurrenceEndDate}
+                onChange={(result) => {
+                  setRecurrenceRule(result.recurrenceRule);
+                  setRecurrenceEndDate(result.recurrenceEndDate);
+                  // Tasks only have a date, no time-of-day -- a one-time
+                  // quick-pick/parse result just sets the due date.
+                  if (result.resolvedDateTime) setDueDate(result.resolvedDateTime.slice(0, 10));
+                }}
               />
               <Button className="w-full" onClick={handleSave}>
                 {editingTask ? t('tasks_save_changes') : t('tasks_create')}
@@ -573,6 +603,9 @@ export default function TasksPage() {
                         <Calendar className="w-3 h-3" />
                         {dueLabel(task)}
                       </span>
+                      {repeatsLabel(task) && (
+                        <span className="text-[11px] text-muted-foreground">{repeatsLabel(task)}</span>
+                      )}
                       {task.dueDate && !task.completed && (
                         <AlarmPicker
                           sourceType="task"
