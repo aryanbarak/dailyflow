@@ -12,6 +12,7 @@ import {
 import { handleGitHubIntegrationRequest } from './github-integration'
 import { handleTelegramWebhookRequest } from './telegram-webhook'
 import { handleJournalAssistantRequest } from './journal-assistant-endpoint'
+import { handleScheduleParseRequest } from './schedule-parse-endpoint'
 import { handleMcpRequest } from './mcp-endpoint'
 import { handleEngineeringTasksRequest } from './engineering-tasks-endpoint'
 import { handleContextDerivationRequest } from './context-derivation-endpoint'
@@ -121,6 +122,11 @@ export default {
     // (module convention), so it sits with the self-contained routes.
     const journalAssistantResponse = await handleJournalAssistantRequest(request, env)
     if (journalAssistantResponse) return journalAssistantResponse
+
+    // CORE-W5: schedule NLP -> RRULE parsing -- handles its own CORS/OPTIONS
+    // (module convention), so it sits with the other self-contained routes.
+    const scheduleParseResponse = await handleScheduleParseRequest(request, env)
+    if (scheduleParseResponse) return scheduleParseResponse
 
     // CORE-W3: MCP server -- api_tokens bearer auth, not browser CORS.
     const mcpResponse = await handleMcpRequest(request, env)
