@@ -40,9 +40,14 @@ import {
 } from '@/features/ai/responseLanguage';
 import { AiMemoryTab } from '@/features/ai-memory/AiMemoryTab';
 import { PersonalMemorySection } from '@/features/personal-memory/components/PersonalMemorySection';
+import { PersonalMemoryExtractionRunHistory } from '@/features/personal-memory/components/PersonalMemoryExtractionRunHistory';
+import { PersonalMemoryRecallLogViewer } from '@/features/personal-memory/components/PersonalMemoryRecallLogViewer';
+import { PersonalMemoryProvenanceGraph } from '@/features/personal-memory/components/PersonalMemoryProvenanceGraph';
 import { browserPersonalMemoryRecordService } from '@/features/personal-memory/personalMemoryRecordBrowserService';
+import { browserPersonalMemoryRecallLogService } from '@/features/personal-memory/personalMemoryRecallLogBrowserService';
 import { triggerPersonalMemoryExtraction } from '@/features/personal-memory/personalMemoryExtractionTriggerClient';
 import { resolveDocumentChunkSources } from '@/features/documents/documentChunkSourceResolver';
+import { resolveChatTurnSources, resolveBriefingSources } from '@/features/personal-memory/personalMemoryProvenanceSourceResolvers';
 import { GitHubIntegrationCard } from '@/features/integrations/github/GitHubIntegrationCard';
 import { TelegramIntegrationCard } from '@/features/integrations/telegram/TelegramIntegrationCard';
 import { PersonaCard } from '@/features/persona/PersonaCard';
@@ -1315,7 +1320,19 @@ export default function SettingsPage() {
     appearance:    <AppearanceTab />,
     notifications: <NotificationsTab />,
     data:          <DataTab />,
-    'ai-memory':   <div className="space-y-6"><PersonaCard /><PersonalMemorySection service={browserPersonalMemoryRecordService} triggerExtraction={triggerPersonalMemoryExtraction} resolveDocumentSources={resolveDocumentChunkSources} /><AiMemoryTab /></div>,
+    'ai-memory':   <div className="space-y-6">
+      <PersonaCard />
+      <PersonalMemorySection service={browserPersonalMemoryRecordService} triggerExtraction={triggerPersonalMemoryExtraction} resolveDocumentSources={resolveDocumentChunkSources} />
+      <PersonalMemoryExtractionRunHistory service={browserPersonalMemoryRecordService} triggerExtraction={triggerPersonalMemoryExtraction} />
+      <PersonalMemoryRecallLogViewer service={browserPersonalMemoryRecallLogService} />
+      <PersonalMemoryProvenanceGraph
+        service={browserPersonalMemoryRecordService}
+        resolveDocumentSources={resolveDocumentChunkSources}
+        resolveChatTurnSources={resolveChatTurnSources}
+        resolveBriefingSources={resolveBriefingSources}
+      />
+      <AiMemoryTab />
+    </div>,
     integrations:  <div className="space-y-6"><GitHubIntegrationCard /><TelegramIntegrationCard /><ApiAccessCard /></div>,
   };
 

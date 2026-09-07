@@ -235,3 +235,58 @@ describe("createSupabasePersonalMemoryRecordRepository -- listConfirmedByOwner (
     expect(limit).toHaveBeenCalledWith(30);
   });
 });
+
+describe("createSupabasePersonalMemoryRecordRepository -- listRunsByOwner (CORE-W6, ADR-0023 SS1)", () => {
+  function fakeRunRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "run-1",
+      user_id: OWNER_ID,
+      model_identity: "gemini-test",
+      derivation_version: "personal-memory-extraction-v1",
+      started_at: "2026-09-01T00:00:00.000Z",
+      completed_at: "2026-09-01T00:00:05.000Z",
+      prompt_token_count: 100,
+      response_token_count: 50,
+      candidate_count: 3,
+      accepted_count: 2,
+      dropped_count: 1,
+      outcome: "completed",
+      failure_reason: null,
+      ...overrides,
+    };
+  }
+
+  it("scopes to the owner, orders newest-first, and applies the limit", async () => {
+    const limit = vi.fn(async () => ({ data: [fakeRunRow()], error: null }));
+    const order = vi.fn(() => ({ limit }));
+    const eq = vi.fn(() => ({ order }));
+    const select = vi.fn(() => ({ eq }));
+    const from = vi.fn(() => ({ select }));
+    const repository = createSupabasePersonalMemoryRecordRepository(fakeClient({ from }));
+
+    const result = await repository.listRunsByOwner(OWNER_ID, 15);
+
+    expect(from).toHaveBeenCalledWith("personal_memory_extraction_runs");
+    expect(eq).toHaveBeenCalledWith("user_id", OWNER_ID);
+    expect(order).toHaveBeenCalledWith("started_at", { ascending: false });
+    expect(limit).toHaveBeenCalledWith(15);
+    expect(result).toHaveLength(1);
+    expect(result[0].outcome).toBe("completed");
+  });
+
+  it("a run with completed_at null and no outcome maps cleanly (still in flight, or interrupted)", async () => {
+    const limit = vi.fn(async () => ({
+      data: [fakeRunRow({ completed_at: null, outcome: null, prompt_token_count: null, response_token_count: null, failure_reason: null })],
+      error: null,
+    }));
+    const order = vi.fn(() => ({ limit }));
+    const eq = vi.fn(() => ({ order }));
+    const select = vi.fn(() => ({ eq }));
+    const from = vi.fn(() => ({ select }));
+    const repository = createSupabasePersonalMemoryRecordRepository(fakeClient({ from }));
+
+    const result = await repository.listRunsByOwner(OWNER_ID);
+    expect(result[0].completedAt).toBeUndefined();
+    expect(result[0].outcome).toBeUndefined();
+  });
+});

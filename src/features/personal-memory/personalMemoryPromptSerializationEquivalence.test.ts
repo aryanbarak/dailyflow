@@ -51,7 +51,7 @@ describe("formatConfirmedMemoryLine -- TS and Worker copies agree", () => {
     ({ r }) => {
       // Worker's ConfirmedPersonalMemoryRecord and PersonalMemoryRecord share
       // the fields formatConfirmedMemoryLine actually reads (kind, content).
-      const workerShaped = { kind: r.kind, content: r.content as unknown as Record<string, unknown>, createdAt: r.createdAt };
+      const workerShaped = { id: r.id, kind: r.kind, content: r.content as unknown as Record<string, unknown>, createdAt: r.createdAt };
       expect(tsFormatLine(r)).toBe(workerFormatLine(workerShaped));
     },
   );

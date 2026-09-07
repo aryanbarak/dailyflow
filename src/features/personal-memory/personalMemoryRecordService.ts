@@ -95,6 +95,8 @@ export interface PersonalMemoryRecordService {
   listConfirmed(): Promise<readonly PersonalMemoryRecord[]>;
   createRun(input: CreatePersonalMemoryExtractionRunInput): Promise<PersonalMemoryExtractionRun>;
   completeRun(input: CompletePersonalMemoryExtractionRunInput): Promise<PersonalMemoryExtractionRun>;
+  /** CORE-W6 (ADR-0023 SS1): extraction-run history for the "Extraction history" UI. */
+  listRuns(): Promise<readonly PersonalMemoryExtractionRun[]>;
 }
 
 function validateCreateInput(input: unknown): { valid: true; value: CreatePersonalMemoryRecordInput } | { valid: false } {
@@ -243,6 +245,15 @@ export function createPersonalMemoryRecordService(
         return await repository.completeRun(input);
       } catch (error) {
         throw toServiceError(error, "Unable to complete an extraction run.");
+      }
+    },
+
+    async listRuns() {
+      const ownerId = await requireOwnerId();
+      try {
+        return await repository.listRunsByOwner(ownerId);
+      } catch (error) {
+        throw toServiceError(error, "Unable to list extraction runs.");
       }
     },
   };

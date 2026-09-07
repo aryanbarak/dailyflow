@@ -26,6 +26,7 @@ export type ConfirmedPersonalMemoryRecordKind =
   | 'preference' | 'goal' | 'working_pattern' | 'commitment' | 'personal_fact' | 'skill'
 
 export interface ConfirmedPersonalMemoryRecord {
+  id: string
   kind: ConfirmedPersonalMemoryRecordKind
   content: Record<string, unknown>
   createdAt: string

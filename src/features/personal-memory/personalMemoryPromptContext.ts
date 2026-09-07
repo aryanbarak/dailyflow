@@ -7,11 +7,21 @@
 // required.
 
 import type { PersonalMemoryRecordService } from "./personalMemoryRecordService";
-import { buildConfirmedMemoryPromptSection } from "./personalMemoryPromptSerialization";
+import { buildConfirmedMemoryPromptSection, selectBoundedConfirmedMemory } from "./personalMemoryPromptSerialization";
+
+export interface ConfirmedMemoryPromptContext {
+  readonly text: string;
+  /** The ids actually selected into `text` (post cap/per-kind bounding) -- ADR-0023 SS2, the tutor's recall-log input. */
+  readonly recordIds: readonly string[];
+}
 
 export async function getConfirmedMemoryPromptContext(
   service: Pick<PersonalMemoryRecordService, "listConfirmed">,
-): Promise<string> {
+): Promise<ConfirmedMemoryPromptContext> {
   const records = await service.listConfirmed();
-  return buildConfirmedMemoryPromptSection(records);
+  const selected = selectBoundedConfirmedMemory(records);
+  return {
+    text: buildConfirmedMemoryPromptSection(records),
+    recordIds: selected.map((record) => record.id),
+  };
 }

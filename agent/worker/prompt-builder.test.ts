@@ -23,7 +23,7 @@ const FIXED_CLOCK = new Date('2026-08-24T14:30:00.000Z')
 const FIXED_TIMEZONE = 'Europe/Berlin'
 
 function confirmedSkill(summary: string): ConfirmedPersonalMemoryRecord {
-  return { kind: 'skill', content: { summary }, createdAt: now }
+  return { id: 'record-skill', kind: 'skill', content: { summary }, createdAt: now }
 }
 
 describe('buildChatSystemPrompt', () => {
